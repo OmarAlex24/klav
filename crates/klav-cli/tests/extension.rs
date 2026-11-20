@@ -263,6 +263,68 @@ fn dia_also_gets_the_mozilla_manifest() {
     assert!(!mozilla.exists());
 }
 
+/// Ardia reads Chromium native messaging manifests from
+/// `com.ardia.browser/Chromium/NativeMessagingHosts` on macOS and
+/// `~/.config/ardia/NativeMessagingHosts` on Linux.
+#[test]
+fn ardia_gets_chromium_manifest() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let device = Device::new(root.path(), "home");
+    let fake_home = root.path().join("user");
+    let host = root.path().join("bin/klav-native-host");
+    std::fs::create_dir_all(host.parent().expect("parent")).expect("dir");
+    std::fs::write(&host, "#!/bin/sh\n").expect("host");
+    let host_arg = host.to_str().expect("utf-8");
+    let run = |args: &[&str]| {
+        let mut cmd = device.command();
+        cmd.env("HOME", &fake_home).args(args);
+        let out = cmd.output().expect("run klav");
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let manifest = fake_home.join(if cfg!(target_os = "macos") {
+        "Library/Application Support/com.ardia.browser/Chromium/NativeMessagingHosts/dev.klav.host.json"
+    } else {
+        ".config/ardia/NativeMessagingHosts/dev.klav.host.json"
+    });
+
+    let (code, _, err) = run(&[
+        "extension",
+        "install-host",
+        "--host",
+        host_arg,
+        "--browser",
+        "ardia",
+        "--dev",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let text = std::fs::read_to_string(&manifest).expect("manifest");
+    let json: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(
+        json["allowed_origins"][0],
+        "chrome-extension://niiplppgdljgimbnmokojdkofdcjkgao/"
+    );
+    assert!(json.get("allowed_extensions").is_none());
+
+    let (code, out, err) = run(&["extension", "host-status", "--host", host_arg, "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let status: Value = serde_json::from_str(&out).expect("status json");
+    let ardia = status["manifests"]
+        .as_array()
+        .expect("manifests")
+        .iter()
+        .find(|m| m["browser"] == "ardia")
+        .expect("ardia manifest");
+    assert_eq!(ardia["current"], true, "{ardia}");
+
+    let (code, _, err) = run(&["extension", "uninstall-host", "--browser", "ardia"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!manifest.exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn klavd_suggests_and_fills_only_matching_sites() {
     let server = ServerProcess::start(900);

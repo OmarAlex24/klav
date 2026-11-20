@@ -1542,6 +1542,12 @@ final class SampleSystem: MacSystem, @unchecked Sendable {
     /// Its own reader, so one test's cache never answers for another's.
     let reader: BuildMarker.Reader
 
+    /// Tests: browsers reported as installed apps on this Mac (nil: show
+    /// every browser whose data folder exists under the test home).
+    private var installedSet: Set<String>?
+    func setInstalledBrowsers(_ browsers: Set<String>?) { mutex.lock(); installedSet = browsers; mutex.unlock() }
+    func installedBrowsers() -> Set<String>? { mutex.lock(); defer { mutex.unlock() }; return installedSet }
+
     func executable(of pid: Int32) -> String? { mutex.lock(); defer { mutex.unlock() }; return other }
 
     func refusal(for paths: InstallPaths) -> String? { SampleSafety.problem(paths: paths) }

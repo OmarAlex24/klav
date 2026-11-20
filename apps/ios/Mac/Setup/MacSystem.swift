@@ -115,6 +115,10 @@ protocol MacSystem: Sendable {
     func probeCLIs(_ candidates: [String], appCLI: String, contents: Bool) -> [String: BuildMarker.Probe]
     /// The executable of a process.
     func executable(of pid: Int32) -> String?
+    /// Supported browsers installed as apps on this Mac (CLI names: `ardia`,
+    /// `dia`, `chrome`, …), or nil when the system doesn't filter by
+    /// installed apps (tests without an explicit list).
+    func installedBrowsers() -> Set<String>?
     /// Why nothing may be set up or written on these places, or nil. The
     /// real Mac never refuses; the sample (`SampleSystem`) refuses the
     /// person's real home, `KLAV_HOME` and PATH.
@@ -192,6 +196,16 @@ struct LiveSystem: MacSystem {
     }
 
     func executable(of pid: Int32) -> String? { executablePath(of: pid) }
+
+    func installedBrowsers() -> Set<String>? {
+        var found = Set<String>()
+        for (id, bundleIDs) in BrowserNames.bundleIDs {
+            if bundleIDs.contains(where: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }) {
+                found.insert(id)
+            }
+        }
+        return found
+    }
 
     func refusal(for paths: InstallPaths) -> String? { nil }
 }

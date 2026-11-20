@@ -31,6 +31,7 @@ fn browser_dir(browser: Browser, home: &Path) -> Option<PathBuf> {
             Browser::Arc => mac.join("Arc/User Data"),
             Browser::Edge => mac.join("Microsoft Edge"),
             Browser::Dia => mac.join("Dia/User Data"),
+            Browser::Ardia => mac.join("com.ardia.browser/Chromium"),
             Browser::Firefox => mac.join("Mozilla"),
         }
     } else {
@@ -39,6 +40,7 @@ fn browser_dir(browser: Browser, home: &Path) -> Option<PathBuf> {
             Browser::Chromium => linux.join("chromium"),
             Browser::Brave => linux.join("BraveSoftware/Brave-Browser"),
             Browser::Edge => linux.join("microsoft-edge"),
+            Browser::Ardia => linux.join("ardia"),
             Browser::Firefox => home.join(".mozilla"),
             Browser::Arc | Browser::Dia => return None,
         }
@@ -54,13 +56,14 @@ fn hosts_dir(browser: Browser, data_dir: &Path) -> PathBuf {
     }
 }
 
-const ALL: [Browser; 7] = [
+const ALL: [Browser; 8] = [
     Browser::Chrome,
     Browser::Chromium,
     Browser::Brave,
     Browser::Arc,
     Browser::Edge,
     Browser::Dia,
+    Browser::Ardia,
     Browser::Firefox,
 ];
 
@@ -72,6 +75,7 @@ fn browser_name(b: Browser) -> &'static str {
         Browser::Arc => "arc",
         Browser::Edge => "edge",
         Browser::Dia => "dia",
+        Browser::Ardia => "ardia",
         Browser::Firefox => "firefox",
     }
 }
@@ -737,5 +741,25 @@ mod tests {
         // A quote left open: nothing to go on.
         assert_eq!(sh_words("'/bin/host --allow x"), None);
         assert_eq!(sh_words("x \"y"), None);
+    }
+
+    #[test]
+    fn ardia_uses_chromium_native_messaging_dir() {
+        let home = Path::new("/home/ana");
+        let dir = browser_dir(Browser::Ardia, home).expect("ardia supported");
+        let hosts = hosts_dir(Browser::Ardia, &dir);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                hosts,
+                Path::new(
+                    "/home/ana/Library/Application Support/com.ardia.browser/Chromium/NativeMessagingHosts"
+                )
+            );
+        } else {
+            assert_eq!(
+                hosts,
+                Path::new("/home/ana/.config/ardia/NativeMessagingHosts")
+            );
+        }
     }
 }

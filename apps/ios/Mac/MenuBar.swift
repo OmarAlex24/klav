@@ -155,6 +155,24 @@ struct MenuBarView: View {
             Text(stateLine)
                 .font(.ui(12, relativeTo: .caption))
                 .foregroundStyle(Palette.gris)
+            Button {
+                openSettings()
+                NSApp.activate()
+                dismiss()
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    IconView(icon: .gear, size: 14)
+                        .foregroundStyle(Palette.gris)
+                    if installer.needsSetupAttention {
+                        CompactMark().frame(width: 5, height: 5).offset(x: 2, y: -2)
+                    }
+                }
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("This Mac & Settings (⌘,)")
+            .accessibilityLabel("Settings")
         }
         .padding(.horizontal, 14)
         .frame(height: 44)

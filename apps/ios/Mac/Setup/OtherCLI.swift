@@ -45,6 +45,16 @@ struct OtherCLI: Equatable, Identifiable {
         return command.flatMap { Self.printable($0) ? $0 : nil }
     }
 
+    /// The command that removes an older `cargo install` copy so this app's
+    /// `klav` runs instead. Only for an older cargo install.
+    var uninstallCommand: String? {
+        guard age == .older, case .cargo(let fromRecord) = origin else { return nil }
+        if let fromRecord, fromRecord.contains("klav-daemon") {
+            return "cargo uninstall klav-cli klav-daemon"
+        }
+        return "cargo uninstall klav-cli"
+    }
+
     /// Every scalar in 0x20–0x7E, except `\` and `!`. The command is built
     /// from a file the app didn't write (`.crates2.json`, T193), and
     /// `URL.path` and `queryItems` decode `%0A` or `%E2%80%AE` into a newline

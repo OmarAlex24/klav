@@ -12,7 +12,7 @@ This page says where to get each part of Klav, what each one needs, and how to s
 |---|---|---|
 | Mac app | macOS 15 or later, Apple silicon | A disk image: `https://klav.dev/download/mac` |
 | CLI (`klav`, with `klavd`) | macOS; Linux x86_64 with glibc 2.36 or later | On a Mac, with the Mac app. On Linux: `https://klav.dev/download/linux` |
-| Browser extension | Chrome, Brave, Edge, Arc and Dia (Chromium 120 or later); Firefox 140 or later | For Chromium browsers, a zip you load by hand; for Firefox, an add-on file Mozilla signed. It isn't in the browser stores yet |
+| Browser extension | Ardia, Dia, Chrome, Brave, Edge and Arc (Chromium 120 or later); Firefox 140 or later | For Chromium browsers, a zip you load by hand; for Firefox, an add-on file Mozilla signed. It isn't in the browser stores yet |
 | iPhone app | iOS 18 or later | A beta on TestFlight. It isn't in the App Store yet |
 
 <Aside type="note" title="Which downloads are out">
@@ -32,15 +32,15 @@ Open the disk image and drag Klav to the Applications folder, then open it from 
 <Steps>
 
 1. **Background service.** Adds Klav to System Settings › General › Login Items & Extensions, so `klavd` starts when you log in.
-2. **Command line.** Creates `/usr/local/bin/klav`, a link to the `klav` inside the app, so updates update it too. macOS asks for an administrator's password once. "Copy the command instead" gives you the command to run yourself. If there's another `klav` your terminal may run instead of the app's, the step names it and compares its build with the app's, read from its file without running it. For an older one installed with `cargo install`, it shows the command to run in Terminal; the app never runs it.
-3. **Browsers.** "Connect the browsers" writes one small file in each browser's folder so the extension can reach `klavd`. Firefox can connect now. Chrome, Dia and the other Chromium browsers wait until Klav is in the Chrome Web Store, unless you turn on "Development extension" (see [Browser extension](#browser-extension)).
-4. **Extension.** "How to install it" shows how to load the extension by hand in each browser.
+2. **Command line.** Creates `/usr/local/bin/klav`, a link to the `klav` inside the app, so updates update it too. macOS asks for an administrator's password once. "Copy the command instead" gives you the command to run yourself. If there's another `klav` your terminal may run instead of the app's, the step names it and compares its build with the app's, read from its file without running it. For an older one installed with `cargo install`, it shows the `cargo uninstall` command to remove it (so the app's `klav` runs instead) and the command to update it in Terminal; the app never runs either.
+3. **Browsers.** Lists the supported browsers installed on this Mac (Ardia, Dia, Chrome, Brave, Arc, Edge, Chromium and Firefox) with checkboxes so you choose which ones to connect; leftover folders from browsers you uninstalled are kept out of the way. "Connect the browsers" writes one small file in each selected browser's folder so the extension can reach `klavd`. Firefox can connect now; Chromium browsers connect once you turn on "Development extension" below (see [Browser extension](#browser-extension)), until Klav is in the Chrome Web Store.
+4. **Extension.** For the Chromium browsers you chose, "Download extension" downloads and unpacks Klav's extension into Klav's folder and reveals it in Finder, with buttons to copy `chrome://extensions` and open each browser. For Firefox, it opens the signed add-on download.
 5. **Account.** "Sign in" with your emergency kit, or "Create an account". See [Create an account](/get-started/create-an-account/).
 6. **Agents.** Installs Klav's skill in your agent clients' folders, so their agents know how to use Klav. It writes no MCP settings and registers no agent. "Not now" skips it.
 
 </Steps>
 
-The same steps, and "Uninstall Klav from this Mac…", are in the app's Settings (⌘,), under This Mac.
+The same steps, and "Uninstall Klav from this Mac…", are always reachable from "This Mac" at the bottom of the main window's sidebar, the gear icon in the menu bar panel, or Settings (⌘,).
 
 The app updates itself. "Check for Updates…" is in the Klav menu, next to "About Klav". An update installs only if Klav signed it.
 
@@ -125,9 +125,9 @@ It prints the file's name and `OK`. Put the name of your download in place of `k
 
 The extension isn't in the Chrome Web Store or on addons.mozilla.org yet, so you install it by hand. Install the Mac app first or, on Linux, the [CLI download](#on-linux): the extension asks `klavd` for everything and holds no keys itself.
 
-### Chrome, Brave, Edge, Arc and Dia
+### Ardia, Dia, Chrome, Brave, Edge and Arc
 
-1. Download `klav-extension-chromium.zip` from `https://klav.dev/download/extension/chromium` and unzip it into a folder of its own, such as `unzip klav-extension-chromium.zip -d ~/klav-extension`. Keep the folder: the browser runs Klav from it.
+1. Download `klav-extension-chromium.zip` from `https://klav.dev/download/extension/chromium` and unzip it into a folder of its own, such as `unzip klav-extension-chromium.zip -d ~/klav-extension` (on a Mac, "Download extension" in Settings › This Mac › Extension does this for you and reveals the folder). Keep the folder: the browser runs Klav from it.
 2. Open the browser's extensions page (`chrome://extensions`; in Edge, `edge://extensions`) and turn on Developer mode.
 3. Choose "Load unpacked" and pick the folder.
 4. Let the extension you loaded reach `klavd`:
@@ -136,7 +136,7 @@ The extension isn't in the Chrome Web Store or on addons.mozilla.org yet, so you
    klav extension install-host --dev
    ```
 
-   With the Mac app, open "Advanced options" in the Browsers step of "Set up this Mac" and turn on "Development extension" instead.
+   With the Mac app, turn on "Development extension" in the Browsers step of "Set up this Mac" (or Settings › This Mac) instead, select the browsers you want, and choose "Connect the browsers".
 
    If you ran the command and then open the Mac app, the Browsers step says which browsers let the development extension in. Before it connects the browsers again, it asks whether to keep it: "Keep it" turns on "Development extension", and "Remove it" shuts it out: it removes the app's manifests that let it into Chromium browsers and the host wrapper in Klav's folder, and any wrapper Klav writes again no longer lists the development extension's ID.
 5. Restart the browser.
@@ -172,7 +172,7 @@ The Firefox build is an add-on file (`.xpi`) that Mozilla signs without listing 
    With the Mac app, "Connect the browsers" does this. It passes `--dev` only while "Development extension" is on (the Browsers step of "Set up this Mac", "Advanced options"). If you connected the Chromium build with `--dev` from the CLI, the Browsers step says so and asks before it connects the browsers again: "Keep it" turns on "Development extension", and "Remove it" shuts that build out: afterwards the host Klav installed no longer lists its ID.
 4. Restart Firefox.
 
-On Linux, `install-host` writes only to the browsers' standard folders: `~/.config/google-chrome`, `~/.config/chromium`, `~/.config/BraveSoftware/Brave-Browser`, `~/.config/microsoft-edge` and `~/.mozilla`. Klav hasn't been tested with a browser installed as a Snap or a Flatpak, which keeps its files in its own folder; Ubuntu installs Firefox as a Snap by default.
+On Linux, `install-host` writes only to the browsers' standard folders: `~/.config/google-chrome`, `~/.config/chromium`, `~/.config/BraveSoftware/Brave-Browser`, `~/.config/microsoft-edge`, `~/.config/ardia` and `~/.mozilla`. Klav hasn't been tested with a browser installed as a Snap or a Flatpak, which keeps its files in its own folder; Ubuntu installs Firefox as a Snap by default.
 
 `klav extension host-status` shows which file each browser has and whether it points to this `klav`. It changes nothing.
 
