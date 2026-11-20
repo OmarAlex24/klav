@@ -1764,7 +1764,7 @@ pub(crate) struct ImportArgs {
 pub(crate) enum ExtensionCommand {
     /// Let the browser extension talk to `klavd`: write the native
     /// messaging host manifests (Chrome, Chromium, Brave, Arc, Edge, Dia,
-    /// Firefox) for this `KLAV_HOME`.
+    /// Ardia, Firefox) for this `KLAV_HOME`.
     InstallHost(HostArgs),
     /// Remove the native messaging host manifests.
     UninstallHost(HostArgs),
@@ -1783,6 +1783,7 @@ pub(crate) enum Browser {
     Arc,
     Edge,
     Dia,
+    Ardia,
     Firefox,
 }
 

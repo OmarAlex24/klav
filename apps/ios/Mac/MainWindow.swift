@@ -5,6 +5,8 @@ import SwiftUI
 /// requests, the agents and the vault's health.
 struct MainWindow: View {
     @EnvironmentObject private var model: MacModel
+    @EnvironmentObject private var installer: Installer
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Group {
@@ -25,10 +27,17 @@ struct MainWindow: View {
                             DeletionBand()
                             // §7.6, D-C: after it, the vault read-only.
                             DeletedBand()
+                            // An older klav on the PATH (docs/macos.md §3):
+                            // shown in the window too, not only the menu bar.
+                            OlderCLIsBand(show: {
+                                openSettings()
+                                NSApp.activate()
+                            })
                             content
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
+                    .task(id: model.info?.running) { await installer.refresh(info: model.info) }
                 case .locked:
                     LockScreen()
                 case .starting, .signedOut, .noDaemon:
@@ -85,10 +94,53 @@ struct MainWindow: View {
     }
 }
 
+// MARK: - Older CLI band
+
+/// Above the window's content when an older `klav` is on the PATH
+/// (docs/macos.md §3): the same warning as the menu bar panel, so opening
+/// the window directly never misses it.
+private struct OlderCLIsBand: View {
+    @EnvironmentObject private var installer: Installer
+    let show: () -> Void
+
+    var body: some View {
+        if !installer.shownOlderCLIs.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(installer.shownOlderCLIs) { cli in
+                    let path = shortPath(cli.path)
+                    HStack(spacing: 0) {
+                        Rectangle().fill(Palette.rojo).frame(width: 2)
+                        HStack(spacing: 12) {
+                            Text(verbatim: String(localized: "An older klav is at \(path). Your terminal may run it instead of this app’s."))
+                                .font(.ui(13, .medium)).foregroundStyle(Palette.tinta)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 8)
+                            Button("Show") { show() }
+                                .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+                                .accessibilityLabel(Text(verbatim: String(localized: "Show the klav at \(path)")))
+                            Button("Not now") { installer.leave(cli) }
+                                .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+                                .accessibilityLabel(Text(verbatim: String(localized: "Not now for the klav at \(path)")))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(Palette.niebla)
+                    Rule()
+                }
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+}
+
 // MARK: - Sidebar
 
 private struct Sidebar: View {
     @EnvironmentObject private var model: MacModel
+    @EnvironmentObject private var installer: Installer
+    @Environment(\.openSettings) private var openSettings
     @State private var vaults: [VaultInfo] = []
     /// How many items of each kind; nil until klavd answered, or if it
     /// could not (then every kind shows, without a count).
@@ -149,6 +201,14 @@ private struct Sidebar: View {
                 .padding(.horizontal, 8)
                 .padding(.bottom, 12)
             }
+            Rule()
+            ActionRow(icon: .gear, title: "This Mac", shortcut: "⌘,", attention: installer.needsSetupAttention) {
+                openSettings()
+                NSApp.activate()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .help("Set up this Mac, browsers and Settings (⌘,)")
             Rule()
             account
         }
@@ -250,6 +310,43 @@ private struct Sidebar: View {
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
             .accessibilityAddTraits(selected ? .isSelected : [])
+        }
+    }
+
+    /// A button row in the sidebar that opens an action (such as Settings ›
+    /// This Mac) instead of switching panes, with an optional cobalt mark
+    /// when setup items want attention.
+    private struct ActionRow: View {
+        let icon: Icon
+        let title: LocalizedStringKey
+        var shortcut: String?
+        var attention = false
+        let action: () -> Void
+        @State private var hovering = false
+
+        var body: some View {
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    IconView(icon: icon, size: 16)
+                        .foregroundStyle(hovering ? Palette.tinta : Palette.gris)
+                    Text(title)
+                        .font(.ui(13))
+                        .foregroundStyle(Palette.tinta)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let shortcut, hovering {
+                        Text(verbatim: shortcut).font(.ui(11)).foregroundStyle(Palette.gris)
+                    } else if attention {
+                        CompactMark().frame(width: 6, height: 6)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(hovering ? Palette.niebla.opacity(0.5) : Color.clear)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
         }
     }
 }

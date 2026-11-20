@@ -15655,6 +15655,396 @@
           }
         }
       }
+    },
+    "Use this app’s host in the selected browsers?" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Usar el host de esta app en los navegadores elegidos?"
+          }
+        }
+      }
+    },
+    "klav extension install-host --dev let the development extension into %@. Any unpacked extension with the public key in Klav’s repository could talk to klavd too. Keeping it turns on “Development extension” and lets it into the selected Chromium browsers on this Mac." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "klav extension install-host --dev dejó entrar la extensión de desarrollo en %@. Cualquier extensión sin empaquetar con la llave pública del repositorio de Klav también podría hablar con klavd. Conservarla enciende «Extensión de desarrollo» y la deja entrar en los navegadores Chromium elegidos de este Mac."
+          }
+        }
+      }
+    },
+    "It came from cargo install. To use this app’s klav instead, remove it in Terminal:" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se instaló con cargo install. Para usar el klav de esta app, quítalo en Terminal:"
+          }
+        }
+      }
+    },
+    "Or update it from that source, after you update that source:" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O actualízalo desde esa fuente, después de actualizarla:"
+          }
+        }
+      }
+    },
+    "Select at least one browser to connect." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elige al menos un navegador para conectar."
+          }
+        }
+      }
+    },
+    "Not selected" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sin elegir"
+          }
+        }
+      }
+    },
+    "Another install, %@" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otra instalación, %@"
+          }
+        }
+      }
+    },
+    "Lets in the development extension, connected from the command line" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deja entrar la extensión de desarrollo, conectada desde la línea de comandos"
+          }
+        }
+      }
+    },
+    "Turn on “Development extension” below to connect until Klav is in the Chrome Web Store" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enciende «Extensión de desarrollo» abajo para conectarlo hasta que Klav esté en Chrome Web Store"
+          }
+        }
+      }
+    },
+    "Ready" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listo"
+          }
+        }
+      }
+    },
+    "Needs connecting again" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hay que volver a conectarlo"
+          }
+        }
+      }
+    },
+    "Not connected yet" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todavía no conectado"
+          }
+        }
+      }
+    },
+    "Hide other browser folders" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ocultar otras carpetas de navegadores"
+          }
+        }
+      }
+    },
+    "Other browser folders found (%lld)" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se encontraron otras carpetas de navegadores (%lld)"
+          }
+        }
+      }
+    },
+    "These browsers aren’t installed on this Mac, so Klav leaves their folders alone: %@." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Estos navegadores no están instalados en este Mac, así que Klav no toca sus carpetas: %@."
+          }
+        }
+      }
+    },
+    "Choose which browsers can reach klavd. Writes one small file in each selected browser’s folder. Development extension is on: Chromium browsers also let in the extension you load unpacked." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elige qué navegadores pueden hablar con klavd. Escribe un archivo pequeño en la carpeta de cada navegador elegido. Extensión de desarrollo está encendida: los navegadores Chromium también dejan entrar la extensión que cargas sin empaquetar."
+          }
+        }
+      }
+    },
+    "Choose which browsers can reach klavd. Writes one small file in each selected browser’s folder. Firefox can connect now; Chromium browsers connect once you turn on “Development extension” below, until Klav is in the Chrome Web Store." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elige qué navegadores pueden hablar con klavd. Escribe un archivo pequeño en la carpeta de cada navegador elegido. Firefox ya se puede conectar; los navegadores Chromium se conectan al encender «Extensión de desarrollo» abajo, hasta que Klav esté en Chrome Web Store."
+          }
+        }
+      }
+    },
+    "Lets in the Klav extension you load unpacked in Ardia, Dia, Chrome and other Chromium browsers. Any unpacked extension with the public key in Klav’s repository could talk to klavd too." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deja entrar la extensión de Klav que cargas sin empaquetar en Ardia, Dia, Chrome y otros navegadores Chromium. Cualquier extensión sin empaquetar con la llave pública del repositorio de Klav también podría hablar con klavd."
+          }
+        }
+      }
+    },
+    "Install Klav’s extension in each browser you chose. Until Klav is in the browser stores, download the folder here and load it in your browser." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Instala la extensión de Klav en cada navegador que elegiste. Hasta que Klav esté en las tiendas, descarga la carpeta aquí y cárgala en tu navegador."
+          }
+        }
+      }
+    },
+    "Select a browser in Browsers above first." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elige primero un navegador arriba en Navegadores."
+          }
+        }
+      }
+    },
+    "Extension folder ready: %@" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carpeta de la extensión lista: %@"
+          }
+        }
+      }
+    },
+    "Show folder" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostrar carpeta"
+          }
+        }
+      }
+    },
+    "Downloading…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Descargando…"
+          }
+        }
+      }
+    },
+    "Update extension" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Actualizar extensión"
+          }
+        }
+      }
+    },
+    "Download extension" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Descargar extensión"
+          }
+        }
+      }
+    },
+    "Install guide" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guía de instalación"
+          }
+        }
+      }
+    },
+    "In your browser, open chrome://extensions, turn on Developer mode, choose “Load unpacked”, and pick that folder." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En tu navegador, abre chrome://extensions, activa el modo desarrollador, elige «Cargar sin empaquetar» y selecciona esa carpeta."
+          }
+        }
+      }
+    },
+    "Turn on “Development extension” in Browsers above so the unpacked extension can reach klavd." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enciende «Extensión de desarrollo» arriba en Navegadores para que la extensión sin empaquetar pueda hablar con klavd."
+          }
+        }
+      }
+    },
+    "Download add-on" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Descargar complemento"
+          }
+        }
+      }
+    },
+    "Copied %@" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ copiado"
+          }
+        }
+      }
+    },
+    "Copied %@ — paste it in %@" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ copiado — pégalo en %2$@"
+          }
+        }
+      }
+    },
+    "Couldn’t download the extension over an insecure connection." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo descargar la extensión por una conexión insegura."
+          }
+        }
+      }
+    },
+    "Couldn’t download the extension (HTTP %lld)." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo descargar la extensión (HTTP %lld)."
+          }
+        }
+      }
+    },
+    "The downloaded extension archive is larger than expected." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El archivo descargado de la extensión pesa más de lo esperado."
+          }
+        }
+      }
+    },
+    "Couldn’t unpack the extension archive." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo descomprimir el archivo de la extensión."
+          }
+        }
+      }
+    },
+    "The downloaded archive didn’t contain a Klav extension." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El archivo descargado no contenía una extensión de Klav."
+          }
+        }
+      }
+    },
+    "The downloaded extension archive contained an unexpected link." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El archivo descargado de la extensión contenía un enlace inesperado."
+          }
+        }
+      }
+    },
+    "Set up this Mac, browsers and Settings (⌘,)" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Configurar este Mac, navegadores y Ajustes (⌘,)"
+          }
+        }
+      }
+    },
+    "This Mac & Settings (⌘,)" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este Mac y Ajustes (⌘,)"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

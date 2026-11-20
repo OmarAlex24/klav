@@ -899,7 +899,7 @@ klav extension host-status [--json]               # qué manifiesto hay en cada 
 
 - Escribe `$KLAV_HOME/native-host/klav-native-host`, un *wrapper* que fija
   este `KLAV_HOME`, y el manifiesto `dev.klav.host.json` en el directorio de
-  cada navegador (Chrome, Chromium, Brave, Arc, Edge, Dia y Firefox).
+  cada navegador (Chrome, Chromium, Brave, Arc, Edge, Dia, Ardia y Firefox).
 - Busca `klav-native-host` junto a `klav` o en el `PATH` (`--host RUTA`
   para otro).
 - Sin `--browser`, solo los navegadores cuyo directorio de datos existe.

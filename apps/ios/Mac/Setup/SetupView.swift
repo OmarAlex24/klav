@@ -16,6 +16,7 @@ struct SetupView: View {
     @State private var confirmDaemon = false
     @State private var uninstalling = false
     @State private var advanced = false
+    @State private var showUninstalled = false
     /// «Connect the browsers» while the command line let the development
     /// extension in: keep it or remove it (T122).
     @State private var confirmDev = false
@@ -80,7 +81,7 @@ struct SetupView: View {
             Button("Replace it") { Task { await installer.linkCLI(replace: true) } }
             Button("Cancel", role: .cancel) {}
         }
-        .confirmationDialog("Use this app’s host in every browser?", isPresented: $confirmHosts) {
+        .confirmationDialog("Use this app’s host in the selected browsers?", isPresented: $confirmHosts) {
             // The next question, if any, comes once this one is gone.
             Button("Use this app’s") { DispatchQueue.main.async { connectHosts(replacingForeign: true) } }
             Button("Cancel", role: .cancel) {}
@@ -92,7 +93,7 @@ struct SetupView: View {
             Button("Remove it") { Task { await installer.connectHosts(keepingDevelopment: false) } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(verbatim: String(localized: "klav extension install-host --dev let the development extension into \(installer.cliDevBrowsers.map(BrowserNames.name).formatted(.list(type: .and))). Any unpacked extension with the public key in Klav’s repository could talk to klavd too. Keeping it turns on “Development extension” and lets it into every Chromium browser on this Mac."))
+            Text(verbatim: String(localized: "klav extension install-host --dev let the development extension into \(installer.cliDevBrowsers.map(BrowserNames.name).formatted(.list(type: .and))). Any unpacked extension with the public key in Klav’s repository could talk to klavd too. Keeping it turns on “Development extension” and lets it into the selected Chromium browsers on this Mac."))
         }
         .confirmationDialog("Stop the other klavd and use this app’s?", isPresented: $confirmDaemon) {
             Button("Use this app’s") { Task { await installer.useThisDaemon(engine: model.engine); model.refresh() } }
@@ -254,14 +255,17 @@ struct SetupView: View {
         return String(localized: "Its build: \(build). This app’s: \(app).")
     }
 
-    /// How to update an older one: the command for cargo or Homebrew, which
-    /// the app shows and never runs.
+    /// How to remove or update an older one: the command for cargo or
+    /// Homebrew, which the app shows and never runs.
     @ViewBuilder private func update(_ cli: OtherCLI) -> some View {
         switch cli.origin {
         case .cargo:
+            if let remove = cli.uninstallCommand {
+                commandBlock(String(localized: "It came from cargo install. To use this app’s klav instead, remove it in Terminal:"), remove)
+            }
             if let command = cli.command {
-                commandBlock(String(localized: "It came from cargo install. To update it, run this in Terminal, after you update that source:"), command)
-            } else {
+                commandBlock(String(localized: "Or update it from that source, after you update that source:"), command)
+            } else if cli.uninstallCommand == nil {
                 Text("It came from cargo install. Install it again from the source you used, or remove it so this app’s klav runs.")
                     .font(.ui(12.5)).foregroundStyle(Palette.gris)
                     .fixedSize(horizontal: false, vertical: true)
@@ -298,44 +302,83 @@ struct SetupView: View {
                 done: installer.hostsReady,
                 problem: installer.problems[.hosts]) {
             ForEach(installer.browsers, id: \.self) { id in
-                let mine = installer.neededManifests.filter { $0.browser == id }
-                let foreign = mine.filter(\.foreign)
-                if installer.foreignDevKept.contains(id) {
-                    // Another install lets the development build in here,
-                    // and this app can't change that: said, not hidden.
-                    ForEach(installer.foreignDevManifests.filter { $0.browser == id }) { m in
-                        Status(text: String(localized: "\(BrowserNames.name(id)): another install, \(m.runs ?? m.pointsTo ?? "?")"), tone: .warning)
-                    }
-                } else if installer.cliDevBrowsers.contains(id) {
-                    Status(text: String(localized: "\(BrowserNames.name(id)): lets in the development extension, connected from the command line"), tone: .warning)
-                } else if installer.waits(id) {
-                    Status(text: String(localized: "\(BrowserNames.name(id)): connects with “Development extension”, under “Advanced options”, until Klav is in the Chrome Web Store"), tone: .plain)
-                } else if !mine.isEmpty, mine.allSatisfy(\.current) {
-                    Status(text: "\(BrowserNames.name(id)): \(String(localized: "ready"))", tone: .done)
-                } else if foreign.isEmpty, mine.contains(where: \.outdated) {
-                    // This app's, but its host turns away an extension the
-                    // manifest lists: connecting rewrites it without asking.
-                    Status(text: String(localized: "\(BrowserNames.name(id)): needs connecting again"), tone: .plain)
-                } else if foreign.isEmpty {
-                    Status(text: "\(BrowserNames.name(id)): \(String(localized: "not connected yet"))", tone: .plain)
-                } else {
-                    ForEach(foreign) { m in
-                        Status(text: String(localized: "\(BrowserNames.name(id)): another install, \(m.runs ?? m.pointsTo ?? "?")"), tone: .warning)
-                    }
-                }
+                browserChoiceRow(id)
             }
             if let kept = installer.foreignDevKeptLine {
                 Status(text: kept, tone: .warning)
             }
-            if installer.manifests.isEmpty {
+            if installer.browsers.isEmpty {
                 Status(text: String(localized: "No supported browser found on this Mac."), tone: .plain)
+            } else if installer.chosenBrowsers.isEmpty {
+                Status(text: String(localized: "Select at least one browser to connect."), tone: .plain)
             } else if installer.hostsToConnect {
                 action(installer.busy == .hosts ? "Connecting…" : installer.foreignManifests.isEmpty ? "Connect the browsers" : "Use this app’s…") {
                     connectHosts(replacingForeign: false)
                 }
             }
-            if !installer.manifests.isEmpty || installer.devExtension { advancedHosts }
+            if !installer.browsers.isEmpty || installer.devExtension { advancedHosts }
+            if !installer.uninstalledBrowsers.isEmpty { uninstalledNotice }
         }
+    }
+
+    @ViewBuilder private func browserChoiceRow(_ id: String) -> some View {
+        let selected = installer.isBrowserSelected(id)
+        let mine = installer.neededManifests.filter { $0.browser == id }
+        let foreign = Installer.uniqueForeignHosts(mine.filter(\.foreign))
+        Toggle(isOn: Binding(get: { selected },
+                             set: { installer.setBrowserSelected(id, $0) })) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: BrowserNames.name(id))
+                    .font(.ui(13.5, .medium))
+                    .foregroundStyle(selected ? Palette.tinta : Palette.gris)
+                if !selected {
+                    Status(text: String(localized: "Not selected"), tone: .plain)
+                } else if installer.foreignDevKept.contains(id) {
+                    // Another install lets the development build in here,
+                    // and this app can't change that: said, not hidden.
+                    ForEach(Installer.uniqueForeignHosts(installer.foreignDevManifests.filter { $0.browser == id })) { m in
+                        Status(text: String(localized: "Another install, \(m.runs ?? m.pointsTo ?? "?")"), tone: .warning)
+                    }
+                } else if installer.cliDevBrowsers.contains(id) {
+                    Status(text: String(localized: "Lets in the development extension, connected from the command line"), tone: .warning)
+                } else if installer.waits(id) {
+                    Status(text: String(localized: "Turn on “Development extension” below to connect until Klav is in the Chrome Web Store"), tone: .plain)
+                } else if !mine.isEmpty, mine.allSatisfy(\.current) {
+                    Status(text: String(localized: "Ready"), tone: .done)
+                } else if foreign.isEmpty, mine.contains(where: \.outdated) {
+                    // This app's, but its host turns away an extension the
+                    // manifest lists: connecting rewrites it without asking.
+                    Status(text: String(localized: "Needs connecting again"), tone: .plain)
+                } else if foreign.isEmpty {
+                    Status(text: String(localized: "Not connected yet"), tone: .plain)
+                } else {
+                    ForEach(foreign) { m in
+                        Status(text: String(localized: "Another install, \(m.runs ?? m.pointsTo ?? "?")"), tone: .warning)
+                    }
+                }
+            }
+        }
+        .toggleStyle(SquareToggleStyle())
+        .disabled(installer.busy != nil)
+    }
+
+    @ViewBuilder private var uninstalledNotice: some View {
+        let count = installer.uninstalledBrowsers.count
+        VStack(alignment: .leading, spacing: 4) {
+            Button(showUninstalled
+                   ? String(localized: "Hide other browser folders")
+                   : String(localized: "Other browser folders found (\(count))")) {
+                showUninstalled.toggle()
+            }
+            .buttonStyle(LinkButtonStyle())
+            if showUninstalled {
+                let names = installer.uninstalledBrowsers.map(BrowserNames.name).formatted(.list(type: .and))
+                Text(verbatim: String(localized: "These browsers aren’t installed on this Mac, so Klav leaves their folders alone: \(names)."))
+                    .font(.ui(12)).foregroundStyle(Palette.gris)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
     }
 
     /// «Connect the browsers»: the installer reads the browsers again, then
@@ -354,8 +397,8 @@ struct SetupView: View {
 
     private var hostsTouches: LocalizedStringKey {
         installer.devExtension
-            ? "Writes one small file in each browser’s folder so the extension can reach klavd: \(browserList). Development extension is on: Chromium browsers also let in the extension you load unpacked."
-            : "Writes one small file in each browser’s folder so the extension can reach klavd: \(browserList). Firefox can connect now. Until Klav is in the Chrome Web Store, Chrome, Dia and the other Chromium browsers connect with “Development extension”, under “Advanced options”."
+            ? "Choose which browsers can reach klavd. Writes one small file in each selected browser’s folder. Development extension is on: Chromium browsers also let in the extension you load unpacked."
+            : "Choose which browsers can reach klavd. Writes one small file in each selected browser’s folder. Firefox can connect now; Chromium browsers connect once you turn on “Development extension” below, until Klav is in the Chrome Web Store."
     }
 
     /// «Open Klav at login» (Settings only): off by default, and it shows
@@ -385,14 +428,16 @@ struct SetupView: View {
     }
 
     /// «Development extension» (T122): off by default, its risk in view
-    /// before it is turned on.
+    /// before it is turned on. Shown directly whenever a chosen browser is
+    /// Chromium so the person doesn't have to hunt for it.
     @ViewBuilder private var advancedHosts: some View {
-        if advanced || installer.devExtension {
+        let hasChromium = installer.chosenBrowsers.contains { !BrowserNames.isFirefox($0) }
+        if advanced || installer.devExtension || hasChromium {
             Toggle(isOn: Binding(get: { installer.devExtension },
                                  set: { on in Task { await installer.setDevExtension(on) } })) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Development extension").font(.ui(13.5)).foregroundStyle(Palette.tinta)
-                    Text("Lets in the Klav extension you load unpacked in Chrome, Dia and other Chromium browsers. Any unpacked extension with the public key in Klav’s repository could talk to klavd too.")
+                    Text("Lets in the Klav extension you load unpacked in Ardia, Dia, Chrome and other Chromium browsers. Any unpacked extension with the public key in Klav’s repository could talk to klavd too.")
                         .font(.ui(12)).foregroundStyle(Palette.gris)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -406,35 +451,107 @@ struct SetupView: View {
         }
     }
 
-    private var browserList: String {
-        let names = installer.browsers.map(BrowserNames.name)
-        return names.isEmpty ? String(localized: "none found") : names.formatted(.list(type: .and))
-    }
-
     private var extensionStep: some View {
-        StepRow(title: "Extension",
-                touches: "Install Klav’s extension in each browser. Until it is in the stores, load it by hand: the page says how.",
-                done: !connected.isEmpty,
-                problem: nil) {
-            ForEach(installer.browsers, id: \.self) { id in
-                HStack(spacing: 10) {
-                    if connected.contains(id) {
-                        Status(text: String(localized: "Connected in \(BrowserNames.name(id))"), tone: .done)
-                    } else {
-                        Text(verbatim: BrowserNames.name(id)).font(.ui(13)).foregroundStyle(Palette.tinta)
-                        Spacer()
-                        Button("How to install it") { NSWorkspace.shared.open(BrowserNames.extensionPage) }
-                            .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
-                    }
+        let chosen = installer.chosenBrowsers
+        let chromiumChosen = chosen.filter { !BrowserNames.isFirefox($0) }
+        return StepRow(title: "Extension",
+                       touches: "Install Klav’s extension in each browser you chose. Until Klav is in the browser stores, download the folder here and load it in your browser.",
+                       done: !connected.isEmpty,
+                       problem: installer.problems[.extensionDownload]) {
+            if chosen.isEmpty {
+                Status(text: String(localized: "Select a browser in Browsers above first."), tone: .plain)
+            } else {
+                if !chromiumChosen.isEmpty {
+                    chromiumExtensionBlock(chromiumChosen)
+                }
+                ForEach(chosen, id: \.self) { id in
+                    extensionBrowserRow(id)
                 }
             }
         }
     }
 
+    @ViewBuilder private func chromiumExtensionBlock(_ chromiumChosen: [String]) -> some View {
+        if let folder = installer.unpackedExtensionURL {
+            Status(text: String(localized: "Extension folder ready: \(shortPath(folder.path))"), tone: .done)
+            HStack(spacing: 10) {
+                Button("Show folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([folder])
+                }
+                .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+                Button(installer.busy == .extensionDownload ? "Downloading…" : "Update extension") {
+                    Task { await installer.downloadChromiumExtension() }
+                }
+                .buttonStyle(LinkButtonStyle())
+                .disabled(installer.busy != nil)
+                Button("Install guide") { NSWorkspace.shared.open(BrowserNames.extensionPage) }
+                    .buttonStyle(LinkButtonStyle())
+            }
+        } else {
+            HStack(spacing: 10) {
+                action(installer.busy == .extensionDownload ? "Downloading…" : "Download extension") {
+                    Task { await installer.downloadChromiumExtension() }
+                }
+                Button("Install guide") { NSWorkspace.shared.open(BrowserNames.extensionPage) }
+                    .buttonStyle(LinkButtonStyle())
+            }
+        }
+        if !connected.isSuperset(of: chromiumChosen) {
+            Text("In your browser, open chrome://extensions, turn on Developer mode, choose “Load unpacked”, and pick that folder.")
+                .font(.ui(12)).foregroundStyle(Palette.gris)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if !installer.devExtension && chromiumChosen.contains(where: { !installer.cliDevBrowsers.contains($0) }) {
+            Status(text: String(localized: "Turn on “Development extension” in Browsers above so the unpacked extension can reach klavd."), tone: .plain)
+        }
+    }
+
+    @ViewBuilder private func extensionBrowserRow(_ id: String) -> some View {
+        HStack(spacing: 10) {
+            if connected.contains(id) {
+                Status(text: String(localized: "Connected in \(BrowserNames.name(id))"), tone: .done)
+            } else if BrowserNames.isFirefox(id) {
+                Text(verbatim: BrowserNames.name(id)).font(.ui(13)).foregroundStyle(Palette.tinta)
+                Spacer()
+                Button("Download add-on") { NSWorkspace.shared.open(BrowserNames.firefoxExtensionDownload) }
+                    .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+                if let appURL = BrowserNames.appURL(for: id) {
+                    Button(String(localized: "Open \(BrowserNames.name(id))")) {
+                        openBrowserForExtension(id: id, appURL: appURL)
+                    }
+                    .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+                }
+            } else {
+                let page = BrowserNames.extensionsPage(for: id)
+                Text(verbatim: BrowserNames.name(id)).font(.ui(13)).foregroundStyle(Palette.tinta)
+                Spacer()
+                Button(String(localized: "Copy \(page)")) {
+                    model.copy(page, what: String(localized: "Copied \(page)"))
+                }
+                .buttonStyle(LinkButtonStyle())
+                if let appURL = BrowserNames.appURL(for: id) {
+                    Button(String(localized: "Open \(BrowserNames.name(id))")) {
+                        openBrowserForExtension(id: id, appURL: appURL)
+                    }
+                    .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+                } else {
+                    Button("How to install it") { NSWorkspace.shared.open(BrowserNames.extensionPage) }
+                        .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+                }
+            }
+        }
+    }
+
+    private func openBrowserForExtension(id: String, appURL: URL) {
+        let page = BrowserNames.extensionsPage(for: id)
+        model.copy(page, what: String(localized: "Copied \(page) — paste it in \(BrowserNames.name(id))"))
+        NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration())
+    }
+
     /// Browsers (CLI names) whose extension attached to `klavd`.
     private var connected: Set<String> {
         let seen = model.info?.browsers.map(\.browser) ?? []
-        return Set(installer.browsers.filter { id in seen.contains { BrowserNames.matches($0, id) } })
+        return Set(installer.chosenBrowsers.filter { id in seen.contains { BrowserNames.matches($0, id) } })
     }
 
     private var accountStep: some View {
@@ -539,6 +656,27 @@ enum BrowserNames {
     /// The public install guide's «Browser extension» section
     /// (`apps/docs/src/content/docs/get-started/install.mdx`).
     static let extensionPage = URL(string: "https://docs.klav.dev/get-started/install/#browser-extension")!
+    /// The Chromium extension zip published with each release.
+    static let chromiumExtensionDownload = URL(string: "https://klav.dev/download/extension/chromium")!
+    /// The signed Firefox add-on (`.xpi`).
+    static let firefoxExtensionDownload = URL(string: "https://klav.dev/download/extension/firefox")!
+
+    /// Display order in «Browsers» and «Extension».
+    static let order = ["ardia", "dia", "chrome", "brave", "arc", "edge", "chromium", "firefox"]
+
+    /// macOS bundle identifiers used to detect installed browsers
+    /// (leftover folders under `~/Library/Application Support` stay after
+    /// an app is deleted).
+    static let bundleIDs: [String: [String]] = [
+        "ardia": ["com.ardia.browser"],
+        "dia": ["company.thebrowser.dia"],
+        "chrome": ["com.google.Chrome"],
+        "chromium": ["org.chromium.Chromium"],
+        "brave": ["com.brave.Browser"],
+        "arc": ["company.thebrowser.Browser"],
+        "edge": ["com.microsoft.edgemac"],
+        "firefox": ["org.mozilla.firefox"],
+    ]
 
     static func name(_ id: String) -> String {
         switch id {
@@ -548,10 +686,31 @@ enum BrowserNames {
         case "arc": return "Arc"
         case "edge": return "Edge"
         case "dia": return "Dia"
+        case "ardia": return "Ardia"
         case "firefox": return "Firefox"
         default: return id
         }
     }
+
+    static func appURL(for id: String) -> URL? {
+        guard let ids = bundleIDs[id] else { return nil }
+        for bundleID in ids {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    static func extensionsPage(for id: String) -> String {
+        switch id {
+        case "firefox": return "about:addons"
+        case "edge": return "edge://extensions"
+        default: return "chrome://extensions"
+        }
+    }
+
+    static func isFirefox(_ id: String) -> Bool { id == "firefox" }
 
     /// `Google Chrome` is `chrome`, `Microsoft Edge` is `edge`…
     static func matches(_ extensionName: String, _ id: String) -> Bool {

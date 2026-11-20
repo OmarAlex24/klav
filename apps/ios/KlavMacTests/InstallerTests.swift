@@ -1354,7 +1354,12 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(BrowserNames.matches("Chromium", "chromium"))
         XCTAssertTrue(BrowserNames.matches("Microsoft Edge", "edge"))
         XCTAssertTrue(BrowserNames.matches("Dia", "dia"))
+        XCTAssertTrue(BrowserNames.matches("Ardia", "ardia"))
         XCTAssertEqual(BrowserNames.name("dia"), "Dia")
+        XCTAssertEqual(BrowserNames.name("ardia"), "Ardia")
+        XCTAssertEqual(BrowserNames.extensionsPage(for: "ardia"), "chrome://extensions")
+        XCTAssertEqual(BrowserNames.extensionsPage(for: "edge"), "edge://extensions")
+        XCTAssertEqual(BrowserNames.extensionsPage(for: "firefox"), "about:addons")
     }
 
     func testOnlyTheTeamsHelpersAreTrusted() throws {
@@ -1697,6 +1702,164 @@ final class InstallerTests: XCTestCase {
         // One bad file among good ones is enough.
         _ = try write("not signed", to: "PersistentDownloads/tok/extra")
         XCTAssertNotNil(UpdateGuard.vet(downloads, requirement: "anchor apple"))
+    }
+
+    // MARK: Installed browser detection, per-browser selection, Ardia & extension unpack
+
+    /// Leftover data folders from uninstalled browsers (Edge, Arc, Chrome)
+    /// are hidden from the main list, never replace foreign manifests there,
+    /// and never block `hostsReady`. Installed browsers (Ardia, Dia) are
+    /// shown—even when Ardia hasn't created its folder yet.
+    func testInstalledBrowsersHideLeftoverFoldersAndIncludeArdia() async throws {
+        let system = SampleSystem()
+        system.setInstalledBrowsers(["ardia", "dia"])
+        let installer = try installer(system: system)
+
+        // Leftover folders from uninstalled browsers with foreign manifests.
+        let edgeForeign = try foreignManifest(at: "\(support)/Microsoft Edge/NativeMessagingHosts/dev.klav.host.json")
+        let arcForeign = try foreignManifest(at: "\(support)/Arc/User Data/NativeMessagingHosts/dev.klav.host.json")
+        let edgeBefore = try String(contentsOf: edgeForeign, encoding: .utf8)
+        let arcBefore = try String(contentsOf: arcForeign, encoding: .utf8)
+        // Dia exists with twin foreign manifests pointing to the same host.
+        _ = try foreignManifest(at: "\(support)/Dia/User Data/NativeMessagingHosts/dev.klav.host.json")
+        _ = try foreignManifest(at: "\(support)/Mozilla/NativeMessagingHosts/dev.klav.host.json")
+        // Ardia has no folder on disk yet (freshly installed app).
+
+        await installer.refresh(info: nil)
+        XCTAssertEqual(installer.browsers, ["ardia", "dia"])
+        XCTAssertEqual(Set(installer.uninstalledBrowsers), ["arc", "edge"])
+        XCTAssertEqual(installer.chosenBrowsers, ["ardia", "dia"])
+        XCTAssertEqual(Set(installer.foreignManifests.map(\.browser)), ["dia"],
+                       "uninstalled Edge and Arc foreign manifests are ignored")
+        XCTAssertEqual(Installer.uniqueForeignHosts(installer.foreignManifests).count, 1,
+                       "Dia's twin foreign manifests to the same host deduplicate to one row")
+        XCTAssertEqual(installer.foreignHostsMessage, "dia: /opt/old/klav-native-host")
+
+        // Uncheck Dia and connect only Ardia with Development extension on.
+        installer.setBrowserSelected("dia", false)
+        XCTAssertEqual(installer.chosenBrowsers, ["ardia"])
+        XCTAssertTrue(installer.foreignManifests.isEmpty, "Dia is unchecked so its foreign manifest is untouched")
+
+        await installer.setDevExtension(true)
+        await installer.installHosts()
+        XCTAssertNil(installer.problems[.hosts])
+        XCTAssertTrue(installer.hostsReady, "\(installer.activeManifests)")
+
+        let ardiaManifest = root.appendingPathComponent(
+            "\(support)/com.ardia.browser/Chromium/NativeMessagingHosts/dev.klav.host.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ardiaManifest.path), "Ardia manifest written")
+        XCTAssertTrue(try String(contentsOf: ardiaManifest, encoding: .utf8).contains(devID))
+        XCTAssertEqual(try String(contentsOf: edgeForeign, encoding: .utf8), edgeBefore, "uninstalled Edge untouched")
+        XCTAssertEqual(try String(contentsOf: arcForeign, encoding: .utf8), arcBefore, "uninstalled Arc untouched")
+
+        // Browser selection persists across launches.
+        let reloaded = try self.installer(system: system)
+        await reloaded.refresh(info: nil)
+        XCTAssertFalse(reloaded.isBrowserSelected("dia"))
+        XCTAssertTrue(reloaded.isBrowserSelected("ardia"))
+        XCTAssertEqual(reloaded.chosenBrowsers, ["ardia"])
+        XCTAssertTrue(reloaded.hostsReady)
+    }
+
+    /// With Development extension off and installed browsers [Ardia, Firefox]
+    /// plus a leftover uninstalled Chrome folder, connecting still writes
+    /// Firefox's manifest and marks Ardia waiting—without touching Chrome.
+    func testConnectingMixedInstalledBrowsersWithoutDevStillConnectsFirefox() async throws {
+        let system = SampleSystem()
+        system.setInstalledBrowsers(["ardia", "firefox"])
+        let installer = try installer(system: system)
+        let chromeForeign = try foreignManifest(at: "\(support)/Google/Chrome/NativeMessagingHosts/dev.klav.host.json")
+        let chromeBefore = try String(contentsOf: chromeForeign, encoding: .utf8)
+        _ = try mkdir("\(support)/com.ardia.browser/Chromium")
+        _ = try mkdir("\(support)/Mozilla")
+
+        await installer.refresh(info: nil)
+        XCTAssertEqual(installer.browsers, ["ardia", "firefox"])
+        XCTAssertEqual(installer.uninstalledBrowsers, ["chrome"])
+
+        await installer.installHosts()
+        XCTAssertNil(installer.problems[.hosts])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firefoxManifest.path))
+        XCTAssertEqual(installer.waitingForStore, ["ardia"])
+        XCTAssertTrue(installer.waits("ardia"))
+        XCTAssertTrue(installer.hostsReady)
+        XCTAssertEqual(try String(contentsOf: chromeForeign, encoding: .utf8), chromeBefore)
+    }
+
+    func testCargoUninstallCommandMatchesInstalledPackages() {
+        let both = OtherCLI(path: "/x/.cargo/bin/klav", reading: nil, age: .older,
+                            origin: .cargo(command: "cargo install --locked --path '/a/klav-cli' && cargo install --locked --path '/a/klav-daemon'"))
+        XCTAssertEqual(both.uninstallCommand, "cargo uninstall klav-cli klav-daemon")
+
+        let cliOnly = OtherCLI(path: "/x/.cargo/bin/klav", reading: nil, age: .older,
+                               origin: .cargo(command: "cargo install --locked --path '/a/klav-cli'"))
+        XCTAssertEqual(cliOnly.uninstallCommand, "cargo uninstall klav-cli")
+
+        let noRecord = OtherCLI(path: "/x/.cargo/bin/klav", reading: nil, age: .older,
+                                origin: .cargo(command: nil))
+        XCTAssertEqual(noRecord.uninstallCommand, "cargo uninstall klav-cli")
+
+        let sameBuild = OtherCLI(path: "/x/.cargo/bin/klav", reading: nil, age: .same,
+                                 origin: .cargo(command: "cargo install --locked --path '/a/klav-cli'"))
+        XCTAssertNil(sameBuild.uninstallCommand)
+
+        let brew = OtherCLI(path: "/opt/homebrew/bin/klav", reading: nil, age: .older,
+                            origin: .homebrew(formula: "klav"))
+        XCTAssertNil(brew.uninstallCommand)
+    }
+
+    func testUnpackExtensionZipExtractsReplacesAndRejectsInvalidArchives() throws {
+        let src = try mkdir("ext-src")
+        _ = try write(#"{"manifest_version":3,"name":"Klav","version":"0.9.0"}"#, to: "ext-src/manifest.json")
+        _ = try write("console.log('ok');", to: "ext-src/bg.js")
+        let zip = root.appendingPathComponent("klav-ext.zip")
+        let pack = try runTool(URL(fileURLWithPath: "/usr/bin/ditto"), ["-ck", src.path, zip.path], environment: [:])
+        XCTAssertEqual(pack.status, 0, pack.errors)
+
+        let dest = root.appendingPathComponent("home/extension/chromium")
+        try Installer.unpackExtensionZip(zip, into: dest)
+        XCTAssertEqual(Installer.existingExtensionDirectory(klavHome: root.appendingPathComponent("home"))?.path, dest.path)
+        XCTAssertTrue(try String(contentsOf: dest.appendingPathComponent("manifest.json"), encoding: .utf8).contains("0.9.0"))
+
+        // Updating replaces in place cleanly.
+        _ = try write(#"{"manifest_version":3,"name":"Klav","version":"0.9.1"}"#, to: "ext-src/manifest.json")
+        let zip2 = root.appendingPathComponent("klav-ext-2.zip")
+        let pack2 = try runTool(URL(fileURLWithPath: "/usr/bin/ditto"), ["-ck", src.path, zip2.path], environment: [:])
+        XCTAssertEqual(pack2.status, 0, pack2.errors)
+        try Installer.unpackExtensionZip(zip2, into: dest)
+        XCTAssertTrue(try String(contentsOf: dest.appendingPathComponent("manifest.json"), encoding: .utf8).contains("0.9.1"))
+
+        // An archive without manifest.json is refused.
+        let badSrc = try mkdir("bad-src")
+        _ = try write("hello", to: "bad-src/readme.txt")
+        let badZip = root.appendingPathComponent("bad.zip")
+        _ = try runTool(URL(fileURLWithPath: "/usr/bin/ditto"), ["-ck", badSrc.path, badZip.path], environment: [:])
+        XCTAssertThrowsError(try Installer.unpackExtensionZip(badZip, into: root.appendingPathComponent("home/extension/bad")))
+
+        // An archive containing a symlink is refused.
+        let linkSrc = try mkdir("link-src")
+        _ = try write(#"{"manifest_version":3}"#, to: "link-src/manifest.json")
+        try FileManager.default.createSymbolicLink(atPath: linkSrc.appendingPathComponent("escape").path,
+                                                   withDestinationPath: "/etc/hosts")
+        let linkZip = root.appendingPathComponent("link.zip")
+        _ = try runTool(URL(fileURLWithPath: "/usr/bin/ditto"), ["-ck", linkSrc.path, linkZip.path], environment: [:])
+        XCTAssertThrowsError(try Installer.unpackExtensionZip(linkZip, into: root.appendingPathComponent("home/extension/link")))
+    }
+
+    func testNeedsSetupAttentionReflectsSetupState() async throws {
+        let system = SampleSystem(agent: .enabled)
+        system.setInstalledBrowsers(["ardia"])
+        let installer = try installer(system: system)
+        XCTAssertFalse(installer.needsSetupAttention, "no flash before refresh")
+
+        await installer.refresh(info: nil)
+        XCTAssertTrue(installer.needsSetupAttention, "CLI unlinked and Ardia unconnected")
+
+        _ = try mkdir("bin")
+        await installer.linkCLI(replace: false)
+        await installer.setDevExtension(true)
+        await installer.installHosts()
+        XCTAssertFalse(installer.needsSetupAttention, "everything ready")
     }
 }
 

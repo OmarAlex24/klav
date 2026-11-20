@@ -7,7 +7,7 @@ import Foundation
 /// another install without asking, and can be done again from Settings.
 @MainActor
 final class Installer: ObservableObject {
-    enum Step: Hashable { case daemon, cli, hosts, account, uninstall, login }
+    enum Step: Hashable { case daemon, cli, hosts, account, uninstall, login, extensionDownload }
 
     /// A browser's manifest, from `klav extension host-status`.
     struct Manifest: Decodable, Equatable, Identifiable {
@@ -106,6 +106,16 @@ final class Installer: ObservableObject {
         [cli.path, cli.build?.commit ?? cli.build?.version ?? "?", appBuild?.commit ?? "?"].joined(separator: "|")
     }
     @Published private(set) var manifests: [Manifest] = []
+    /// Supported browsers installed as apps on this Mac (`LiveSystem`), or
+    /// nil when not filtering by installed apps (tests).
+    @Published private(set) var installedBrowsers: Set<String>?
+    /// Browsers the person unchecked in Settings › This Mac › Browsers.
+    @Published private(set) var deselectedBrowsers: Set<String> = []
+    /// True once `refresh(info:)` has run at least once (avoids a flash of
+    /// incomplete-setup badges before state is read).
+    @Published private(set) var refreshed = false
+    /// Where this app unpacked the Chromium extension, if already downloaded.
+    @Published private(set) var unpackedExtensionURL: URL?
     @Published private(set) var helpersMissing = false
     /// What the signature check said (T120); nil without helpers to check.
     @Published private(set) var helperTrust: HelperSignature.Verdict?
@@ -136,6 +146,7 @@ final class Installer: ObservableObject {
     /// to load unpacked, `klav-extension-chromium.zip`, carries that key.
     nonisolated static let developmentOrigin = "chrome-extension://niiplppgdljgimbnmokojdkofdcjkgao/"
     private static let waitingKey = "browsersWaitingForStore"
+    private static let deselectedBrowsersKey = "deselectedBrowsers"
     /// What was left out depends on the bundle's `klav`: an update with a
     /// store ID connects them.
     private static var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
@@ -153,6 +164,9 @@ final class Installer: ObservableObject {
         devExtension = defaults.bool(forKey: Self.devExtensionKey)
         let saved = defaults.dictionary(forKey: Self.waitingKey)
         waitingForStore = saved?[Self.build] as? [String] ?? []
+        let savedDeselected = defaults.dictionary(forKey: Self.deselectedBrowsersKey) ?? [:]
+        deselectedBrowsers = Set(savedDeselected.compactMap { $0.value as? Bool == true ? $0.key : nil })
+        unpackedExtensionURL = Self.existingExtensionDirectory(klavHome: paths.klavHome)
         leftCLIs = defaults.dictionary(forKey: Self.leftCLIsKey) ?? [:]
     }
 
@@ -162,19 +176,84 @@ final class Installer: ObservableObject {
 
     // MARK: State
 
-    /// Manifests «Connect the browsers» writes: not the Chromium ones of a
-    /// browser that waits for the store.
+    /// Whether a browser is checked in «Browsers». Checked by default.
+    func isBrowserSelected(_ id: String) -> Bool { !deselectedBrowsers.contains(id) }
+
+    /// Checks or unchecks a browser in «Browsers», saved in preferences.
+    func setBrowserSelected(_ id: String, _ selected: Bool) {
+        var next = deselectedBrowsers
+        if selected { next.remove(id) } else { next.insert(id) }
+        guard next != deselectedBrowsers else { return }
+        deselectedBrowsers = next
+        let stored = Dictionary(uniqueKeysWithValues: next.map { ($0, true) })
+        defaults.set(stored, forKey: Self.deselectedBrowsersKey)
+    }
+
+    /// Supported browsers shown in «Browsers»: installed apps when the system
+    /// reports them (`LiveSystem`), otherwise every browser whose data folder
+    /// exists (tests).
+    var browsers: [String] {
+        var seen = Set<String>()
+        if let installed = installedBrowsers {
+            let ordered = BrowserNames.order.filter { installed.contains($0) }
+            let extra = manifests.map(\.browser).filter { installed.contains($0) && !ordered.contains($0) }
+            return (ordered + extra).filter { seen.insert($0).inserted }
+        }
+        return manifests.map(\.browser).filter { seen.insert($0).inserted }
+    }
+
+    /// Browsers with leftover data folders on disk whose app is not installed
+    /// on this Mac.
+    var uninstalledBrowsers: [String] {
+        guard let installed = installedBrowsers else { return [] }
+        var seen = Set<String>()
+        return manifests.map(\.browser).filter { !installed.contains($0) && seen.insert($0).inserted }
+    }
+
+    /// Installed (or visible) browsers the person chose to connect.
+    var chosenBrowsers: [String] {
+        browsers.filter { !deselectedBrowsers.contains($0) }
+    }
+
+    /// Manifests of the browsers the person chose: uninstalled folders and
+    /// unchecked browsers are left alone.
+    var activeManifests: [Manifest] {
+        let chosen = Set(chosenBrowsers)
+        return manifests.filter { chosen.contains($0.browser) }
+    }
+
+    /// Something in Settings › This Mac wants attention: an older `klav` on
+    /// the PATH, `klavd` not set up, `klav` not linked, or chosen browsers
+    /// not connected yet.
+    var needsSetupAttention: Bool {
+        if !shownOlderCLIs.isEmpty { return true }
+        guard refreshed else { return false }
+        return !daemonReady || link != .ours || (!chosenBrowsers.isEmpty && !hostsReady)
+    }
+
+    /// Deduplicates foreign manifests for one browser that run the same host
+    /// (Dia reads both `Dia/User Data` and `Mozilla`, which often point to
+    /// the same other install).
+    static func uniqueForeignHosts(_ manifests: [Manifest]) -> [Manifest] {
+        var seen = Set<String>()
+        return manifests.filter { m in
+            seen.insert("\(m.browser)|\(m.runs ?? m.pointsTo ?? "?")").inserted
+        }
+    }
+
+    /// Manifests «Connect the browsers» writes: only for chosen browsers, and
+    /// not the Chromium ones of a browser that waits for the store.
     var neededManifests: [Manifest] {
         let kept = foreignDevKept
-        return manifests.filter { !($0.chromium && waits($0.browser)) && !($0.foreign && kept.contains($0.browser) && $0.chromium) }
+        return activeManifests.filter { !($0.chromium && waits($0.browser)) && !($0.foreign && kept.contains($0.browser) && $0.chromium) }
     }
     /// Manifests that point to another install: the app shows them and asks.
     /// This app's own with an outdated wrapper are not among them.
     var foreignManifests: [Manifest] { neededManifests.filter(\.foreign) }
-    /// Done when a browser can reach `klavd`: not while every one waits for
-    /// the store (Dia's manifest in Mozilla's folder alone lets nothing in).
+    /// Done when a chosen browser can reach `klavd`: not while every one waits
+    /// for the store (Dia's manifest in Mozilla's folder alone lets nothing in).
     var hostsReady: Bool {
-        !neededManifests.isEmpty && neededManifests.allSatisfy(\.current) && browsers.contains { !waits($0) }
+        !neededManifests.isEmpty && neededManifests.allSatisfy(\.current) && chosenBrowsers.contains { !waits($0) }
     }
     /// Something «Connect the browsers» would still write.
     var hostsToConnect: Bool { neededManifests.contains { !$0.current } }
@@ -192,11 +271,11 @@ final class Installer: ObservableObject {
     /// line. The app never turns the switch on by itself, nor takes that
     /// way in without asking: the Browsers step says so, and connecting the
     /// browsers asks first (`connectHosts(keepingDevelopment:)`, T122).
-    /// Read from `manifests` and `devExtension`, so it changes with them.
+    /// Read from `activeManifests` and `devExtension`, so it changes with them.
     var cliDevBrowsers: [String] {
         guard !devExtension else { return [] }
         var seen = Set<String>()
-        return manifests.filter { $0.chromium && $0.current && $0.listsDevelopmentBuild }
+        return activeManifests.filter { $0.chromium && $0.current && $0.listsDevelopmentBuild }
             .map(\.browser).filter { seen.insert($0).inserted }
     }
     /// The browsers whose manifest, of another install, has a host that lets
@@ -219,7 +298,7 @@ final class Installer: ObservableObject {
     /// build in, while «Development extension» is off.
     var foreignDevManifests: [Manifest] {
         guard !devExtension else { return [] }
-        return manifests.filter {
+        return activeManifests.filter {
             $0.chromium && $0.foreign && $0.listsDevelopmentBuild
                 && !($0.refused ?? []).contains(Self.developmentOrigin)
         }
@@ -235,8 +314,8 @@ final class Installer: ObservableObject {
         Self.names(foreignDevManifests.filter { !($0.viaThisHomesWrapper && writesWrapper) })
     }
     /// `install-host` without `--dev` writes this home's wrapper: there is a
-    /// Firefox-format manifest to write.
-    private var writesWrapper: Bool { manifests.contains { !$0.chromium } }
+    /// Firefox-format manifest to write among the chosen browsers.
+    private var writesWrapper: Bool { activeManifests.contains { !$0.chromium } }
 
     private static func names(_ manifests: [Manifest]) -> [String] {
         var seen = Set<String>()
@@ -249,7 +328,7 @@ final class Installer: ObservableObject {
     /// it is (`foreignDevBrowsers`), still connecting where this app can't
     /// change it (`foreignDevKept`).
     var foreignHostsMessage: String {
-        var lines = foreignManifests.map { "\($0.browser): \($0.runs ?? $0.pointsTo ?? "?")" }
+        var lines = Self.uniqueForeignHosts(foreignManifests).map { "\($0.browser): \($0.runs ?? $0.pointsTo ?? "?")" }
         let out = foreignDevBrowsers, kept = foreignDevKept
         if !out.isEmpty || !kept.isEmpty { lines.append("") }
         if !out.isEmpty {
@@ -267,11 +346,6 @@ final class Installer: ObservableObject {
         return String(localized: "Another install’s host lets the development extension into \(names). Klav can’t replace it there until Klav is in the Chrome Web Store, so the development extension still connects.")
     }
     var daemonReady: Bool { agent == .enabled && otherDaemon == nil }
-    /// The browsers with Klav's host, by the name the CLI gives them.
-    var browsers: [String] {
-        var seen = Set<String>()
-        return manifests.map(\.browser).filter { seen.insert($0).inserted }
-    }
 
     /// Reads of the browsers started, and the newest one applied: a read
     /// that ends after a newer one (a slow `refresh` after a connect) never
@@ -293,9 +367,10 @@ final class Installer: ObservableObject {
     func refresh(info: DaemonInfo?) async {
         let hostRead = startHostRead()
         let paths = paths, system = system, signatures = signatures, development = development
+        let installed = system.installedBrowsers()
         let helpersMissing = !FileManager.default.isExecutableFile(atPath: paths.cli.path)
         let state = await Task.detached {
-            () -> (AgentState, String?, LinkState, CLIState, [Manifest], HelperSignature.Verdict?, AgentState) in
+            () -> (AgentState, String?, LinkState, CLIState, [Manifest], HelperSignature.Verdict?, AgentState, URL?) in
             let trust = helpersMissing ? nil
                 : HelperSignature.check(helpers: paths.helpers, signatures: signatures, development: development)
             let untrusted = trust?.refusal
@@ -307,13 +382,16 @@ final class Installer: ObservableObject {
             }
             let link = Self.linkState(paths)
             let clis = Self.cliState(paths, system, trusted: !helpersMissing && untrusted == nil)
-            let manifests = helpersMissing || untrusted != nil ? [] : ((try? Self.hostStatus(paths, system)) ?? [])
-            return (agent, other, link, clis, manifests, trust, system.appLoginState())
+            let manifests = helpersMissing || untrusted != nil ? [] : ((try? Self.hostStatus(paths, system, installed: installed)) ?? [])
+            let extensionDir = Self.existingExtensionDirectory(klavHome: paths.klavHome)
+            return (agent, other, link, clis, manifests, trust, system.appLoginState(), extensionDir)
         }.value
         self.helpersMissing = helpersMissing
-        (agent, otherDaemon, link, _, _, helperTrust, openAtLogin) = state
+        installedBrowsers = installed
+        (agent, otherDaemon, link, _, _, helperTrust, openAtLogin, unpackedExtensionURL) = state
         setManifests(state.4, read: hostRead)
         (otherCLIs, appBuild, checkedCLIs) = (state.3.others, state.3.app, state.3.checked)
+        refreshed = true
         if let why = helpersUntrusted {
             macLog.error("not signed by Klav's team, nothing is set up: \(why, privacy: .public)")
         }
@@ -390,9 +468,25 @@ final class Installer: ObservableObject {
 
     private var clisChecked = false
 
-    private nonisolated static func hostStatus(_ paths: InstallPaths, _ system: MacSystem) throws -> [Manifest] {
-        let result = try system.run(paths.cli, ["extension", "host-status", "--host", paths.nativeHost.path, "--json"],
-                                    environment: environment(paths))
+    private nonisolated static func hostStatus(_ paths: InstallPaths, _ system: MacSystem,
+                                               installed: Set<String>? = nil) throws -> [Manifest] {
+        var list = try runHostStatus(paths, system, browsers: [])
+        if let installed {
+            let seen = Set(list.map(\.browser))
+            let missing = installed.subtracting(seen).sorted()
+            if !missing.isEmpty, let extra = try? runHostStatus(paths, system, browsers: missing) {
+                let pathsSeen = Set(list.map(\.path))
+                list += extra.filter { !pathsSeen.contains($0.path) }
+            }
+        }
+        return list
+    }
+
+    private nonisolated static func runHostStatus(_ paths: InstallPaths, _ system: MacSystem,
+                                                  browsers: [String]) throws -> [Manifest] {
+        let arguments = ["extension", "host-status", "--host", paths.nativeHost.path]
+            + browsers.flatMap { ["--browser", $0] } + ["--json"]
+        let result = try system.run(paths.cli, arguments, environment: environment(paths))
         guard result.status == 0 else { throw SetupError.failed(result.errors) }
         let report = try JSONDecoder().decode(HostReport.self, from: result.output)
         return report.manifests.map { manifest in
@@ -594,10 +688,10 @@ final class Installer: ObservableObject {
     func connectBrowsers(info: DaemonInfo?, replacingForeign: Bool) async -> HostsQuestion {
         await refresh(info: info)
         var question = HostsQuestion.none
-        let paths = paths, system = system
+        let paths = paths, system = system, installed = installedBrowsers
         await step(.hosts) {
             let read = startHostRead()
-            let found = try await Task.detached { try Self.hostStatus(paths, system) }.value
+            let found = try await Task.detached { try Self.hostStatus(paths, system, installed: installed) }.value
             setManifests(found, read: read)
             if !replacingForeign, !foreignManifests.isEmpty {
                 question = .foreign
@@ -610,12 +704,26 @@ final class Installer: ObservableObject {
         return question
     }
 
+    private var usesExplicitBrowserFilter: Bool {
+        installedBrowsers != nil || !deselectedBrowsers.isEmpty
+    }
+
     /// `klav extension install-host` through the bundle's `klav`, and the
     /// browsers read again. Runs inside `step(.hosts)`.
     private func connect() async throws {
-        let paths = paths, system = system
+        let paths = paths, system = system, installed = installedBrowsers
+        let explicit = usesExplicitBrowserFilter
+        let chosen = chosenBrowsers
+        if explicit, chosen.isEmpty {
+            let read = startHostRead()
+            let found = try await Task.detached { try Self.hostStatus(paths, system, installed: installed) }.value
+            setWaiting([])
+            setManifests(found, read: read)
+            return
+        }
+        let browserArgs = explicit ? chosen.flatMap { ["--browser", $0] } : []
         let arguments = ["extension", "install-host", "--host", paths.nativeHost.path]
-            + (devExtension ? ["--dev"] : []) + ["--json"]
+            + browserArgs + (devExtension ? ["--dev"] : []) + ["--json"]
         let result = try await Task.detached {
             try system.run(paths.cli, arguments, environment: Self.environment(paths))
         }.value
@@ -625,12 +733,28 @@ final class Installer: ObservableObject {
                 ? String(localized: "No supported browser found on this Mac.")
                 : result.errors)
         }
+        // When connecting specific browsers without `--dev` and Chromium has no
+        // store build yet, still write Mozilla's manifest if Firefox or Dia was
+        // chosen, without touching uninstalled or unchecked browsers.
+        if nothingToAllow, explicit, !devExtension,
+           chosen.contains("firefox") || chosen.contains("dia") {
+            let ffArgs = ["extension", "install-host", "--host", paths.nativeHost.path,
+                          "--browser", "firefox", "--json"]
+            let ffResult = try await Task.detached {
+                try system.run(paths.cli, ffArgs, environment: Self.environment(paths))
+            }.value
+            guard ffResult.status == 0 else {
+                throw SetupError.failed(ffResult.errors)
+            }
+        }
         let read = startHostRead()
-        let found = try await Task.detached { try Self.hostStatus(paths, system) }.value
+        let found = try await Task.detached { try Self.hostStatus(paths, system, installed: installed) }.value
         if nothingToAllow {
-            // Only Chromium browsers here, and nothing to allow in them.
+            // Chosen Chromium browsers have nothing to allow yet.
             var seen = Set<String>()
-            setWaiting(found.filter(\.chromium).map(\.browser).filter { seen.insert($0).inserted })
+            let chosenSet = Set(chosen)
+            setWaiting(found.filter { $0.chromium && (!explicit || chosenSet.contains($0.browser)) }
+                .map(\.browser).filter { seen.insert($0).inserted })
         } else {
             let report = try? JSONDecoder().decode(InstallReport.self, from: result.output)
             setWaiting(report?.skipped ?? [])
@@ -653,11 +777,11 @@ final class Installer: ObservableObject {
             await installHosts()
             return
         }
-        let paths = paths, system = system
+        let paths = paths, system = system, installed = installedBrowsers
         await step(.hosts) {
             // What to delete is read in this step, not taken from the list
             // the window showed when the person clicked.
-            let found = try await Task.detached { try Self.hostStatus(paths, system) }.value
+            let found = try await Task.detached { try Self.hostStatus(paths, system, installed: installed) }.value
             let listing = found.filter { $0.chromium && $0.ours && $0.listsDevelopmentBuild }.map(\.path)
             await Task.detached {
                 let fm = FileManager.default
@@ -684,7 +808,7 @@ final class Installer: ObservableObject {
         defaults.set(on, forKey: Self.devExtensionKey)
         setWaiting([])
         guard !on else { return }
-        let paths = paths, system = system
+        let paths = paths, system = system, installed = installedBrowsers
         let ours = manifests.filter(\.ours)
         guard !ours.isEmpty else { return }
         await step(.hosts) {
@@ -696,7 +820,7 @@ final class Installer: ObservableObject {
                 try? fm.removeItem(at: paths.klavHome.appendingPathComponent("native-host/klav-native-host"))
             }.value
             let read = startHostRead()
-            setManifests(try await Task.detached { try Self.hostStatus(paths, system) }.value, read: read)
+            setManifests(try await Task.detached { try Self.hostStatus(paths, system, installed: installed) }.value, read: read)
         }
         await installHosts()
         // Said, not hidden: a manifest that stays still lets it in. Its
@@ -710,6 +834,95 @@ final class Installer: ObservableObject {
     private func setWaiting(_ browsers: [String]) {
         waitingForStore = browsers
         defaults.set(browsers.isEmpty ? [:] : [Self.build: browsers], forKey: Self.waitingKey)
+    }
+
+    // MARK: Chromium extension download & unpack
+
+    /// Stable folder where this app unpacks the Chromium extension so the
+    /// browser keeps loading it from one place and updates replace it in place.
+    var extensionDirectory: URL { paths.klavHome.appendingPathComponent("extension/chromium") }
+
+    nonisolated static func existingExtensionDirectory(klavHome: URL) -> URL? {
+        let dir = klavHome.appendingPathComponent("extension/chromium")
+        let manifest = dir.appendingPathComponent("manifest.json")
+        return FileManager.default.isReadableFile(atPath: manifest.path) ? dir : nil
+    }
+
+    /// Maximum size accepted for the Chromium extension zip (25 MiB).
+    nonisolated static let maxExtensionArchiveBytes: Int64 = 25 * 1024 * 1024
+
+    /// Downloads the latest Chromium extension zip from `url`, unpacks it
+    /// safely into `extensionDirectory`, and optionally reveals it in Finder.
+    func downloadChromiumExtension(from url: URL = BrowserNames.chromiumExtensionDownload, reveal: Bool = true) async {
+        await step(.extensionDownload) {
+            let destination = extensionDirectory
+            let (tempZip, response) = try await URLSession.shared.download(from: url)
+            defer { try? FileManager.default.removeItem(at: tempZip) }
+            if !url.isFileURL, let scheme = response.url?.scheme?.lowercased(), scheme != "https" {
+                throw SetupError.failed(String(localized: "Couldn’t download the extension over an insecure connection."))
+            }
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw SetupError.failed(String(localized: "Couldn’t download the extension (HTTP \(http.statusCode))."))
+            }
+            let values = try tempZip.resourceValues(forKeys: [.fileSizeKey])
+            if let size = values.fileSize, Int64(size) > Self.maxExtensionArchiveBytes {
+                throw SetupError.failed(String(localized: "The downloaded extension archive is larger than expected."))
+            }
+            try await Task.detached {
+                try Self.unpackExtensionZip(tempZip, into: destination)
+            }.value
+            unpackedExtensionURL = Self.existingExtensionDirectory(klavHome: paths.klavHome)
+            if reveal, let folder = unpackedExtensionURL {
+                NSWorkspace.shared.activateFileViewerSelecting([folder])
+            }
+        }
+    }
+
+    /// Unpacks a Chromium extension zip into `destination` atomically, after
+    /// verifying it contains `manifest.json` and no symbolic links.
+    nonisolated static func unpackExtensionZip(_ zip: URL, into destination: URL) throws {
+        let fm = FileManager.default
+        let parent = destination.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let staging = parent.appendingPathComponent(".chromium-staging-\(UUID().uuidString)")
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+
+        let ditto = try runTool(URL(fileURLWithPath: "/usr/bin/ditto"), ["-xk", zip.path, staging.path], environment: [:])
+        guard ditto.status == 0 else {
+            throw SetupError.failed(ditto.errors.isEmpty ? String(localized: "Couldn’t unpack the extension archive.") : ditto.errors)
+        }
+
+        let source: URL
+        if fm.fileExists(atPath: staging.appendingPathComponent("manifest.json").path) {
+            source = staging
+        } else {
+            let entries = try fm.contentsOfDirectory(at: staging, includingPropertiesForKeys: [.isDirectoryKey],
+                                                     options: [.skipsHiddenFiles])
+                .filter { $0.lastPathComponent != "__MACOSX" }
+            if entries.count == 1,
+               fm.fileExists(atPath: entries[0].appendingPathComponent("manifest.json").path) {
+                source = entries[0]
+            } else {
+                throw SetupError.failed(String(localized: "The downloaded archive didn’t contain a Klav extension."))
+            }
+        }
+
+        // Reject symbolic links inside the archive before moving it in place.
+        if let enumerator = fm.enumerator(at: source, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
+            for case let fileURL as URL in enumerator {
+                let isLink = (try? fileURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false
+                if isLink {
+                    throw SetupError.failed(String(localized: "The downloaded extension archive contained an unexpected link."))
+                }
+            }
+        }
+
+        if fm.fileExists(atPath: destination.path) {
+            _ = try fm.replaceItemAt(destination, withItemAt: source)
+        } else {
+            try fm.moveItem(at: source, to: destination)
+        }
     }
 
     // MARK: Open Klav at login
