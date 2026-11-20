@@ -39,7 +39,7 @@ concurrency:
 jobs:
   publish:
     name: docker release publish
-    runs-on: boat-large
+    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
     # Cold release builds of klav-server and klav-proxy on boat-large (the
     # second build shares the local BuildKit cargo/target cache mounts with the
     # first). Boat bills every second; this bounds a hung run.

@@ -34,7 +34,7 @@ concurrency:
 jobs:
   build:
     name: linux release build
-    runs-on: boat-large
+    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
     # A fat-LTO release build of five binaries: the first run (2026-11-16)
     # took 2 min 46 s in all, about 145 s of it the build (docs/releasing.md
     # §6). Boat bills every second; this bounds a hung run.

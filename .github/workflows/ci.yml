@@ -43,7 +43,7 @@ jobs:
     # boat-xlarge 16 / 32. 8 GB is too little for the workspace build plus
     # Chromium plus the Docker image; the metrics table at the end of the job
     # says whether to go up or down.
-    runs-on: ${{ vars.CI_RUNS_ON || 'boat-large' }}
+    runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
     # Paid runners only for this repository's own code: pushes to main and
     # PRs whose head branch lives here (gh stack PRs included, whatever their
     # base). A PR from a fork gets no machine; a maintainer pushes its
