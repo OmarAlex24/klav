@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "aad": "0110000000156b6c61762f76312f6974656d2f6f7665727669657700000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010d2abd46d0943b279f5de4688a9006f6400000010c0ef1745472f70d1965d6c2983fb4c1b000000080000000000000001",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ciphertext": "01107afd0261269b8f7f2fce11c78ef566899335cdf07d4e95785b5a8a5cd0aed5946bb561c7fad51203e16d11766201982435b9c5efe226e2d125671d8751bf53782ea21e6a90499304d75cce5b03e1ed2a302740e2ee7ad47a869a5fec4565c9daa7adc257b6026c403737e7cb1d2b7498457dd7ccd437a22d5ebf956980e881",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "item_key": "b28a04d96fa4cc3475c471aebc79c0d9ea15e0d5ac02a0f4062aecc60a1e0512",
+      "name": "overview-v1",
+      "nonce": "7afd0261269b8f7f2fce11c78ef566899335cdf07d4e9578",
+      "plaintext": "{\"v\":1,\"kind\":\"login\",\"title\":\"GitHub\",\"urls\":[\"https://github.com\"],\"username\":\"omar\"}",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "section": "overview",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "version": 1
+    },
+    {
+      "aad": "0111000000146b6c61762f76312f6974656d2f64657461696c7300000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010d2abd46d0943b279f5de4688a9006f6400000010c0ef1745472f70d1965d6c2983fb4c1b000000080000000000000007",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ciphertext": "011134a2e1902827e330096a56bd541b48a35c46efc73c18e38985299d3ae4a5b7626961288accad7485e6833b9b4531b0260a63b4561d8bf32c5347931a81145a73fce7c69a0788efc6a8c32bc60f848c60e72ebf81c54902c9ed35d4ad7f1ee03348870f13ca5a5fb32941033a1f521ad34d1c7fdb00fa61d336180d20411f461e69b51250815c370b175a4edb8bc512e4bf5e07db90c30cded80fbdadd2114f765758f62083153d036afd8568141397b05326cb3b49a18417d7f0dfc8d3961b8b",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "item_key": "b28a04d96fa4cc3475c471aebc79c0d9ea15e0d5ac02a0f4062aecc60a1e0512",
+      "name": "details-v7",
+      "nonce": "34a2e1902827e330096a56bd541b48a35c46efc73c18e389",
+      "plaintext": "{\"v\":1,\"kind\":\"login\",\"fields\":[{\"id\":\"a5722b31-5d5d-1eff-fc3a-74b834b91717\",\"name\":\"password\",\"label\":\"Password\",\"type\":\"password\",\"value\":\"hunter2\"}]}",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "section": "details",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "version": 7
+    }
+  ],
+  "description": "Cifrado de las secciones de un elemento",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §7"
+}

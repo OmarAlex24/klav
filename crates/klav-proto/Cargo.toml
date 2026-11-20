@@ -1,0 +1,20 @@
+[package]
+name = "klav-proto"
+description = "Klav wire protocol: JSON request and response types shared by the server and its clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+klav-core.workspace = true
+data-encoding = "2.11"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

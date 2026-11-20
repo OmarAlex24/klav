@@ -1,0 +1,153 @@
+/* Klav's frames inside pages: the field menu, the top card, the palette,
+ * the save bar and the agent notice. Tokens and components: klav.css.
+ * What floats over a page has a 1 px ink edge (the shadow is the
+ * iframe's, set by the content script). */
+
+/* A long list scrolls inside the frame, which is at most a set height. */
+html { height: 100%; overflow: hidden; }
+body { height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+
+/* Exactly the frame's box: its ink edge, and what the clickjacking check watches. */
+.frame-edge { position: fixed; inset: 0; pointer-events: none; border: 1px solid var(--tinta); z-index: 10; }
+main { padding: 1px; }
+
+/* ------------------------------------------------------------- header */
+.head {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px 0 12px;
+  border-bottom: 1px solid var(--linea); background: var(--papel);
+}
+.head-title { flex: 1; min-width: 0; font-size: 12px; color: var(--gris); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.head-end { display: inline-flex; align-items: center; gap: 6px; }
+
+/* --------------------------------------------------------------- rows */
+.list { display: flex; flex-direction: column; padding: 4px 0; }
+.list-foot { border-top: 1px solid var(--linea); }
+.section-title { padding: 10px 12px 2px; font-size: 11px; font-weight: 400; color: var(--gris); }
+.choice {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 12px;
+  border: 0; background: none; text-align: left; cursor: pointer; color: var(--tinta);
+}
+.choice:hover, .choice:focus-visible { background: var(--niebla); outline: none; }
+.choice:focus-visible { box-shadow: inset 2px 0 0 var(--cobalto); }
+.choice:disabled { opacity: 0.55; cursor: progress; }
+.choice-enter { visibility: hidden; }
+.choice:hover .choice-enter, .choice:focus-visible .choice-enter { visibility: visible; }
+.choice-site { font: 400 11px/1 var(--mono); color: var(--gris); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile svg { width: 14px; height: 14px; }
+.tile-dashed { border-style: dashed; border-color: var(--cruz); color: var(--gris); }
+
+.empty { padding: 12px; color: var(--gris); font-size: 12.5px; }
+.empty strong { color: var(--tinta); font-weight: 600; }
+
+/* A message: ink text with a red bar (red text alone is too faint to read small). */
+.notice-slot { padding: 10px 12px 0; }
+.notice-slot:empty { display: none; }
+.notice { padding: 7px 10px; border-left: 2px solid var(--rojo); background: var(--niebla); color: var(--tinta); font-size: 12px; }
+.notice-info { border-left-color: var(--tinta); }
+main > .notice { margin: 12px; }
+
+/* --------------------------------------------------------- generator */
+.generated { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--linea); }
+.generated-head { display: flex; align-items: center; gap: 12px; min-height: 36px; }
+.generated .back { font-size: 12px; }
+.generated-head .row-sub { white-space: normal; }
+.generated-end { flex: none; align-self: flex-start; padding-top: 2px; }
+.generated-end .btn-link { font-size: 12px; }
+.btn-s { height: auto; min-height: 32px; padding: 0 12px; font-size: 12px; }
+.btn-use { height: 36px; }
+
+/* ------------------------------------------------------------ locked */
+.unlock { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.unlock-head { display: flex; align-items: center; gap: 10px; }
+.unlock-hole { width: 32px; height: 32px; flex: none; background: var(--marino); }
+.unlock-what { font-size: 14px; font-weight: 600; letter-spacing: -0.03em; }
+.unlock-row { display: flex; gap: 8px; }
+.unlock-row .input { flex: 1; }
+.unlock-row .btn { height: 36px; }
+.unlock .notice-slot { padding: 0; }
+
+/* ---------------------------------------------------------- top card */
+.card { display: flex; align-items: flex-start; gap: 12px; padding: 12px; }
+.card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-top: 1px; }
+.card-what { font-size: 14px; font-weight: 500; letter-spacing: -0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-what strong { font-weight: 600; }
+.card-host { color: var(--gris); font-weight: 400; }
+.card-actions { display: flex; gap: 8px; margin-top: 10px; }
+.card .notice-slot { padding: 8px 0 0; }
+.card > .icon-btn, .save-head > .icon-btn, .notice-bar > .icon-btn { border-color: transparent; margin: -4px -4px 0 0; }
+
+/* ----------------------------------------------------------- palette */
+.find-bar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 14px;
+  border-bottom: 1px solid var(--linea); background: var(--papel);
+}
+.find-bar > svg { width: 16px; height: 16px; color: var(--gris); flex: none; }
+.find-input {
+  flex: 1; min-width: 0; height: 100%; border: 0; background: none; padding: 0;
+  font-size: 16px; letter-spacing: -0.01em; color: var(--tinta); outline: none;
+}
+.find-input::placeholder { color: var(--gris); }
+.find-input::-webkit-search-cancel-button { display: none; }
+.results { padding: 4px 0 6px; min-height: 120px; }
+.find-foot {
+  position: sticky; bottom: 0; z-index: 2;
+  display: flex; align-items: center; gap: 14px; height: 36px; padding: 0 14px;
+  border-top: 1px solid var(--linea); background: var(--papel); font-size: 11.5px; color: var(--gris);
+}
+.find-foot .kbd { margin-right: 3px; }
+.find-foot-end { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-foot-end strong { color: var(--tinta); font-weight: 500; }
+.find-locked .unlock { padding: 20px; }
+@media (max-width: 480px) { .find-foot-end { display: none; } }
+
+/* A login of another site: both hosts side by side before filling. */
+.confirm { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.confirm-title { font-size: 20px; font-weight: 600; letter-spacing: -0.045em; line-height: 1.2; outline: none; overflow-wrap: anywhere; }
+.sites { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--linea); margin: 4px; }
+.site { display: flex; flex-direction: column; gap: 4px; padding: 12px; min-width: 0; }
+.site + .site { border-left: 1px solid var(--linea); }
+.site-label { font-size: 11px; color: var(--gris); }
+.site-host { font-size: 15px; font-weight: 500; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.site-here { box-shadow: inset 0 -2px 0 var(--rojo); }
+.mismatch { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+.mismatch::before { content: ""; width: 6px; height: 6px; background: var(--rojo); flex: none; }
+.confirm-actions { display: flex; gap: 8px; }
+.confirm .notice-slot { padding: 0; }
+
+/* ---------------------------------------------------------- save bar */
+.save-head { display: flex; align-items: flex-start; gap: 12px; padding: 12px 12px 0; }
+.save-what { font-size: 14px; font-weight: 500; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.save-what strong { font-weight: 600; }
+.save-form { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.save-field { display: flex; flex-direction: column; gap: 4px; }
+.field-label { font-size: 11px; color: var(--gris); }
+.save-field select.input { appearance: auto; }
+.save-form .notice-slot { padding: 0; }
+.save-actions { display: flex; gap: 8px; }
+.save-done { display: flex; align-items: center; gap: 8px; padding: 16px 14px; }
+.save-done svg { width: 16px; height: 16px; flex: none; }
+.save-done strong { font-weight: 600; }
+.save-hint { padding: 4px 12px 0 52px; }
+.surface-save .unlock { padding-top: 10px; }
+.surface-save .unlock-head { display: none; }
+
+/* ------------------------------------------------------- agent notice */
+.surface-notice .frame-edge { border-width: 1px 0 0; }
+.notice-bar { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 12px; }
+.notice-band { width: 36px; height: 36px; flex: none; background: var(--marino); }
+.notice-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 8px 0; }
+.notice-reason { font-size: 12px; color: var(--gris); overflow-wrap: anywhere; }
+.notice-bar > .icon-btn { margin: 0; }
+
+/* ----------------------------------------------------------- passkey */
+/* ADR 0020: the site's passkeys, or «Save a passkey…», top right. */
+.passkey-actions:empty { display: none; }
+.passkey-actions { padding: 0 12px 12px; }
+.passkey-what { white-space: normal; overflow-wrap: anywhere; }
+.passkey-where { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.passkey-where select.input { appearance: auto; }
+.passkey-question { font-size: 14px; font-weight: 500; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.approval-password { display: flex; flex-direction: column; width: 100%; margin-top: 10px; }
+.approval-actions { display: flex; gap: 8px; margin-top: 8px; }

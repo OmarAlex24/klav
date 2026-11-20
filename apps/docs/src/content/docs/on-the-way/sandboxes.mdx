@@ -1,0 +1,35 @@
+---
+title: "Sandboxes with a credential proxy"
+description: "An accepted design: an agent in a disposable sandbox reaches your services through a proxy that adds the real token, and holds only a credential that dies with the sandbox."
+sidebar:
+  order: 1
+---
+
+<Aside>In progress. The self-hosted base-URL proxy (`klav-proxy` and `klav-forward`) and the Mac app's Active Sandboxes panel are in early preview in the repository; transparent `HTTPS_PROXY` mode, the MCP gate, the iPhone panel, and a managed enclave proxy are still on the way.</Aside>
+
+This page explains a design for agents that work in disposable sandboxes: what goes wrong today when a sandbox holds your API tokens, and how a credential proxy would keep them out.
+
+## The problem
+
+An agent that works in a disposable sandbox, such as a cloud virtual machine started for one conversation, often needs to deploy or call an API. Today the usual way is to give the sandbox a real token:
+
+- every sandbox gets the same long-lived token, so a leak can't be traced to one sandbox, and revoking it breaks all of them;
+- the token outlives the sandbox;
+- the token sits inside the sandbox, where the agent, any program there and whoever copies the disk can read it;
+- nothing records what each sandbox did with it, and nothing asks you before a dangerous call.
+
+## The idea
+
+- **The tokens stay outside.** A proxy you run takes them from your Klav vault and adds the real token to each request on its way out. The sandbox never holds one.
+- **One credential per sandbox.** The sandbox gets a credential of its own. It isn't a Klav key: it decrypts nothing, works only through the proxy and dies with the sandbox.
+- **Only what you allowed.** The real token goes only to the hosts, paths and methods you listed, and the dangerous calls, such as a `DELETE`, wait for your approval on your iPhone or Mac.
+- **Every call in your log,** with the name of the sandbox that made it.
+- **Revoke from the apps or the terminal.** "Active sandboxes" in the Mac and iPhone apps lists them and lets you revoke one, and so does `klav proxy sandboxes` in the CLI.
+
+The proxy you host yourself comes first. A proxy run by Klav would come later, once it runs inside an enclave you can verify.
+
+## What it won't solve
+
+- Whoever runs the sandbox sees what the agent sends and receives. The proxy keeps your tokens and your Klav keys out, not the data.
+- While a sandbox lives, the agent can do what the token allows through the proxy. The allow lists and the approvals are for that.
+- If you run the proxy yourself, keeping it running, updated and protected is up to you; whoever runs its machine could, in principle, read its memory.

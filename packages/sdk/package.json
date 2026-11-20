@@ -1,0 +1,23 @@
+{
+  "name": "@klav/sdk",
+  "version": "0.9.0",
+  "description": "Klav for agent runtimes in Node: fill, run, inject and totp without handing secrets to the LLM",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": ["index.js", "index.d.ts"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

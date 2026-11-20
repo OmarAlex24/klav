@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "aad": "0120",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ikm_e": "973a76459bb231fdcad5a7570573b552a755f3496102449e19cf3a712c238b36",
+      "info": "000000176b6c61762f76312f73686172652f7661756c742d6b657900000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f10000002030ead7b5720a11070b26ec8519381bd1de6dc1d19fdddf96af512dc6423a01d0",
+      "key": "97f09e8a2e917ded639977fa52c0a397f6efe5ed13afb4245abc7141b30e8119",
+      "name": "vault-key",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "recipient_ed25519_seed": "db58a44127d5908d4706b1dd7f50837558fb463825f63cf10f46c60c3ff9e21a",
+      "recipient_public_identity": "0105e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c035d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a",
+      "recipient_x25519_seed": "4ff4cb087cad98ce29951eeaf37b65a88bd3ab66eb0cb95b120b16d6b255439b",
+      "shared": "01204f29be4ff5c9b1994dec435adbd5c38426b1346a46240cedc5dab030a04d2e74b9badab5de8fdedfdadb931a3ba41995b4cbcc306b921ee5544551630d19035d9a89fd64f9643e9ae4bf31ff0619ca68",
+      "vault_id": "be95de59b617035725a062fdf46a63f1"
+    },
+    {
+      "aad": "0121",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ikm_e": "57d770582a2d7ef78bbf91c63943687bd048205387c0351f785d0322b18b8469",
+      "info": "000000196b6c61762f76312f73686172652f70726f6a6563742d6b657900000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010d2abd46d0943b279f5de4688a9006f640000002030ead7b5720a11070b26ec8519381bd1de6dc1d19fdddf96af512dc6423a01d0",
+      "key": "11375198322caae1d764699e221e51b8f6868361c1fa4c64ec0a276974ad1ebe",
+      "name": "project-key",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "recipient_ed25519_seed": "db58a44127d5908d4706b1dd7f50837558fb463825f63cf10f46c60c3ff9e21a",
+      "recipient_public_identity": "0105e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c035d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a",
+      "recipient_x25519_seed": "4ff4cb087cad98ce29951eeaf37b65a88bd3ab66eb0cb95b120b16d6b255439b",
+      "shared": "0121aaddaecd7043e7cada08e3a9eb4a06bff027f925b43bf0a6a8d5c3098e3b1c653c6fb7471d07f0a147b82196d2ece03a7dee8eb9525fc9e61ba0693aa1f84e603da5e12c41b15209f98c0303f5c4f58f",
+      "vault_id": "be95de59b617035725a062fdf46a63f1"
+    }
+  ],
+  "description": "Llaves de bóveda y proyecto compartidas con HPKE",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §8"
+}

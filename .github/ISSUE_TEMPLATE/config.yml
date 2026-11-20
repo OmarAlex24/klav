@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/OmarAlex24/klav/blob/main/SECURITY.md
+    about: Never in a public issue or discussion. Use private vulnerability reporting or the email in SECURITY.md.
+  - name: Propose a feature
+    url: https://github.com/OmarAlex24/klav/discussions/categories/ideas
+    about: Features and changes in behavior start as an Idea in Discussions, before any code.
+  - name: Ask a question
+    url: https://github.com/OmarAlex24/klav/discussions/categories/q-a
+    about: Questions about using or building Klav go to Q&A in Discussions.

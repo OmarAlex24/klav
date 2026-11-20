@@ -1,0 +1,107 @@
+---
+title: "What Klav defends against"
+description: "What Klav protects you from (a stolen database, a dishonest server, a stolen device, agents and prompt injection, phishing) and what it doesn't."
+sidebar:
+  order: 2
+---
+
+This page summarizes Klav's [threat model](https://github.com/OmarAlex24/klav/blob/main/docs/modelo-de-amenazas.md): what Klav protects you from, the limits of each protection, and what it doesn't try to stop. How the encryption itself works is in [How Klav protects your data](/security/how-klav-protects-your-data/).
+
+## A stolen server database
+
+Someone with a copy of everything the server stores gets encrypted data and [what the server sees](/security/how-klav-protects-your-data/#what-the-server-sees): email addresses, device and agent names, agents' notes, permissions and reasons and the sites they name, the tags of the items agents use or write, the sites of the items in tasks and password changes, the audit log, the iPhone's push token, sizes and dates.
+
+- They can't read your items.
+- They can't guess your master password alone: each guess also needs your Secret Key. With your Secret Key as well (from your emergency kit or one of your devices), each guess costs a full Argon2id run.
+- The database holds only hashes of session tokens, so they can't use them to act as one of your devices.
+
+## A dishonest server
+
+Klav is designed to hold up against a server working against you, whether a hostile operator or someone who took it over. It can't read your vault, and your devices check what it sends, so they catch these changes:
+
+- **Moved or swapped data.** Each encrypted piece names its account, vault, project, item and version, so data moved to another place, or an old version passed off as new, doesn't open.
+- **Rolled-back data.** Each device remembers the newest version it has seen of each vault and item, and refuses older data, even complete with its old version number. A device that has never synced has nothing to compare with, so it can't detect a rollback before its first sync.
+- **Swapped keys.** Your devices refuse your account's identity if its public keys don't match its private keys, and refuse a vault whose key your account didn't sign.
+- **Made-up permissions.** Grants, approvals and task decisions carry your account's signature, and the agent checks it. When you approve a new agent, you compare its [six words](/agents/how-agents-work/#the-six-words), so the server can't swap the agent's key for its own.
+- **A rewritten audit log.** The audit log is a chain of hashes. Agents' events carry the agent's signed request, and grants and decisions carry your account's signature. When you run `klav log verify`, your device checks the chain and signs its head; from then on, that device catches an earlier event that is edited, removed or reordered.
+
+What a dishonest server can still do:
+
+- Stop answering, or delete your data. Your devices keep their copies and keep working with them; a vault the server stops listing stays on the device, read-only.
+- Learn the metadata it sees, including when you sync and how much.
+- Leave out audit events after the last head a device signed, or stop recording. Your own changes to your items are recorded by the server only, without your device's signature.
+- Write the parts of an agent's event that nobody signs. The agent's signature covers the item, the permission, the reason and the site, except, for an item it creates or changes with a request over 16 KiB, which the server keeps without the request, the reason and the site, and for a new item which item it was. The server alone writes the outcome (allowed, asked or denied), which approval or task let it through, the alerts, and the vault and project of most events.
+- Get past two checks `klav log verify` can't make, though it warns about each: an agent the server no longer lists can't have its signature checked, and a device's first verify accepts the chain it finds, checked only against heads your other devices signed.
+- Keep your data after you delete your account. Without your master password and Secret Key, it stays encrypted.
+
+If someone took over `klav.dev` or its DNS, they would be a dishonest server for the people who use it. Existing accounts keep these protections, and lose the service, and the metadata of their sessions, while it lasts. Accounts created during that time would live on the attacker's server. Klav doesn't pin the server's certificate.
+
+## Someone on the network
+
+TLS protects the connection to the server. Behind it, an attacker who could read or change the traffic would still face everything in the section above: what travels is encrypted, and your devices check it.
+
+## A stolen device
+
+- **A locked Mac or iPhone.** Opening Klav takes Touch ID, Face ID or your master password. If the enrolled fingerprints or faces change, Klav asks for the master password. On the iPhone, Klav's files can't be read while the iPhone is locked.
+- **An unlocked Mac.** `klavd` locks after 15 minutes without use (by default), when the Mac sleeps and when its screen locks. Until then, whoever uses the Mac can use Klav as you.
+- **A copy of Klav's folder.** It holds your Secret Key and your encrypted vaults; someone who copies it, from the device or, on a Mac, from a Time Machine backup or any copy of the disk, can guess your master password offline, at a full Argon2id run per guess. Klav doesn't exclude its folder from the iPhone's backups.
+
+Limits:
+
+- **The clipboard.** When you copy a value, Klav clears the clipboard after 30 seconds, and the Mac and iPhone apps keep the copy on that device. Until then, any app that reads the clipboard can read it, and a copy from the browser extension isn't kept off your other devices.
+- **Suggestions above the keyboard.** On an unlocked iPhone, they show which accounts Klav has for a site (username and site) without Face ID. Turn them off in Klav's Settings › AutoFill › "Suggestions on the keyboard".
+- **Asking to delete your account.** It takes your master password, and Face ID or Touch ID where Klav uses it. Someone with your unlocked iPhone and its passcode can turn Face ID off in Klav, or add their face in the iPhone's settings, which makes Klav forget Face ID; then, if your master password is saved in the iPhone's Passwords, the passcode is enough to ask. On a Mac, someone using your unlocked Mac, or a program running as you, can make Klav forget Touch ID (with a new fingerprint, or by deleting a file in Klav's folder); then your master password alone is enough to ask. The deletion waits 7 days, and you can cancel it from any device.
+
+## Agents and prompt injection
+
+The language model behind an agent isn't trusted: a web page, an email or a file can carry instructions that make it misbehave. Klav limits what it can do:
+
+- **Actions, not values.** By default an agent fills logins and runs commands without Klav returning the secret to it. Showing it a value takes the `reveal` permission, denied by default. Every request needs a reason, which goes to the audit log.
+- **`inject` is not sealed.** A command that an agent runs with a secret in its environment, or a file it fills, has the value and could print it in another form or send it over the network. Klav hides the value and its common encodings in the output it returns, as a net for accidents, not a barrier. One-time code seeds are never injected.
+- **Filling only on the item's sites.** An agent fills a login only on a page whose host is one of the item's sites, or a subdomain of one. Sites an agent adds to an item stay pending until you confirm them, and until then neither your autofill nor other agents use them. The one exception is an item the agent created: it can fill it on the sites it gave while nobody else has edited the item.
+- **Two barriers.** An agent can only decrypt the projects in its grant, and both the server and the agent's own runtime check its permissions.
+- **Approvals.** An approval card shows the agent, the action, the item and the reason, and approving asks for Touch ID or your master password on a Mac, and for Face ID, or the iPhone's passcode when Face ID can't be used, on the iPhone. Your device signs only the request it showed you. The site an agent claims is shown as "according to the agent". One-time codes need your approval by default.
+- **Revoking.** Revoking an agent stops it at once on the server, but it keeps what it already obtained, and it still has the keys of its projects. Changing their keys protects items you add later, not new versions of the items that existed while it had access: those keep their keys, so with the server's help the agent could still read them. Secrets it already obtained must be changed where they are used. See [Pause or revoke an agent](/agents/pause-and-revoke/).
+
+Limits that remain:
+
+- An agent that also controls your browser (JavaScript in the page, or a browser automation tool) can read what Klav types into a field. If an agent must never see a password, don't give it your browser.
+- An agent that can run commands on your computer as your user is another program of yours (see below): while `klavd` is unlocked, it can ask `klavd` for what you can from the terminal, including revealing a value. Approving an agent, a request or a task still asks for Touch ID or your master password.
+- A stolen agent key gives its holder whatever the agent's grant allows, until you revoke the agent.
+- An agent trusts the account identity it sees the first time it connects. Compare your account's words in `klav agent status` on the agent's machine with `klav status` on yours.
+- An approval for one use is spent by the agent's next try at the same action on the same item within 10 minutes, even if that try gives a different reason. The log keeps both reasons.
+- When an agent uses a passkey inside a task, the site is told you verified yourself, because you approved the task. Uncheck `passkey` on the task card if you don't want that.
+- Which agent wrote each version of an item is what the server says. A server working with an agent that has `update` could let it fill a login on sites it added.
+- On the iPhone, which agent a request came from is what the server says: it can show a request as coming from another of your approved agents, not from one it made up. What you approve is still exactly what the card shows.
+
+## Phishing
+
+- **In the browser,** Klav offers a login on its saved host or a subdomain of it, with no partial matches, and never fills when a page loads. A login saved for a subdomain is offered on its parent domain in a separate group, with the saved host shown, and only fills if you choose it. Klav doesn't use the Public Suffix List, so a parent domain may belong to someone else: a login for `you.github.io` is offered on `github.io`. A login of another site, found through Klav's search, fills only after a second click on a question that shows both sites, and only into an `https` page (or `http` on your own computer).
+- **The page never sees Klav's menu.** It is an extension frame the page can't read, and Klav ignores clicks on it while it is new, covered or out of place, to make it hard for a page to trick you into a click.
+- **On the iPhone,** AutoFill gets the site's domain from iOS, not from the page, and uses the same check on the host. A login that isn't saved for that site doesn't fill, and Klav says so; one saved for a subdomain of it is listed apart and fills only if you tap it.
+
+Limits:
+
+- **Pressing buttons.** Klav finds the button that signs in or continues by heuristics, so on a matching site it may press another one. The values still go only to that site. "Only fill, don't press" turns pressing off.
+- **A confirmed fill on another site** is logged as a reveal of the item, not as a fill on that site.
+
+## Other programs on your computer
+
+Only programs running as your user can talk to `klavd`, and the browser extension's connection accepts only Klav's own extensions. A program running as your user, with `klavd` unlocked, can ask it for what you can ask from the terminal. Klav reduces that window by locking when idle and when the computer sleeps, but doesn't prevent it: such a program can already read your screen, your keyboard and your files.
+
+## Out of scope
+
+Klav doesn't try to protect against:
+
+- **Malware running as administrator or root** on your device, or on an agent's machine, while Klav is unlocked: it can read memory, the keyboard and the screen.
+- **A compromised agent:** whoever controls an agent's code has everything its grant allows.
+- **What a language model already saw.** A value shown to an agent with `reveal` enters the model's context and its provider's logs, and can't be taken back.
+- **Forgetting your master password, or losing your emergency kit and every signed-in device.** The account can't be recovered; there is no back door.
+- **Giving away both your master password and your Secret Key.**
+- **Advanced physical attacks** on the hardware, such as on the Secure Enclave, and side channels in the processor.
+- **Traffic analysis,** such as when and how much a device syncs, and the metadata the server sees.
+- **Denial of service by volume.** The server has basic rate limits only.
+
+## Next
+
+[Report a vulnerability](/security/report-a-vulnerability/).

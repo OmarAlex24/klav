@@ -1,0 +1,8 @@
+// Copy to Local.xcconfig (ignored by git) and fill in. Nothing here is a
+// secret, but it is yours, not the project's.
+//
+// Your Apple Developer team ID (Membership details in developer.apple.com).
+DEVELOPMENT_TEAM = SZ3F58F8LX
+// Prefix of the bundle IDs: the app is <prefix>, the AutoFill extension
+// <prefix>.credentials and the App Group group.<prefix>.
+KLAV_BUNDLE_PREFIX = dev.klav.ios

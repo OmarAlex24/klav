@@ -1,0 +1,66 @@
+[package]
+name = "klav-proxy"
+description = "Klav credential proxy (ADR 0036): an agent that puts a granted credential into HTTP requests it builds itself, without handing it to the caller"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+# The build's identity for `--version`, the same script as klavd's and
+# klav's.
+build = "../klav-daemon/build.rs"
+
+[dependencies]
+klav-client.workspace = true
+klav-core.workspace = true
+klav-forward.workspace = true
+klav-proto.workspace = true
+klav-sdk.workspace = true
+axum = "0.8"
+bytes = "1"
+clap = { version = "4.6", features = ["derive"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+# The channel's own HTTP/1.1 loop, with a timer for the head and idle
+# deadlines that `axum::serve` does not set (both already locked through
+# axum and reqwest).
+hyper = { version = "1.12", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "service"] }
+# `user` for the key file's owner; `resource`, `mman` and `process` for the
+# memory measures of ADR 0044 §3 (`setrlimit`, `mlockall`, and
+# `prctl::set_dumpable` on Linux). None of the three brings in a crate.
+nix = { version = "0.31", default-features = false, features = ["user", "resource", "mman", "process"] }
+# Upstream TLS: rustls with the aws-lc-rs provider and the platform verifier
+# (ADR 0011), as every Klav client. No redirects, no proxies from the
+# environment, and a resolver that refuses non-public addresses.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+# Only to check at start that the system trust store has roots (Linux): the
+# platform verifier already depends on it.
+rustls-native-certs = "0.8"
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The sandboxes' channel listener (ADR 0036 §6): TLS 1.3 only, the
+# aws-lc-rs provider (the configuration is `klav_forward::channel`).
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+url = "2"
+zeroize = "1.9"
+
+[dev-dependencies]
+klav-core = { workspace = true, features = ["insecure-test-kdf"] }
+# The fake HTTPS upstream of the end-to-end test (same versions and
+# provider reqwest already locks; never `ring`).
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
+tempfile = "3"
+proptest = "1.12"
+# A provider's body in pieces, for the body tests (both already locked
+# through reqwest and axum).
+http-body = "1"
+http-body-util = "0.1"
+
+[lints]
+workspace = true

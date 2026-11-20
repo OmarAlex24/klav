@@ -1,0 +1,77 @@
+---
+title: "Railway"
+description: "Deploy klav-server on Railway as one service with a volume and SQLite: the variables, the health check, the client's IP address, backups and cost."
+sidebar:
+  order: 6
+---
+
+This page deploys `klav-server` on Railway as one service with a volume and SQLite, the cheapest setup: Railway builds it from your copy of Klav's source code, provides TLS and a domain, and keeps `/data` on a volume. There is no one-click Railway template yet.
+
+The service uses its own image, `deploy/railway/Dockerfile`, because the one at the root doesn't work on Railway. Railway mounts volumes as root; this image's entrypoint gives `/data` to the unprivileged `klav` user (UID 10001) and starts the server as that user, without capabilities. It listens on the `PORT` Railway gives (8080 if there is none). You don't need `RAILWAY_RUN_UID`: the entrypoint already starts as root only to hand over `/data`, and the server never runs as root.
+
+## Deploy
+
+<Steps>
+
+1. **Project.** In Railway's dashboard, create a project from your GitHub copy of Klav's source code. Railway creates a service with a first deploy, which fails until step 3.
+2. **Volume.** Attach a volume to the service, mounted at `/data`.
+3. **Variables**, in the service's variables:
+
+   - `RAILWAY_DOCKERFILE_PATH` = `deploy/railway/Dockerfile`: Railway's image, not the root one.
+   - `KLAV_ALLOW_REGISTRATION` = `false`, and `true` only while you create your accounts (step 6). Without it, the server accepts new accounts.
+   - `KLAV_TRUST_FORWARDED_FOR` = `false`: see [the client's IP address](#the-clients-ip-address).
+   - Optional: `KLAV_APNS_KEY`, `KLAV_APNS_KEY_ID`, `KLAV_APNS_TEAM_ID` and `KLAV_APNS_TOPIC`, for [notifications to the iPhone](/self-hosting/configuration/#approval-notifications-to-the-iphone).
+
+   **Don't create empty variables:** an empty `KLAV_APNS_*` counts as set, and the server doesn't start. Anyone with access to the Railway project can read the variables, including the APNs key. If the build uses the root `Dockerfile` and fails, try `/deploy/railway/Dockerfile`.
+4. **Deploy settings:** health check path `/v1/health`, restart policy "On Failure", and no custom start command (Railway would run it instead of the image's entrypoint).
+5. **Domain:** generate a `*.up.railway.app` domain or add your own. Railway provides TLS.
+6. **Accounts.** Deploy and open `https://<your domain>/v1/health`. To create your accounts, set `KLAV_ALLOW_REGISTRATION` to `true` and deploy, create them with `klav signup --server https://<your domain> …` or the Mac app, then set it back to `false` and deploy again. While it is `true`, anyone who finds the address can create an account.
+
+</Steps>
+
+Don't turn on Railway's serverless mode: it puts the service to sleep without traffic, and the first request after it wakes up can fail, such as an agent asking for your approval.
+
+## The client's IP address
+
+Railway's proxy documents that it sets `X-Real-IP` to the client's address, but not whether it replaces one the client sends. Keep `KLAV_TRUST_FORWARDED_FOR=false`. Without `KLAV_TRUSTED_IP_HEADER`, all clients share the proxy's address for the limits per IP address (see [TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/#the-clients-ip-address)).
+
+To use `KLAV_TRUSTED_IP_HEADER=x-real-ip`, first check that Railway replaces the header. With the variable set, send more sign-in requests than `auth_ip_burst` (10), each with a different made-up `X-Real-IP` and a different email:
+
+```sh
+for i in $(seq 1 15); do
+  curl -s -o /dev/null -w '%{http_code}\n' -H "X-Real-IP: 192.0.2.$i" \
+    -H 'content-type: application/json' \
+    -d "{\"email\":\"test$i@example.com\"}" \
+    https://<your domain>/v1/auth/prelogin
+done
+```
+
+If `429` starts at request 11, Railway replaced the header with your real address and the setting is safe. If all 15 answer `200`, the server believed the made-up addresses: remove the variable.
+
+## Limits of Railway's proxy
+
+- A request is cut after 5 minutes without data, and after 15 minutes in total. An agent's 30-second wait and attachment chunks fit well within that; the live event stream reconnects by itself every 15 minutes.
+- With a volume, each deploy has a short gap: the old container stops before the new one starts. A volume also rules out replicas, which fits the server's [one-instance limit](/self-hosting/#known-limits).
+
+## Backups
+
+Back up with Railway's own volume backups. In the service's settings, under the Backups tab, make one by hand before something delicate, or choose a daily, weekly or monthly schedule. Railway's documentation limits manual backups to 50% of the volume's size. Railway's documentation says it keeps daily backups for 6 days, weekly ones for 27 and monthly ones for 89, and that restoring one creates a new volume and leaves the old one in the project, unmounted. **Wiping the volume also deletes its backups.**
+
+As an extra copy outside Railway, on a best-effort basis, `railway ssh` into the running container and pack `/data` with `tar`. The server keeps running there and the image has no `sqlite3`, so the copy **may not be consistent**: copy `klav.db`, `klav.db-wal` and `klav.db-shm` together at a quiet moment, and check the copy on your machine:
+
+```sh
+mkdir copy && tar xzf klav-YYYY-MM-DD.tar.gz -C copy
+sqlite3 copy/klav.db 'PRAGMA integrity_check'
+```
+
+If it doesn't say `ok`, the copy is broken. `ok` means the file isn't corrupt, not that it holds every change: the server writes through `klav.db-wal` and doesn't wait for the disk on every change, so a copy taken while it writes can miss the latest ones. What [Restore](/self-hosting/data-and-backups/#restore) says about older backups applies here too.
+
+## Cost
+
+On 2026-11-04, Railway's Hobby plan cost 5 USD a month and included 5 USD of usage. A personal server at rest uses almost nothing: in a local test, the image used about 5 MiB of memory and no CPU without requests. Expect the plan's fixed price, and watch the usage page; this is an estimate, not a promise.
+
+Railway's free plan isn't for your passwords: when it ends, Railway deletes its volumes after 30 days.
+
+## Notifications to the iPhone
+
+Apple delivers a notification only to an app signed by the same team as the APNs key, so your own key reaches only an app you build and sign yourself, with its bundle ID in `KLAV_APNS_TOPIC`. Without notifications, the iPhone app sees agents' requests while it is open.

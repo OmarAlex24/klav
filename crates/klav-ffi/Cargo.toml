@@ -1,0 +1,73 @@
+[package]
+name = "klav-ffi"
+description = "Klav client bindings for Swift and Kotlin (uniffi)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+# `staticlib` for the iOS XCFramework, `cdylib` so `uniffi-bindgen` can read
+# the interface from the library (library mode), `lib` for the Rust tests.
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+# The bindings generator, at exactly this crate's uniffi version (ADR 0018).
+[[bin]]
+name = "uniffi-bindgen"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+# `DaemonEngine`, the Mac app's client of `klavd` (ADR 0027 §3). Only the
+# Mac slice of the XCFramework has it; the iOS bindings are generated
+# without it and do not change.
+daemon = ["dep:klav-daemon"]
+
+[dependencies]
+# `health`: the vault health report and «Fix my reused passwords» (ADR
+# 0022 §4, §6). It brings zxcvbn's dictionaries (about 1 MB) into the
+# library, also in the AutoFill extension's binary, which never calls it.
+klav-client = { workspace = true, features = ["health"] }
+klav-core.workspace = true
+klav-proto.workspace = true
+# Only the client side of the socket: no Touch ID shim, QR reader or
+# command line in the app (ADR 0027 §8).
+klav-daemon = { path = "../klav-daemon", default-features = false, optional = true }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "net", "time"] }
+uniffi = { version = "0.32", default-features = false }
+zeroize = "1.9"
+
+[dev-dependencies]
+klav-core = { workspace = true }
+# `DaemonEngine`'s tests run a real `klavd` in the test process.
+klav-daemon = { workspace = true }
+klav-import = { workspace = true, features = ["samples"] }
+# An agent that adds a site to a login, for the pending-sites test.
+klav-sdk.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# Compile-time T34 checks (same version klav-core and klav-import use).
+static_assertions = "1.1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync", "time"] }
+
+# `klav-ffi` is one of the two crates allowed to use `unsafe` (ADR 0013,
+# ADR 0018): the uniffi scaffolding is `extern "C"`. Its own code has no
+# `unsafe` blocks. It restates the workspace lints with `warn`.
+[lints.rust]
+unsafe_code = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+unwrap_used = "warn"
+undocumented_unsafe_blocks = "deny"

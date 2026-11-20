@@ -1,0 +1,101 @@
+---
+title: "Pause, change or revoke an agent"
+description: "Stop every agent at once with a pause, change what one agent may do, or revoke it for good and change what it obtained."
+sidebar:
+  order: 6
+---
+
+This page explains the three ways to take access back from agents: pause them, which stops them at once and costs nothing; change one agent's grant; and revoke an agent for good. It also says what none of them can take back.
+
+## Pause agents
+
+A pause stops every agent of your account, or one, everywhere, until the time is up or you resume. The server refuses what a paused agent asks.
+
+```sh
+klav agent pause --all
+```
+
+```text
+Every agent paused until you resume: the server refuses what they ask until then.
+Resume with `klav agent resume --all`.
+```
+
+- `klav agent pause <name>` pauses one agent. `--for 1h` ends the pause by itself.
+- Pausing asks for nothing, so you can do it in a hurry. Resuming asks for Touch ID, Face ID or your master password.
+- With `klavd` running, `klav agent pause --all` works while Klav is locked: until you unlock, it refuses what goes through this computer, and then tells the server.
+- `klav agent list` shows the pause in its `PAUSED` column.
+
+A paused agent gets exit code 7, or `status: "paused"` through `klav mcp`, with a message that tells it to stop:
+
+```text
+klav: agents_paused: the person paused Klav for agents; do not retry or work around it, tell the person you need Klav and ask them to resume it
+```
+
+```sh
+klav agent resume --all
+```
+
+```text
+Every agent resumed.
+```
+
+In the Mac app, pause from the menu bar or Development › Agents, also while Klav is locked. On the iPhone, "Pause agents" is in the Agents sheet.
+
+## Change a grant
+
+Run `klav agent approve` again on an active agent, with the projects and permissions it should have now. Here the agent had `Personal/General` and `Personal/Work`:
+
+```sh
+klav agent approve claude-code --project Personal/General --deny totp
+```
+
+```text
+Agent "claude-code" is active. What changes in its grant (version 2):
+  - Personal/Work
+  totp: ask (default) -> deny
+It already has the keys of the projects taken away: with an honest server it can no longer use them. --rotate-removed also changes those keys.
+This only narrows what it can do: no Touch ID needed.
+A new grant version expires the agent's pending requests.
+Sign it? [y/N] y
+Grant of agent claude-code changed (version 2).
+```
+
+- It shows only what changes and asks before it signs (`--yes` skips the question).
+- A change that widens what the agent can do asks for Touch ID or your master password. Narrowing asks for nothing.
+- `--rotate-removed` also changes the key of each project you take away. The agent already has those keys, so without it a dishonest server could still let it open what you add there later. Items that were already there keep their own keys, so even with it, a dishonest server could let the agent read their new versions.
+- A new grant cancels the agent's requests that are waiting for you.
+
+In the Mac app, it is Development › Agents › "Change permissions…", which shows the same "Check what changes" step. The iPhone can't change a grant yet.
+
+## Revoke an agent
+
+```sh
+klav agent revoke claude-code
+```
+
+```text
+Revoked claude-code: the server refuses its next request.
+claude-code held the keys of: Personal/General. It could read the titles, usernames and URLs of their items.
+What claude-code used (from the audit log):
+ID        ITEM                            PERMISSIONS  SECRET  USES  LAST
+ba8fb3dd  klav://Personal/General/GitHub  totp         yes     1     2026-11-12 23:03:12Z
+d0598530  klav://Personal/General/Stripe  inject       yes     2     2026-11-12 23:02:57Z
+warning: It obtained the secrets marked `yes`: change them where they are used (the site, the API) if you no longer trust it.
+To also rotate its projects' keys: run again with --rotate.
+```
+
+It asks you to confirm, unless you pass `--yes`, and then prints [what the agent saw](/agents/activity-log/#what-an-agent-saw). From then on the agent gets exit code 5:
+
+```text
+klav: denied: agent claude-code is revoked: it was revoked; register a new agent
+```
+
+- `--rotate` also changes the keys of the agent's projects and gives the other agents that share them a new grant.
+- A revoked agent can't come back: to give access again, register a new one.
+- In the Mac app, it is Development › Agents › "Revoke…"; on the iPhone, "Revoke…" in the Agents sheet. Both show what the agent used and offer to change its projects' keys. Revoking needs Klav unlocked; while it is locked, the Mac offers "Pause every agent now" instead.
+
+## What none of them takes back
+
+<Aside type="caution" title="What an agent already has stays with it">
+A pause, a narrower grant or a revoke stops what the agent asks from then on. They don't take back what it already has: a process it started, a file it was given, a value or a code it read. Changing a project's key protects items you add later, not new versions of the items that were already there, nor the secrets it already obtained. For those, change each secret marked `yes` where it is used: on the site or in the service that issued the API key.
+</Aside>

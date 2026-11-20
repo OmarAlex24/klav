@@ -1,0 +1,136 @@
+---
+title: "Configuration"
+description: "Every klav-server setting as an environment variable or a TOML key, with its default; the logs; and approval notifications to the iPhone through APNs."
+sidebar:
+  order: 2
+---
+
+This page lists every setting of `klav-server`, with its default, and explains its logs and how to send approval notifications to the iPhone. Every setting has a safe default.
+
+## Where settings come from
+
+1. An optional TOML file, with `--config <path>` (or `-c`) or the `KLAV_CONFIG` variable.
+2. `KLAV_*` environment variables, which win over the file.
+
+An unknown key in the file is an error, so a typo doesn't pass silently:
+
+```text
+klav-server: invalid config file: unknown field `lisen`, expected one of `listen`, `database_url`, `data_dir`, `trust_forwarded_for`, `trusted_ip_header`, `allow_registration`, `sessions`, `retention`, `log`, `limits`, `rate_limit`, `push`
+```
+
+## Environment variables
+
+| Variable | TOML key | Default | What it does |
+|---|---|---|---|
+| `KLAV_CONFIG` | — | — | The TOML file's path |
+| `KLAV_LISTEN` | `listen` | `127.0.0.1:8080` (`0.0.0.0:8080` in the image) | Address and port |
+| `KLAV_DATABASE_URL` | `database_url` | `sqlite://data/klav.db` (`sqlite:///data/klav.db` in the image) | `sqlite://…` or `postgres://…` |
+| `KLAV_DATA_DIR` | `data_dir` | `data` (`/data` in the image) | Folder for attachments |
+| `KLAV_ALLOW_REGISTRATION` | `allow_registration` | `true` (`false` in `docker-compose.yml`) | Accept new accounts |
+| `KLAV_TRUST_FORWARDED_FOR` | `trust_forwarded_for` | `false` | Take the client's IP address from `X-Forwarded-For` |
+| `KLAV_TRUSTED_IP_HEADER` | `trusted_ip_header` | none | A header your proxy sets to the client's IP address, such as `x-real-ip`; not with the one above |
+| `KLAV_LOG_FORMAT` | `log.format` | `json` | `json` or `pretty` |
+| `KLAV_LOG` | `log.filter` | `info` | Log filter, such as `info,klav_server=debug` |
+| `KLAV_APNS_KEY_PATH` | `push.apns.key_path` | — | The APNs `.p8` key file |
+| `KLAV_APNS_KEY` | `push.apns.key` | — | The `.p8` key's PEM content, instead of the path |
+| `KLAV_APNS_KEY_ID` | `push.apns.key_id` | — | That key's ID |
+| `KLAV_APNS_TEAM_ID` | `push.apns.team_id` | — | Your Apple team ID |
+| `KLAV_APNS_TOPIC` | `push.apns.topic` | — | The iPhone app's bundle ID |
+
+Booleans take `true`/`false`, `1`/`0` and `yes`/`no`. For the two IP settings, see [The client's IP address](/self-hosting/tls-and-reverse-proxy/#the-clients-ip-address).
+
+## The whole TOML file
+
+Every key, with its default. `[push.apns]` has no default and stays commented out:
+
+```toml
+listen = "127.0.0.1:8080"
+database_url = "sqlite://data/klav.db"
+data_dir = "data"
+trust_forwarded_for = false
+# trusted_ip_header = "x-real-ip"   # or this one, never both
+allow_registration = true
+
+[sessions]
+access_ttl_secs = 900          # access token: 15 min
+refresh_ttl_secs = 2592000     # refresh token: 30 days, renewed on each use
+
+[retention]
+trash_days = 30                # trash and deleted vaults, before they are purged
+purge_interval_secs = 3600     # how often the purge runs
+
+[log]
+format = "json"
+filter = "info"
+
+[limits]
+max_json_body_bytes = 4194304         # 4 MiB per JSON request
+max_meta_bytes = 65536                # metadata of a vault or project
+max_overview_bytes = 65536            # an item's overview section
+max_details_bytes = 1048576           # an item's details section
+max_item_versions = 50                # earlier versions kept per item
+max_attachment_bytes = 104857600      # 100 MiB per attachment (encrypted)
+max_attachment_chunk_bytes = 8388608  # 8 MiB per upload chunk
+max_pending_upload_bytes = 1073741824 # 1 GiB of unfinished uploads per account
+
+[rate_limit]                   # token buckets: refill per minute, and burst
+ip_per_minute = 600            # every request, per IP address
+ip_burst = 120
+auth_ip_per_minute = 30        # prelogin, registration, login and refresh, per IP address
+auth_ip_burst = 10
+auth_email_per_minute = 10     # attempts per email and IP address
+auth_email_burst = 5
+account_per_minute = 1200      # signed-in requests per account
+account_burst = 300
+
+# Approval notifications to the iPhone: off by default.
+# Uncomment key_path (or key), key_id, team_id and topic; with one missing,
+# the server doesn't start.
+# [push.apns]
+# key_path = "/run/secrets/AuthKey_<KEY_ID>.p8"
+# key = """-----BEGIN PRIVATE KEY-----…"""  # or the content, never both
+# key_id = "<KEY_ID>"
+# team_id = "<TEAM_ID>"
+# topic = "<your bundle ID>"
+```
+
+Over a limit, the server answers `429` with `Retry-After`. Limits per IP address group IPv6 addresses by their `/64`. The sign-in limit per email counts by email **and** IP address, so someone who knows your email can't lock you out from another network.
+
+## Logs
+
+Logs go to standard output, one JSON object per line:
+
+```text
+{"timestamp":"…","level":"INFO","message":"klav-server listening","listen":"127.0.0.1:8080","version":"…","target":"klav_server"}
+```
+
+For each request the server logs the method, the route as a template (`/v1/vaults/{vault_id}/items/{item_id}`), the status code and the duration. It never logs bodies, encrypted data, headers (`Authorization` included) or query strings.
+
+When an account is deleted, the log keeps one `account deleted` line with the account's ID in its `account` field, never its email. Keep these lines with your backups: see [Deleted accounts](/self-hosting/data-and-backups/#deleted-accounts-and-backups).
+
+## Approval notifications to the iPhone
+
+Without `[push.apns]`, the server sends no notifications, and the iPhone app sees agents' requests while it is open. To notify the iPhone:
+
+<Steps>
+
+1. In your Apple developer account, create a key with **Apple Push Notifications service (APNs)**. Download its `.p8` file (you can only download it once) and note its Key ID and your Team ID.
+2. Give the key to the server, either as a file readable only by the server's user (in Docker, a secret or a read-only volume), in `KLAV_APNS_KEY_PATH`; or as content, the whole PEM with its `BEGIN` and `END` lines, in `KLAV_APNS_KEY`. Line breaks may be written as literal `\n`. Never both.
+3. Set `KLAV_APNS_KEY_ID`, `KLAV_APNS_TEAM_ID` and `KLAV_APNS_TOPIC`, the bundle ID of the iPhone app you build and sign (see the last point below).
+
+</Steps>
+
+The four go together. If one is missing, the server doesn't start:
+
+```text
+klav-server: invalid configuration: APNs needs KLAV_APNS_KEY_PATH or KLAV_APNS_KEY, KLAV_APNS_KEY_ID, KLAV_APNS_TEAM_ID and KLAV_APNS_TOPIC
+```
+
+- The server reads the key when it starts and refuses to start if it isn't a valid P-256 key, without repeating its content. It never logs the key, its signed tokens or the devices' tokens.
+- A key given in `KLAV_APNS_KEY` stays in the process's environment, where anyone who can read it sees it. Prefer the file where you can.
+- Apple sees that your server notifies a device, when, and the kind of notification with a random ID. Not the agent's name, its reason or the item.
+- **Apple delivers a notification only to an app signed by the same team as the key.** The Klav app you get from TestFlight is signed by Klav, so a key of your own reaches only an app you build and sign yourself.
+
+## Next
+
+[TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/).

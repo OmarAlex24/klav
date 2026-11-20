@@ -1,0 +1,92 @@
+---
+title: "The browser extension"
+description: "Use Klav in Chrome, Brave, Edge, Arc, Dia and Firefox: fill logins, cards and addresses, save and generate passwords, one-time codes, passkeys, and the popup."
+sidebar:
+  order: 3
+---
+
+This page explains what the browser extension does once it is set up: fill logins, cards and addresses on a page, save the passwords you type, generate new ones, fill one-time codes, sign in with passkeys, and the popup with your vault. It works in Chromium browsers (Chrome, Brave, Edge, Arc, Dia) and Firefox. To set it up, see [Install Klav](/get-started/install/#browser-extension).
+
+The extension talks to `klavd`, Klav's background service on your computer. It is unlocked when Klav is unlocked: with Touch ID or the master password, in the extension, the Mac app or the CLI.
+
+## Fill a login
+
+Klav never fills when a page loads. It fills when you choose a login:
+
+- **In the field.** Klav's key appears at the end of a sign-in field. Click it to see the logins for the site, then choose one. ⌘⇧L (Ctrl+Shift+L on Windows and Linux) opens the same menu without the mouse, or Klav's search if no field has the focus.
+- **"Sign in with Klav"**, a card at the top right of a page with a sign-in form, offers "Sign in as" the login for that site, and "Another account" when there are more. It never fills without a click.
+- **Klav's search** finds any item. A login saved for another site doesn't fill with one click: Klav shows both sites side by side, and fills only after you choose "Fill on" the page's site.
+- **From the popup**, "Fill" on a login for the current site.
+
+Klav fills a login by itself only on one of its sites or a subdomain of it, which keeps a look-alike site from getting it. A login saved for a subdomain is offered on the parent site apart, under "Saved for a subdomain", and fills only if you choose it. A login of another site fills only after you confirm "Fill on" the page's site (see above).
+
+**Sign-ins in several steps,** such as an email first and the password on the next page, are followed for you: Klav types the username, presses the button that continues, waits for the password field, fills it and signs in, then fills the one-time code if the login has one. It stops and says why if it sees a captcha or the password field doesn't appear. To press nothing yourself, turn on "Only fill, don’t press" in the popup's settings.
+
+## Cards and addresses
+
+In a card or address form, Klav's menu offers your cards and addresses (identity items), and fills the fields it recognizes.
+
+## Save and update passwords
+
+When you submit a form with a password, Klav offers to save it on the next page, at the top right:
+
+- **"Save this login to Klav?"** for a new login, with a title (the site, by default) and, if you have more than one project, where to save it.
+- **"Update the password of …?"** when you signed in with a password that differs from the one Klav has.
+- Nothing, when Klav already has that username and password for the site.
+
+Klav keeps what you typed in memory for 60 seconds, never on disk, and forgets it once you save or dismiss.
+
+## Generate a password
+
+In a new-password field, such as a sign-up or change-password form, Klav's menu starts with the generator:
+
+- **"Smart"** follows the site's password rules, from the field or from a list of known sites; "Random", "Memorable" and "PIN" have their own options. A strength bar shows how strong it is.
+- **"Use this password"** fills it into the password field and its confirmation. When you submit the form, Klav offers to save it.
+- **"Use as default for suggestions"** keeps your choice.
+- **"History"** lists every password the generator gave you, kept before it is used, so a failed sign-up doesn't lose it. "Delete history" erases it.
+
+## One-time codes
+
+- After Klav fills a login that has a one-time code, the code field on the next page opens Klav's menu with that login first. Choose it to fill the code.
+- In a sign-in that Klav followed step by step, the code goes in by itself.
+- In the popup, the login for the current site shows its live code. Click it, or press ⌘C (Ctrl+C) with nothing selected, to copy it.
+- The "Codes" tab lists every item with a one-time code, those for the current site first. Click a row to copy its code.
+
+## Passkeys
+
+When a site asks to create or use a passkey, Klav offers to keep it: "Save a passkey for … in Klav", or "Sign in with a passkey" with the ones Klav has for the site. "Use another device" hands the request back to your browser, for its own passkeys, a phone or a security key.
+
+The popup's settings choose when a passkey asks for Touch ID or your master password again: "Every time", "Every 5 minutes" or "While Klav is unlocked". It is a setting of this computer only.
+
+## The popup
+
+Click Klav's button in the browser's toolbar:
+
+- **Unlock or lock** Klav.
+- **Agent requests** waiting for you, at the top, with "Approve" and "Deny". Approving asks for Touch ID or your master password. Task requests show as one card. See [Approvals and tasks](/agents/approvals-and-tasks/).
+- **Your vault,** with the logins for the current site first, search (press `/` to jump to it) and tabs by kind. Secret values stay hidden until you choose "Show" or "Copy".
+- **"Previous passwords"** on each item.
+- **"New item"** creates a login, a secure note, a card or a one-time code. A login takes the current site's address by default. A code takes the setup key or the `otpauth://` link the site gives you.
+- **The generator**, with its history.
+- **"Health"**: reused, weak, old and, once you turn on "Look for breached passwords", breached passwords, without showing them. Klav then sends Have I Been Pwned only the first 5 characters of each password's SHA-1 hash. "Fix my reused passwords" offers one of your agents a task to change them; see [Approvals and tasks](/agents/approvals-and-tasks/#tasks).
+- **Import:** "Where are you coming from?" See [Import your passwords](/get-started/import/).
+
+A value you copy is cleared from the clipboard 30 seconds later, even if you copied something else since: the extension doesn't ask for permission to read your clipboard, so it can't tell.
+
+### Sites an agent added
+
+When an agent adds a website to a login, the popup shows it apart: "Not confirmed: Klav does not suggest or fill this login there.", with "Confirm" and "Remove" for all of them at once.
+
+### A password an agent changed
+
+An agent with a task can change a password in your browser without seeing it; Klav types the new one into the page. Until the site accepts it, the item shows "Pending change: did the new password work?" with "Use the new one" and "Keep the current one".
+
+## When an agent fills a page
+
+An agent that fills a login, a card or a code into your browser does it through the extension, on the tab you have open. The page then shows "Klav filled this page for" and the agent's name, with its reason. See [Use secrets without seeing them](/agents/use-secrets-without-seeing-them/#klav-agent-fill).
+
+## What the extension can't do yet
+
+- **Edit an existing item** by hand, or **move one to the trash**. Use the Mac app, the iPhone app or the CLI.
+- **The activity log, managing agents, and deleting your account.** Use the Mac app, the iPhone app or the CLI.
+- **Install from the browsers' stores.** For now, you load it yourself: see [Install Klav](/get-started/install/#browser-extension).

@@ -1,0 +1,38 @@
+{
+  "cases": [
+    {
+      "body": "{\"store_epoch\":\"ekGcWdxLu9lL6ROENZzh6w\"}",
+      "body_sha256": "0c8cd9ed5829dfe339a8648244763b3c52ed9512b1b94194267176dd788ca90e",
+      "method": "POST",
+      "name": "store_reset",
+      "nonce": "675db26b1e64c259cdbfd30b1d2b7710",
+      "path": "/v1/agent/sandboxes/epochs",
+      "proxy_agent_id": "49f8511562395a33e4db3d011a6c1537",
+      "proxy_ed25519_seed": "a19461aca3b30f3fafdd938e9d022973a39f1d6eab2527259347050131fdf9a7",
+      "proxy_public_identity": "010508fe8864dc3e1eaf0a7a982eaa7aaaa93d40b38dd4992bbd224f26c2ca860172c9886b6c30437999a6dd40f0166f9953d7d89a15e99cf2b8df286c6f42e74788",
+      "proxy_x25519_seed": "fb8a6d831f8de86033afed466acc2fcc7b1a8cc7f5c6c5c8d5f8d200d8697664",
+      "request_message": "000000196b6c61762f76312f7369672f6167656e742d726571756573740000001049f8511562395a33e4db3d011a6c153700000004504f53540000001a2f76312f6167656e742f73616e64626f7865732f65706f63687300000008000001a3185ff98000000010675db26b1e64c259cdbfd30b1d2b7710000000200c8cd9ed5829dfe339a8648244763b3c52ed9512b1b94194267176dd788ca90e",
+      "request_signature": "cbb1c91ec5c0a99c4f8147bb3f1d19ec1eb7f7e05349370cae1ada21a48a7222f4d27818799637dc3390f7e67a142e2288dbe086854e8fc03a59250eb7441902",
+      "timestamp_ms": 1800000240000
+    },
+    {
+      "body": "{\"sandboxes\":[{\"connected\":true,\"id\":\"e3d1bf79-5eab-a96f-57b5-9e761349e560\",\"last_seen_at\":1800000290000}],\"sent_at_ms\":1800000300000,\"seq\":1,\"store_epoch\":\"ekGcWdxLu9lL6ROENZzh6w\",\"v\":1}",
+      "body_sha256": "912af80ba0fbc0d27956991a06bbc0a818bfb9f1d2c1810446cca0177850b11c",
+      "method": "PUT",
+      "name": "heartbeat",
+      "nonce": "ab8ccde03529b0ab07225ce05314f314",
+      "path": "/v1/agent/sandboxes/state",
+      "proxy_agent_id": "49f8511562395a33e4db3d011a6c1537",
+      "proxy_ed25519_seed": "a19461aca3b30f3fafdd938e9d022973a39f1d6eab2527259347050131fdf9a7",
+      "proxy_public_identity": "010508fe8864dc3e1eaf0a7a982eaa7aaaa93d40b38dd4992bbd224f26c2ca860172c9886b6c30437999a6dd40f0166f9953d7d89a15e99cf2b8df286c6f42e74788",
+      "proxy_x25519_seed": "fb8a6d831f8de86033afed466acc2fcc7b1a8cc7f5c6c5c8d5f8d200d8697664",
+      "request_message": "000000196b6c61762f76312f7369672f6167656e742d726571756573740000001049f8511562395a33e4db3d011a6c153700000003505554000000192f76312f6167656e742f73616e64626f7865732f737461746500000008000001a31860e3e000000010ab8ccde03529b0ab07225ce05314f31400000020912af80ba0fbc0d27956991a06bbc0a818bfb9f1d2c1810446cca0177850b11c",
+      "request_signature": "21fae02f5b7c74a1ad6031e1aad798d97b16a2dd225c2821ecf350078d453136e411f3120a7a50e67f8d159a9ef08c338fe46390d8f64476abd9d25501fa3d02",
+      "timestamp_ms": 1800000300000
+    }
+  ],
+  "description": "The credential proxy's signed requests for a new store epoch (sandbox.store_reset) and its heartbeat: bodies, their section 13.3 messages and signatures",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §13.3, §13.7, §13.12"
+}

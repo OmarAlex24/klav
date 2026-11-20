@@ -1,0 +1,87 @@
+---
+title: "The iPhone app"
+description: "Use Klav on an iPhone: your items, Face ID, AutoFill for passwords, codes and passkeys, saving a site's code, agent requests, vault health and settings."
+sidebar:
+  order: 2
+---
+
+This page explains what you do with the iPhone app day to day: find and edit your items, unlock with Face ID, fill passwords, one-time codes and passkeys in Safari and other apps, decide what agents ask for, and check your vault's health. To install the app and sign in, see [Install Klav](/get-started/install/#iphone-app) and [Add a device](/get-started/add-a-device/).
+
+## Your items
+
+The vault opens on a search field and a row of tabs by kind: "All", "Logins", "Codes", "Cards", "Notes", "SSH keys", "API keys", "Addresses" and "Files". Only the tabs that have something show.
+
+- **Search** by title, username, site or tag.
+- **"Codes"** lists every item with a one-time code, with the code large. Tap anywhere on a row to copy the code.
+- **Open an item** to see it. Secret values stay hidden until you choose "Show", and hide again when Klav goes to the background. "Previous passwords" lists the passwords an item had before.
+- **"+"** creates an item. "Edit" changes one, and "Move to the trash" asks you to confirm. No Klav app can restore an item from the trash yet.
+- **"Generate"**, next to a password in the editor, opens the password generator with the rules of the item's site. "Use this password" puts it in the field.
+
+A value you copy doesn't go to your other devices through Universal Clipboard, and the iPhone clears it after 30 seconds.
+
+When an agent adds a website to a login, the item shows it apart, with "Confirm" and "Remove". Klav doesn't fill a login on a site you haven't confirmed.
+
+## Lock and unlock
+
+- **Face ID** unlocks Klav. It asks for the master password when you sign in, after the iPhone restarts and every 14 days. If the faces enrolled on the iPhone change, Klav asks for the master password again.
+- **Klav locks itself** when it has been in the background for a while: 1 minute by default. Settings › "Lock Klav" offers "When you leave the app", "After 1 minute", "After 5 minutes", "After 15 minutes" and "After 1 hour".
+- **In the app switcher** you see a lock, never your vault.
+- Turning off "Unlock with Face ID" asks for Face ID or the iPhone's passcode first.
+
+## AutoFill
+
+Turn Klav on in the iPhone's Settings › General › AutoFill & Passwords. Until you do, the app shows how, with "Open AutoFill & Passwords".
+
+- **Passwords:** in Safari and other apps, Klav suggests the logins for the site above the keyboard, or you choose Klav from the list. It asks for Face ID, then fills.
+- **One-time codes** fill the same way, on iOS 18 or later.
+- **The site is checked:** Klav suggests a login on its site or a subdomain of it. Logins saved for a subdomain of the page show apart, under "Saved for a subdomain", and fill only if you choose one.
+- **Suggestions on the keyboard** never include a password or a code. Turn them off in Settings › AutoFill › "Suggestions on the keyboard".
+- **Cards** don't fill through AutoFill yet: copy them from the item.
+- AutoFill uses what the app last synced, and can't fill until Face ID is on and the master password isn't due. Open the app to sync or unlock.
+
+### Passkeys
+
+Klav is a passkey provider: when a site offers to sign in with a passkey or to create one, choose Klav. Both ask for Face ID.
+
+A passkey you create from AutoFill is saved on this iPhone first. Open the app to sync it to your other devices: if you uninstall Klav before that, the passkey is lost.
+
+### Save a site's code in Klav
+
+Choose Klav in the iPhone's Settings › General › AutoFill & Passwords › "Set Up Codes In". Then a site's two-factor QR code, read with the Camera or Safari, or an `otpauth://` link from any app, opens Klav. Settings › AutoFill › "Set up codes in Klav" opens that page.
+
+Klav shows what the link says and the logins that match its issuer. You choose a login, or "Save in a new login", and confirm before anything is saved. If the login already has another code, "Replace" says what it removes. After "Save the code", Klav shows the live code, so you can type it on the site to finish turning on two-factor.
+
+If Klav is locked, it asks you to unlock first and keeps the link in memory only: if iOS closes the app in the meantime, open the link again.
+
+## Agents
+
+- **Requests** appear above your vault: what the agent wants, on which item and site, its reason and how long you have. Choose "Approve once", "Approve 15 min" or "Deny". Approving asks for Face ID; denying asks nothing. Task requests show as one card, and a running task has "End task". See [Approvals and tasks](/agents/approvals-and-tasks/).
+- **A new agent** that wants to join leads to "Compare words": check the six words against the agent's, choose the projects to share and when access ends. To set permissions one by one, use `klav agent approve` (see [Connect an agent](/agents/connect-an-agent/)).
+- **Notifications:** turn on "Agent notifications" in Settings to hear about requests. A notification carries no details: the app fetches them when you open it. Without notifications, requests still show while the app is open.
+- **The Agents sheet**, the robot button next to "+", has "Pause agents", "Activity" and your agents. An agent with access has "Pause" on its row; open it to "Revoke…" it. See [Pause, change or revoke an agent](/agents/pause-and-revoke/) and [The activity log](/agents/activity-log/).
+
+## Passwords
+
+Settings › Passwords has:
+
+- **"Password generator"**: smart (it follows a site's rules), random, memorable and PIN. "Use as default for suggestions" keeps your choice on this iPhone. "Generator history", at the bottom, lists every password the generator gave you, kept before you use it, so a failed sign-up doesn't lose it. Copy one from the list; "Delete history" erases it.
+- **"Vault health"**: reused, weak, old and, once you turn on "Look for breached passwords", breached passwords, without showing them. Klav then sends Have I Been Pwned only the first 5 characters of each password's SHA-1 hash; the setting is for this iPhone only. Tap a row to open the item.
+
+**"Fix my reused passwords"**, in Vault health, offers one of your agents a task to change your reused passwords on their sites, in your computer's browser. You choose the agent and uncheck the logins you want to keep, and approve once with Face ID. The agent gets the sites, never which ones shared a password. While it works, a card shows each site as changed, pending or failed.
+
+An item whose password an agent changed shows "Pending change: did the new password work?", with "Use the new one" and "Keep the current one".
+
+## Settings
+
+Settings, the gear button, also has:
+
+- **Account:** your email, the server, this iPhone's name, the account's words, "Print the emergency kit" (it asks for your master password), "Use another server" and "Sign out on this iPhone".
+- **Import:** "Import from another app". See [Import your passwords](/get-started/import/).
+- **"Delete my account"**: Klav deletes the account 7 days later, and every agent stops at once. You can cancel from any of your devices until then.
+
+## What the iPhone app can't do yet
+
+- **Fill cards through AutoFill.** Copy them from the item.
+- **Change an agent's permissions.** Use the Mac app or `klav agent approve`.
+- **Restore from the trash, or list and remove your devices.** No Klav app does these yet.
+- **Create an account.** Create it with the Mac app or the CLI, then sign in.

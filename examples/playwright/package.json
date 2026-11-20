@@ -1,0 +1,13 @@
+{
+  "name": "klav-example-playwright",
+  "private": true,
+  "type": "module",
+  "description": "An agent logs in to a site with Playwright; the password goes from Klav to the page, never through this script",
+  "scripts": {
+    "start": "node login.mjs"
+  },
+  "dependencies": {
+    "@klav/sdk": "file:../../packages/sdk",
+    "playwright": "^1.56.0"
+  }
+}

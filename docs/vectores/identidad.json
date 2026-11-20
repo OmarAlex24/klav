@@ -1,0 +1,21 @@
+{
+  "cases": [
+    {
+      "aad": "0101000000186b6c61762f76312f6964656e746974792f7365637265747300000010a7745fc9c1fb8daabf635acb32603f6c0000004201053d7ca7369531fb2bbe203337b706b895b5c7e107c1e064335c3e639118e99b69854d534ffaf68fa7aaa3dab224c194e65f4c720668770d92426c0dd34946cb9f",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ed25519_seed": "dacabdfa8db78e01f10e71da2c94a1761681106227b4da4dd268cb2a585488aa",
+      "fingerprint": "a4d352004f82a3a7fff338338cb3de6e5449dcab1eaee94edebf6bf602126344",
+      "kek": "25b230a55f7a7bf7934d72d7270147459538feeb7f053a2ac1db03abf0e8f64e",
+      "name": "account-identity",
+      "nonce": "08b2f52f486b43521d7152c3129479d287cacd1c94708bab",
+      "public_identity": "01053d7ca7369531fb2bbe203337b706b895b5c7e107c1e064335c3e639118e99b69854d534ffaf68fa7aaa3dab224c194e65f4c720668770d92426c0dd34946cb9f",
+      "sealed": "010108b2f52f486b43521d7152c3129479d287cacd1c94708babde417ac00ea3253a490adc46f8f76ff95c4696cfa8c03e7cae9ac394fc1f9c1586157adc6b0794212c27109dc3fc6c4514b90b87ad11a9d2f3746a9cf11397df27e4521b83641eb497289ab85d630275",
+      "x25519_private_clamped": "1014c89d82bee4b2ff052841b9e3bf6e96f1f92f49e65f55d64729cc394f875b",
+      "x25519_seed": "1414c89d82bee4b2ff052841b9e3bf6e96f1f92f49e65f55d64729cc394f871b"
+    }
+  ],
+  "description": "Par de llaves de identidad y su sellado con la KEK",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §6"
+}

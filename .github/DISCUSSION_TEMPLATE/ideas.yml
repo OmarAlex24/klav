@@ -1,0 +1,60 @@
+# Form for the "Ideas" category of Discussions (ADR 0040 §2). GitHub matches
+# the file name to the category's slug, so this file only works while that
+# slug is `ideas`. Discussion forms take only `body`, `labels` and `title` at
+# the top level; the fields below are the old issue feature form's.
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Features and changes in behavior are agreed here **before** a PR (see [CONTRIBUTING.md](https://github.com/OmarAlex24/klav/blob/main/CONTRIBUTING.md)). Anything that changes the design (cryptography, formats, the server API, what agents can see or do) also needs an ADR.
+        **Never post a vulnerability here:** follow [SECURITY.md](https://github.com/OmarAlex24/klav/blob/main/SECURITY.md).
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing Ideas, the issues and the roadmap (docs/roadmap.md).
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you're trying to do and why it's hard today. Describe the need, not only the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How Klav could solve it. Mention which components it touches, if you know.
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and agents
+      description: Does it change what the server, an agent or another device can see or do? Does a secret reach a new place? Write "none" if not.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you considered, including existing features that almost do it.
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you implement it?
+      options:
+        - "Yes, once the direction is agreed"
+        - "Maybe, with help"
+        - "No"
+    validations:
+      required: true

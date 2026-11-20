@@ -1,0 +1,2090 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Klav · The agent asks. You decide.</title>
+<meta name="description" content="Klav is the open-source secrets manager for the age of agents. Each agent gets its own identity and permissions, uses your keys without seeing them, and asks you when it needs more. Free to self-host, or 20 USD a year hosted.">
+<link rel="canonical" href="https://klav.dev/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Klav">
+<meta property="og:url" content="https://klav.dev/">
+<meta property="og:title" content="Klav · The agent asks. You decide.">
+<meta property="og:description" content="The open-source secrets manager for the age of agents. Agents get actions, not values.">
+<meta property="og:image" content="https://klav.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A keyhole of light in blue pixel dither, next to the words: The agent asks. You decide.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Klav · The agent asks. You decide.">
+<meta name="twitter:description" content="The open-source secrets manager for the age of agents. Agents get actions, not values.">
+<meta name="twitter:image" content="https://klav.dev/og.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-1 -1.5 10 10' shape-rendering='crispEdges'%3E%3Crect x='-1' y='-1.5' width='10' height='10' fill='%2309090b'/%3E%3Cpath fill='%23fff' d='M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+/* Klav's site. Tokens, type and dither follow docs/diseno-visual/README.md:
+ * white paper, near-black ink, thin lines, cross corners, square buttons.
+ * Blue means agents and the one-time code's time, nothing else. Hidden
+ * values turn into the grey "mask" dither, never into blue. */
+@font-face { font-family: "Geist"; src: url("fonts/geist.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/geist-mono-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Departure Mono"; src: url("fonts/departure-mono-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+
+:root {
+  --tinta: #09090b;
+  --papel: #ffffff;
+  --niebla: #f4f4f5;
+  --linea: #e4e4e7;
+  --cruz: #a1a1aa;
+  --gris: #71717a;
+  --cobalto: #2337ff;
+  --rojo: #e5484d;
+  --boton: #09090b;
+  --boton-texto: #ffffff;
+  --dither-0: #0d1466;
+  --dither-1: #2337ff;
+  --dither-2: #ffffff;
+  --mask-0: #ffffff;
+  --mask-1: #e4e4e7;
+  --mask-2: #c8c8ce;
+  --float-shadow: 0 12px 32px -12px rgb(9 9 11 / 0.35);
+  --ui: "Geist", system-ui, -apple-system, sans-serif;
+  --pixel: "Departure Mono", "Geist Mono", ui-monospace, monospace;
+  --mono: "Geist Mono", ui-monospace, monospace;
+  --term-bg: #09090b;
+  --term-fg: #fafafa;
+  --term-dim: #a1a1aa;
+  --term-line: #09090b;
+  --term-agent: #aab2ff;
+  --term-mask-1: #27272a;
+  --term-mask-2: #3f3f46;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tinta: #fafafa; --papel: #09090b; --niebla: #18181b; --linea: #27272a; --cruz: #52525b; --gris: #a1a1aa;
+    --cobalto: #4555ff; --rojo: #f2555a; --boton: #fafafa; --boton-texto: #09090b;
+    --dither-0: #0a0f4d; --dither-1: #4555ff; --dither-2: #c9ceff;
+    --mask-0: #09090b; --mask-1: #27272a; --mask-2: #3f3f46;
+    --float-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.7);
+    --term-bg: #111113; --term-line: #27272a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --tinta: #fafafa; --papel: #09090b; --niebla: #18181b; --linea: #27272a; --cruz: #52525b; --gris: #a1a1aa;
+  --cobalto: #4555ff; --rojo: #f2555a; --boton: #fafafa; --boton-texto: #09090b;
+  --dither-0: #0a0f4d; --dither-1: #4555ff; --dither-2: #c9ceff;
+  --mask-0: #09090b; --mask-1: #27272a; --mask-2: #3f3f46;
+  --float-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.7);
+  --term-bg: #111113; --term-line: #27272a;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--papel); color: var(--tinta);
+  font: 400 15px/1.55 var(--ui); -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+h1, h2, h3, p, ul { margin: 0; }
+ul { list-style: none; padding: 0; }
+a { color: inherit; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--cobalto); outline-offset: 2px; }
+code { font-family: var(--mono); font-size: 0.86em; white-space: nowrap; }
+[hidden] { display: none !important; }
+
+.wrap { max-width: 1152px; margin: 0 auto; padding: 0 32px; }
+
+/* ------------------------------------------------------------- pieces */
+.key { display: block; flex: none; }
+.gh { width: 16px; height: 16px; flex: none; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  height: 44px; padding: 0 18px; border-radius: 0; border: 1px solid var(--linea);
+  background: var(--papel); color: var(--tinta); font-weight: 500; font-size: 15px;
+  text-decoration: none; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: var(--niebla); }
+.btn-primary { background: var(--boton); color: var(--boton-texto); border-color: var(--boton); }
+.btn-primary:hover { background: var(--boton); opacity: 0.88; }
+.btn-s { height: 32px; padding: 0 14px; font-size: 13px; }
+
+.agent-mark { display: flex; align-items: center; gap: 7px; color: var(--cobalto); font-size: 12.5px; font-weight: 500; }
+.agent-mark::before { content: ""; width: 6px; height: 6px; background: currentColor; flex: none; }
+.soon { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid var(--tinta); font-size: 12px; font-weight: 500; letter-spacing: 0; }
+
+/* 9 px marks in "Cruz" at the corners of a block that groups data. */
+.cross { position: relative; }
+.cross::before {
+  content: ""; position: absolute; inset: -5px; pointer-events: none; z-index: 2;
+  --c: linear-gradient(var(--cruz), var(--cruz));
+  background:
+    var(--c) left 0 top 4px / 9px 1px no-repeat, var(--c) left 4px top 0 / 1px 9px no-repeat,
+    var(--c) right 0 top 4px / 9px 1px no-repeat, var(--c) right 4px top 0 / 1px 9px no-repeat,
+    var(--c) left 0 bottom 4px / 9px 1px no-repeat, var(--c) left 4px bottom 0 / 1px 9px no-repeat,
+    var(--c) right 0 bottom 4px / 9px 1px no-repeat, var(--c) right 4px bottom 0 / 1px 9px no-repeat;
+}
+
+.dither { display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; }
+/* The grey noise a value turns into while it's being taken out. */
+canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; image-rendering: crisp-edges; }
+
+.h2 { font-size: clamp(30px, 3.6vw, 44px); font-weight: 600; letter-spacing: -0.045em; line-height: 1.05; max-width: 19em; }
+.lede { color: var(--gris); font-size: 16px; margin-top: 14px; max-width: 36em; }
+.section { padding-top: 120px; }
+.section-head .soon { margin-bottom: 18px; }
+
+/* ------------------------------------------------------------- header */
+.top { border-bottom: 1px solid var(--linea); }
+.top .wrap { height: 64px; display: flex; align-items: center; gap: 24px; }
+.brand { display: flex; align-items: center; gap: 9px; text-decoration: none; font-size: 19px; font-weight: 600; letter-spacing: -0.04em; }
+.brand .key { width: 22px; height: 14px; }
+.nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
+.nav-link { color: var(--gris); text-decoration: none; font-size: 14px; }
+.nav-link:hover { color: var(--tinta); }
+.lang { display: flex; border: 1px solid var(--linea); }
+.lang button {
+  height: 30px; min-width: 36px; padding: 0 8px; border: 0; background: var(--papel);
+  color: var(--gris); font-size: 12.5px; font-weight: 500; cursor: pointer;
+}
+.lang button + button { border-left: 1px solid var(--linea); }
+.lang button[aria-pressed="true"] { background: var(--niebla); color: var(--tinta); }
+.gh-btn {
+  width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--linea);
+  color: var(--tinta); background: var(--papel);
+}
+.gh-btn:hover { background: var(--niebla); }
+
+/* --------------------------------------------------------------- hero */
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.02fr); gap: 72px; align-items: center; padding-top: 72px; }
+.hero h1 { font-size: clamp(44px, 5.5vw, 70px); font-weight: 600; letter-spacing: -0.055em; line-height: 0.98; }
+.hero h1 span { display: block; }
+.hero-copy > p { color: var(--gris); font-size: 18px; line-height: 1.5; margin: 26px 0 34px; max-width: 29em; }
+.hero-copy > p strong { color: var(--tinta); font-weight: 500; }
+.ctas { display: flex; flex-wrap: wrap; gap: 12px; }
+.hero-note { margin-top: 22px; font-size: 13.5px; color: var(--gris); }
+
+.stage { aspect-ratio: 1 / 1; width: 100%; }
+.stage-field { position: absolute; inset: 0; background: var(--dither-0); }
+
+.request {
+  position: absolute; left: -56px; bottom: 44px; width: 352px; z-index: 3;
+  display: grid; grid-template-columns: 48px 1fr; background: var(--papel);
+  border: 1px solid var(--tinta); box-shadow: var(--float-shadow);
+}
+.request-band { position: relative; min-height: 100%; background: var(--dither-0); }
+.request-band canvas { position: absolute; inset: 0; }
+.request-body { padding: 14px 16px 16px; min-height: 148px; display: flex; flex-direction: column; }
+.request-title { margin-top: 7px; font-size: 15px; line-height: 1.35; }
+.request-title strong { font-weight: 600; }
+.request-why { margin-top: 4px; font-size: 13px; color: var(--gris); }
+.request-actions { margin-top: auto; padding-top: 14px; display: flex; gap: 8px; align-items: center; }
+.request-again { margin-left: auto; background: none; border: 0; padding: 2px 0; color: var(--gris); font-size: 13px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--linea); }
+.request-again:hover { color: var(--tinta); text-decoration-color: currentColor; }
+.denied { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; }
+.denied::before { content: ""; width: 6px; height: 6px; background: var(--rojo); flex: none; }
+
+/* ------------------------------------------------------------ problem */
+.leaks { margin-top: 48px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--linea); }
+.leak { display: flex; flex-direction: column; min-width: 0; }
+.leak + .leak { border-left: 1px solid var(--linea); }
+.leak-view { background: var(--niebla); border-bottom: 1px solid var(--linea); padding: 28px 22px; min-height: 156px; display: flex; align-items: center; }
+.leak-text { padding: 20px 22px 26px; }
+.leak-text h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.03em; }
+.leak-text p { margin-top: 6px; color: var(--gris); font-size: 14.5px; }
+.code { font: 400 12px/1.75 var(--mono); white-space: pre; overflow: hidden; min-width: 0; width: 100%; }
+.code .p { color: var(--gris); }
+.code .exposed { background: var(--papel); box-shadow: inset 0 -1px 0 var(--tinta); }
+
+/* --------------------------------------------------------------- how */
+.scenes { margin-top: 48px; border: 1px solid var(--linea); }
+.scene { display: grid; grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr); }
+.scene + .scene { border-top: 1px solid var(--linea); }
+.scene-text { padding: 40px 40px 44px; display: flex; flex-direction: column; justify-content: center; }
+.scene-text h3 { font-size: 23px; font-weight: 600; letter-spacing: -0.04em; line-height: 1.15; max-width: 16em; }
+.scene-text p { margin-top: 12px; color: var(--gris); font-size: 15px; max-width: 31em; }
+.scene-text p code { color: var(--tinta); }
+.scene-text .fine { margin-top: 16px; font-size: 13.5px; padding-left: 12px; box-shadow: inset 2px 0 0 var(--linea); }
+.scene-view { background: var(--niebla); border-left: 1px solid var(--linea); padding: 44px 40px; display: grid; place-items: center; min-height: 380px; min-width: 0; }
+
+/* the agent's card: six words and its policy */
+.policy { width: 100%; max-width: 360px; background: var(--papel); border: 1px solid var(--linea); }
+.policy-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--linea); }
+.policy-scope { font: 400 11.5px/1 var(--mono); color: var(--gris); }
+.policy-words { padding: 12px 16px 14px; border-bottom: 1px solid var(--linea); }
+.policy-words small, .pg-head span { display: block; font-size: 11.5px; color: var(--gris); }
+.words6 { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; column-gap: 18px; margin-top: 4px; font: 400 15px/1.55 var(--pixel); }
+.pg { padding: 6px 16px 10px; }
+.pg-row { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 46px); align-items: center; height: 27px; }
+.pg-row + .pg-row { border-top: 1px solid var(--linea); }
+.pg-head { height: 28px; }
+.pg-head span { text-align: center; font-family: var(--mono); font-size: 11px; }
+.pg-row code { font-size: 12.5px; }
+.pg-row i { justify-self: center; width: 10px; height: 10px; border: 1px solid var(--linea); }
+.pg-row i.on { background: var(--tinta); border-color: var(--tinta); }
+.pg-row i.on.no { background: var(--rojo); border-color: var(--rojo); }
+
+/* a task, as the person's device shows it */
+.task { width: 100%; max-width: 360px; display: grid; grid-template-columns: 40px 1fr; background: var(--papel); border: 1px solid var(--tinta); box-shadow: var(--float-shadow); }
+.task-band { position: relative; background: var(--dither-0); }
+.task-band canvas { position: absolute; inset: 0; }
+.task-body { padding: 14px 16px 16px; }
+.task-title { margin-top: 7px; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; }
+.task-meta { margin-top: 2px; font-size: 12.5px; color: var(--gris); }
+.task-list { margin-top: 12px; border-top: 1px solid var(--linea); }
+.task-list li { display: flex; align-items: center; gap: 10px; height: 34px; border-bottom: 1px solid var(--linea); font-size: 13.5px; }
+.task-list li::before { content: ""; width: 12px; height: 12px; background: var(--tinta); flex: none; }
+.task-list code { margin-left: auto; color: var(--gris); font-size: 11.5px; }
+.task-actions { margin-top: 14px; display: flex; gap: 8px; }
+.task-actions span { pointer-events: none; }
+
+/* the terminal */
+.term { width: 100%; max-width: 480px; background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--term-line); font: 400 12px/1.75 var(--mono); }
+.term-body { padding: 14px 16px 16px; }
+.term .p, .term .dim { color: var(--term-dim); }
+.term .line { white-space: pre; }
+.term .wrapline { white-space: pre-wrap; }
+.term .invisible { visibility: hidden; }
+.secret, .redacted { position: relative; display: inline-block; }
+.redacted { color: var(--term-dim); }
+.term-tabs { display: flex; border-bottom: 1px solid #27272a; }
+.term-tabs button {
+  height: 34px; padding: 0 14px; border: 0; background: none; cursor: pointer;
+  color: var(--term-dim); font: 400 11.5px/1 var(--mono); display: flex; align-items: center; gap: 7px;
+}
+.term-tabs button + button { border-left: 1px solid #27272a; }
+.term-tabs button[aria-pressed="true"] { color: var(--term-fg); background: #1c1c1f; box-shadow: inset 0 -2px 0 var(--term-fg); }
+.term-tabs .is-agent::before { content: ""; width: 6px; height: 6px; background: var(--term-agent); flex: none; }
+.term-tabs .is-agent[aria-pressed="true"] { color: var(--term-agent); box-shadow: inset 0 -2px 0 var(--term-agent); }
+
+/* the editor: a .env turning into a klav.toml */
+.editor { width: 100%; max-width: 440px; background: var(--papel); border: 1px solid var(--linea); }
+.editor-tabs { display: flex; border-bottom: 1px solid var(--linea); }
+.editor-tabs button {
+  height: 34px; padding: 0 14px; border: 0; background: none; cursor: pointer;
+  color: var(--gris); font: 400 11.5px/1 var(--mono);
+}
+.editor-tabs button + button { border-left: 1px solid var(--linea); }
+.editor-tabs button:last-child { border-right: 1px solid var(--linea); }
+.editor-tabs button[aria-pressed="true"] { color: var(--tinta); background: var(--niebla); box-shadow: inset 0 -2px 0 var(--tinta); }
+.editor-body { position: relative; padding: 14px 16px; min-height: calc(6 * 1.75em + 28px); font: 400 12px/1.75 var(--mono); }
+.editor-body .line { white-space: pre; }
+.editor-body .k { color: var(--tinta); }
+.editor-body .s { color: var(--gris); }
+.editor-body .c { color: var(--gris); }
+.editor-foot { border-top: 1px solid var(--linea); padding: 10px 16px 12px; font-size: 13px; }
+.editor-foot .status { display: flex; align-items: baseline; gap: 8px; }
+.editor-foot .status::before { content: ""; width: 6px; height: 6px; background: var(--tinta); flex: none; transform: translateY(-1px); }
+.editor-foot .status.is-bad::before { background: var(--rojo); }
+.editor-foot .cmd { margin-top: 4px; font: 400 12px/1.6 var(--mono); color: var(--gris); }
+
+/* your own agent: it asks for a fill, Klav types into the browser */
+.pa { width: 100%; max-width: 440px; display: grid; gap: 12px; }
+.term .ag { color: var(--term-agent); }
+.browser { background: var(--papel); border: 1px solid var(--linea); }
+.browser-bar { display: flex; align-items: center; gap: 5px; height: 36px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--linea); }
+.browser-bar > i { width: 7px; height: 7px; border: 1px solid var(--cruz); flex: none; }
+.browser-url { flex: 1 1 auto; min-width: 0; height: 24px; margin: 0 2px 0 9px; padding: 0 9px; display: flex; align-items: center; background: var(--niebla); color: var(--gris); font: 400 11.5px/1 var(--mono); white-space: nowrap; overflow: hidden; }
+.browser-bar .seal { width: 26px; height: 24px; flex: none; display: grid; place-items: center; border: 1px solid var(--tinta); background: var(--papel); }
+.browser-bar .seal .key { width: 14px; height: 9px; }
+.pa.is-filling .browser-bar .seal { background: var(--tinta); color: var(--papel); }
+.browser-page { padding: 16px 18px 6px; }
+.browser-page b { display: block; margin-bottom: 12px; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+.browser-page small { display: block; margin-bottom: 4px; font-size: 12px; color: var(--gris); }
+.browser-field { height: 32px; margin-bottom: 12px; padding: 0 10px; display: flex; align-items: center; border: 1px solid var(--linea); font-size: 13px; }
+.browser-field.is-focus { border-color: var(--tinta); }
+.browser-field.is-focus::after { content: ""; width: 1px; height: 15px; margin-left: 1px; background: var(--tinta); }
+.browser-field.dots { letter-spacing: 0.14em; }
+.browser-notice { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: center; padding: 9px 12px 10px; border-top: 1px solid var(--tinta); }
+.browser-notice.is-off { visibility: hidden; }
+.notice-band { position: relative; height: 30px; background: var(--papel); }
+.notice-band canvas { position: absolute; inset: 0; }
+.browser-notice .agent-mark { align-items: flex-start; }
+.browser-notice .agent-mark::before { margin-top: 7px; }
+.browser-notice .agent-mark .nw { white-space: nowrap; }
+.browser-notice small { display: block; margin-top: 1px; font-size: 12px; color: var(--gris); }
+
+/* the pair below the scenes */
+.duo { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--linea); }
+.duo-item { display: flex; flex-direction: column; min-width: 0; }
+.duo-item + .duo-item { border-left: 1px solid var(--linea); }
+.duo-view { background: var(--niebla); border-bottom: 1px solid var(--linea); padding: 36px 32px; display: grid; place-items: center; min-height: 248px; }
+.duo-text { padding: 24px 32px 30px; }
+.duo-text h3 { font-size: 19px; font-weight: 600; letter-spacing: -0.035em; }
+.duo-text p { margin-top: 8px; color: var(--gris); font-size: 14.5px; max-width: 32em; }
+.duo-text p code { color: var(--tinta); }
+.term.small { font-size: 11.5px; }
+
+/* ------------------------------------------------------------- proxy */
+.proxy { margin-top: 48px; border: 1px solid var(--linea); }
+.proxy-scene { background: var(--niebla); padding: 56px 48px 28px; }
+.proxy-flow { display: flex; align-items: center; }
+.node { position: relative; flex: none; background: var(--papel); border: 1px solid var(--linea); }
+.node-sandbox { width: 320px; height: 232px; border-color: var(--tinta); overflow: hidden; }
+.node-sandbox canvas { position: absolute; inset: 0; }
+.node-sandbox.is-dead { border-style: dashed; border-color: var(--cruz); }
+.sbx-chip { position: absolute; top: 12px; left: 12px; z-index: 1; background: var(--papel); border: 1px solid var(--tinta); padding: 3px 8px; font-size: 12.5px; font-weight: 500; }
+.sbx-term { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 1; background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--term-line); padding: 9px 12px; font: 400 11.5px/1.65 var(--mono); }
+.sbx-term .dim { color: var(--term-dim); }
+.sbx-term .line { white-space: pre; overflow: hidden; }
+.node-box { padding: 16px 18px 18px; width: 196px; }
+.node-box b { display: block; font-size: 14px; font-weight: 600; letter-spacing: -0.02em; }
+.node-box small { display: block; margin-top: 2px; font-size: 12.5px; color: var(--gris); line-height: 1.35; }
+.node-proxy { border-color: var(--tinta); }
+.node-proxy .seal { width: 34px; height: 30px; border: 1px solid var(--tinta); display: grid; place-items: center; margin-bottom: 12px; background: var(--papel); }
+.node-proxy .seal .key { width: 18px; height: 11px; }
+.node-proxy.is-on .seal { background: var(--tinta); color: var(--papel); }
+.node-api .api-lines { margin-bottom: 12px; display: grid; gap: 4px; }
+.node-api .api-lines i { display: block; height: 6px; background: var(--linea); }
+.node-api .api-lines i:nth-child(2) { width: 70%; }
+.node-api .api-lines i:nth-child(3) { width: 45%; }
+.node-api.is-on .api-lines i { background: var(--cruz); }
+.wire { position: relative; flex: 1 1 auto; min-width: 40px; height: 2px; background: repeating-linear-gradient(90deg, var(--cruz) 0 4px, transparent 4px 8px); }
+.packet { position: absolute; left: 0; top: -5px; width: 12px; height: 12px; }
+.packet.req { background: var(--cobalto); }
+.packet.tok { background: var(--tinta); }
+.packet.res { background: var(--papel); border: 1px solid var(--gris); }
+.legend { margin-top: 36px; display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 12.5px; color: var(--gris); }
+.legend span { display: flex; align-items: center; gap: 8px; }
+.legend i { width: 10px; height: 10px; flex: none; }
+.legend .req { background: var(--cobalto); }
+.legend .tok { background: var(--tinta); }
+.legend .res { background: var(--papel); border: 1px solid var(--gris); }
+
+.proxy-does { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--linea); }
+.proxy-does li { padding: 20px 24px 22px; font-size: 14.5px; color: var(--gris); }
+.proxy-does li strong { display: block; color: var(--tinta); font-weight: 600; font-size: 15px; letter-spacing: -0.02em; margin-bottom: 3px; }
+.proxy-does li:not(:nth-child(3n + 1)) { border-left: 1px solid var(--linea); }
+.proxy-does li:nth-child(n + 4) { border-top: 1px solid var(--linea); }
+
+.ptable { margin-top: 56px; border: 1px solid var(--linea); }
+.prow { display: grid; grid-template-columns: 196px repeat(3, minmax(0, 1fr)); }
+.prow + .prow { border-top: 1px solid var(--linea); }
+.prow > div { padding: 12px 20px; font-size: 14px; }
+.prow > div + div { border-left: 1px solid var(--linea); }
+.prow-head > div { padding-top: 14px; padding-bottom: 14px; font-size: 13px; color: var(--gris); }
+.prow-head .is-klav { color: var(--tinta); font-weight: 600; font-size: 14px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; }
+.prow-head .is-klav .key { width: 16px; height: 10px; }
+.prow .plabel { font-weight: 500; }
+.prow .none { color: var(--gris); }
+.prow .self, .prow .managed { background: var(--niebla); }
+.pcol { display: none; }
+
+.honest { margin-top: 56px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.honest-box { border: 1px solid var(--linea); padding: 24px 28px 26px; }
+.honest-box h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.03em; }
+.honest-box ul { margin-top: 12px; }
+.honest-box li { display: flex; gap: 12px; align-items: baseline; padding: 9px 0; border-top: 1px solid var(--linea); font-size: 14.5px; color: var(--gris); }
+.honest-box li::before { content: ""; width: 7px; height: 7px; background: var(--tinta); flex: none; transform: translateY(-2px); }
+.honest-box li strong { color: var(--tinta); font-weight: 500; }
+
+.next { margin-top: 24px; border: 1px solid var(--linea); padding: 24px 28px 26px; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; }
+.next h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.03em; }
+.next h3 + p { margin-top: 6px; font-size: 13.5px; color: var(--gris); }
+.next ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 20px; }
+.next li { font-size: 14.5px; color: var(--gris); padding-top: 12px; border-top: 2px solid var(--tinta); }
+.next li strong { display: block; color: var(--tinta); font-weight: 600; margin-bottom: 2px; }
+
+/* ----------------------------------------------------------- surfaces */
+.surfaces { margin-top: 48px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--linea); }
+.surface { display: flex; flex-direction: column; min-width: 0; }
+.surface + .surface { border-left: 1px solid var(--linea); }
+.surface-view { height: 232px; border-bottom: 1px solid var(--linea); background: var(--niebla); position: relative; overflow: hidden; display: grid; place-items: center; padding: 24px; }
+.surface-text { padding: 22px 24px 26px; }
+.surface-text h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.03em; }
+.surface-text p { margin-top: 6px; color: var(--gris); font-size: 14.5px; }
+
+/* the in-field menu (extension) */
+.mini { width: 100%; max-width: 300px; font-size: 13px; }
+.mini-field { height: 38px; border: 1px solid var(--linea); background: var(--papel); display: flex; align-items: center; padding: 0 6px 0 11px; color: var(--gris); }
+.mini-field .seal { margin-left: auto; width: 26px; height: 24px; border: 1px solid var(--tinta); display: grid; place-items: center; }
+.mini-field .seal .key { width: 14px; height: 9px; }
+.mini-menu { margin-top: 6px; background: var(--papel); border: 1px solid var(--tinta); box-shadow: var(--float-shadow); }
+.mini-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-bottom: 1px solid var(--linea); color: var(--gris); font-size: 11.5px; }
+.kbd { display: inline-grid; place-items: center; height: 17px; padding: 0 4px; border: 1px solid var(--linea); font: 400 10px/1 var(--mono); color: var(--gris); }
+.mini-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+.mini-row.on { background: var(--niebla); box-shadow: inset 2px 0 0 var(--cobalto); }
+.mini-row + .mini-row { border-top: 1px solid var(--linea); }
+.ini { width: 26px; height: 26px; flex: none; border: 1px solid var(--linea); background: var(--papel); display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+.ini.dashed { border-style: dashed; border-color: var(--cruz); font-weight: 400; }
+.ini svg { width: 14px; height: 14px; }
+.mini-row b { display: block; font-weight: 500; font-size: 13px; line-height: 1.25; }
+.mini-row small { display: block; color: var(--gris); font-size: 12px; line-height: 1.3; }
+.mini-row .kbd { margin-left: auto; }
+
+/* the live code (iPhone and Mac) */
+.otp { width: 100%; max-width: 280px; background: var(--papel); border: 1px solid var(--linea); padding: 16px 18px 18px; }
+.otp-top { display: flex; align-items: center; justify-content: space-between; }
+.otp-label { font-size: 12px; color: var(--gris); }
+.otp-copy { width: 28px; height: 28px; border: 1px solid var(--linea); display: grid; place-items: center; color: var(--gris); background: var(--papel); }
+.otp-code { margin-top: 6px; font: 400 40px/1 var(--pixel); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+.otp-bar { margin-top: 14px; display: grid; grid-template-columns: repeat(30, 1fr); gap: 2px; }
+.otp-bar i { height: 6px; background: var(--linea); }
+.otp-bar i.left { background: var(--cobalto); }
+.otp-site { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--linea); display: flex; gap: 8px; align-items: center; font-size: 12.5px; }
+.otp-site .ini { width: 22px; height: 22px; font-size: 11px; }
+.otp-site span { color: var(--gris); }
+
+/* ----------------------------------------------------------- download */
+.dl { margin-top: 48px; border: 1px solid var(--linea); }
+.dl-row { display: grid; grid-template-columns: 224px minmax(0, 1fr) 264px; }
+.dl-row + .dl-row { border-top: 1px solid var(--linea); }
+.dl-row > div { padding: 24px 28px 26px; min-width: 0; }
+.dl-row > div + div { border-left: 1px solid var(--linea); }
+.dl-name h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.03em; }
+.dl-name p { margin-top: 4px; font-size: 13px; color: var(--gris); }
+.dl-text p, .dl-intro { color: var(--gris); font-size: 14.5px; max-width: 36em; }
+.dl-row code { color: var(--tinta); white-space: normal; overflow-wrap: anywhere; }
+.dl-get { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.dl-get small { font-size: 12.5px; color: var(--gris); line-height: 1.4; }
+.dl-get .btn { white-space: normal; text-align: center; height: auto; min-height: 44px; padding-top: 10px; padding-bottom: 10px; line-height: 1.3; }
+.dl-get a + small, .dl-get .soon + small { margin-top: -2px; }
+.dl-ext .dl-browsers { grid-column: span 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0; }
+.dl-intro { grid-column: 1 / -1; padding: 24px 28px 0; }
+.dl-browser { padding: 18px 28px 26px; display: flex; flex-direction: column; }
+.dl-browser + .dl-browser { border-left: 1px solid var(--linea); }
+.dl-browser h4 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+.dl-browser h4 .dl-preview { font-weight: 500; color: var(--gris); letter-spacing: 0; }
+.dl-browser ol { margin: 10px 0 0; padding-left: 20px; font-size: 14px; color: var(--gris); }
+.dl-browser li { padding-left: 4px; }
+.dl-browser li + li { margin-top: 6px; }
+.dl-browser li::marker { color: var(--tinta); font-weight: 500; }
+.dl-risk { margin-top: 14px; padding-left: 12px; font-size: 13px; color: var(--gris); box-shadow: inset 2px 0 0 var(--linea); }
+.dl-browser .dl-get { margin-top: auto; padding-top: 18px; }
+.dl-next { margin-top: 20px; font-size: 14px; color: var(--gris); }
+.dl-next a, .lede a, .next li a { color: var(--tinta); text-underline-offset: 3px; text-decoration-color: var(--cruz); }
+.dl-next a:hover, .lede a:hover, .next li a:hover { text-decoration-color: currentColor; }
+
+/* ------------------------------------------------------------ pricing */
+.plans { margin-top: 48px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.plan { border: 1px solid var(--linea); padding: 28px 30px 30px; display: flex; flex-direction: column; }
+.plan-hosted { border-color: var(--tinta); }
+.plan-name { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; display: flex; align-items: center; justify-content: space-between; }
+.plan-tag { font-size: 12px; font-weight: 500; color: var(--gris); border: 1px solid var(--linea); padding: 2px 7px; }
+.price { margin-top: 18px; display: flex; align-items: baseline; gap: 8px; }
+.price strong { font-size: 60px; font-weight: 600; letter-spacing: -0.06em; line-height: 1; }
+.price span { color: var(--gris); font-size: 15px; }
+.plan-desc { margin-top: 12px; color: var(--gris); font-size: 15px; max-width: 30em; }
+.plan-list { margin: 22px 0 28px; border-top: 1px solid var(--linea); }
+.plan-list li { display: flex; gap: 12px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--linea); font-size: 14.5px; }
+.plan-list li::before { content: ""; width: 7px; height: 7px; background: var(--tinta); flex: none; transform: translateY(-2px); }
+.plan > .btn { margin-top: auto; align-self: flex-start; }
+
+/* the waitlist (hosted plan) */
+.waitlist { margin-top: auto; scroll-margin-top: 96px; }
+.wl-label { display: block; font-size: 14px; color: var(--gris); margin-bottom: 10px; }
+.wl-row { display: flex; gap: 8px; }
+.wl-input {
+  flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 12px; border-radius: 0;
+  border: 1px solid var(--linea); background: var(--papel); color: var(--tinta); font: inherit; font-size: 15px;
+}
+.wl-input::placeholder { color: var(--gris); }
+.wl-input:focus { outline: none; border-color: var(--tinta); }
+.wl-input[aria-invalid="true"] { border-color: var(--rojo); }
+.wl-row .btn:disabled { opacity: 0.55; cursor: default; }
+.wl-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+.wl-status { margin-top: 10px; font-size: 14px; padding: 10px 12px; background: var(--niebla); }
+.wl-status.is-error { box-shadow: inset 2px 0 0 var(--rojo); }
+.wl-status.is-done { margin-top: 0; padding: 14px 16px; box-shadow: inset 2px 0 0 var(--tinta); }
+.wl-status:focus { outline: none; }
+
+/* ------------------------------------------------------------- footer */
+.foot { margin-top: 120px; border-top: 1px solid var(--linea); }
+.foot .wrap { padding-top: 28px; padding-bottom: 36px; display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: center; }
+.foot p { color: var(--gris); font-size: 13.5px; }
+.foot nav { margin-left: auto; display: flex; gap: 22px; }
+.foot nav a { color: var(--gris); font-size: 13.5px; text-decoration: none; }
+.foot nav a:hover { color: var(--tinta); }
+
+/* ----------------------------------------------------------- responsive */
+@media (max-width: 1180px) {
+  .code { font-size: 11px; }
+}
+@media (max-width: 1080px) {
+  .proxy-does { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proxy-does li:not(:nth-child(3n + 1)) { border-left: 0; }
+  .proxy-does li:nth-child(n + 4) { border-top: 0; }
+  .proxy-does li:nth-child(even) { border-left: 1px solid var(--linea); }
+  .proxy-does li:nth-child(n + 3) { border-top: 1px solid var(--linea); }
+  .next { grid-template-columns: 1fr; }
+}
+@media (max-width: 960px) {
+  .hero { grid-template-columns: 1fr; gap: 48px; padding-top: 48px; }
+  .stage { max-width: 560px; }
+  .request { left: auto; right: 16px; bottom: 16px; }
+  .leaks, .surfaces, .duo { grid-template-columns: 1fr; }
+  .leak + .leak, .surface + .surface, .duo-item + .duo-item { border-left: 0; border-top: 1px solid var(--linea); }
+  .surface-view { height: 224px; }
+  .scene { grid-template-columns: 1fr; }
+  .scene-view { border-left: 0; border-top: 1px solid var(--linea); order: 2; min-height: 0; }
+  .ptable .prow { grid-template-columns: 160px repeat(3, minmax(0, 1fr)); }
+  .honest { grid-template-columns: 1fr; }
+  .dl-row { grid-template-columns: 200px minmax(0, 1fr); }
+  .dl-row > .dl-get { grid-column: 2; border-left: 1px solid var(--linea); padding-top: 0; }
+  .dl-ext .dl-browsers { grid-column: 2; grid-template-columns: 1fr; }
+  .dl-browser + .dl-browser { border-left: 0; border-top: 1px solid var(--linea); }
+}
+/* The proxy scene turns vertical: sandbox, proxy and API stacked, the
+ * wires running down between them. */
+@media (max-width: 1000px) {
+  .proxy-flow { flex-direction: column; align-items: stretch; max-width: 460px; margin: 0 auto; }
+  .node-sandbox, .node-box { width: 100%; }
+  .proxy-flow > .wire { flex: none; height: 40px; width: 2px; min-width: 0; margin: 0 auto; background: repeating-linear-gradient(180deg, var(--cruz) 0 4px, transparent 4px 8px); }
+  .proxy-flow > .wire .packet { top: 0; left: -5px; }
+  .node-proxy, .node-api { display: grid; grid-template-columns: auto 1fr; gap: 0 14px; align-items: center; }
+  .node-proxy .seal { margin-bottom: 0; }
+  .node-api .api-lines { margin-bottom: 0; width: 34px; }
+}
+@media (max-width: 720px) {
+  .wrap { padding-left: 16px; padding-right: 16px; }
+  .nav-link { display: none; }
+  .nav { gap: 12px; }
+  .section { padding-top: 88px; }
+  .hero-copy > p { font-size: 16.5px; }
+  .ctas .btn { flex: 1 1 auto; }
+  .request { position: relative; left: auto; right: auto; bottom: auto; width: auto; }
+  .stage { aspect-ratio: auto; }
+  .stage-field { position: relative; inset: auto; aspect-ratio: 1 / 0.92; }
+  .request { margin: -72px 12px 0; }
+  .leak-view { padding: 22px 16px; min-height: 0; }
+  .leak-text { padding: 18px 16px 22px; }
+  .code { font-size: 11px; }
+  .scene-text { padding: 26px 18px 28px; }
+  .scene-text h3 { font-size: 21px; }
+  .scene-view { padding: 28px 14px; }
+  .term, .editor-body, .editor-foot .cmd { font-size: 11px; }
+  .term-body { padding: 12px 12px 14px; }
+  .term-tabs button, .editor-tabs button { padding: 0 10px; font-size: 11px; }
+  .editor-body { padding: 12px; }
+  .duo-view { padding: 26px 14px; min-height: 0; }
+  .duo-text { padding: 20px 18px 24px; }
+  .pg-row { grid-template-columns: minmax(0, 1fr) repeat(3, 40px); }
+  .proxy-scene { padding: 28px 16px 22px; }
+  .node-sandbox { height: 200px; }
+  .proxy-does { grid-template-columns: 1fr; }
+  .proxy-does li:nth-child(even) { border-left: 0; }
+  .proxy-does li:nth-child(n + 2) { border-top: 1px solid var(--linea); }
+  .proxy-does li { padding: 16px 16px 18px; }
+  .ptable .prow { grid-template-columns: 1fr; }
+  .prow-head { display: none; }
+  .prow > div { padding: 5px 16px; }
+  .prow > div + div { border-left: 0; display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+  .prow > .plabel { padding-top: 16px; padding-bottom: 6px; font-size: 15.5px; font-weight: 600; letter-spacing: -0.02em; }
+  .prow .self, .prow .managed { background: none; }
+  .prow > div:last-child { padding-bottom: 16px; }
+  .pcol { display: block; font-size: 12px; color: var(--gris); }
+  .prow .self .pcol, .prow .managed .pcol { color: var(--tinta); font-weight: 600; }
+  .honest-box, .next { padding: 20px 18px 22px; }
+  .next ul { grid-template-columns: 1fr; }
+  .plans { grid-template-columns: 1fr; }
+  .dl-row { grid-template-columns: 1fr; }
+  .dl-row > div { padding: 18px 16px 20px; }
+  .dl-row > div + div { border-left: 0; }
+  .dl-row > .dl-text { padding-top: 0; }
+  .dl-row > .dl-get { grid-column: auto; border-left: 0; padding-top: 0; }
+  .dl-name { padding-bottom: 10px !important; }
+  .dl-ext .dl-browsers { grid-column: auto; padding: 0; border-top: 1px solid var(--linea); }
+  .dl-intro { padding: 16px 16px 0; }
+  .dl-browser { padding: 14px 16px 20px; }
+  .wl-row { flex-direction: column; }
+  .wl-row .btn { width: 100%; }
+  .plan { padding: 22px 20px 24px; }
+  .price strong { font-size: 52px; }
+  .foot nav { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#" aria-label="Klav">
+      <svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg>
+      klav
+    </a>
+    <nav class="nav">
+      <a class="nav-link" href="#how" data-i18n="nav.how">How it works</a>
+      <a class="nav-link" href="#proxy" data-i18n="nav.proxy">Proxy</a>
+      <a class="nav-link" href="#download" data-i18n="nav.download">Downloads</a>
+      <a class="nav-link" href="#pricing" data-i18n="nav.pricing">Pricing</a>
+      <!--open:docs--><a class="nav-link" href="https://docs.klav.dev/" data-i18n="nav.docs">Docs</a><!--/open:docs-->
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang="es" aria-pressed="false">ES</button>
+      </div>
+      <!--open:repo--><a class="gh-btn" href="https://github.com/OmarAlex24/klav" aria-label="Klav on GitHub">
+        <svg class="gh" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a><!--/open:repo-->
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- ============================================================ hero -->
+  <section class="wrap hero">
+    <div class="hero-copy">
+      <h1 data-i18n-html="hero.title"><span>The agent asks.</span> <span>You decide.</span></h1>
+      <p data-i18n-html="hero.lede">Klav is the open-source secrets manager for the age of agents. Each agent gets its own identity and only the permissions you give it. <strong>It uses your keys without seeing them</strong>, and when it needs more, it asks you on your iPhone or Mac.</p>
+      <div class="ctas">
+        <!--open:repo--><a class="btn btn-primary" href="https://github.com/OmarAlex24/klav">
+          <svg class="gh" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span data-i18n="hero.github">View on GitHub</span>
+        </a><!--/open:repo-->
+        <!--closed:repo--><a class="btn btn-primary" href="#download" data-i18n="hero.install">Downloads</a><!--/closed:repo-->
+        <a class="btn" href="#waitlist" id="hero-waitlist" data-i18n="hero.waitlist">Join the waitlist</a>
+      </div>
+      <p class="hero-note" data-i18n="hero.note">Free on your own server · 20 USD a year on ours</p>
+    </div>
+
+    <div class="stage-wrap">
+      <div class="stage cross">
+        <div class="stage-field"><canvas class="dither" id="keyhole" aria-hidden="true"></canvas></div>
+        <div class="request" id="request" aria-live="polite">
+          <div class="request-band"><canvas class="dither" id="band" aria-hidden="true"></canvas></div>
+          <div class="request-body">
+            <div data-state="ask">
+              <div class="agent-mark" data-i18n="req.waiting">claude-code is waiting for you</div>
+              <p class="request-title" data-i18n-html="req.title">Wants to inject <strong>Stripe</strong> into <code>npm test</code></p>
+              <p class="request-why" data-i18n="req.why">“run the billing tests”</p>
+            </div>
+            <div data-state="filled" hidden>
+              <div class="agent-mark" data-i18n="req.filled">claude-code ran the tests</div>
+              <p class="request-title" data-i18n="req.filledTitle">Approved once, with Touch ID.</p>
+              <p class="request-why" data-i18n="req.filledWhy">It got the output back, without the key.</p>
+            </div>
+            <div data-state="denied" hidden>
+              <div class="denied" data-i18n="req.denied">Denied</div>
+              <p class="request-title" data-i18n="req.deniedTitle">claude-code got nothing.</p>
+              <p class="request-why" data-i18n="req.deniedWhy">It's in the log: who asked, when and why.</p>
+            </div>
+            <div class="request-actions">
+              <button class="btn btn-primary btn-s" type="button" id="approve" data-i18n="req.approve">Approve</button>
+              <button class="btn btn-s" type="button" id="deny" data-i18n="req.deny">Deny</button>
+              <button class="request-again" type="button" id="again" hidden data-i18n="req.again">Ask again</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================= problem -->
+  <section class="wrap section" id="problem">
+    <h2 class="h2" data-i18n="pb.title">Every agent you start takes a copy of your keys.</h2>
+    <p class="lede" data-i18n="pb.lede">To let an agent work in a sandbox, you hand it your environment variables and trust the provider to leave them alone. CI works the same way. It all runs on trust.</p>
+
+    <div class="leaks cross">
+      <article class="leak">
+        <div class="leak-view"><div class="code"><span class="p">agent@sandbox:~$</span> env | grep RAILWAY
+<span class="exposed">RAILWAY_TOKEN=demo-7c1e4b2a9f00</span></div></div>
+        <div class="leak-text">
+          <h3 data-i18n="pb.sbx">In a sandbox</h3>
+          <p data-i18n="pb.sbxText">The provider's machine holds your real token. Delete the sandbox and the token still works.</p>
+        </div>
+      </article>
+      <article class="leak">
+        <div class="leak-view"><div class="code"><span class="p"># .github/workflows/test.yml</span>
+env:
+  <span class="exposed">STRIPE_KEY: ${{ secrets.STRIPE_KEY }}</span></div></div>
+        <div class="leak-text">
+          <h3 data-i18n="pb.ci">In CI</h3>
+          <p data-i18n="pb.ciText">Each run puts the key in the job's environment. Every step can read it, and so can whatever that step installs.</p>
+        </div>
+      </article>
+      <article class="leak">
+        <div class="leak-view"><div class="code"><span class="p">$</span> cat .env
+<span class="exposed">STRIPE_KEY=sk_demo_7Hq2Zt9Lm</span>
+<span class="exposed">DATABASE_URL=postgres://app:Vq8m@db/acme</span></div></div>
+        <div class="leak-text">
+          <h3 data-i18n="pb.laptop">On your laptop</h3>
+          <p data-i18n="pb.laptopText">Plain text next to the code. Any agent with a shell is one command away from it.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ============================================================= how -->
+  <section class="wrap section" id="how">
+    <h2 class="h2" data-i18n="how.title">Agents get actions, not values.</h2>
+    <p class="lede" data-i18n="how.lede">Pair an agent once. From then on it fills logins and runs commands with your keys, and the values stay out of its context.</p>
+
+    <div class="scenes cross">
+      <!-- identity and permissions -->
+      <article class="scene">
+        <div class="scene-text">
+          <h3 data-i18n="how.idTitle">Its own identity, and only the permissions you give it.</h3>
+          <p data-i18n-html="how.idText">An agent pairs once: you compare six words and approve it with Touch ID. Then, per project, you set each permission to <code>allow</code>, <code>ask</code> or <code>deny</code>. <code>reveal</code> starts denied, so out of the box an agent gets actions, not values.</p>
+        </div>
+        <div class="scene-view">
+          <div class="policy cross">
+            <div class="policy-head"><span class="agent-mark">claude-code</span><span class="policy-scope">Work/acme-api</span></div>
+            <div class="policy-words">
+              <small data-i18n="how.words">Pairing words</small>
+              <div class="words6"><span>ribbon</span><span>t-shirt</span><span>marble</span><span>oyster</span><span>quench</span><span>lantern</span></div>
+            </div>
+            <div class="pg" role="table" aria-label="claude-code permissions in Work/acme-api">
+              <div class="pg-row pg-head" role="row"><span role="columnheader"></span><span role="columnheader">allow</span><span role="columnheader">ask</span><span role="columnheader">deny</span></div>
+              <div class="pg-row" role="row" aria-label="list: allow"><code>list</code><i class="on"></i><i></i><i></i></div>
+              <div class="pg-row" role="row" aria-label="fill: allow"><code>fill</code><i class="on"></i><i></i><i></i></div>
+              <div class="pg-row" role="row" aria-label="inject: ask"><code>inject</code><i></i><i class="on"></i><i></i></div>
+              <div class="pg-row" role="row" aria-label="create: allow"><code>create</code><i class="on"></i><i></i><i></i></div>
+              <div class="pg-row" role="row" aria-label="totp: ask"><code>totp</code><i></i><i class="on"></i><i></i></div>
+              <div class="pg-row" role="row" aria-label="update: ask"><code>update</code><i></i><i class="on"></i><i></i></div>
+              <div class="pg-row" role="row" aria-label="reveal: deny"><code>reveal</code><i></i><i></i><i class="on no"></i></div>
+              <div class="pg-row" role="row" aria-label="delete: deny"><code>delete</code><i></i><i></i><i class="on no"></i></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- approvals and tasks -->
+      <article class="scene">
+        <div class="scene-text">
+          <h3 data-i18n="how.askTitle">When it needs more, it asks you.</h3>
+          <p data-i18n-html="how.askText">Anything set to <code>ask</code> reaches your iPhone or Mac as a notification. Open it to see which agent is asking and why, and approve once or for a while, with Face ID or Touch ID. For a bigger job, the agent asks for a task: one approval covers every item it needs, for as long as you allow.</p>
+        </div>
+        <div class="scene-view">
+          <div class="task" aria-hidden="true">
+            <div class="task-band"><canvas class="dither" id="task-band"></canvas></div>
+            <div class="task-body">
+              <div class="agent-mark" data-i18n="how.taskMark">claude-code asks for a task</div>
+              <p class="task-title" data-i18n="how.taskTitle">Deploy billing to staging</p>
+              <p class="task-meta" data-i18n="how.taskMeta">2 hours · 3 items</p>
+              <ul class="task-list">
+                <li>Stripe<code>inject</code></li>
+                <li>Postgres<code>inject</code></li>
+                <li>Railway<code>inject</code></li>
+              </ul>
+              <div class="task-actions"><span class="btn btn-primary btn-s" data-i18n="how.taskApprove">Approve</span><span class="btn btn-s" data-i18n="how.taskDeny">Deny</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- redacted output -->
+      <article class="scene">
+        <div class="scene-text">
+          <h3 data-i18n="how.redTitle">The output, with the values taken out.</h3>
+          <p data-i18n-html="how.redText"><code>klav agent run</code> puts the values in the command's environment and hands the output to the agent only once the command ends, with every value replaced by <code>[redacted by klav]</code>: as written, or in base64, hex, URL encoding or escaped JSON.</p>
+          <p class="fine" data-i18n="how.redFine">It's a safety net for accidents. A command that encrypts or reshapes a value on purpose can still get it out.</p>
+        </div>
+        <div class="scene-view">
+          <div class="term" id="redact">
+            <div class="term-tabs" role="group" aria-label="Output">
+              <button type="button" aria-pressed="true" data-i18n="how.redTab0">./debug.sh printed</button>
+              <button type="button" class="is-agent" aria-pressed="false" data-i18n="how.redTab1">claude-code got back</button>
+            </div>
+            <div class="term-body" id="redact-body"></div>
+          </div>
+        </div>
+      </article>
+
+      <!-- klav.toml instead of .env -->
+      <article class="scene">
+        <div class="scene-text">
+          <h3 data-i18n="how.envTitle">No .env to read.</h3>
+          <p data-i18n-html="how.envText"><code>klav.toml</code> lists references, not values, so it goes in the repo with the code. <code>klav run -- npm run dev</code> resolves them when the process starts. Klav doesn't block a <code>cat .env</code>; there's just no <code>.env</code> left to read.</p>
+          <p class="fine" data-i18n-html="how.envFine">If a tool insists on a file, <code>klav inject --fifo</code> hands it the value through a pipe that can be read once.</p>
+        </div>
+        <div class="scene-view">
+          <div class="editor" id="envfile">
+            <div class="editor-tabs" role="group" aria-label="File">
+              <button type="button" aria-pressed="true">.env</button>
+              <button type="button" aria-pressed="false">klav.toml</button>
+            </div>
+            <div class="editor-body" id="env-body"></div>
+            <div class="editor-foot"><div class="status" id="env-status"></div><div class="cmd" id="env-cmd"></div></div>
+          </div>
+        </div>
+      </article>
+
+      <!-- the person's own agent -->
+      <article class="scene">
+        <div class="scene-text">
+          <h3 data-i18n="how.paTitle">Your personal agent, too.</h3>
+          <p data-i18n-html="how.paText">The agent you built signs in to sites with your passwords and passkeys, and never sees them. It asks Klav to fill the login, with <code>fill_login</code> in <code>klav mcp</code> or with <code>klav agent fill</code>. Klav types the values into the page in your browser, and the agent gets back the names of the fields it filled, never the values. Passkeys work inside a task you approved: Klav signs in, and the agent never gets the key.</p>
+          <p class="fine" data-i18n="how.paFine">It has to run on the computer where your browser is. If it also drives the page with scripts or DevTools, it can read a field after Klav fills it.</p>
+        </div>
+        <div class="scene-view">
+          <div class="pa" id="pa" aria-hidden="true">
+            <div class="term small"><div class="term-body" id="pa-term"></div></div>
+            <div class="browser">
+              <div class="browser-bar">
+                <i></i><i></i><i></i>
+                <span class="browser-url">acme.com/login</span>
+                <span class="seal"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg></span>
+              </div>
+              <div class="browser-page">
+                <b data-i18n="how.paSite">Sign in to Acme</b>
+                <small data-i18n="how.paUser">Username or email</small>
+                <div class="browser-field" id="pa-user"></div>
+                <small data-i18n="how.paPass">Password</small>
+                <div class="browser-field dots" id="pa-pass"></div>
+              </div>
+              <div class="browser-notice is-off" id="pa-notice">
+                <span class="notice-band"><canvas class="dither" id="pa-band"></canvas></span>
+                <span><span class="agent-mark" id="pa-notice-title"></span><small id="pa-notice-why"></small></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- the clients, and the log -->
+      <div class="duo">
+        <article class="duo-item">
+          <div class="duo-view">
+            <div class="term small" aria-hidden="true">
+              <div class="term-body">
+                <div class="line"><span class="p">$</span> claude mcp add klav -- klav mcp</div>
+                <div class="line"><span class="p">$</span> cp skill/SKILL.md .claude/skills/klav/</div>
+                <div class="line"><span class="p">$</span> klav agent fill GitHub --extension \</div>
+                <div class="line">    --reason "review PR #62"</div>
+              </div>
+            </div>
+          </div>
+          <div class="duo-text">
+            <h3 data-i18n="how.cliTitle">Works with what your agent already uses.</h3>
+            <p data-i18n-html="how.cliText"><code>klav mcp</code> gives any MCP client tools like <code>fill_login</code> and <code>run_with_secrets</code>. The skill teaches the agent to prefer actions and give real reasons. From a shell, <code>klav agent fill</code> fills a login in your browser without the password passing through the agent.</p>
+          </div>
+        </article>
+        <article class="duo-item">
+          <div class="duo-view">
+            <div class="term small" aria-hidden="true">
+              <div class="term-body">
+                <div class="line"><span class="p">$</span> klav agent show claude-code</div>
+                <div class="line dim">What claude-code used (from the audit log):</div>
+                <div class="line">ITEM      PERMISSIONS  SECRET  USES</div>
+                <div class="line">GitHub    fill         yes     4</div>
+                <div class="line">Stripe    inject       yes     2</div>
+                <div class="line">Postgres  inject       yes     1</div>
+                <div class="line dim">2 attempts were denied.</div>
+              </div>
+            </div>
+          </div>
+          <div class="duo-text">
+            <h3 data-i18n="how.logTitle">See what each agent saw.</h3>
+            <p data-i18n="how.logText">Every action lands in a log you can verify, with the agent's reason. Revoke an agent and Klav shows each item it used, how often, and whether it got a secret, so you know what to change.</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================== proxy -->
+  <section class="wrap section" id="proxy">
+    <div class="section-head">
+      <span class="soon" data-i18n="px.soon">Coming soon</span>
+      <h2 class="h2" data-i18n="px.title">Your tokens never enter the sandbox.</h2>
+      <p class="lede" data-i18n="px.lede">Agents will reach Railway, Northflank or Maple through a proxy that adds the real token on the way out. The sandbox only gets a credential that dies with it. The self-hosted proxy comes first; the managed one follows, once it runs inside an enclave you can verify.</p>
+    </div>
+
+    <div class="proxy cross">
+      <div class="proxy-scene" id="proxy-scene">
+        <div class="proxy-flow">
+          <div class="node node-sandbox">
+            <canvas class="dither" id="sandbox-field" aria-hidden="true"></canvas>
+            <span class="sbx-chip">sandbox · claude-code</span>
+            <div class="sbx-term" id="sbx-term"></div>
+          </div>
+          <div class="wire"><span class="packet" hidden></span></div>
+          <div class="node node-box node-proxy">
+            <span class="seal"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg></span>
+            <span><b data-i18n="px.proxy">Klav proxy</b><small data-i18n="px.proxySub">Your token stays here and goes on the request.</small></span>
+          </div>
+          <div class="wire"><span class="packet" hidden></span></div>
+          <div class="node node-box node-api">
+            <span class="api-lines" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span><b>Railway API</b><small data-i18n="px.apiSub">Only the hosts, paths and methods you allowed.</small></span>
+          </div>
+        </div>
+        <div class="legend">
+          <span><i class="req"></i><span data-i18n="px.lgReq">The sandbox's credential</span></span>
+          <span><i class="tok"></i><span data-i18n="px.lgTok">Your real token</span></span>
+          <span><i class="res"></i><span data-i18n="px.lgRes">The answer</span></span>
+        </div>
+      </div>
+      <ul class="proxy-does">
+        <li><strong data-i18n="px.d1">Tokens stay outside</strong><span data-i18n="px.d1t">The proxy takes them from your Klav vault. The sandbox never holds one.</span></li>
+        <li><strong data-i18n="px.d2">A credential per sandbox</strong><span data-i18n="px.d2t">It isn't a Klav key: it decrypts nothing, only works through the proxy and dies with the sandbox.</span></li>
+        <li><strong data-i18n="px.d3">Encrypted end to end</strong><span data-i18n="px.d3t">Neither the tunnel nor the network between the sandbox and the proxy can read what passes.</span></li>
+        <li><strong data-i18n="px.d4">Only what you allowed</strong><span data-i18n="px.d4t">The real token goes only to the hosts, paths and methods you listed.</span></li>
+        <li><strong data-i18n="px.d5">You approve the dangerous calls</strong><span data-i18n-html="px.d5t">A <code>DELETE</code>, for example, reaches your iPhone or Mac first.</span></li>
+        <li><strong data-i18n="px.d6">Every call in your log</strong><span data-i18n="px.d6t">With the name of the sandbox that made it.</span></li>
+      </ul>
+    </div>
+
+    <div class="ptable" role="table" aria-label="No proxy, self-hosted proxy and Klav managed">
+      <div class="prow prow-head" role="row">
+        <div role="columnheader"></div>
+        <div role="columnheader" data-i18n="px.cNone">No proxy</div>
+        <div role="columnheader" class="is-klav"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg><span data-i18n="px.cSelf">Self-hosted proxy</span></div>
+        <div role="columnheader" class="is-klav"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg><span data-i18n="px.cManaged">Klav managed</span></div>
+      </div>
+    </div>
+
+    <div class="honest">
+      <div class="honest-box">
+        <h3 data-i18n="px.selfTitle">With the self-hosted proxy, it's on you to:</h3>
+        <ul>
+          <li><span data-i18n-html="px.self1"><strong>Keep it running.</strong> If it runs on your Mac and the Mac sleeps, sandboxes can't use your tokens until it wakes.</span></li>
+          <li><span data-i18n-html="px.self2"><strong>Update it</strong> when a new version comes out.</span></li>
+          <li><span data-i18n-html="px.self3"><strong>Protect the machine it runs on.</strong> Whoever runs that machine could, in principle, read its memory. To keep even your cloud provider out, run it on a machine with confidential computing.</span></li>
+          <li><span data-i18n-html="px.self4"><strong>Expose it to your sandboxes</strong> through a tunnel or a private network.</span></li>
+        </ul>
+      </div>
+      <div class="honest-box">
+        <h3 data-i18n="px.noneTitle">What no mode solves:</h3>
+        <ul>
+          <li><span data-i18n-html="px.none1"><strong>Whoever runs the sandbox sees what the agent sends and receives.</strong> The proxy keeps your tokens and your Klav keys out, not the data.</span></li>
+          <li><span data-i18n-html="px.none2"><strong>While a sandbox lives, the agent can do what the token allows</strong> through the proxy. That's what the allow lists and approvals are for.</span></li>
+          <li><span data-i18n-html="px.none3"><strong>The proxy protects the token,</strong> not data the agent decides to send somewhere else.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="next">
+      <div>
+        <h3 data-i18n="nx.title">Also on the way</h3>
+        <p data-i18n="nx.lede">Not released yet.</p>
+      </div>
+      <ul>
+        <li><strong data-i18n="nx.envs">Environments per repository</strong><span data-i18n-html="nx.envsText">Import a <code>.env</code> once, then run with <code>--env production</code>.</span></li>
+        <li><strong data-i18n="nx.deployed">Deployed services</strong><span data-i18n="nx.deployedText">Your app on a hosting platform keeps a service ID instead of its secrets, and Klav notices a copied instance.</span></li>
+        <li><strong data-i18n="nx.stores">In the stores</strong><span data-i18n="nx.storesText">The extension in the Chrome Web Store and on addons.mozilla.org, and the iPhone app in the App Store.</span></li>
+        <li><strong data-i18n="nx.hosted">Klav’s own server</strong><span data-i18n-html="nx.hostedText">A paid plan, 20 USD a year, so you don’t have to run one. <a href="#waitlist">Join the waitlist</a>.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======================================================== everyday -->
+  <section class="wrap section" id="everyday">
+    <h2 class="h2" data-i18n="ev.title">Your passwords, too.</h2>
+    <p class="lede" data-i18n="ev.lede">Passwords, passkeys and one-time codes, encrypted on your devices before they reach the server. Bring them over from Bitwarden, 1Password or your browser.</p>
+
+    <div class="surfaces">
+      <article class="surface">
+        <div class="surface-view">
+          <div class="mini" aria-hidden="true">
+            <div class="mini-field"><span data-i18n="srf.field">Username or email</span><span class="seal"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg></span></div>
+            <div class="mini-menu">
+              <div class="mini-head"><span>Klav · github.com</span><span class="kbd">⌘⇧L</span></div>
+              <div class="mini-row on"><span class="ini">G</span><span><b>GitHub</b><small>ana</small></span><span class="kbd">↵</span></div>
+              <div class="mini-row"><span class="ini dashed">+</span><span><b data-i18n="srf.gen">Generate password</b><small data-i18n="srf.genSub">20 characters</small></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="surface-text">
+          <h3 data-i18n="srf.ext">Browser extension</h3>
+          <p data-i18n="srf.extText">Chrome, Brave, Edge, Arc, Dia and Firefox. The menu opens on the field, and logins split across several steps finish on their own.</p>
+        </div>
+      </article>
+
+      <article class="surface">
+        <div class="surface-view">
+          <div class="mini" aria-hidden="true">
+            <div class="mini-menu">
+              <div class="mini-head"><span>Klav · github.com</span><span class="kbd">⌘⇧L</span></div>
+              <div class="mini-row on"><span class="ini"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><circle cx="5.5" cy="8" r="3"/><path d="M8.5 8h6M12.5 8v2.5M14.5 8v2"/></svg></span><span><b data-i18n="srf.pk">Passkey</b><small>ana · github.com</small></span><span class="kbd">↵</span></div>
+              <div class="mini-row"><span class="ini">G</span><span><b>GitHub</b><small data-i18n="srf.pkPwd">ana · password</small></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="surface-text">
+          <h3 data-i18n="srf.pkTitle">Passkeys</h3>
+          <p data-i18n="srf.pkText">Klav creates and keeps your passkeys and signs in with them in the browser and on iPhone. An agent can use one too, inside a task you approved.</p>
+        </div>
+      </article>
+
+      <article class="surface">
+        <div class="surface-view">
+          <div class="otp" aria-hidden="true">
+            <div class="otp-top"><span class="otp-label" data-i18n="srf.otp">One-time code</span><span class="otp-copy"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8" height="8"/><path d="M10.5 3V2.5h-8v8H3"/></svg></span></div>
+            <div class="otp-code" id="otp">289 591</div>
+            <div class="otp-bar" id="otp-bar"></div>
+            <div class="otp-site"><span class="ini">G</span>GitHub <span>· ana</span></div>
+          </div>
+        </div>
+        <div class="surface-text">
+          <h3 data-i18n="srf.apps">iPhone and Mac</h3>
+          <p data-i18n="srf.appsText">Autofill for passwords, passkeys and codes on iPhone, a menu bar app on the Mac, and Face ID or Touch ID to unlock.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ======================================================== download -->
+  <section class="wrap section" id="download">
+    <h2 class="h2" data-i18n="dl.title">Install it where you work.</h2>
+    <p class="lede" data-i18n-html="dl.lede">Free, for everyone. Your vault lives on a Klav server: one you run yourself, or ours at 20 USD a year, which isn’t open yet; <a href="#waitlist">join the waitlist</a> to hear when it is.</p>
+
+    <div class="dl cross">
+      <article class="dl-row">
+        <div class="dl-name">
+          <h3 data-i18n="dl.macName">Mac app</h3>
+          <p data-i18n="dl.macReq">macOS 15 or later, Apple silicon</p>
+        </div>
+        <div class="dl-text">
+          <p data-i18n="dl.macText">The menu bar app and its window, unlocked with Touch ID. “Set up this Mac” installs the command line and the background service, and connects your browsers. It updates itself.</p>
+        </div>
+        <div class="dl-get">
+          <!--open:mac--><a class="btn btn-primary" href="/download/mac" data-i18n="dl.macBtn">Download for Mac</a>
+          <small data-i18n="dl.macNote">Disk image, signed and notarized by Apple</small><!--/open:mac-->
+          <!--closed:mac--><span class="soon" data-i18n="dl.soon">Coming soon</span>
+          <small data-i18n="dl.macWait">The signed, notarized download is on its way.</small><!--/closed:mac-->
+        </div>
+      </article>
+
+      <article class="dl-row">
+        <div class="dl-name">
+          <h3 data-i18n="dl.cliName">Command line</h3>
+          <p data-i18n="dl.cliReq">macOS, and Linux x86_64 with glibc 2.36 or later</p>
+        </div>
+        <div class="dl-text">
+          <p data-i18n-html="dl.cliText"><code>klav</code>, for your terminal and your agents. On a Mac it comes with the app: “Set up this Mac” puts it at <code>/usr/local/bin/klav</code>. On Linux, it’s a download of its own, with Klav’s background service and the browser bridge. There’s no app on Linux: <code>klav unlock</code> starts the background service and asks for your master password. It runs on Debian 12, Ubuntu 23.04 and newer, not on Ubuntu 22.04; <code>ldd --version</code> shows your glibc.</p>
+        </div>
+        <div class="dl-get">
+          <!--open:linux--><a class="btn" href="/download/linux" data-i18n="dl.cliBtn">Download for Linux</a>
+          <small data-i18n="dl.cliNote">x86_64 · klav, klavd and klav-native-host</small><!--/open:linux-->
+          <!--closed:linux--><span class="soon" data-i18n="dl.soon">Coming soon</span>
+          <small data-i18n="dl.cliWait">Linux builds are on their way. On a Mac, use the app.</small><!--/closed:linux-->
+        </div>
+      </article>
+
+      <article class="dl-row dl-ext">
+        <div class="dl-name">
+          <h3 data-i18n="dl.extName">Browser extension</h3>
+          <p data-i18n="dl.extReq">Needs the Mac app on the same computer or, on Linux, the command line</p>
+        </div>
+        <div class="dl-browsers">
+          <p class="dl-intro" data-i18n="dl.extIntro">It isn’t in the browser stores yet, so you install it by hand. It asks Klav’s background service for everything, and holds no keys itself.</p>
+          <div class="dl-browser">
+            <h4><span data-i18n="dl.chrName">Chrome, Brave, Edge, Arc and Dia</span> <span class="dl-preview" data-i18n="dl.preview">· preview</span></h4>
+            <ol>
+              <li data-i18n="dl.chr1">Unzip the download into a folder of its own, and keep that folder: the browser runs Klav from it.</li>
+              <li data-i18n-html="dl.chr2">Open <code>chrome://extensions</code>, turn on Developer mode, choose “Load unpacked” and pick the folder.</li>
+              <li data-i18n-html="dl.chr3">In the Mac app, open “Set up this Mac” › Browsers › “Advanced options” and turn on “Development extension”. With the CLI: <code>klav extension install-host --dev</code>. Then restart the browser.</li>
+            </ol>
+            <p class="dl-risk" data-i18n="dl.chrRisk">A preview. Until Klav is in the Chrome Web Store, any unpacked extension that carries the public key from Klav’s source code can talk to Klav’s background service, not only Klav’s. Load only extensions you trust.</p>
+            <div class="dl-get">
+              <!--open:chromium--><a class="btn" href="/download/extension/chromium" data-i18n="dl.chrBtn">Download for Chromium</a><!--/open:chromium-->
+              <!--closed:chromium--><span class="soon" data-i18n="dl.soon">Coming soon</span><!--/closed:chromium-->
+            </div>
+          </div>
+          <div class="dl-browser">
+            <h4>Firefox</h4>
+            <ol>
+              <li data-i18n-html="dl.ff1">Open <code>about:addons</code>, click the gear, choose “Install Add-on From File…” and pick the <code>.xpi</code>. Mozilla signed it, so it stays installed.</li>
+              <li data-i18n-html="dl.ff2">In the Mac app, “Connect the browsers”. With the CLI: <code>klav extension install-host --browser firefox</code>, or <code>--dev</code> instead if you also load the Chromium download: it connects Firefox too. Then restart Firefox.</li>
+            </ol>
+            <p class="dl-risk" data-i18n="dl.ffRisk">It doesn’t update itself until Klav is on addons.mozilla.org: install each new version from here.</p>
+            <div class="dl-get">
+              <!--open:firefox--><a class="btn" href="/download/extension/firefox" data-i18n="dl.ffBtn">Download for Firefox</a><!--/open:firefox-->
+              <!--closed:firefox--><span class="soon" data-i18n="dl.soon">Coming soon</span>
+              <small data-i18n="dl.ffWait">The Firefox build is waiting for Mozilla’s signature.</small><!--/closed:firefox-->
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="dl-row">
+        <div class="dl-name">
+          <h3 data-i18n="dl.iosName">iPhone app</h3>
+          <p data-i18n="dl.iosReq">iOS 18 or later</p>
+        </div>
+        <div class="dl-text">
+          <p data-i18n="dl.iosText">AutoFill for passwords, codes and passkeys, and your agents’ requests with Face ID. It signs in to an account you created on your Mac or with the command line. A public beta on TestFlight; the App Store comes later.</p>
+        </div>
+        <div class="dl-get">
+          <!--open:iphone--><a class="btn" href="/download/iphone" data-i18n="dl.iosBtn">Join the TestFlight beta</a>
+          <small data-i18n="dl.iosNote">Install TestFlight from the App Store first</small><!--/open:iphone-->
+          <!--closed:iphone--><span class="soon" data-i18n="dl.soon">Coming soon</span>
+          <small data-i18n="dl.iosWait">The public beta opens once Apple reviews it.</small><!--/closed:iphone-->
+        </div>
+      </article>
+
+      <article class="dl-row">
+        <div class="dl-name">
+          <h3 data-i18n="dl.srvName">Your own server</h3>
+          <p data-i18n="dl.srvReq">Docker, on any small VPS</p>
+        </div>
+        <div class="dl-text">
+          <p data-i18n-html="dl.srvText">Every app signs in to a Klav server, and it stores only encrypted data. <code>docker compose up</code> with SQLite or Postgres, behind your own TLS. You create your account there with the Mac app or the command line.</p>
+        </div>
+        <div class="dl-get">
+          <!--open:docs--><a class="btn" href="https://docs.klav.dev/self-hosting/" data-i18n="dl.srvBtn">Read the self-hosting guide</a><!--/open:docs-->
+          <!--closed:docs--><span class="soon" data-i18n="dl.soon">Coming soon</span>
+          <small data-i18n="dl.srvWait">The guide goes up with the docs.</small><!--/closed:docs-->
+        </div>
+      </article>
+    </div>
+
+    <!--open:docs--><p class="dl-next"><span data-i18n="dl.next">What isn’t out yet, like the browser stores, the App Store and our hosted server, is listed in</span> <a href="https://docs.klav.dev/on-the-way/">On the way</a>.</p><!--/open:docs-->
+  </section>
+
+  <!-- ========================================================= pricing -->
+  <section class="wrap section" id="pricing">
+    <h2 class="h2" data-i18n="pr.title">Free on your server. 20 USD a year on ours.</h2>
+    <p class="lede" data-i18n="pr.lede">Same Klav, same encryption. The only difference is who keeps the server running.</p>
+
+    <div class="plans">
+      <article class="plan">
+        <div class="plan-name"><span data-i18n="pr.selfName">Self-hosted</span></div>
+        <div class="price"><strong data-i18n="pr.selfPrice">Free</strong></div>
+        <p class="plan-desc" data-i18n-html="pr.selfDesc">One <code>docker compose up</code> on a small VPS. Full vault, apps and agents; bring your own APNs key for iPhone push.</p>
+        <ul class="plan-list">
+          <li data-i18n="pr.self1">The full app: extension, iPhone, Mac, CLI and agents</li>
+          <li data-i18n="pr.self2">SQLite or Postgres in a single container</li>
+          <li data-i18n="pr.self3">You handle backups, updates and TLS</li>
+        </ul>
+        <!--open:docs--><a class="btn" href="https://docs.klav.dev/self-hosting/" data-i18n="pr.selfCta">Read the self-hosting guide</a><!--/open:docs-->
+      </article>
+
+      <article class="plan plan-hosted">
+        <div class="plan-name"><span data-i18n="pr.hostName">Hosted by us</span><span class="plan-tag" data-i18n="pr.hostTag">Everything included</span></div>
+        <div class="price"><strong>$20</strong><span data-i18n="pr.hostPer">per year</span></div>
+        <p class="plan-desc" data-i18n="pr.hostDesc">We run the server so you don't have to. Your vault is still encrypted on your devices before it reaches us.</p>
+        <ul class="plan-list">
+          <li data-i18n="pr.host1">Server, backups and updates, handled</li>
+          <li data-i18n="pr.host2">Push approvals on your iPhone</li>
+          <li data-i18n="pr.host3">Unlimited agents and devices</li>
+        </ul>
+        <form class="waitlist" id="waitlist" action="/api/waitlist" method="post" novalidate>
+          <label class="wl-label" for="wl-email" data-i18n="wl.label">Not open yet. Leave your email and we'll write when it opens.</label>
+          <div class="wl-row" id="wl-row">
+            <input class="wl-input" id="wl-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required placeholder="you@example.com" data-i18n-placeholder="wl.placeholder" aria-describedby="wl-status">
+            <button class="btn btn-primary" type="submit" id="wl-submit" data-i18n="wl.join">Join the waitlist</button>
+          </div>
+          <!-- Left empty by people; bots that fill every field land here. -->
+          <div class="wl-trap" aria-hidden="true">
+            <label for="wl-website">Website</label>
+            <input id="wl-website" name="website" type="text" tabindex="-1" autocomplete="off">
+          </div>
+          <p class="wl-status" id="wl-status" role="status" aria-live="polite" tabindex="-1" hidden></p>
+        </form>
+      </article>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="brand" href="#" aria-label="Klav">
+      <svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg>
+      klav
+    </a>
+    <!--open:repo--><p data-i18n="ft.license">Open source. Apache-2.0, server under AGPL-3.0.</p><!--/open:repo-->
+    <!--closed:repo--><p data-i18n="ft.licenseSoon">Open source when it launches: Apache-2.0, server under AGPL-3.0.</p><!--/closed:repo-->
+    <nav>
+      <a href="#download" data-i18n="ft.download">Downloads</a>
+      <a href="/privacy" data-i18n="ft.privacy">Privacy</a>
+      <!--open:repo--><a href="https://github.com/OmarAlex24/klav">GitHub</a><!--/open:repo-->
+      <!--open:docs--><a href="https://docs.klav.dev/self-hosting/" data-i18n="ft.self">Self-hosting</a><!--/open:docs-->
+      <!--open:docs--><a href="https://docs.klav.dev/security/report-a-vulnerability/" data-i18n="ft.security">Security</a><!--/open:docs-->
+    </nav>
+  </div>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const params = new URLSearchParams(location.search);
+  const theme = params.get("theme");
+  if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+
+  // --------------------------------------------- the proxy comparison --
+  // Rows of the table in #proxy: [label, no proxy, self-hosted, managed].
+  // Source: the comparison Omar asked for (docs/sitio-web.md §6).
+  const PROXY_ROWS = {
+    en: [
+      ["Available", "Today", "First", "Later, once the enclave is ready"],
+      ["Where your tokens live", "Inside every sandbox", "On your server or your Mac", "On Klav's infrastructure, inside an enclave"],
+      ["Who could read them", "The agent and whoever runs the sandbox", "You and whoever hosts your server", "No one: not Klav's team, not its cloud provider"],
+      ["Can Klav see them", "No", "No", "No: your devices check what code runs before handing them over"],
+      ["When the sandbox is deleted", "The token stays alive", "Access ends at once", "Access ends at once"],
+      ["With your computer off", "Works", "Only if the proxy runs on an always-on server", "Works"],
+      ["Approvals and log per sandbox", "No", "Yes", "Yes"],
+      ["Who runs and updates it", "No one", "You", "Klav"],
+      ["Setup", "None", "Deploy it and pair it once, with six words and Face ID or Touch ID", "A switch in your account"],
+      ["Cost", "Nothing", "What hosting it costs you", "Part of the hosted plan; price to be confirmed"],
+    ],
+    es: [
+      ["Disponible", "Hoy", "Primero", "Más adelante, cuando el enclave esté listo"],
+      ["Dónde están tus tokens", "Dentro de cada sandbox", "En tu servidor o en tu Mac", "En la infraestructura de Klav, dentro de un enclave"],
+      ["Quién podría leerlos", "El agente y quien opera el sandbox", "Tú y quien hospeda tu servidor", "Nadie: ni el equipo de Klav ni su proveedor de nube"],
+      ["Klav puede verlos", "No", "No", "No: tus dispositivos comprueban qué código corre antes de entregarlos"],
+      ["Al borrar el sandbox", "El token sigue vivo", "El acceso muere al instante", "El acceso muere al instante"],
+      ["Con tu computadora apagada", "Funciona", "Solo si el proxy corre en un servidor siempre encendido", "Funciona"],
+      ["Aprobaciones y bitácora por sandbox", "No", "Sí", "Sí"],
+      ["Quién lo mantiene y actualiza", "Nadie", "Tú", "Klav"],
+      ["Configuración", "Ninguna", "Lo despliegas y lo emparejas una vez, con seis palabras y Face ID o Touch ID", "Un interruptor en tu cuenta"],
+      ["Costo", "Nada", "Lo que te cueste hospedarlo", "Incluido en el plan alojado; precio por confirmar"],
+    ],
+  };
+  const COLS = { en: ["No proxy", "Self-hosted proxy", "Klav managed"], es: ["Sin proxy", "Proxy propio", "Klav gestionado"] };
+  const ptable = document.querySelector(".ptable");
+  function renderProxyTable() {
+    ptable.querySelectorAll(".prow:not(.prow-head)").forEach((r) => r.remove());
+    for (const [label, ...cells] of PROXY_ROWS[lang]) {
+      const row = document.createElement("div");
+      row.className = "prow";
+      row.setAttribute("role", "row");
+      const head = document.createElement("div");
+      head.className = "plabel";
+      head.setAttribute("role", "rowheader");
+      head.textContent = label;
+      row.append(head);
+      cells.forEach((text, i) => {
+        const cell = document.createElement("div");
+        cell.className = ["none", "self", "managed"][i];
+        cell.setAttribute("role", "cell");
+        const col = document.createElement("span");
+        col.className = "pcol";
+        col.textContent = COLS[lang][i];
+        cell.append(col, document.createTextNode(text));
+        row.append(cell);
+      });
+      ptable.append(row);
+    }
+  }
+
+  // ------------------------------------------------------------- i18n --
+  const ES = {
+    "nav.how": "Cómo funciona",
+    "nav.proxy": "Proxy",
+    "nav.pricing": "Precio",
+    "nav.docs": "Docs",
+    "nav.download": "Descargas",
+    "hero.title": "<span>El agente pide.</span> <span>Tú decides.</span>",
+    "hero.lede": "Klav es el gestor de secretos open source para la era de los agentes. Cada agente tiene su propia identidad y solo los permisos que tú le das. <strong>Usa tus llaves sin verlas</strong>, y cuando necesita más, te lo pide en el iPhone o en la Mac.",
+    "hero.github": "Ver en GitHub",
+    "hero.waitlist": "Unirme a la lista",
+    "hero.install": "Descargas",
+    "hero.note": "Gratis en tu servidor · 20 USD al año en el nuestro",
+    "req.waiting": "claude-code espera tu permiso",
+    "req.title": "Quiere inyectar <strong>Stripe</strong> en <code>npm test</code>",
+    "req.why": "«correr las pruebas de cobros»",
+    "req.filled": "claude-code corrió las pruebas",
+    "req.filledTitle": "Aprobado una vez, con Touch ID.",
+    "req.filledWhy": "Recibió la salida, sin la llave.",
+    "req.denied": "Denegado",
+    "req.deniedTitle": "claude-code no recibió nada.",
+    "req.deniedWhy": "Queda en la bitácora: quién pidió, cuándo y por qué.",
+    "req.approve": "Aprobar",
+    "req.deny": "Denegar",
+    "req.again": "Pedir otra vez",
+    "pb.title": "Cada agente que arrancas se lleva una copia de tus llaves.",
+    "pb.lede": "Para que un agente trabaje en un sandbox, le pasas tus variables de entorno y confías en que el proveedor no haga nada con ellas. En la CI pasa lo mismo. Todo se basa en la confianza.",
+    "pb.sbx": "En un sandbox",
+    "pb.sbxText": "La máquina del proveedor tiene tu token real. Borras el sandbox y el token sigue sirviendo.",
+    "pb.ci": "En la CI",
+    "pb.ciText": "Cada ejecución pone la llave en el entorno del job. Cualquier paso puede leerla, y también lo que ese paso instale.",
+    "pb.laptop": "En tu computadora",
+    "pb.laptopText": "Texto plano junto al código. A cualquier agente con una terminal le basta un comando para leerlo.",
+    "how.title": "Los agentes reciben acciones, no valores.",
+    "how.lede": "Emparejas un agente una vez. A partir de ahí rellena logins y corre comandos con tus llaves, y los valores se quedan fuera de su contexto.",
+    "how.idTitle": "Su propia identidad, y solo los permisos que le das.",
+    "how.idText": "Un agente se empareja una vez: comparas seis palabras y lo apruebas con Touch ID. Después, por proyecto, pones cada permiso en <code>allow</code>, <code>ask</code> o <code>deny</code>. <code>reveal</code> empieza denegado: de entrada, un agente recibe acciones, no valores.",
+    "how.words": "Palabras de emparejamiento",
+    "how.askTitle": "Cuando necesita más, te pregunta.",
+    "how.askText": "Lo que está en <code>ask</code> te llega como notificación al iPhone o a la Mac. Al abrirla ves qué agente pide y por qué, y lo apruebas una vez o por un rato, con Face ID o Touch ID. Para un trabajo más grande, el agente pide una tarea: una sola aprobación cubre todo lo que necesita, durante el tiempo que tú permitas.",
+    "how.taskMark": "claude-code pide una tarea",
+    "how.taskTitle": "Desplegar cobros en staging",
+    "how.taskMeta": "2 horas · 3 elementos",
+    "how.taskApprove": "Aprobar",
+    "how.taskDeny": "Denegar",
+    "how.redTitle": "La salida, sin los valores.",
+    "how.redText": "<code>klav agent run</code> pone los valores en el entorno del comando y le pasa la salida al agente solo cuando el comando termina, con cada valor cambiado por <code>[redacted by klav]</code>: tal cual, o en base64, hex, codificación de URL o JSON escapado.",
+    "how.redFine": "Es una red contra descuidos. Un comando que cifre o transforme el valor a propósito todavía puede sacarlo.",
+    "how.redTab0": "./debug.sh imprimió",
+    "how.redTab1": "claude-code recibió",
+    "how.envTitle": "Sin .env que leer.",
+    "how.envText": "<code>klav.toml</code> guarda referencias, no valores, así que va en el repo con el código. <code>klav run -- npm run dev</code> las resuelve al arrancar el proceso. Klav no bloquea un <code>cat .env</code>: simplemente ya no queda ningún <code>.env</code> que leer.",
+    "how.envFine": "Si una herramienta exige un archivo, <code>klav inject --fifo</code> le pasa el valor por una tubería que se lee una sola vez.",
+    "how.paTitle": "También tu agente personal.",
+    "how.paText": "El agente que tú armaste inicia sesión en sitios con tus contraseñas y passkeys, sin verlas nunca. Le pide a Klav que rellene el login, con <code>fill_login</code> de <code>klav mcp</code> o con <code>klav agent fill</code>. Klav escribe los valores en la página, en tu navegador, y al agente le vuelven los nombres de los campos que rellenó, nunca los valores. Las passkeys van dentro de una tarea que aprobaste: Klav inicia la sesión y el agente nunca recibe la llave.",
+    "how.paFine": "Tiene que correr en la computadora donde está tu navegador. Si además controla la página con scripts o DevTools, puede leer un campo después de que Klav lo rellene.",
+    "how.paSite": "Inicia sesión en Acme",
+    "how.paUser": "Correo o usuario",
+    "how.paPass": "Contraseña",
+    "how.cliTitle": "Funciona con lo que tu agente ya usa.",
+    "how.cliText": "<code>klav mcp</code> le da a cualquier cliente MCP herramientas como <code>fill_login</code> y <code>run_with_secrets</code>. La skill le enseña al agente a preferir acciones y a dar motivos reales. Desde la terminal, <code>klav agent fill</code> rellena un login en tu navegador sin que la contraseña pase por el agente.",
+    "how.logTitle": "Mira lo que vio cada agente.",
+    "how.logText": "Cada acción queda en una bitácora que puedes verificar, con el motivo del agente. Revocas un agente y Klav te enseña cada elemento que usó, cuántas veces y si obtuvo un secreto, para que sepas qué cambiar.",
+    "px.soon": "Próximamente",
+    "px.title": "Tus tokens nunca entran al sandbox.",
+    "px.lede": "Los agentes llegarán a Railway, Northflank o Maple a través de un proxy que pone el token real por el camino. El sandbox solo recibe una credencial que muere con él. Primero sale el proxy propio; el gestionado llega después, cuando corra dentro de un enclave verificable.",
+    "px.proxy": "Proxy de Klav",
+    "px.proxySub": "Tu token se queda aquí y viaja en la petición.",
+    "px.apiSub": "Solo los hosts, rutas y métodos que permitiste.",
+    "px.lgReq": "La credencial del sandbox",
+    "px.lgTok": "Tu token real",
+    "px.lgRes": "La respuesta",
+    "px.d1": "Los tokens se quedan fuera",
+    "px.d1t": "El proxy los saca de tu bóveda de Klav. El sandbox nunca tiene uno.",
+    "px.d2": "Una credencial por sandbox",
+    "px.d2t": "No es una llave de Klav: no descifra nada, solo sirve a través del proxy y muere con el sandbox.",
+    "px.d3": "Cifrado de punta a punta",
+    "px.d3t": "Ni el túnel ni la red entre el sandbox y el proxy pueden leer lo que pasa.",
+    "px.d4": "Solo lo que permitiste",
+    "px.d4t": "El token real va solo a los hosts, rutas y métodos de tu lista.",
+    "px.d5": "Tú apruebas lo peligroso",
+    "px.d5t": "Un <code>DELETE</code>, por ejemplo, llega antes a tu iPhone o a tu Mac.",
+    "px.d6": "Cada llamada en tu bitácora",
+    "px.d6t": "Con el nombre del sandbox que la hizo.",
+    "px.cNone": "Sin proxy",
+    "px.cSelf": "Proxy propio",
+    "px.cManaged": "Klav gestionado",
+    "px.selfTitle": "Con el proxy propio, te toca:",
+    "px.self1": "<strong>Mantenerlo encendido.</strong> Si corre en tu Mac y se duerme, los sandboxes no pueden usar tus tokens hasta que despierte.",
+    "px.self2": "<strong>Actualizarlo</strong> cuando salga una versión nueva.",
+    "px.self3": "<strong>Proteger la máquina donde corre.</strong> Quien opera esa máquina podría, en principio, leer su memoria. Para dejar fuera incluso a tu proveedor de nube, córrelo en una máquina con <em>confidential computing</em>.",
+    "px.self4": "<strong>Exponerlo a tus sandboxes</strong> con un túnel o una red privada.",
+    "px.noneTitle": "Lo que ningún modo resuelve:",
+    "px.none1": "<strong>Quien opera el sandbox ve lo que el agente manda y recibe.</strong> El proxy deja fuera tus tokens y tus llaves de Klav, no los datos.",
+    "px.none2": "<strong>Mientras el sandbox vive, el agente puede hacer lo que el token permite</strong> a través del proxy. Para eso están las listas de permitidos y las aprobaciones.",
+    "px.none3": "<strong>El proxy protege el token,</strong> no los datos que el agente decida sacar por otro lado.",
+    "nx.title": "También en camino",
+    "nx.lede": "Todavía sin publicar.",
+    "nx.envs": "Entornos por repositorio",
+    "nx.envsText": "Importas un <code>.env</code> una vez y después corres con <code>--env production</code>.",
+    "nx.deployed": "Servicios desplegados",
+    "nx.deployedText": "Tu app en una plataforma de hosting guarda un ID de servicio en vez de sus secretos, y Klav se da cuenta si alguien copia una instancia.",
+    "nx.stores": "En las tiendas",
+    "nx.storesText": "La extensión en la Chrome Web Store y en addons.mozilla.org, y la app de iPhone en la App Store.",
+    "nx.hosted": "El servidor de Klav",
+    "nx.hostedText": "Un plan de pago, 20 USD al año, para que no tengas que montar uno. <a href=\"#waitlist\">Apúntate a la lista de espera</a>.",
+    "ev.title": "También tus contraseñas.",
+    "ev.lede": "Contraseñas, passkeys y códigos de un solo uso, cifrados en tus dispositivos antes de llegar al servidor. Tráelos desde Bitwarden, 1Password o tu navegador.",
+    "srf.field": "Correo o usuario",
+    "srf.gen": "Generar contraseña",
+    "srf.genSub": "20 caracteres",
+    "srf.ext": "Extensión de navegador",
+    "srf.extText": "Chrome, Brave, Edge, Arc, Dia y Firefox. El menú se abre en el campo, y los logins de varios pasos se completan solos.",
+    "srf.pk": "Passkey",
+    "srf.pkPwd": "ana · contraseña",
+    "srf.pkTitle": "Passkeys",
+    "srf.pkText": "Klav crea y guarda tus passkeys e inicia sesión con ellas en el navegador y en el iPhone. Un agente también puede usar una, dentro de una tarea que aprobaste.",
+    "srf.otp": "Código de un solo uso",
+    "srf.apps": "iPhone y Mac",
+    "srf.appsText": "Autollenado de contraseñas, passkeys y códigos en el iPhone, una app en la barra de menús de la Mac, y Face ID o Touch ID para desbloquear.",
+    "pr.title": "Gratis en tu servidor. 20 USD al año en el nuestro.",
+    "pr.lede": "El mismo Klav, el mismo cifrado. Solo cambia quién mantiene el servidor encendido.",
+    "pr.selfName": "En tu servidor",
+    "pr.selfPrice": "Gratis",
+    "pr.selfDesc": "Un <code>docker compose up</code> en un VPS pequeño. Bóveda, apps y agentes completos; para avisos al iPhone necesitas tu propia llave de APNs.",
+    "pr.self1": "Todo: extensión, iPhone, Mac, CLI y agentes",
+    "pr.self2": "SQLite o Postgres en un solo contenedor",
+    "pr.self3": "Tú te encargas de respaldos, actualizaciones y TLS",
+    "pr.selfCta": "Leer la guía para alojarlo",
+    "pr.hostName": "Alojado por nosotros",
+    "pr.hostTag": "Todo incluido",
+    "pr.hostPer": "al año",
+    "pr.hostDesc": "Nosotros mantenemos el servidor para que tú no tengas que hacerlo. Tu bóveda se cifra en tus dispositivos antes de llegarnos.",
+    "pr.host1": "Servidor, respaldos y actualizaciones, resueltos",
+    "pr.host2": "Aprobaciones con aviso en tu iPhone",
+    "pr.host3": "Agentes y dispositivos sin límite",
+    "wl.label": "Todavía no abre. Deja tu correo y te escribimos cuando abra.",
+    "wl.placeholder": "tu@ejemplo.com",
+    "wl.join": "Unirme a la lista",
+    "ft.license": "Open source. Apache-2.0, el servidor con AGPL-3.0.",
+    "ft.licenseSoon": "Open source desde el lanzamiento: Apache-2.0, el servidor con AGPL-3.0.",
+    "ft.self": "Alojarlo tú",
+    "ft.security": "Seguridad",
+    "ft.privacy": "Privacidad",
+    "ft.download": "Descargas",
+    "dl.title": "Instálalo donde trabajas.",
+    "dl.lede": "Gratis, para todos. Tu bóveda vive en un servidor de Klav: uno que montas tú, o el nuestro, a 20 USD al año, que todavía no abre; <a href=\"#waitlist\">apúntate a la lista</a> y te avisamos.",
+    "dl.soon": "Próximamente",
+    "dl.macName": "App de Mac",
+    "dl.macReq": "macOS 15 o más nuevo, Apple silicon",
+    "dl.macText": "La app de la barra de menús y su ventana, que se abre con Touch ID. «Configurar este Mac» instala la línea de comandos y el servicio en segundo plano, y conecta tus navegadores. Se actualiza sola.",
+    "dl.macBtn": "Descargar para Mac",
+    "dl.macNote": "Imagen de disco, firmada y notarizada por Apple",
+    "dl.macWait": "La descarga firmada y notarizada está en camino.",
+    "dl.cliName": "Línea de comandos",
+    "dl.cliReq": "macOS, y Linux x86_64 con glibc 2.36 o posterior",
+    "dl.cliText": "<code>klav</code>, para tu terminal y tus agentes. En la Mac viene con la app: «Configurar este Mac» lo deja en <code>/usr/local/bin/klav</code>. En Linux se descarga aparte, con el servicio en segundo plano de Klav y el puente para el navegador. En Linux no hay app: <code>klav unlock</code> arranca el servicio en segundo plano y te pide la contraseña maestra. Funciona en Debian 12, Ubuntu 23.04 y posteriores, no en Ubuntu 22.04; <code>ldd --version</code> te dice qué glibc tienes.",
+    "dl.cliBtn": "Descargar para Linux",
+    "dl.cliNote": "x86_64 · klav, klavd y klav-native-host",
+    "dl.cliWait": "Las versiones para Linux están en camino. En la Mac, usa la app.",
+    "dl.extName": "Extensión de navegador",
+    "dl.extReq": "Necesita la app de Mac en la misma computadora o, en Linux, la línea de comandos",
+    "dl.extIntro": "Todavía no está en las tiendas de los navegadores, así que la instalas a mano. Todo se lo pide al servicio en segundo plano de Klav; ella no guarda ninguna llave.",
+    "dl.chrName": "Chrome, Brave, Edge, Arc y Dia",
+    "dl.preview": "· versión preliminar",
+    "dl.chr1": "Descomprime la descarga en una carpeta propia y no la borres: el navegador corre Klav desde ahí.",
+    "dl.chr2": "Abre <code>chrome://extensions</code>, enciende el modo de desarrollador, elige «Cargar descomprimida» y escoge la carpeta.",
+    "dl.chr3": "En la app de Mac, abre «Configurar este Mac» › Navegadores › «Opciones avanzadas» y enciende «Extensión de desarrollo». Con la CLI: <code>klav extension install-host --dev</code>. Después reinicia el navegador.",
+    "dl.chrRisk": "Es una versión preliminar. Mientras Klav no esté en la Chrome Web Store, cualquier extensión sin empaquetar que lleve la llave pública del código de Klav puede hablar con el servicio en segundo plano de Klav, no solo la de Klav. Carga solo extensiones en las que confíes.",
+    "dl.chrBtn": "Descargar para Chromium",
+    "dl.ff1": "Abre <code>about:addons</code>, haz clic en el engrane, elige «Instalar complemento desde archivo…» y escoge el <code>.xpi</code>. Mozilla lo firmó, así que se queda instalado.",
+    "dl.ff2": "En la app de Mac, «Conectar los navegadores». Con la CLI: <code>klav extension install-host --browser firefox</code>, o <code>--dev</code> si también cargaste la de Chromium, que conecta Firefox de paso. Después reinicia Firefox.",
+    "dl.ffRisk": "No se actualiza solo hasta que Klav esté en addons.mozilla.org: cada versión nueva la instalas desde aquí.",
+    "dl.ffWait": "La versión para Firefox espera la firma de Mozilla.",
+    "dl.ffBtn": "Descargar para Firefox",
+    "dl.iosName": "App de iPhone",
+    "dl.iosReq": "iOS 18 o más nuevo",
+    "dl.iosText": "Autollenado de contraseñas, códigos y passkeys, y las solicitudes de tus agentes con Face ID. Entra a una cuenta que creaste en tu Mac o con la línea de comandos. Es una beta pública en TestFlight; la App Store llega después.",
+    "dl.iosBtn": "Entrar a la beta de TestFlight",
+    "dl.iosNote": "Antes, instala TestFlight desde la App Store",
+    "dl.iosWait": "La beta pública abre cuando Apple la revise.",
+    "dl.srvName": "Tu propio servidor",
+    "dl.srvReq": "Docker, en cualquier VPS pequeño",
+    "dl.srvText": "Cada app entra a un servidor de Klav, y ese servidor solo guarda datos cifrados. <code>docker compose up</code> con SQLite o Postgres, detrás de tu propio TLS. Tu cuenta la creas ahí con la app de Mac o con la línea de comandos.",
+    "dl.srvBtn": "Leer la guía para alojarlo",
+    "dl.srvWait": "La guía se publica con los docs.",
+    "dl.next": "Lo que todavía no sale, como las tiendas de los navegadores, la App Store y nuestro servidor alojado, está en",
+  };
+  // What the illustrations write themselves (they change while they move,
+  // so they can't carry data-i18n).
+  const SAY = {
+    en: {
+      envBad: "Plain text. Any agent with a shell can read it.",
+      envGood: "References only. Commit it with the code.",
+      envComment: "# keep this out of git",
+      sbxNone: "# no token in here",
+      sbxDead: "# sandbox deleted",
+      sbxDeadSub: "# its credential died with it",
+      paAgent: "my-agent",
+      paReason: "pay the power bill",
+      paNotice: ["Klav filled this page for ", "“my-agent”"],
+      paWhy: "“pay the power bill”",
+    },
+    es: {
+      envBad: "Texto plano. Cualquier agente con una terminal lo lee.",
+      envGood: "Solo referencias. Súbelo al repo con el código.",
+      envComment: "# que no llegue a git",
+      sbxNone: "# aquí no hay ningún token",
+      sbxDead: "# sandbox borrado",
+      sbxDeadSub: "# su credencial murió con él",
+      paAgent: "mi-agente",
+      paReason: "pagar la luz",
+      paNotice: ["Klav rellenó esta página para ", "«mi-agente»"],
+      paWhy: "«pagar la luz»",
+    },
+  };
+  const META = {
+    en: { title: "Klav · The agent asks. You decide.", price: "$20" },
+    es: { title: "Klav · El agente pide. Tú decides.", price: "20 USD" },
+  };
+  const EN = {};
+  document.querySelectorAll("[data-i18n]").forEach((el) => { EN[el.dataset.i18n] = el.textContent; });
+  document.querySelectorAll("[data-i18n-html]").forEach((el) => { EN[el.dataset.i18nHtml] = el.innerHTML; });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => { EN[el.dataset.i18nPlaceholder] = el.placeholder; });
+  let lang = "en";
+  const onLang = [];
+  const say = (key) => SAY[lang][key];
+
+  function setLang(next) {
+    lang = next === "es" ? "es" : "en";
+    const dict = lang === "es" ? ES : EN;
+    document.documentElement.lang = lang;
+    document.title = META[lang].title;
+    document.querySelectorAll("[data-i18n]").forEach((el) => {
+      const v = dict[el.dataset.i18n];
+      if (v !== undefined) el.textContent = v;
+    });
+    // Our own constant strings only (strong / code / em), never user input.
+    document.querySelectorAll("[data-i18n-html]").forEach((el) => {
+      const v = dict[el.dataset.i18nHtml];
+      if (v !== undefined) el.innerHTML = v;
+    });
+    document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+      const v = dict[el.dataset.i18nPlaceholder];
+      if (v !== undefined) el.placeholder = v;
+    });
+    document.querySelector(".plan-hosted .price strong").textContent = META[lang].price;
+    onLang.forEach((fn) => fn());
+    document.querySelectorAll(".lang button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === lang)));
+    try { localStorage.setItem("klav-lang", lang); } catch {}
+  }
+  onLang.push(renderProxyTable);
+  document.querySelectorAll(".lang button").forEach((b) => b.addEventListener("click", () => setLang(b.dataset.lang)));
+
+  // ----------------------------------------------------------- dither --
+  // Ported from apps/extension/src/shared/dither.ts (8×8 Bayer, value noise).
+  const BAYER = [[0,32,8,40,2,34,10,42],[48,16,56,24,50,18,58,26],[12,44,4,36,14,46,6,38],[60,28,52,20,62,30,54,22],
+                 [3,35,11,43,1,33,9,41],[51,19,59,27,49,17,57,25],[15,47,7,39,13,45,5,37],[63,31,55,23,61,29,53,21]];
+  const threshold = (x, y) => (BAYER[y & 7][x & 7] + 0.5) / 64;
+  function pick(b, n, th) {
+    const steps = n - 1, s = Math.min(1, Math.max(0, b)) * steps, i = Math.min(steps - 1, Math.floor(s));
+    return s - i > th ? i + 1 : i;
+  }
+  function hash(x, y, seed) {
+    let h = (x * 374761393 + y * 668265263 + seed * 2147483647) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  }
+  function valueNoise(x, y, seed = 7) {
+    const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const a = hash(xi, yi, seed), b = hash(xi + 1, yi, seed), c = hash(xi, yi + 1, seed), d = hash(xi + 1, yi + 1, seed);
+    return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+  }
+  const clamp = (n) => Math.min(1, Math.max(0, n));
+  // Streaks drift sideways with `t` so the field breathes, a threshold at a time.
+  const streaks = (u, v, aspect, rows, t) =>
+    valueNoise(u * aspect * 2.2 + t, v * rows) * 0.65 + valueNoise(u * aspect * 9 - t * 2.5, v * rows * 2, 11) * 0.35;
+
+  function keyholeDistance(x, y, cx, cy, r) {
+    const circle = Math.hypot(x - cx, y - cy) - r;
+    const top = cy, bottom = cy + r * 2.6;
+    const t = clamp((y - top) / (bottom - top));
+    const half = r * (0.42 + 0.36 * t);
+    const slot = Math.max(Math.abs(x - cx) - half, Math.max(top - y, y - bottom));
+    return Math.min(circle, slot);
+  }
+  function keyhole(open, t, cy) {
+    return (u, v, aspect) => {
+      const x = u * aspect, cx = aspect / 2;
+      const d = keyholeDistance(x, v, cx, cy, 0.12);
+      if (d <= 0) return 1;
+      const glow = Math.exp(-d * 16) * 0.75;
+      const ground = 0.12 + v * 0.42 + (streaks(u, v, aspect, 34, t) - 0.5) * 0.5;
+      const sparks = v > 0.72 ? Math.max(0, valueNoise(u * aspect * 5 + t * 3, v * 60, 3) - 0.78) * 2.4 : 0;
+      const base = clamp(Math.max(ground + sparks, glow + ground * 0.4));
+      if (open <= 0) return base;
+      const reach = open * 1.6 - d * 1.2;
+      return clamp(base + Math.max(0, reach) + open * open * 0.9);
+    };
+  }
+  const band = (t) => (u, v, aspect) => clamp(0.08 + v * 0.95 + (streaks(u, v, aspect, 22, t) - 0.5) * 0.45);
+
+  function parseHex(hex) {
+    const h = hex.trim().replace(/^#/, ""), full = h.length === 3 ? h.replace(/./g, "$&$&") : h, n = parseInt(full, 16);
+    return full.length !== 6 || Number.isNaN(n) ? [0, 0, 0] : [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const tokens = (...names) => {
+    const s = getComputedStyle(document.documentElement);
+    return names.map((p) => parseHex(s.getPropertyValue(p)));
+  };
+  const colors = {};
+  function readColors() {
+    colors.blue = tokens("--dither-0", "--dither-1", "--dither-2");
+    colors.mask = tokens("--mask-0", "--mask-1", "--mask-2");
+    colors.termMask = tokens("--term-bg", "--term-mask-1", "--term-mask-2");
+  }
+  readColors();
+
+  // Paints `field` on `canvas` at `pixel` px per cell. With `alive` < 1 a
+  // cell only shows while its threshold is below it: the field dissolves.
+  function paint(canvas, field, pixel, pal, alive = 1) {
+    const r = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width / pixel)), h = Math.max(1, Math.round(r.height / pixel));
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const img = ctx.createImageData(w, h), out = img.data, aspect = w / h;
+    for (let y = 0; y < h; y++) {
+      const v = h > 1 ? y / (h - 1) : 0;
+      for (let x = 0; x < w; x++) {
+        const th = threshold(x, y), o = (y * w + x) * 4;
+        if (alive < 1 && th >= alive) continue;
+        const u = w > 1 ? x / (w - 1) : 0;
+        const c = pal[pick(field(u, v, aspect), pal.length, th)];
+        out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  // Covers `el` with the grey mask noise, sweeping left to right: at p = 0
+  // nothing, at p = 1 all of it. The canvas lives inside `el`, so replacing
+  // the element's content takes the mask with it.
+  function cover(el, p, pal, seed) {
+    let c = el.querySelector(":scope > canvas.mask");
+    if (p <= 0) { c?.remove(); return; }
+    if (!c) {
+      c = document.createElement("canvas");
+      c.className = "mask";
+      c.setAttribute("aria-hidden", "true");
+      el.append(c);
+    }
+    const r = el.getBoundingClientRect(), px = 2;
+    const w = Math.max(1, Math.ceil(r.width / px)), h = Math.max(1, Math.ceil(r.height / px));
+    if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    const img = ctx.createImageData(w, h), out = img.data;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const th = threshold(x, y), u = w > 1 ? x / (w - 1) : 0;
+        if (th >= p * 1.4 - u * 0.4) continue;
+        const n = valueNoise(x * 0.35 + seed * 17, y * 0.7, 5) + (th - 0.5) * 0.35;
+        const col = pal[n > 0.5 ? 2 : 1], o = (y * w + x) * 4;
+        out[o] = col[0]; out[o + 1] = col[1]; out[o + 2] = col[2]; out[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  // ------------------------------------------------- moving pieces --
+  // Every illustration steps at ~8 fps, like the dither in the apps: no
+  // easing. Each one only steps while it's on screen; with reduced motion
+  // none of them step and each shows its still frame.
+  const pieces = [];
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) for (const p of pieces) if (p.el === e.target) p.visible = e.isIntersecting;
+  });
+  const ro = new ResizeObserver((entries) => {
+    for (const e of entries) for (const p of pieces) if (p.el === e.target) p.draw();
+  });
+  function piece(el, p) {
+    p.el = el;
+    p.visible = false;
+    pieces.push(p);
+    io.observe(el);
+    ro.observe(el);
+    return p;
+  }
+  function settle() { for (const p of pieces) (reduced.matches ? p.still : p.draw)(); }
+  const repalette = () => { readColors(); for (const p of pieces) p.draw(); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", repalette);
+  reduced.addEventListener("change", settle);
+
+  // A two-state illustration: hold one state, cover it in mask noise, swap
+  // the content, uncover. The tabs name the states and pick one by hand.
+  function swapper({ el, render, targets, pal, hold, steps = 6, still = 1 }) {
+    const tabs = [...el.querySelectorAll("[aria-pressed]")];
+    const s = { view: 0, goal: 0, phase: "hold", k: 0, auto: true };
+    const show = (v) => {
+      s.view = v;
+      render(v);
+      tabs.forEach((b, i) => b.setAttribute("aria-pressed", String(i === v)));
+    };
+    const coverAll = (p) => targets().forEach((t, i) => cover(t, p, pal(), i + 1));
+    const p = piece(el, {
+      step() {
+        s.k++;
+        if (s.phase === "hold") {
+          if (s.auto && s.k >= hold[s.view]) { s.phase = "in"; s.k = 0; s.goal = 1 - s.view; }
+        } else if (s.phase === "in") {
+          coverAll(s.k / steps);
+          if (s.k >= steps) { show(s.goal); coverAll(1); s.phase = "out"; s.k = 0; }
+        } else {
+          coverAll(1 - s.k / steps);
+          if (s.k >= steps) { coverAll(0); s.phase = "hold"; s.k = 0; }
+        }
+      },
+      draw() {
+        if (s.phase === "in") coverAll(s.k / steps);
+        else if (s.phase === "out") coverAll(1 - s.k / steps);
+      },
+      still() { s.phase = "hold"; s.k = 0; show(s.auto ? still : s.view); coverAll(0); },
+    });
+    tabs.forEach((b, i) => b.addEventListener("click", () => {
+      s.auto = false;
+      if (reduced.matches) { show(i); coverAll(0); return; }
+      if (i === s.view && s.phase === "hold") return;
+      s.goal = i;
+      s.phase = "in";
+      s.k = 0;
+    }));
+    onLang.push(() => { render(s.view); p.draw(); });
+    show(reduced.matches ? still : 0);
+    return p;
+  }
+
+  // Lines for the illustrations: [text, class] segments; "secret" segments
+  // get their own box so the mask can cover just them.
+  function lines(body, rows) {
+    body.replaceChildren(...rows.map((row) => {
+      const line = document.createElement("div");
+      line.className = row.cls ?? "line";
+      for (const [text, cls] of row.parts) {
+        if (!cls) { line.append(text); continue; }
+        const span = document.createElement("span");
+        span.className = cls;
+        span.textContent = text;
+        line.append(span);
+      }
+      return line;
+    }));
+  }
+
+  // ------------------------------------------------------------ hero --
+  const hole = document.getElementById("keyhole");
+  const strip = document.getElementById("band");
+  const hero = { open: 0, t: 0 };
+  const narrow = matchMedia("(max-width: 720px)");
+  function drawHero() {
+    const cy = narrow.matches ? 0.26 : 0.3;
+    paint(hole, keyhole(hero.open, hero.t, cy), 4, colors.blue);
+    paint(strip, band(hero.t * 0.6), 3, colors.blue);
+  }
+  piece(hole, {
+    step() { hero.t += 0.035; drawHero(); },
+    draw: drawHero,
+    still: drawHero,
+  });
+
+  // Approving floods the field with the keyhole's light in 10 steps (~400 ms).
+  function stepTo(target, done) {
+    if (reduced.matches) { hero.open = target; drawHero(); done?.(); return; }
+    const from = hero.open, steps = 10;
+    let i = 0;
+    const id = setInterval(() => {
+      i++;
+      hero.open = from + (target - from) * (i / steps);
+      drawHero();
+      if (i >= steps) { clearInterval(id); done?.(); }
+    }, 40);
+  }
+
+  const req = document.getElementById("request");
+  const btnApprove = document.getElementById("approve");
+  const btnDeny = document.getElementById("deny");
+  const btnAgain = document.getElementById("again");
+  function show(which) {
+    req.querySelectorAll("[data-state]").forEach((el) => { el.hidden = el.dataset.state !== which; });
+    const asking = which === "ask";
+    btnApprove.hidden = !asking;
+    btnDeny.hidden = !asking;
+    btnAgain.hidden = asking;
+  }
+  btnApprove.addEventListener("click", () => {
+    btnApprove.disabled = true;
+    stepTo(0.34, () => { btnApprove.disabled = false; show("filled"); btnAgain.focus(); });
+  });
+  btnDeny.addEventListener("click", () => { show("denied"); btnAgain.focus(); });
+  btnAgain.addEventListener("click", () => {
+    show("ask");
+    btnApprove.focus();
+    if (hero.open > 0) stepTo(0);
+  });
+
+  // ------------------------------------------------- the task's band --
+  const taskBand = document.getElementById("task-band");
+  const task = { t: 3 };
+  piece(taskBand, {
+    step() { task.t += 0.021; paint(taskBand, band(task.t), 3, colors.blue); },
+    draw() { paint(taskBand, band(task.t), 3, colors.blue); },
+    still() { paint(taskBand, band(task.t), 3, colors.blue); },
+  });
+
+  // ------------------------------------------------ redacted output --
+  // A made-up key, short and obviously fake; its base64 and hex are what
+  // `klav agent run` also takes out (docs/cli.md §9).
+  const KEY = "sk_demo_7Hq2Zt9Lm";
+  const KEY64 = btoa(KEY);
+  const KEYHEX = [...KEY].map((ch) => ch.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+  const RED = "[redacted by klav]";
+  const redBody = document.getElementById("redact-body");
+  swapper({
+    el: document.getElementById("redact"),
+    pal: () => colors.termMask,
+    hold: [22, 34],
+    targets: () => [...redBody.querySelectorAll(".secret, .redacted")],
+    render(v) {
+      const val = (raw) => (v ? [RED, "redacted"] : [raw, "secret"]);
+      lines(redBody, [
+        { parts: [["$ ", "p"], ["klav agent run \\"]] },
+        { parts: [["    --reason \"debug the webhook\" \\"]] },
+        { parts: [["    -- ./debug.sh"]] },
+        { parts: [["STRIPE_KEY="], val(KEY)] },
+        { parts: [["auth: Basic "], val(KEY64)] },
+        { parts: [["hex: "], val(KEYHEX)] },
+        { cls: v ? "wrapline dim" : "wrapline dim invisible", parts: [["warning: secret values were removed from the output in 3 place(s)"]] },
+      ]);
+    },
+  });
+
+  // ------------------------------------------- .env into klav.toml --
+  const envBody = document.getElementById("env-body");
+  const envStatus = document.getElementById("env-status");
+  const envCmd = document.getElementById("env-cmd");
+  swapper({
+    el: document.getElementById("envfile"),
+    pal: () => colors.mask,
+    hold: [22, 34],
+    targets: () => [envBody],
+    render(v) {
+      if (v) {
+        lines(envBody, [
+          { parts: [["project", "k"], [" = "], ["\"Work/acme-api\"", "s"]] },
+          { parts: [[" "]] },
+          { parts: [["[env]", "k"]] },
+          { parts: [["STRIPE_KEY", "k"], ["   = "], ["\"Stripe/api_key\"", "s"]] },
+          { parts: [["DATABASE_URL", "k"], [" = "], ["\"Postgres/url\"", "s"]] },
+          { parts: [["GITHUB_TOKEN", "k"], [" = "], ["\"GitHub/token\"", "s"]] },
+        ]);
+      } else {
+        lines(envBody, [
+          { parts: [[say("envComment"), "c"]] },
+          { parts: [["STRIPE_KEY", "k"], ["=sk_demo_7Hq2Zt9Lm"]] },
+          { parts: [["DATABASE_URL", "k"], ["=postgres://app:Vq8m@db/acme"]] },
+          { parts: [["GITHUB_TOKEN", "k"], ["=gh_demo_A1b2C3d4E5"]] },
+        ]);
+      }
+      envStatus.textContent = say(v ? "envGood" : "envBad");
+      envStatus.classList.toggle("is-bad", !v);
+      envCmd.textContent = v ? "$ klav run -- npm run dev" : "$ npm run dev";
+    },
+  });
+
+  // ------------------------------------------------- your own agent --
+  // An agent on the person's computer calls `fill_login` with target
+  // `extension` (docs/cli.md §9, docs/extension.md §8). Klav types into
+  // the page, the page shows the notice, and the agent gets back the
+  // field names and the origin: what `klav mcp` returns, never a value.
+  const pa = document.getElementById("pa");
+  const paTerm = document.getElementById("pa-term");
+  const paUser = document.getElementById("pa-user");
+  const paPass = document.getElementById("pa-pass");
+  const paNotice = document.getElementById("pa-notice");
+  const paBand = document.getElementById("pa-band");
+  const PA_USER = "ana", PA_DOTS = 12;
+  // Steps of each part, at ~8 per second.
+  const PA = { idle: 8, user: PA_USER.length, pass: PA_DOTS, notice: 4, answer: 4, hold: 34 };
+  const paLength = Object.values(PA).reduce((a, b) => a + b, 0);
+  function paAt(k) {
+    const s = { user: 0, pass: 0, focus: "", notice: 0, answer: 0 };
+    let i = k - PA.idle;
+    if (i < 0) return s;
+    if (i < PA.user) return { ...s, user: i + 1, focus: "user" };
+    s.user = PA.user; i -= PA.user;
+    if (i < PA.pass) return { ...s, pass: i + 1, focus: "pass" };
+    s.pass = PA.pass; i -= PA.pass;
+    if (i < PA.notice) return { ...s, notice: (i + 1) / PA.notice };
+    s.notice = 1; i -= PA.notice;
+    return { ...s, answer: Math.min(PA.answer, i + 1) };
+  }
+  const PA_STILL = paAt(paLength - 1);
+  const paNow = { k: 0, t: 5 };
+  function paRender(s) {
+    const shown = (n) => (s.answer > n ? "line" : "line invisible");
+    lines(paTerm, [
+      { parts: [[say("paAgent"), "ag"], [" → fill_login", "dim"]] },
+      { parts: [["{ \"url\": \"https://acme.com/login\","]] },
+      { parts: [["  \"target\": \"extension\","]] },
+      { parts: [[`  "reason": "${say("paReason")}" }`]] },
+      { cls: shown(0), parts: [["klav → ", "dim"], [say("paAgent"), "ag"]] },
+      { cls: shown(1), parts: [["{ \"ok\": true,"]] },
+      { cls: shown(2), parts: [["  \"filled\": [\"username\", \"password\"],"]] },
+      { cls: shown(3), parts: [["  \"url\": \"https://acme.com\" }"]] },
+    ]);
+    paUser.textContent = PA_USER.slice(0, s.user);
+    paPass.textContent = "•".repeat(s.pass);
+    paUser.classList.toggle("is-focus", s.focus === "user");
+    paPass.classList.toggle("is-focus", s.focus === "pass");
+    pa.classList.toggle("is-filling", s.focus !== "");
+    paNotice.classList.toggle("is-off", s.notice === 0);
+    if (s.notice > 0) paint(paBand, band(paNow.t), 3, colors.blue, s.notice);
+  }
+  function paText() {
+    // The agent's name stays on one line: it's one word to the person.
+    const [lead, name] = say("paNotice");
+    const text = document.createElement("span");
+    const who = document.createElement("span");
+    who.className = "nw";
+    who.textContent = name;
+    text.append(lead, who);
+    document.getElementById("pa-notice-title").replaceChildren(text);
+    document.getElementById("pa-notice-why").textContent = say("paWhy");
+  }
+  const paFrame = () => (reduced.matches ? PA_STILL : paAt(paNow.k));
+  piece(pa, {
+    step() { paNow.k = (paNow.k + 1) % paLength; paNow.t += 0.021; paRender(paAt(paNow.k)); },
+    draw() { paRender(paFrame()); },
+    still() { paRender(PA_STILL); },
+  });
+  onLang.push(() => { paText(); paRender(paFrame()); });
+  paText();
+
+  // ---------------------------------------------------- the proxy --
+  // Not built yet (docs/sitio-web.md §6). A request leaves the sandbox
+  // with its own credential (blue), the proxy puts your token on it (ink)
+  // and only the answer comes back. Twice; then the sandbox is deleted and
+  // a new one starts. The token never moves into the sandbox.
+  const scene = document.getElementById("proxy-scene");
+  const field = document.getElementById("sandbox-field");
+  const sandbox = scene.querySelector(".node-sandbox");
+  const sbxTerm = document.getElementById("sbx-term");
+  const nodeProxy = scene.querySelector(".node-proxy");
+  const nodeApi = scene.querySelector(".node-api");
+  const wires = [...scene.querySelectorAll(".wire")];
+  const packets = wires.map((w) => w.querySelector(".packet"));
+  const timeline = [];
+  // `p` runs 0→1 across a segment unless the segment fixes it (a pause).
+  const seg = (o, n) => { for (let i = 1; i <= n; i++) timeline.push({ p: i / n, ...o }); };
+  for (let round = 0; round < 2; round++) {
+    seg({ wire: 0, kind: "req", dir: 1 }, 7);
+    seg({ at: "proxy", wire: 0, kind: "req", dir: 1, p: 1 }, 3);
+    seg({ wire: 1, kind: "tok", dir: 1, on: "proxy" }, 7);
+    seg({ at: "api" }, 3);
+    seg({ wire: 1, kind: "res", dir: -1 }, 7);
+    seg({ wire: 0, kind: "res", dir: -1 }, 7);
+    seg({}, 6);
+  }
+  seg({ life: "die" }, 8);
+  seg({ life: "dead" }, 14);
+  seg({ life: "born" }, 8);
+  seg({}, 6);
+  const px = { i: 0, t: 1, alive: 1, dead: false };
+  const sandboxField = (t) => (u, v, aspect) => clamp(0.1 + v * 0.75 + (streaks(u, v, aspect, 18, t) - 0.5) * 0.5);
+
+  function renderSbx() {
+    lines(sbxTerm, px.dead
+      ? [{ parts: [[say("sbxDead"), "dim"]] }, { parts: [[say("sbxDeadSub"), "dim"]] }]
+      : [{ parts: [["$ ", "dim"], ["env | grep RAILWAY"]] }, { parts: [[say("sbxNone"), "dim"]] }]);
+  }
+  function frame(f) {
+    const life = f.life === "die" ? 1 - f.p : f.life === "dead" ? 0 : f.life === "born" ? f.p : 1;
+    px.alive = life;
+    const dead = life < 0.5;
+    if (dead !== px.dead) { px.dead = dead; renderSbx(); }
+    sandbox.classList.toggle("is-dead", dead);
+    packets.forEach((pk, i) => {
+      if (f.wire !== i) { pk.hidden = true; return; }
+      pk.hidden = false;
+      pk.className = `packet ${f.kind}`;
+      const w = wires[i], along = w.clientWidth >= w.clientHeight;
+      const room = (along ? w.clientWidth : w.clientHeight) - 12;
+      const at = Math.round((f.dir > 0 ? f.p : 1 - f.p) * room);
+      pk.style.transform = along ? `translateX(${at}px)` : `translateY(${at}px)`;
+    });
+    nodeProxy.classList.toggle("is-on", f.at === "proxy" || f.on === "proxy");
+    nodeApi.classList.toggle("is-on", f.at === "api");
+    paint(field, sandboxField(px.t), 4, colors.blue, life);
+  }
+  const STILL = { wire: 1, kind: "tok", dir: 1, p: 0.5, on: "proxy" };
+  piece(scene, {
+    step() { px.i = (px.i + 1) % timeline.length; px.t += 0.03; frame(timeline[px.i]); },
+    draw() { frame(reduced.matches ? STILL : timeline[px.i]); },
+    still() { frame(STILL); },
+  });
+  onLang.push(renderSbx);
+  renderSbx();
+
+  // ------------------------------------------------- one-time code demo --
+  // A made-up code that changes every 30 s; the bar spends a block a second.
+  const otp = document.getElementById("otp");
+  const bar = document.getElementById("otp-bar");
+  for (let i = 0; i < 30; i++) bar.append(document.createElement("i"));
+  const blocks = [...bar.children];
+  function code() {
+    const now = Date.now() / 1000, win = Math.floor(now / 30), left = 30 - Math.floor(now % 30);
+    const n = String(Math.floor(hash(win, 3, 17) * 1e6)).padStart(6, "0");
+    otp.textContent = `${n.slice(0, 3)} ${n.slice(3)}`;
+    blocks.forEach((b, i) => b.classList.toggle("left", i < left));
+  }
+  code();
+  setInterval(code, 1000);
+
+  // --------------------------------------------------------- waitlist --
+  // One field. The server answers the same for a new email and one it
+  // already has, so the page can't be used to check who signed up.
+  const WL = {
+    en: {
+      sending: "Joining…",
+      done: (e) => `You're on the list. We'll write to ${e} when the hosted plan opens.`,
+      invalid: "Check the email: it needs an @ and a domain.",
+      limited: "Too many tries from here. Wait a few minutes and try again.",
+      failed: "The list didn't answer. Try again in a moment.",
+    },
+    es: {
+      sending: "Apuntando…",
+      done: (e) => `Ya estás en la lista. Te escribiremos a ${e} cuando abra el plan alojado.`,
+      invalid: "Revisa el correo: le falta la @ o el dominio.",
+      limited: "Demasiados intentos desde aquí. Espera unos minutos y vuelve a probar.",
+      failed: "La lista no respondió. Vuelve a probar en un momento.",
+    },
+  };
+  const form = document.getElementById("waitlist");
+  const email = document.getElementById("wl-email");
+  const trap = document.getElementById("wl-website");
+  const submit = document.getElementById("wl-submit");
+  const row = document.getElementById("wl-row");
+  const label = form.querySelector(".wl-label");
+  const status = document.getElementById("wl-status");
+  const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  let wl = { state: "idle", error: "", email: "" };
+
+  function renderWaitlist() {
+    const t = WL[lang];
+    const done = wl.state === "done";
+    row.hidden = done;
+    label.hidden = done;
+    submit.disabled = wl.state === "sending";
+    if (wl.state === "sending") submit.textContent = t.sending;
+    else submit.textContent = (lang === "es" ? ES : EN)["wl.join"];
+    email.setAttribute("aria-invalid", String(wl.state === "error" && wl.error === "invalid"));
+    status.classList.toggle("is-error", wl.state === "error");
+    status.classList.toggle("is-done", done);
+    // textContent, never innerHTML: the email is what the person typed.
+    if (done) status.textContent = t.done(wl.email);
+    else if (wl.state === "error") status.textContent = t[wl.error];
+    status.hidden = !(done || wl.state === "error");
+  }
+  onLang.push(renderWaitlist);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (wl.state === "sending") return;
+    const value = email.value.trim();
+    if (value.length > 254 || !EMAIL.test(value)) {
+      wl = { state: "error", error: "invalid", email: "" };
+      renderWaitlist();
+      email.focus();
+      return;
+    }
+    wl = { state: "sending", error: "", email: value };
+    renderWaitlist();
+    try {
+      const res = await fetch("/api/waitlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: value, lang, website: trap.value }),
+      });
+      if (res.ok) wl = { state: "done", error: "", email: value };
+      else wl = { state: "error", email: "", error: res.status === 400 ? "invalid" : res.status === 429 ? "limited" : "failed" };
+    } catch {
+      wl = { state: "error", error: "failed", email: "" };
+    }
+    renderWaitlist();
+    if (wl.state === "error") email.focus();
+    else status.focus();
+  });
+  email.addEventListener("input", () => {
+    if (wl.state === "error") { wl = { state: "idle", error: "", email: "" }; renderWaitlist(); }
+  });
+
+  // The hero's "Join the waitlist" goes to the form and puts the cursor in it.
+  document.getElementById("hero-waitlist").addEventListener("click", (event) => {
+    event.preventDefault();
+    form.scrollIntoView({ behavior: reduced.matches ? "auto" : "smooth", block: "center" });
+    email.focus({ preventScroll: true });
+    history.replaceState(null, "", "#waitlist");
+  });
+
+  // ------------------------------------------------------------ start --
+  let saved = null;
+  try { saved = localStorage.getItem("klav-lang"); } catch {}
+  const initial = params.get("lang") || saved || ((navigator.language || "en").toLowerCase().startsWith("es") ? "es" : "en");
+  if (initial === "es") setLang("es");
+  else renderProxyTable();
+  settle();
+
+  let last = 0;
+  function tick(now) {
+    if (!reduced.matches && now - last > 120) {
+      last = now;
+      for (const p of pieces) if (p.visible) p.step();
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

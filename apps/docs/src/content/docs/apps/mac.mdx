@@ -1,0 +1,141 @@
+---
+title: "The Mac app"
+description: "Use Klav on a Mac: the menu bar panel, the window, items, Touch ID, vault health, settings, and what the Mac app can't do yet."
+sidebar:
+  order: 1
+---
+
+This page explains what you do with the Mac app day to day: find and copy a password from the menu bar, browse and edit your items in the window, lock and unlock with Touch ID, and check your vault's health. To install the app and sign in, see [Install Klav](/get-started/install/#mac-app) and [Create an account](/get-started/create-an-account/).
+
+The Mac app is a client of `klavd`, the background service that keeps your vault unlocked. Unlocking or locking in the app also unlocks or locks the browser extension and the CLI on this Mac.
+
+## The menu bar
+
+Klav lives in the menu bar: the pixel key, dim while Klav is locked, with the number of agent requests waiting next to it. Closing the window leaves Klav in the menu bar, and the Dock icon shows only while the window is open.
+
+Click the key to open the panel:
+
+- **Search your vault.** The first six results show "User", "Password" and "Code" (when the item has a one-time code). Click one to copy it without opening the window. Return copies the first result's password.
+- **Agent requests waiting,** with "Review", which opens Requests in the window.
+- **The last thing an agent did,** which opens Activity.
+- **Pause agents,** which works even while Klav is locked. See [Pause, change or revoke an agent](/agents/pause-and-revoke/).
+- **An older `klav`,** at the bottom: your terminal may run it instead of the app's. "Show" opens Settings › This Mac, which shows both builds and, for one from `cargo install`, the command that updates it. "Not now" hides it until either build changes.
+- **"Open Klav" (⌘O), "Lock" (⌘L) and "Quit" (⌘Q).**
+
+When Klav is locked, the panel offers "Unlock with Touch ID", or a master password field on a Mac without it.
+
+## The window
+
+The sidebar has:
+
+- "All items", one row per kind of item you have, and your vaults when you have more than one;
+- "Requests", the requests from agents that wait for you;
+- "Development", with "Agents", "Activity" and "Clients";
+- "Passwords", with "Vault health";
+- "Lock", at the bottom.
+
+| Shortcut | What it does |
+|---|---|
+| ⌘1 | All items |
+| ⌘2 | Requests |
+| ⌘3 | Agents |
+| ⌘4 | Vault health |
+| ⌘5 | Activity |
+| ⌘6 | Clients |
+| ⌘F | Search |
+| ⌘N | New item |
+| ⌘E | Edit the open item |
+| ⌘C | Copy the open item's password |
+| ⇧⌘C | Copy the open item's username |
+| ⌘L | Lock Klav |
+| ⌘, | Settings |
+
+The same sections are in the "Go" menu.
+
+## Your items
+
+The list is on the left, with search and live one-time codes, and the open item on the right.
+
+- **Secret values** stay hidden until you choose "Show". Klav hides them again when you lock or open another item.
+- **Copy** a value with the button next to it, or with ⌘C (password) and ⇧⌘C (username).
+- **Website** has "Open". "Reference for agents" copies the item's `klav://` reference.
+- **Notes** and **Previous passwords** show when you ask. A previous password is copied the same way as a current one.
+- **Who used it** lists the last uses of the item by agents. See [The activity log](/agents/activity-log/).
+
+### Create and edit
+
+<Steps>
+
+1. Choose "+" above the list, or press ⌘N. "New item" opens.
+2. Choose the kind: login, API key, card or note. Choose where it goes: Personal / General unless you pick another project.
+3. Fill in the title and the fields. "Generate", next to a password, opens the password generator with the site's password rules. "Use this password" puts it in the field.
+4. For a login's one-time code, paste the setup key or the `otpauth://` link the site gives you.
+5. Choose "Save to the vault".
+
+</Steps>
+
+"Edit" on the item, or ⌘E, opens the same editor. Secret fields are never filled in: an empty secret field says "Unchanged" and keeps the value the item has. Titles are unique in a project, and the editor says so before you save.
+
+### Move to the trash
+
+"Move to the trash…", at the end of the item, asks you to confirm. The item stops showing on all your devices. No Klav app can restore an item from the trash yet.
+
+### Sites an agent added
+
+When an agent adds a website to a login, the item shows it apart, under "Sites added by" and the agent's name, marked "Not confirmed". Klav doesn't fill a login on a site you haven't confirmed. "Confirm" and "Remove" act on all of those sites at once. Saving the item in the editor also confirms them, and the editor says so first.
+
+## Lock and unlock
+
+- **Touch ID** unlocks Klav. It asks for the master password after the Mac restarts and every 14 days. On a Mac without Touch ID, you always use the master password.
+- **Klav locks itself** after 15 minutes without use (the default), and when the Mac sleeps. ⌘L locks it now. A list on screen isn't use, except for its one-time codes: Klav fetches each new code a row or an open item shows, and that counts as use. Opening an item, copying or changing something is use too.
+- **One lock for this Mac.** Unlocking in the app unlocks the browser extension and the CLI too, and locking anywhere locks all three.
+- **After an update,** the app restarts `klavd` the first time it opens, so the new `klavd` runs. Unlock again with Touch ID or the master password.
+
+## The clipboard
+
+A value you copy stays on this Mac: it doesn't go to your other devices through Universal Clipboard. It is marked so clipboard managers that respect the convention don't keep it, and Klav clears it after 30 seconds unless you copied something else since.
+
+## Vault health
+
+"Vault health" (⌘4) lists the passwords to look at, without showing them:
+
+- **Reused:** the same password in two or more items;
+- **Weak** and **Old** (unchanged for over a year);
+- **Breached**, once you turn on "Look for breached passwords". It is off by default. Klav then sends Have I Been Pwned only the first 5 characters of each password's SHA-1 hash; Have I Been Pwned sees your IP address and the time. The setting is for this Mac only.
+
+Click a row to open the item. "Fix my reused passwords" offers one of your agents a task to change your reused passwords, one site at a time, in your browser. You choose the agent and the sites, and approve once with Touch ID or the master password. The agent gets the sites, never which ones shared a password. While it works, a card at the top says which sites changed. See [Approvals and tasks](/agents/approvals-and-tasks/#tasks).
+
+## Agents
+
+The Mac app is where you decide what your agents may do:
+
+- **Requests** (⌘2) holds agents asking to join, task requests and approvals. Each new request also shows a notification. See [Approvals and tasks](/agents/approvals-and-tasks/).
+- **Development › Agents** (⌘3) pauses, changes or revokes an agent. See [Pause, change or revoke an agent](/agents/pause-and-revoke/).
+- **Development › Activity** (⌘5) is the activity log. See [The activity log](/agents/activity-log/).
+- **Development › Clients** (⌘6) connects Klav to Claude Code, Codex, Cursor and other agent clients. See [Connect an agent](/agents/connect-an-agent/).
+
+## Settings
+
+Settings (⌘,) has two tabs:
+
+- **This Mac:** the steps of "Set up this Mac" again (see [Install Klav](/get-started/install/#mac-app)), "Open Klav at login", and "Uninstall Klav from this Mac…", which says what it removes and what it leaves before it does anything.
+
+- **Account:** your account, and "Delete my account".
+
+### Open Klav at login
+
+"Open Klav at login", in Settings › This Mac, is off by default. Turn it on and Klav opens in the menu bar each time you log in, without a window. The switch shows what macOS says: if you turn Klav off in System Settings › General › Login Items & Extensions, the switch is off too. If macOS asks you to allow Klav there, the switch stays off until you do, and the app says so, with "Open Login Items".
+
+It is separate from the background service: `klavd` starts when you log in either way, so the browser extension and the CLI work whether the app opens or not. "Uninstall Klav from this Mac…" turns it off too.
+
+### Delete your account
+
+Settings › Account › "Delete my account" asks the server to delete everything your account has there, 7 days later. It explains what is deleted and what isn't first, then asks for your master password, and for Touch ID too if Klav uses it on this Mac. Every agent stops at once. While you wait, a strip in the window shows the date, with "Cancel the deletion", which you can also do from any other device. After the date, this Mac's copy opens read-only: you can search and copy, but not edit or sync. "Delete this Mac’s copy…" removes it.
+
+## What the Mac app can't do yet
+
+- **Import.** Use the [browser extension, the iPhone app or the CLI](/get-started/import/).
+- **The "Pending change" card** of an assisted password change. Decide it in the [browser extension's popup](/apps/browser-extension/#a-password-an-agent-changed) or on the iPhone.
+- **Generator history.** Generated passwords are kept, but you see the list in the extension, the iPhone app or with `klav generated ls`.
+- **Passkeys.** On a Mac, Klav's passkeys work in your browser through [the extension](/apps/browser-extension/#passkeys); the app has no passkey view.
+- **Restoring from the trash, and listing or removing your devices.** No Klav app does these yet.

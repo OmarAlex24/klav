@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  klavd as a LaunchAgent (ADR 0027 §4), registered by the app with
+  SMAppService.agent(plistName:). It runs the klavd inside Klav.app, so
+  updating the app updates it. With another klavd already answering on the
+  socket, `if-not-running` exits 0 and KeepAlive does not start it again.
+  The program is the binary inside Helpers/klavd.app, the bundle that makes
+  the Touch ID dialog say Klav, with its icon (ADR 0027, note of
+  2026-11-05). Not the Helpers/klavd link to it: a static check of a
+  signature through a link fails.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.klav.klavd</string>
+	<key>BundleProgram</key>
+	<string>Contents/Helpers/klavd.app/Contents/MacOS/klavd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>klavd</string>
+		<string>--if-not-running</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.klav.mac</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

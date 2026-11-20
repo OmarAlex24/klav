@@ -1,0 +1,98 @@
+---
+title: "Data and backups"
+description: "What klav-server keeps in its data folder, how to back it up and restore it consistently, upgrades, and what happens to deleted accounts in your backups."
+sidebar:
+  order: 4
+---
+
+This page explains what `klav-server` keeps, how to back it up without corrupting the database, how to restore it, and what happens to deleted accounts in your backups.
+
+## What is in `/data`
+
+- `klav.db`, `klav.db-wal` and `klav.db-shm`: the SQLite database, in WAL mode.
+- `attachments/<vault>/<attachment>`: encrypted attachments (`.part` while they upload).
+
+The database also holds the **server's OPAQUE setup**, created on the first start. If it is lost, nobody can sign in again, although the encrypted data is still safe. Always back up the whole database.
+
+What you back up is already encrypted end to end, but keep backups as carefully as the server: they hold email addresses and metadata.
+
+## Back up
+
+The simplest consistent backup stops the server for a moment:
+
+```sh
+docker compose stop klav
+docker run --rm -v klav_klav-data:/data:ro -v "$PWD":/backup debian:bookworm-slim \
+  tar czf /backup/klav-$(date +%F).tar.gz -C /data .
+docker compose start klav
+```
+
+The volume's name starts with the Compose project's name, which is the folder's name by default (`klav_klav-data`). Check it with `docker volume ls`.
+
+Don't copy the database files while the server runs: SQLite spreads changes between `klav.db` and `klav.db-wal`, and a copy taken halfway may not open. If you can't stop it, use SQLite's backup command, which is consistent while the server writes, from a machine with `sqlite3` that sees the volume (the image doesn't include it). Then copy the attachments separately:
+
+```sh
+sqlite3 /path/to/volume/klav.db ".backup '/backups/klav-$(date +%F).db'"
+sqlite3 /backups/klav-$(date +%F).db 'PRAGMA integrity_check'
+```
+
+```text
+ok
+```
+
+## Restore
+
+Stop the server, empty the volume, extract the backup into it, and start the server again.
+
+If the backup came from `sqlite3 .backup`, put that file in the empty volume as `klav.db` and the attachments you copied as `attachments/`, and make both owned by UID 10001, the user the server runs as (`chown -R 10001:10001` on them).
+
+<Aside type="caution" title="What a restore undoes">
+A backup holds only what the server had when you took it. Everything changed after it (items added or edited, and items deleted, which come back) now exists only on the devices that saw it, and `klav sync --reset-cache` below deletes it from each device it runs on. Klav can't export a vault yet, so save those changes by hand first. Files attached after the backup are gone: devices download attachments from the server and don't keep them.
+
+Agents get back the access they had when you took the backup: one you revoked or paused after it works again. After step 5, check `klav agent list`, and revoke those agents again with `klav agent revoke <agent> --rotate`. Permissions you narrowed after the backup are wide again too: narrow them again with `klav agent approve <agent>`.
+</Aside>
+
+Every device remembers the newest state of each vault it saw. After you restore an older backup, a device refuses what the server sends as a rollback: its commands warn and keep using the device's own copy, unchanged, and `klav sync` fails with exit code 3. That copy is how you keep the newer changes:
+
+1. **Pick the device that saw the most changes,** usually the one you use most.
+2. **On it, note or copy what changed after the backup.** `klav item ls` lists the items on the device, `klav item ls --trash` the ones deleted, and `klav item get <item> --reveal` shows one with its secret values; the apps show them too. A passkey saved after the backup can't be added back by hand: sign in on that site and save a new one.
+3. **On every other device, run:**
+
+   ```sh
+   klav sync --reset-cache
+   klav log reset
+   ```
+
+   Both ask you to confirm; in a script, add `--yes`. The first forgets the device's copy of your vaults and the marks that detect a rollback. The second does the same for the activity log, which keeps its own copy: until you run it, `klav log` and `klav log verify` fail with exit code 3. Afterwards nothing can check the entries from before the reset: run it only for a backup you restored yourself.
+
+   With `klavd` running, as it is alongside the Mac app, both also cover the Mac app and the browser extension, which go through it. The iPhone app has no such command: in its Settings, use "Sign out on this iPhone", which deletes its copy and its Secret Key, and sign in again with your email, master password and the Secret Key from your emergency kit (`klav account kit` shows it again on a computer that still has the account). If passkeys or generated passwords haven't been uploaded yet, Klav says how many before it signs out; copy them first.
+
+   A device you signed in after the backup is unknown to the restored server: its commands, `klav item ls` included, fail with "the session expired or was revoked" (exit code 1), so don't pick it in step 1. On it, run `klav logout --yes` and then `klav login` with your emergency kit instead.
+4. **Reset the device you picked last,** once you have everything you need from it.
+5. **Add the changes again,** from any device.
+
+## Upgrades
+
+Database migrations run by themselves when the server starts. Take a backup before you upgrade: going back to an older version may need it.
+
+## Deleted accounts and backups
+
+Anyone with an account can delete it from the iPhone app, the Mac app or with `klav account delete`; there is no setting to turn that off. The server deletes the account 7 days after the request, in its regular purge (`retention.purge_interval_secs`, every hour by default), with all its data and its vaults' files. The email becomes free for a new account.
+
+What stays:
+
+- **Your backups** keep the account until you delete them. If you restore one taken before a deletion, the account comes back. To delete it again, find the `account deleted` lines in the log after the backup's date (each has the account's ID in its `account` field), and with the server stopped, delete each account:
+
+  ```sh
+  sqlite3 /path/to/volume/klav.db \
+    "PRAGMA foreign_keys = ON; \
+     DELETE FROM vault_members WHERE member_type = 'account' AND member_id = '<account_id>'; \
+     DELETE FROM accounts WHERE id = '<account_id>';"
+  ```
+
+  `PRAGMA foreign_keys = ON` makes SQLite delete everything that belongs to the account; on Postgres that always happens. The server's next purge removes those vaults' files.
+- **The log** keeps the `account deleted` lines for as long as you keep it. They hold only the account's ID.
+
+## Next
+
+[Postgres](/self-hosting/postgres/).

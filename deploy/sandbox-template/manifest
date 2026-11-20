@@ -1,0 +1,60 @@
+# The sandbox template's manifest (ADR 0042 §7, layer 3).
+#
+# Fill in a copy for each Klav release and give it to build-template with
+# --manifest. Every key is required but ALLOW: build-template refuses an
+# empty or malformed value, and never picks a version on its own. It holds
+# no secret. build-template writes the values, the allow list and what it
+# installed to /etc/klav-sandbox-template/manifest in the template.
+#
+# Format: KEY=VALUE, one per line, no quotes; `#` starts a comment line.
+# Only ALLOW may appear more than once.
+
+# The Klav release. The template is saved as klav-sandbox-<KLAV_VERSION>,
+# a new name for each release. Digits, lowercase letters, dots and dashes.
+KLAV_VERSION=
+
+# The release's full commit (40 lowercase hex). `klav-forward --version`
+# must name it, and so must the `klav` that prints the setup lines.
+KLAV_COMMIT=
+
+# SHA-256 (64 lowercase hex) of the Linux klav-forward binary of that
+# commit, from the release's CI run (docs/releasing.md §1 and §6), until a
+# release carries it. build-template checks it before installing.
+KLAV_FORWARD_SHA256=
+
+# SHA-256 (64 lowercase hex) of Tailscale's apt keyring for the build
+# machine's release, https://pkgs.tailscale.com/stable/<ID>/<CODENAME>.noarmor.gpg
+# (ID and VERSION_CODENAME from /etc/os-release). Fetched once and pinned:
+# build-template refuses a keyring with another hash. It changes only when
+# Tailscale rotates its key.
+TAILSCALE_KEYRING_SHA256=
+
+# Exact versions from Tailscale's signed apt repository and from apt, as
+# `apt-cache policy tailscale jq` names them.
+TAILSCALE_VERSION=
+JQ_VERSION=
+
+# The Northflank CLI and the agent CLIs, from npm, space-separated, each as
+# name@version with an exact version (no ranges, no tags).
+NPM_PACKAGES=
+
+# The login files of those CLIs, relative to a home and space-separated,
+# beyond .claude/.credentials.json and .codex/auth.json, which are always
+# checked. Write `none` if there is no other. Northflank's public docs
+# (https://northflank.com/docs/v1/api/use-the-cli) say its CLI keeps its
+# logins in .northflank/config.json, or in config.json in the folder that
+# NF_CONFIG_DIR or NORTHFLANK_CONFIG_DIR names; check-template sees only
+# the paths listed here, never a folder moved with those variables.
+AGENT_LOGIN_FILES=
+
+# The allow list: files of the base image that name a string the scan looks
+# for, or that sit in Boat's folder ~/.config/ascii, and hold no secret. One
+# line per file, as `check-template --hashes` prints it:
+#
+#   ALLOW=<SHA-256, 64 lowercase hex>  <absolute path>
+#
+# with two spaces between. A file is excused only while it is a regular file
+# at that path with that SHA-256. Look at each file before you list it. The
+# list never excuses a login, an SSH key, git credentials, forwarder or
+# Tailscale state, or the two Klav files, and takes no path under /var/log
+# or apt's lists (build-template empties both). None by default.

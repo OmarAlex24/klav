@@ -1,0 +1,5 @@
+dist/
+build/
+src/wasm-gen/
+test-results/
+playwright-report/

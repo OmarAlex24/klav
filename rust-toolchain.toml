@@ -1,0 +1,31 @@
+# An exact release, not `stable`, so CI, Boat sandboxes and laptops compile
+# with the same rustc. sccache's keys include the compiler: a `stable` that
+# resolves to another release on one side (a release day, an older runner
+# image) misses every crate, and clippy verdicts can change without a commit.
+# rustup installs this version the first time `cargo` runs in the repository.
+#
+# To bump it, in a PR of its own:
+#   1. Set `channel` to the new release; CI runs fmt, clippy and the tests with
+#      it. Fix new lints in the same PR. Prefer the release the Boat runner
+#      image ships as `stable` (the `rustc` line of the "rust: install rustup
+#      and the toolchain" step in a CI log): CI reuses it. Any other release
+#      is downloaded on every CI run (5–150 s), and that step warns.
+#   2. Pin the same release in the `rust:` base image of the four
+#      Dockerfiles (`Dockerfile`, `deploy/railway/Dockerfile`,
+#      `deploy/proxy/Dockerfile` and `deploy/linux/Dockerfile`, the Linux
+#      release build): the Docker build doesn't read this file, so the
+#      shipped binary would otherwise come from another rustc. Take the
+#      "Digest:" line of
+#      `docker buildx imagetools inspect rust:<release>-slim-bookworm`.
+#   3. Expect cold builds once: sccache misses every crate on the first CI
+#      runs (main, then each branch), in every sandbox and in the Docker build.
+#
+# 1.98.1 is ahead of the Boat image's `stable` (1.97.1 on 2026-11-09) on
+# purpose: on macOS 27, 1.97.1 links sqlx's proc-macro into a dylib that dyld
+# refuses ("mis-aligned LINKEDIT string pool"), so nothing that uses sqlx
+# builds on a Mac. Until the image ships 1.98.1, CI downloads it and warns;
+# don't go back to 1.97.1 to silence the warning.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

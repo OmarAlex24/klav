@@ -1,0 +1,43 @@
+{
+  "cases": [
+    {
+      "aad": "01150000001b6b6c61762f76312f706173736b65792f707269766174652d6b657900000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010c0ef1745472f70d1965d6c2983fb4c1b0000001047d6b7ac66e4ded5cc94eed2a59037340000000b6578616d706c652e636f6d0000000e6b6c61762d757365722d30303031",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "credential_id": "47d6b7ac66e4ded5cc94eed2a5903734",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "message": "6b6c6176207465737420766563746f723a206d657373616765207369676e6564206279206120706173736b6579",
+      "name": "passkey-key",
+      "nonce": "a344655577f2473fbb4b242221a28945ecb50db8705fd4af",
+      "public_key": "04f356ae2239042e5bb5e25f2b868f88acc1b0028072fd724dd3186175bd72fcdcc72864e48c87449bbd78206836fdfbe10f085cd57a3274303ad865afb9e9935e",
+      "public_key_spki": "3059301306072a8648ce3d020106082a8648ce3d03010703420004f356ae2239042e5bb5e25f2b868f88acc1b0028072fd724dd3186175bd72fcdcc72864e48c87449bbd78206836fdfbe10f085cd57a3274303ad865afb9e9935e",
+      "rp_id": "example.com",
+      "scalar": "ebb83c2230675936b146e04bf236d61fb839922f531e9e39ff17fc65c4078f10",
+      "sealed_key": "0115a344655577f2473fbb4b242221a28945ecb50db8705fd4af992862094aeb884377d668ccc0029a2c3d2e8f1ea4824fb3d28488a66c961313e18be4fe1ad67f5d6cd44a42d8212860",
+      "signature": "3045022100e0e3e720b66159d1de13effdeb5ec8da421d233ec6a60f3932c6ca5b54cea08402207260ebb4be8bd04a5ca9a1aba0c07140ab5729183b0a29288cc8ceb06bcf8bc7",
+      "user_handle": "6b6c61762d757365722d30303031",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "vault_key": "8575e611d7683f862068648b1eb643171e09110e6fbaaadf0fbe0926d9e520ae"
+    },
+    {
+      "aaguid": "a36a6cd0200d411fa41db964cce16689",
+      "attestation_object": "a363666d74646e6f6e656761747453746d74a06861757468446174615894a379a6f6eeafb9a55e378c118034e2751e682fab9f2d30ab13d2125586ce19475d00000000a36a6cd0200d411fa41db964cce16689001047d6b7ac66e4ded5cc94eed2a5903734a5010203262001215820f356ae2239042e5bb5e25f2b868f88acc1b0028072fd724dd3186175bd72fcdc225820c72864e48c87449bbd78206836fdfbe10f085cd57a3274303ad865afb9e9935e",
+      "create_auth_data": "a379a6f6eeafb9a55e378c118034e2751e682fab9f2d30ab13d2125586ce19475d00000000a36a6cd0200d411fa41db964cce16689001047d6b7ac66e4ded5cc94eed2a5903734a5010203262001215820f356ae2239042e5bb5e25f2b868f88acc1b0028072fd724dd3186175bd72fcdc225820c72864e48c87449bbd78206836fdfbe10f085cd57a3274303ad865afb9e9935e",
+      "create_challenge": "13c39c3bf622373032b54b4f4a6f621a20f8a887ad45d8706b60757ec49b04c1",
+      "create_client_data_json": "{\"type\":\"webauthn.create\",\"challenge\":\"E8OcO_YiNzAytUtPSm9iGiD4qIetRdhwa2B1fsSbBME\",\"origin\":\"https://login.example.com\",\"crossOrigin\":false}",
+      "credential_id": "47d6b7ac66e4ded5cc94eed2a5903734",
+      "get_auth_data": "a379a6f6eeafb9a55e378c118034e2751e682fab9f2d30ab13d2125586ce19471d00000000",
+      "get_challenge": "e1aef4179a1d02d72bdd8d567965a32e96c638afc5d0bea3df77bbead1b8a421",
+      "get_client_data_json": "{\"type\":\"webauthn.get\",\"challenge\":\"4a70F5odAtcr3Y1WeWWjLpbGOK_F0L6j33e76tG4pCE\",\"origin\":\"https://login.example.com\",\"crossOrigin\":false}",
+      "get_signature": "304502203653ab6b0f86520055c03a0407fa4b6ff80a000a0a8a04dcfa839c41788e9de6022100fcc5facb8e6a9367b5dbc34f6fdca5272952d2cfa9976970d1f5b2e065e634f4",
+      "name": "webauthn",
+      "origin": "https://login.example.com",
+      "public_key_cose": "a5010203262001215820f356ae2239042e5bb5e25f2b868f88acc1b0028072fd724dd3186175bd72fcdc225820c72864e48c87449bbd78206836fdfbe10f085cd57a3274303ad865afb9e9935e",
+      "rp_id": "example.com",
+      "scalar": "ebb83c2230675936b146e04bf236d61fb839922f531e9e39ff17fc65c4078f10"
+    }
+  ],
+  "description": "Passkeys: llave privada P-256 sellada con la llave de bóveda, firma ES256 (RFC 6979, DER), y el registro y la aserción WebAuthn de Klav",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §14"
+}

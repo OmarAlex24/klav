@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "aad": "01160000001c6b6c61762f76312f6974656d2f70617373776f72642d7265636f726400000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010c0ef1745472f70d1965d6c2983fb4c1b",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ciphertext": "011695ad006a624f28988fca8e0c90fd7b18dc298bebfa5e850601a5381f072a64238e1456c1db23bda3fb607fb410f8cbd133da18d9d7996f6f593834cae5b4e62f93244cafeac5c41e03ee625305e94aeab2e5f36bded479baf25d5175ff72a7479dd458396bdf92f33e88dd304fb87b2c7a8a365d896fa92c37fe60d1c4f0f9310e74f4904c664475ce436bf27779ddb9533d7f880b91",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "key": "8575e611d7683f862068648b1eb643171e09110e6fbaaadf0fbe0926d9e520ae",
+      "name": "password-record",
+      "nonce": "95ad006a624f28988fca8e0c90fd7b18dc298bebfa5e8506",
+      "plaintext": "{\"v\":1,\"history\":[{\"field\":\"password\",\"value\":\"correct horse\",\"from_ms\":1800000000000,\"to_ms\":1800000500000}]}",
+      "vault_id": "be95de59b617035725a062fdf46a63f1"
+    },
+    {
+      "aad": "01160000001c6b6c61762f76312f6974656d2f70617373776f72642d7265636f726400000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010c0ef1745472f70d1965d6c2983fb4c1b",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ciphertext": "01165a33ad7a65238217433d4388922e93070b6c6d9244058658892e8435a273eb47367292dd2992b49edc99db20263dabe6bc26379c09c73151dee828ed5d21cc318ed3535e5db06c60375d1149a547e3e9aff6ddde86ef89a21e68c808761d0902f3a529b951532c8ced76f2ff55e2cac91482983eab85c9558ef4d6bcaadfa067afa8ac4ee9ebe7c111f6455f14788fbdfc3581d0d174a8eecb12cadfcf3e847da4d933058a205a545cb98f00df83e45fb5ef472a6e15f3b54b868bbf48ae65c62abd9411f7a95a21724aa4703a48828c578e8ed73ec2d0fab0f35522c0dcc3a48a600b2204495f27a8594ee04b973b50b3b355183a45b5ea6a852520b2433b7a4dd48441d64808f959a71e40553895732331b75faf6aadbb69d0c0bcbae4c733af09df327f9a5589ffd85a8a203dabe51c2dba3640466fb3a2c63c86025ef426f37837b44117205131e124920a3601c7e74e4110ec134b3cf98c70912d8bdf484549939943b56bac556d2f84d4fb8f0c263ce1888153af777909baebce4a1c8201f4b0cff8526154e0e4151feef5b5b413b874885cd1e3bf1f9f21ff957de3cc0b806d429dcc003393cfc67389f6e34396734d337373ecf60c4e92e596f58277ef69e2082b8721179708c69727",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "key": "8575e611d7683f862068648b1eb643171e09110e6fbaaadf0fbe0926d9e520ae",
+      "name": "password-record-rotation",
+      "nonce": "5a33ad7a65238217433d4388922e93070b6c6d9244058658",
+      "plaintext": "{\"v\":2,\"history\":[{\"field\":\"password\",\"value\":\"correct horse\",\"from_ms\":1800000000000,\"to_ms\":1800000500000},{\"field\":\"password\",\"value\":\"x7#Lq9vR2mWt8Kp4Zs1B\",\"from_ms\":1800000600000,\"to_ms\":1800000660000,\"unconfirmed\":true}],\"pending\":{\"field\":\"password\",\"value\":\"Hn3$Vd8qPz2Rk7Lw5Tb9\",\"created_at_ms\":1800000700000,\"task_id\":\"0193c2a4-5b6d-4e7f-8a9b-0c1d2e3f4a5b\",\"rotation_id\":\"0193c2a4-6c7d-4e8f-9a0b-1c2d3e4f5a6b\"}}",
+      "vault_id": "be95de59b617035725a062fdf46a63f1"
+    },
+    {
+      "name": "system-project",
+      "project_id": "2aa43a81fc618cb383c6b3808edacd6d",
+      "vault_id": "be95de59b617035725a062fdf46a63f1"
+    }
+  ],
+  "description": "Registro de contraseñas de un elemento, sellado con la llave de bóveda, e ID del proyecto de sistema",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §7.3"
+}

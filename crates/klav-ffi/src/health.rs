@@ -1,0 +1,548 @@
+//! Vault health and assisted password changes for the phone (ADR 0022
+//! §4–6): the health report, the breach check's setting, an item's pending
+//! password («Use the new one» / «Keep the current one») and «Fix my
+//! reused passwords», the task the person offers an agent, with each
+//! site's progress.
+//!
+//! Everything is `klav-client`: the report is computed on this device and
+//! carries no value, hash or `zxcvbn` hint, only items, hosts and reasons.
+//! The offer is signed by `klav-client` through `klav-core`.
+
+use std::sync::atomic::Ordering;
+
+use klav_client::health::{
+    BREACH_API, BreachReport, HealthItem, HealthSettings, OldPassword, VaultHealth,
+};
+use klav_client::history::PasswordHistoryView;
+use klav_client::offer::{OfferRequest, OfferRow, ReusedOffer, TaskProgress};
+use klav_core::ids::ItemId;
+
+use crate::types::Kind;
+use crate::{KlavCore, KlavError, KlavResult, item_id, location, task_item, wire_name};
+
+/// An item with a health problem: never a value.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HealthItemInfo {
+    /// Item ID.
+    pub id: String,
+    /// Vault ID.
+    pub vault_id: String,
+    /// Project ID.
+    pub project_id: String,
+    /// `klav://vault/project/item`.
+    pub reference: String,
+    /// Type.
+    pub kind: Kind,
+    /// Title.
+    pub title: String,
+    /// User name, if any.
+    pub username: Option<String>,
+    /// Hosts of its URLs.
+    pub hosts: Vec<String>,
+    /// The field's name.
+    pub field: String,
+    /// The field's label (its name if it has none).
+    pub field_label: String,
+}
+
+/// Items that share one password.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ReusedGroupInfo {
+    /// Two or more items, by title.
+    pub items: Vec<HealthItemInfo>,
+}
+
+/// A weak password.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WeakPasswordInfo {
+    /// Where.
+    pub item: HealthItemInfo,
+    /// `zxcvbn` score, 0 (worst) to 4.
+    pub score: u8,
+    /// Known entropy in bits, when it came out of the generator.
+    pub generated_bits: Option<u32>,
+}
+
+/// A password unchanged for more than a year.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OldPasswordInfo {
+    /// Where.
+    pub item: HealthItemInfo,
+    /// Unchanged since (Unix ms).
+    pub since_ms: i64,
+    /// Whole days since then.
+    pub days: u64,
+    /// `record` (the item's password record) or `created` (no change
+    /// recorded: when the item was created).
+    pub source: String,
+}
+
+/// A password seen in breaches.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct BreachedPasswordInfo {
+    /// Where.
+    pub item: HealthItemInfo,
+    /// How many times Have I Been Pwned saw it.
+    pub count: u64,
+}
+
+/// The breach check's outcome.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct BreachInfo {
+    /// `off` (the default), `checked` or `failed`.
+    pub status: String,
+    /// The passwords seen in breaches (`checked`).
+    pub found: Vec<BreachedPasswordInfo>,
+    /// Prefixes sent (`checked`).
+    pub queries: u32,
+    /// Why it failed (`failed`).
+    pub message: Option<String>,
+}
+
+/// The vault health report (ADR 0022 §4): items, hosts and reasons, never
+/// values.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct VaultHealthInfo {
+    /// When it was computed (Unix ms).
+    pub checked_at: i64,
+    /// Items looked at.
+    pub items: u32,
+    /// Password fields looked at.
+    pub passwords: u32,
+    /// Items that could not be opened (left out).
+    pub skipped: u32,
+    /// Groups of items that share a password, largest first.
+    pub reused: Vec<ReusedGroupInfo>,
+    /// Weak passwords.
+    pub weak: Vec<WeakPasswordInfo>,
+    /// Old passwords, oldest first.
+    pub old: Vec<OldPasswordInfo>,
+    /// The breach check.
+    pub breaches: BreachInfo,
+}
+
+/// This device's health settings (`health.json`, not synced).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HealthSettingsInfo {
+    /// Check passwords against Have I Been Pwned. Off by default.
+    pub breach_check: bool,
+}
+
+/// One previous password of an item, without its value.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PreviousPasswordInfo {
+    /// Position, newest first.
+    pub index: u32,
+    /// Field name.
+    pub field: String,
+    /// Field label.
+    pub label: String,
+    /// Since when (Unix ms), if known.
+    pub from_ms: Option<i64>,
+    /// Until when (Unix ms).
+    pub to_ms: i64,
+    /// Generated for an assisted change that was never confirmed: the site
+    /// may or may not have it.
+    pub unconfirmed: bool,
+}
+
+/// An item's password history and its pending password, if any.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PasswordHistoryInfo {
+    /// Previous passwords, newest first.
+    pub entries: Vec<PreviousPasswordInfo>,
+    /// A new password generated by an assisted change and not confirmed
+    /// yet («Pending change: did the new password work?»).
+    pub pending: bool,
+    /// When that pending password was generated (Unix ms).
+    pub pending_since: Option<i64>,
+}
+
+/// An agent the person can offer the task to.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OfferAgentInfo {
+    /// ID.
+    pub id: String,
+    /// Name.
+    pub name: String,
+}
+
+/// One login on the «Fix my reused passwords» card. Metadata only.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OfferRowInfo {
+    /// Item ID.
+    pub item_id: String,
+    /// Vault ID.
+    pub vault_id: String,
+    /// Project ID.
+    pub project_id: String,
+    /// `klav://vault/project/item`.
+    pub reference: String,
+    /// Title.
+    pub title: String,
+    /// User name.
+    pub username: Option<String>,
+    /// The item's hosts: where the agent may change it.
+    pub hosts: Vec<String>,
+    /// The site's change-password page.
+    pub change_url: Option<String>,
+    /// Which group of logins sharing one password it is in (1, 2…), for
+    /// the person only: the agent never gets it.
+    pub group: Option<u32>,
+    /// What the task would hold: `rotate`, and `totp` if the login has a
+    /// code and the policy does not deny it.
+    pub permissions: Vec<String>,
+    /// Why it cannot go in the task: `not_granted`, `no_site`,
+    /// `not_login` or `other_field`.
+    pub blocked: Option<String>,
+}
+
+/// The «Fix my reused passwords» card: the agents that can take it and the
+/// logins that share a password.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ReusedOfferInfo {
+    /// Active agents with a grant.
+    pub agents: Vec<OfferAgentInfo>,
+    /// The agent the rows were checked against.
+    pub agent: Option<OfferAgentInfo>,
+    /// The logins, sorted by host; blocked ones last.
+    pub rows: Vec<OfferRowInfo>,
+    /// Default title.
+    pub task: String,
+    /// Default reason.
+    pub reason: String,
+    /// Default duration (seconds).
+    pub duration_secs: u64,
+}
+
+/// What the person approves: the agent, the logins left checked and,
+/// optionally, their own title, reason and duration.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OfferInput {
+    /// The agent (ID or name).
+    pub agent: String,
+    /// The logins (item IDs).
+    pub items: Vec<String>,
+    /// Title (neutral by default).
+    pub task: Option<String>,
+    /// Reason.
+    pub reason: Option<String>,
+    /// Duration in seconds (5 minutes to 24 hours; 2 hours by default).
+    pub duration_secs: Option<u64>,
+}
+
+/// One site of a task with `rotate`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SiteProgressInfo {
+    /// Item ID.
+    pub item_id: String,
+    /// `klav://…`, if this device knows the item.
+    pub reference: Option<String>,
+    /// Title, if this device knows the item.
+    pub title: Option<String>,
+    /// The hosts the task allows.
+    pub hosts: Vec<String>,
+    /// `changed`, `pending` or `failed`.
+    pub state: String,
+    /// The agent started a change and has not closed it yet.
+    pub started: bool,
+    /// Time of the last change event for this site (Unix ms).
+    pub at: Option<i64>,
+}
+
+/// The sites of a task with `rotate` and where each one is.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TaskProgressInfo {
+    /// The task.
+    pub task_id: String,
+    /// Its card, while the server still lists it.
+    pub card: Option<crate::TaskItem>,
+    /// One per login with `rotate`, in the task's order.
+    pub sites: Vec<SiteProgressInfo>,
+}
+
+fn count(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+fn health_item(i: HealthItem) -> HealthItemInfo {
+    HealthItemInfo {
+        id: i.id.to_string(),
+        vault_id: i.vault_id.to_string(),
+        project_id: i.project_id.to_string(),
+        reference: i.reference,
+        kind: i.kind.into(),
+        title: i.title,
+        username: i.username,
+        hosts: i.hosts,
+        field: i.field,
+        field_label: i.field_label,
+    }
+}
+
+fn old_password(o: OldPassword) -> OldPasswordInfo {
+    OldPasswordInfo {
+        item: health_item(o.item),
+        since_ms: o.since_ms,
+        days: o.days,
+        source: wire_name(&o.source),
+    }
+}
+
+pub(crate) fn vault_health_info(report: VaultHealth) -> VaultHealthInfo {
+    let breaches = match report.breaches {
+        BreachReport::Off => BreachInfo {
+            status: "off".into(),
+            found: Vec::new(),
+            queries: 0,
+            message: None,
+        },
+        BreachReport::Checked { found, queries } => BreachInfo {
+            status: "checked".into(),
+            found: found
+                .into_iter()
+                .map(|b| BreachedPasswordInfo {
+                    item: health_item(b.item),
+                    count: b.count,
+                })
+                .collect(),
+            queries: count(queries),
+            message: None,
+        },
+        BreachReport::Failed { message } => BreachInfo {
+            status: "failed".into(),
+            found: Vec::new(),
+            queries: 0,
+            message: Some(message),
+        },
+    };
+    VaultHealthInfo {
+        checked_at: report.checked_at,
+        items: count(report.items),
+        passwords: count(report.passwords),
+        skipped: count(report.skipped),
+        reused: report
+            .reused
+            .into_iter()
+            .map(|g| ReusedGroupInfo {
+                items: g.items.into_iter().map(health_item).collect(),
+            })
+            .collect(),
+        weak: report
+            .weak
+            .into_iter()
+            .map(|w| WeakPasswordInfo {
+                item: health_item(w.item),
+                score: w.score,
+                generated_bits: w.generated_bits,
+            })
+            .collect(),
+        old: report.old.into_iter().map(old_password).collect(),
+        breaches,
+    }
+}
+
+pub(crate) fn history_info(view: PasswordHistoryView) -> PasswordHistoryInfo {
+    PasswordHistoryInfo {
+        entries: view
+            .entries
+            .into_iter()
+            .map(|p| PreviousPasswordInfo {
+                index: count(p.index),
+                field: p.field,
+                label: p.label,
+                from_ms: p.from_ms,
+                to_ms: p.to_ms,
+                unconfirmed: p.unconfirmed,
+            })
+            .collect(),
+        pending: view.pending,
+        pending_since: view.pending_since,
+    }
+}
+
+fn offer_row(r: OfferRow) -> OfferRowInfo {
+    OfferRowInfo {
+        item_id: r.item_id.to_string(),
+        vault_id: r.vault_id.to_string(),
+        project_id: r.project_id.to_string(),
+        reference: r.reference,
+        title: r.title,
+        username: r.username,
+        hosts: r.hosts,
+        change_url: r.change_url.map(|c| c.url),
+        group: r.group.map(count),
+        permissions: r
+            .permissions
+            .into_iter()
+            .map(|p| p.as_str().to_owned())
+            .collect(),
+        blocked: r.blocked.map(|b| wire_name(&b)),
+    }
+}
+
+pub(crate) fn reused_offer_info(o: ReusedOffer) -> ReusedOfferInfo {
+    let agent = |a: klav_client::offer::OfferAgent| OfferAgentInfo {
+        id: a.id.to_string(),
+        name: a.name,
+    };
+    ReusedOfferInfo {
+        agents: o.agents.into_iter().map(agent).collect(),
+        agent: o.agent.map(agent),
+        rows: o.rows.into_iter().map(offer_row).collect(),
+        task: o.task,
+        reason: o.reason,
+        duration_secs: o.duration_secs,
+    }
+}
+
+pub(crate) fn offer_request(input: OfferInput) -> KlavResult<OfferRequest> {
+    Ok(OfferRequest {
+        agent: input.agent,
+        items: input
+            .items
+            .iter()
+            .map(|i| item_id(i))
+            .collect::<KlavResult<Vec<ItemId>>>()?,
+        task: input.task,
+        reason: input.reason,
+        duration_secs: input.duration_secs,
+    })
+}
+
+pub(crate) fn task_progress_info(p: TaskProgress) -> TaskProgressInfo {
+    TaskProgressInfo {
+        task_id: p.task_id.to_string(),
+        card: p.card.map(task_item),
+        sites: p
+            .sites
+            .into_iter()
+            .map(|s| SiteProgressInfo {
+                item_id: s.item_id.to_string(),
+                reference: s.reference,
+                title: s.title,
+                hosts: s.hosts,
+                state: wire_name(&s.state),
+                started: s.started,
+                at: s.at,
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+#[uniffi::export]
+impl KlavCore {
+    /// The vault health report (ADR 0022 §4), computed on this device. The
+    /// breach check runs only if the person turned it on
+    /// ([`Self::set_breach_check`]), after the vault's lock is released,
+    /// so a slow answer never holds up the rest of the app.
+    pub fn vault_health(&self) -> KlavResult<VaultHealthInfo> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let scan = self.with(|u| Ok(u.health_scan(now_ms())))?;
+        let settings = HealthSettings::load(&self.home)?;
+        let report = self
+            .runtime
+            .block_on(scan.finish(settings.breach_check.then_some(BREACH_API)));
+        // Locked while the breach check waited on the network: like any
+        // other call, its result is not handed out.
+        if self.generation.load(Ordering::SeqCst) != generation {
+            return Err(KlavError::Locked);
+        }
+        Ok(vault_health_info(report))
+    }
+
+    /// The breach check's setting on this device (no unlock needed).
+    pub fn health_settings(&self) -> KlavResult<HealthSettingsInfo> {
+        let settings = HealthSettings::load(&self.home)?;
+        Ok(HealthSettingsInfo {
+            breach_check: settings.breach_check,
+        })
+    }
+
+    /// Turns the breach check on or off on this device. The app shows what
+    /// it sends before the person turns it on.
+    pub fn set_breach_check(&self, on: bool) -> KlavResult<HealthSettingsInfo> {
+        let mut settings = HealthSettings::load(&self.home)?;
+        settings.breach_check = on;
+        settings.save(&self.home)?;
+        Ok(HealthSettingsInfo { breach_check: on })
+    }
+
+    /// The previous passwords of an item, newest first, without values,
+    /// and whether an assisted change left a new one pending.
+    pub fn password_history(&self, id: String) -> KlavResult<PasswordHistoryInfo> {
+        self.with(|u| {
+            let loc = location(u, &id)?;
+            Ok(history_info(u.password_history(loc)?))
+        })
+    }
+
+    /// The person decides on an item's pending password (ADR 0022 §5):
+    /// «Use the new one» (`accept`) makes it current and the old one goes
+    /// to the history; «Keep the current one» moves the pending one to the
+    /// history, unconfirmed. Returns the history afterwards.
+    pub fn resolve_pending(&self, id: String, accept: bool) -> KlavResult<PasswordHistoryInfo> {
+        self.writing(|u| {
+            let loc = location(u, &id)?;
+            // The app does not show the person's warnings yet (that the
+            // log holds the agent's other outcome): only `klavd` returns
+            // them.
+            let _unshown = self.runtime.block_on(u.resolve_pending(loc, accept))?;
+            Ok(history_info(u.password_history(loc)?))
+        })
+    }
+
+    /// The «Fix my reused passwords» card (ADR 0022 §6): the logins that
+    /// share a password, sorted by host, with their change pages, checked
+    /// against `agent`'s grant (the only agent with a grant when absent,
+    /// if there is just one). Never for an agent.
+    pub fn reused_offer(&self, agent: Option<String>) -> KlavResult<ReusedOfferInfo> {
+        self.with(|u| {
+            let offer = self.runtime.block_on(u.reused_offer(agent.as_deref()))?;
+            Ok(reused_offer_info(offer))
+        })
+    }
+
+    /// Checks an offer before the person is asked for Face ID: the agent
+    /// is active with a grant and every login can go in the task. Nothing
+    /// is signed or sent. Returns how many logins it holds.
+    pub fn check_offer(&self, offer: OfferInput) -> KlavResult<u32> {
+        let request = offer_request(offer)?;
+        self.with(|u| {
+            let prepared = self.runtime.block_on(u.prepare_offer(&request))?;
+            Ok(count(prepared.len()))
+        })
+    }
+
+    /// Offers the agent a task with `rotate` (and `totp` where the login
+    /// has a code) on these logins, signed by the account without a
+    /// request from the agent (ADR 0022 §6). The app checks presence (Face
+    /// ID) first, after [`Self::check_offer`].
+    pub fn offer_task(&self, offer: OfferInput) -> KlavResult<crate::TaskItem> {
+        let request = offer_request(offer)?;
+        if request.items.is_empty() {
+            return Err(KlavError::invalid(
+                "nothing to offer: pick at least one login",
+            ));
+        }
+        self.with(|u| {
+            let card = self.runtime.block_on(u.offer_task(&request))?;
+            Ok(task_item(card))
+        })
+    }
+
+    /// Where each site of a task with `rotate` is: changed, pending or
+    /// failed, from the task's `rotate.*` events.
+    pub fn task_progress(&self, task_id: String) -> KlavResult<TaskProgressInfo> {
+        self.with(|u| {
+            let progress = self.runtime.block_on(u.task_progress(task_id.trim()))?;
+            Ok(task_progress_info(progress))
+        })
+    }
+}

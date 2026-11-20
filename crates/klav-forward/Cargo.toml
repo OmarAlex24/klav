@@ -1,0 +1,36 @@
+[package]
+name = "klav-forward"
+description = "Klav's sandbox forwarder (ADR 0036 §5, §6): claims a sandbox at the credential proxy over a pinned TLS 1.3 channel and forwards local calls through it. It holds no vault code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+# The build's identity for `--version`, the same script as klavd's and
+# klav's.
+build = "../klav-daemon/build.rs"
+
+[dependencies]
+# Only the sandbox package, the pin and the channel key: never an item,
+# a grant or an agent's key (ADR 0036 §5). Never `klav-sdk` or
+# `klav-client` (a test checks it).
+klav-core.workspace = true
+# The pinned channel (ADR 0036 §6): TLS 1.3 only, aws-lc-rs as the
+# provider, never `ring` (ADR 0011). Both already locked through reqwest.
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs"] }
+# The command line, the relay and its files (none cryptographic, all
+# already direct dependencies of other workspace crates).
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+zeroize = "1.9"
+
+[dev-dependencies]
+# TLS 1.2 only for the test that the channel refuses it.
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,42 @@
+{
+  "name": "@klav/docs",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.4"
+  },
+  "scripts": {
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview",
+    "typecheck": "ASTRO_TELEMETRY_DISABLED=1 astro check",
+    "lint:docs": "nimbus-docs lint",
+    "lint:docs:fix": "nimbus-docs lint --fix",
+    "check:csp": "node tools/check-csp.mjs",
+    "prepreview:cf": "ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "preview:cf": "WRANGLER_SEND_METRICS=false wrangler dev",
+    "predeploy": "ASTRO_TELEMETRY_DISABLED=1 astro check && ASTRO_TELEMETRY_DISABLED=1 astro build && node tools/check-csp.mjs",
+    "deploy": "WRANGLER_SEND_METRICS=false wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/nimbus-docs": "0.19.3",
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@iconify-json/ph": "1.2.2",
+    "astro": "7.4.7",
+    "clsx": "2.1.1",
+    "sharp": "0.35.5",
+    "tailwind-merge": "3.7.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.12",
+    "@astrojs/language-server": "2.16.13",
+    "@tailwindcss/vite": "4.3.4",
+    "pagefind": "1.6.0",
+    "tailwindcss": "4.3.4",
+    "typescript": "5.9.3",
+    "wrangler": "4.158.0"
+  }
+}

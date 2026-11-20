@@ -1,0 +1,24 @@
+---
+title: "Postgres"
+description: "Run klav-server on Postgres instead of SQLite, and keep the database connection on the same machine or a private network."
+sidebar:
+  order: 5
+---
+
+This page explains how to run `klav-server` on Postgres instead of SQLite. SQLite is enough for one person or a family; Klav's own tests run against Postgres 17 too.
+
+Point the server to the database:
+
+```sh
+KLAV_DATABASE_URL=postgres://klav:<password>@127.0.0.1:5432/klav
+```
+
+Migrations run by themselves when the server starts. Attachments stay on disk, in `KLAV_DATA_DIR`.
+
+<Aside type="caution" title="No TLS to Postgres">
+The server doesn't use TLS for its connection to the database. Run Postgres on the same machine, through a socket or `127.0.0.1`, or on a private network. What travels is encrypted data, but also the digests of session tokens and the OPAQUE records.
+</Aside>
+
+## Next
+
+[Railway](/self-hosting/railway/).

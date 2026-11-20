@@ -1,0 +1,7 @@
+# Only server.mjs, entrypoint.sh and public/ go into the image.
+data/
+drafts/
+test/
+tools/
+Dockerfile
+.dockerignore

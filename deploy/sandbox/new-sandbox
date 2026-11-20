@@ -1,0 +1,410 @@
+#!/bin/bash
+# new-sandbox: creates the Boat machine of one daily sandbox, from the
+# proxy's host (ADR 0042 §5, layer 4).
+#
+# Shell: bash, 3.2 or later. It runs on Linux as the issuer's system user,
+# as the command of `klav sandbox start`, which puts the package in
+# KLAV_SANDBOX and closes standard input:
+#
+#   klav sandbox start --label L --profile northflank -- deploy/sandbox/new-sandbox
+#
+# With the tailnet on, it trades the Tailscale OAuth client for a one-hour
+# access token, creates a single-use key with the fixed body of ADR 0042
+# §4, and then asks Boat's API for the machine, with KLAV_SANDBOX,
+# KLAV_TAILNET_KEY and KLAV_TAILNET_HOSTNAME in its `env`. With the tailnet
+# off, only KLAV_SANDBOX. It prints only Boat's sandbox ID.
+#
+# Its files, in ${KLAV_SANDBOX_CONFIG_DIR:-~/.config/klav-sandbox}, a
+# directory of this user that only this user may write:
+#   config           Not secret, but it decides where the secrets go: this
+#                    user's, writable by no one else. KEY=VALUE lines
+#                    (README.md lists them).
+#   boat-api-key     The Boat API key, one line. Mode 0600, this user's.
+#   tailscale-oauth  `client_id=…` and `client_secret=…` lines, read only
+#                    with TAILNET=on. Mode 0600, this user's.
+#
+# No secret is ever an argument of a process, in a trace, in an exported
+# variable or in a file: curl reads each secret header from its own file
+# descriptor (-K) and each body from standard input (--data-binary @-),
+# and both are written by shell builtins. Never run it with `-x`.
+#
+# Exit: 0 with the sandbox ID on standard output; 1 when a call failed, 2
+# for a wrong configuration, file or package, 128 + the signal's number
+# when HUP, INT or TERM stopped it. Each failure is one line on standard
+# error that says what failed and whether a Boat machine may exist, and
+# never holds a response.
+
+set -eu
+# An inherited SHELLOPTS can turn these on: a trace would print the
+# secrets, and `allexport` would put each one in every child's environment.
+set +x
+set +a
+set -o pipefail
+
+# klav-test-seam: begin. Constants, never read from the environment. The
+# tests replace these two lines and nothing else, and check that
+# (deploy/sandbox/test/run-tests).
+bin_path=/usr/bin:/bin
+retry_wait=3
+# klav-test-seam: end
+
+# `klav sandbox start` passes the issuer's environment through: the PATH
+# is fixed here, and the variables that would send curl through a proxy,
+# change the certificates it trusts or log its TLS keys are dropped.
+PATH=$bin_path
+export PATH
+unset HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY https_proxy http_proxy all_proxy no_proxy \
+	CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR SSLKEYLOGFILE CURL_HOME
+IFS=$' \t\n'
+LC_ALL=C
+export LC_ALL
+umask 077
+
+none="no Boat machine was created"
+maybe="a Boat machine may exist: check Boat"
+# Where the run is: before the Boat call, after a Tailscale key may have
+# been made, once the Boat call may have been sent, or with a key made and
+# the Boat call surely never sent.
+stage=before
+tailnet=off
+
+# Every secret blanked on every exit.
+forget() {
+	package=''
+	boat_key=''
+	client_id=''
+	client_secret=''
+	token=''
+	tailnet_key=''
+	env_json=''
+	boat_body=''
+	answer=''
+}
+trap forget EXIT
+
+fail() { # message, exit code
+	printf 'new-sandbox: %s\n' "$1" >&2
+	exit "${2:-1}"
+}
+# What a failure or a signal says about the machine and the key.
+outcome() {
+	case $stage in
+	before) printf '%s' "$none" ;;
+	key) printf '%s (if Tailscale made a key, it expires unused within an hour)' "$none" ;;
+	unsent) printf '%s (the Tailscale key made for it expires unused within an hour)' "$none" ;;
+	sent)
+		if [ "$tailnet" = on ]; then
+			printf '%s (the Tailscale key goes to that machine if it exists)' "$maybe"
+		else
+			printf '%s' "$maybe"
+		fi
+		;;
+	esac
+}
+on_signal() { # name, number
+	printf 'new-sandbox: stopped by %s; %s\n' "$1" "$(outcome)" >&2
+	exit $((128 + $2))
+}
+trap 'on_signal HUP 1' HUP
+trap 'on_signal INT 2' INT
+trap 'on_signal TERM 15' TERM
+
+# The package: kept in an unexported variable, out of every child's
+# environment.
+package=${KLAV_SANDBOX:-}
+unset KLAV_SANDBOX
+[ -n "$package" ] ||
+	fail "no package in KLAV_SANDBOX: run it as the command of klav sandbox start; $none" 2
+case $package in
+ksb1_*) ;;
+*) fail "KLAV_SANDBOX is not a ksb1_ package; $none" 2 ;;
+esac
+case ${package#ksb1_} in
+"" | *[!A-Za-z0-9_-]*) fail "KLAV_SANDBOX is not a ksb1_ package; $none" 2 ;;
+esac
+
+# The sandbox ID's first 4 bytes, from the package's bytes (spec §13.10:
+# version, then the 16 bytes of the ID), decoded with builtins only.
+b64=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_
+head8=${package#ksb1_}
+head8=${head8:0:8}
+[ "${#head8}" -eq 8 ] || fail "KLAV_SANDBOX is not a ksb1_ package; $none" 2
+bits=0
+bytes=()
+for i in 0 1 2 3 4 5 6 7; do
+	c=${head8:$i:1}
+	prefix=${b64%%"$c"*}
+	v=${#prefix}
+	if [ $((i % 4)) -eq 0 ]; then bits=$v; else bits=$(((bits << 6) | v)); fi
+	if [ $((i % 4)) -eq 3 ]; then
+		bytes+=($(((bits >> 16) & 255)) $(((bits >> 8) & 255)) $((bits & 255)))
+	fi
+done
+[ "${bytes[0]}" -eq 1 ] || fail "KLAV_SANDBOX is a package of another version; $none" 2
+printf -v hostname 'klav-%02x%02x%02x%02x' "${bytes[1]}" "${bytes[2]}" "${bytes[3]}" "${bytes[4]}"
+
+# A path's listing, split on blanks: mode, links, owner's uid, ...
+listing() { # path
+	local out
+	out=$(ls -lnd -- "$1") || fail "cannot read the mode of $1; $none" 2
+	set -f
+	# shellcheck disable=SC2206 # split on blanks, with globbing off
+	parts=($out)
+	set +f
+	[ "${parts[2]:-}" = "$EUID" ] || fail "$1 belongs to another user: refused; $none" 2
+}
+# The configuration and its directory decide which host gets the secrets:
+# this user's, never a link, and writable by no one else.
+own_only() { # path
+	[ ! -L "$1" ] || fail "$1 is a link: refused; $none" 2
+	listing "$1"
+	case ${parts[0]:5:1}${parts[0]:8:1} in
+	*w*) fail "$1 is writable by others: refused; $none" 2 ;;
+	esac
+}
+# A secret file: a regular file of this user, readable by no one else.
+private() { # path
+	[ -f "$1" ] && [ ! -L "$1" ] || fail "no file at $1; $none" 2
+	listing "$1"
+	case ${parts[0]} in
+	-r--------* | -rw-------*) ;;
+	*) fail "$1 is readable by others (it must be 0600): refused; $none" 2 ;;
+	esac
+}
+
+# The configuration, read line by line, never sourced.
+dir=${KLAV_SANDBOX_CONFIG_DIR:-${HOME:-}/.config/klav-sandbox}
+[ -d "$dir" ] || fail "no configuration directory at $dir; $none" 2
+own_only "$dir"
+[ -f "$dir/config" ] || fail "no configuration at $dir/config; $none" 2
+own_only "$dir/config"
+boat_api_default=https://boat.dev/api/v1
+tailscale_api_default=https://api.tailscale.com/api/v2
+c_BOAT_TEMPLATE=
+c_BOAT_ENVIRONMENT=
+c_TAILNET=
+c_BOAT_TTL_SECONDS=
+c_BOAT_API=$boat_api_default
+c_TAILSCALE_API=$tailscale_api_default
+c_TAILNET_NAME=-
+c_ALLOW_OTHER_API=no
+while IFS= read -r line || [ -n "$line" ]; do
+	case $line in "" | "#"*) continue ;; esac
+	k=${line%%=*}
+	v=${line#*=}
+	[ "$k" != "$line" ] || fail "a line of $dir/config is not KEY=VALUE; $none" 2
+	case $k in
+	BOAT_TEMPLATE) c_BOAT_TEMPLATE=$v ;;
+	BOAT_ENVIRONMENT) c_BOAT_ENVIRONMENT=$v ;;
+	TAILNET) c_TAILNET=$v ;;
+	BOAT_TTL_SECONDS) c_BOAT_TTL_SECONDS=$v ;;
+	BOAT_API) c_BOAT_API=$v ;;
+	TAILSCALE_API) c_TAILSCALE_API=$v ;;
+	TAILNET_NAME) c_TAILNET_NAME=$v ;;
+	ALLOW_OTHER_API) c_ALLOW_OTHER_API=$v ;;
+	*) fail "$dir/config has an unknown key $k; $none" 2 ;;
+	esac
+done <"$dir/config"
+name_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+url_re='^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*$'
+ttl_re='^[1-9][0-9]{0,6}$'
+[[ $c_BOAT_TEMPLATE =~ $name_re ]] || fail "BOAT_TEMPLATE in $dir/config is missing or not a name; $none" 2
+[[ $c_BOAT_ENVIRONMENT =~ $name_re ]] || fail "BOAT_ENVIRONMENT in $dir/config is missing or not a name; $none" 2
+case $c_TAILNET in on | off) tailnet=$c_TAILNET ;; *) fail "TAILNET in $dir/config must be on or off; $none" 2 ;; esac
+if [ -n "$c_BOAT_TTL_SECONDS" ]; then
+	[[ $c_BOAT_TTL_SECONDS =~ $ttl_re ]] && [ "$c_BOAT_TTL_SECONDS" -le 2592000 ] ||
+		fail "BOAT_TTL_SECONDS in $dir/config must be a whole number of seconds from 1 to 2592000; $none" 2
+fi
+case $c_ALLOW_OTHER_API in yes | no) ;; *) fail "ALLOW_OTHER_API in $dir/config must be yes or no; $none" 2 ;; esac
+for k in BOAT_API TAILSCALE_API; do
+	var=c_$k
+	url=${!var}
+	[[ $url =~ $url_re ]] || fail "$k in $dir/config is not an https URL; $none" 2
+	case $url/ in */./* | */../*) fail "$k in $dir/config has a . or .. segment; $none" 2 ;; esac
+done
+if [ "$c_BOAT_API" != "$boat_api_default" ] || [ "$c_TAILSCALE_API" != "$tailscale_api_default" ]; then
+	[ "$c_ALLOW_OTHER_API" = yes ] ||
+		fail "$dir/config names another BOAT_API or TAILSCALE_API without ALLOW_OTHER_API=yes: refused; $none" 2
+fi
+[[ $c_TAILNET_NAME =~ ^[A-Za-z0-9@._-]+$ ]] || fail "TAILNET_NAME in $dir/config is not a tailnet name; $none" 2
+case $c_TAILNET_NAME in . | ..) fail "TAILNET_NAME in $dir/config is not a tailnet name; $none" 2 ;; esac
+
+# The characters of a secret from a file, or of a value from an answer,
+# checked before it goes in JSON or a curl configuration; at most 255 (the
+# most a POSIX regex repeats).
+token_re='^[A-Za-z0-9_-]{1,255}$'
+# What Tailscale mints, its access token and its key: the same characters,
+# and a length checked apart, because its access tokens are longer than
+# 255 characters.
+minted_re='^[A-Za-z0-9_-]+$'
+minted_max=4096
+# Boat's sandbox IDs, as its reference shapes them: `bx_` and 8 of [0-9a-z].
+boat_id_re='^bx_[0-9a-z]{8}$'
+
+private "$dir/boat-api-key"
+boat_key=
+IFS= read -r boat_key <"$dir/boat-api-key" || true
+[[ $boat_key =~ $token_re ]] || fail "$dir/boat-api-key does not hold one key; $none" 2
+
+if [ "$tailnet" = on ]; then
+	private "$dir/tailscale-oauth"
+	client_id=
+	client_secret=
+	while IFS= read -r line || [ -n "$line" ]; do
+		case $line in
+		client_id=*) client_id=${line#client_id=} ;;
+		client_secret=*) client_secret=${line#client_secret=} ;;
+		"") ;;
+		*) fail "$dir/tailscale-oauth holds a line other than client_id= or client_secret=; $none" 2 ;;
+		esac
+	done <"$dir/tailscale-oauth"
+	line=
+	[[ $client_id =~ $token_re ]] || fail "$dir/tailscale-oauth has no valid client_id; $none" 2
+	[[ $client_secret =~ $token_re ]] || fail "$dir/tailscale-oauth has no valid client_secret; $none" 2
+fi
+
+# One HTTPS POST: the body on standard input, the secret header (when
+# there is one) on file descriptor 3. Sets `curl_exit`, and with 0 the
+# answer's `status` and body (`answer`). curl's own messages are dropped:
+# they could quote the answer. `-q` first: no ~/.curlrc. curl runs in a
+# process substitution read by the `read` builtin, which a signal
+# interrupts at once (a command substitution would wait for curl). That
+# subshell outlives a stopped script, so its first command gives up the
+# script's standard error: otherwise whoever reads that pipe, such as
+# `klav sandbox start`, waits for curl and may drop the script's last line.
+# (No comment inside `<( … )`: bash 3.2 parses quotes in one.)
+post() { # url, body, secret header line ("" for none), content type, [plain header]
+	local out rest extra=() conf=()
+	[ -z "${5:-}" ] || extra=(-H "$5")
+	[ -z "$3" ] || conf=(-K /dev/fd/3)
+	curl_exit=0
+	status=
+	answer=
+	exec 4< <(
+		exec 2>/dev/null
+		rc=0
+		printf '%s' "$2" | curl -q --silent --proto =https --max-time 60 \
+			--connect-timeout 15 -X POST -H "content-type: $4" ${extra[@]+"${extra[@]}"} \
+			${conf[@]+"${conf[@]}"} --data-binary @- -w '\n%{http_code}' "$1" \
+			3< <(printf 'header = "%s"\n' "$3") 2>/dev/null || rc=$?
+		printf '\n%s' "$rc"
+	)
+	out=
+	IFS= read -r -d '' -u 4 out || true
+	exec 4<&-
+	curl_exit=${out##*$'\n'}
+	[[ $curl_exit =~ ^[0-9]{1,3}$ ]] || curl_exit=255
+	[ "$curl_exit" = 0 ] || return 0
+	rest=${out%$'\n'*}
+	status=${rest##*$'\n'}
+	answer=${rest%$'\n'*}
+	[[ $status =~ ^[0-9]{3}$ ]] && [ "$rest" != "$status" ] || curl_exit=255
+}
+# One string field of the answer, its characters checked against a regex
+# and, when a third argument says so, its length against a maximum.
+field() { # jq filter, regex, most characters (optional)
+	local v
+	v=$(printf '%s' "$answer" | jq -r "$1 // empty" 2>/dev/null) || return 1
+	[[ $v =~ $2 ]] || return 1
+	[ -z "${3:-}" ] || [ "${#v}" -le "$3" ] || return 1
+	printf '%s' "$v"
+}
+ok() { case $status in 2[0-9][0-9]) return 0 ;; *) return 1 ;; esac; }
+
+tailnet_key=
+if [ "$tailnet" = on ]; then
+	# 1. The trade: the client's ID and secret in the form body.
+	post "$c_TAILSCALE_API/oauth/token" "client_id=$client_id&client_secret=$client_secret" "" \
+		application/x-www-form-urlencoded
+	client_id=
+	client_secret=
+	[ "$curl_exit" = 0 ] || fail "could not reach Tailscale for the token trade; $none"
+	ok || fail "Tailscale refused the token trade (HTTP $status); $none"
+	token=$(field .access_token "$minted_re" "$minted_max") ||
+		fail "Tailscale's token answer held no token it could read; $none"
+	answer=
+	# 2. The key, with the fixed body of ADR 0042 §4.
+	key_body='{"keyType":"auth","description":"klav sandbox","expirySeconds":3600,"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["tag:klav-sandbox"]}}}}'
+	stage=key
+	post "$c_TAILSCALE_API/tailnet/$c_TAILNET_NAME/keys" "$key_body" \
+		"Authorization: Bearer $token" application/json
+	token=
+	[ "$curl_exit" = 0 ] || fail "could not reach Tailscale to create the key; $(outcome)"
+	ok || fail "Tailscale refused to create the key (HTTP $status); $none"
+	tailnet_key=$(field .key "$minted_re" "$minted_max") ||
+		fail "Tailscale's answer held no key it could read; $(outcome)"
+	answer=
+fi
+
+# 3. The machine. The Idempotency-Key is not secret. The same key and the
+# same body on every attempt: Boat gives back the same sandbox, never a
+# second one.
+idem=$(od -An -N16 -tx1 /dev/urandom) || fail "could not read /dev/urandom; $(outcome)"
+idem=${idem//[!0-9a-f]/}
+[ "${#idem}" -eq 32 ] || fail "could not read /dev/urandom; $(outcome)"
+if [ -n "$tailnet_key" ]; then
+	printf -v env_json '{"KLAV_SANDBOX":"%s","KLAV_TAILNET_KEY":"%s","KLAV_TAILNET_HOSTNAME":"%s"}' \
+		"$package" "$tailnet_key" "$hostname"
+else
+	printf -v env_json '{"KLAV_SANDBOX":"%s"}' "$package"
+fi
+ttl=
+[ -z "$c_BOAT_TTL_SECONDS" ] || ttl=",\"ttlSeconds\":$c_BOAT_TTL_SECONDS"
+printf -v boat_body '{"from":"%s","environment":"%s"%s,"env":%s}' \
+	"$c_BOAT_TEMPLATE" "$c_BOAT_ENVIRONMENT" "$ttl" "$env_json"
+package=
+tailnet_key=
+env_json=
+
+# At most 3 attempts, a few seconds apart, only when Boat says so or the
+# answer was lost: curl's 28 (timeout), 52 (no answer) and 56 (cut off), a
+# 5xx, or a 409 `idempotency_in_progress`. Never a 4xx otherwise. curl's 6
+# and 7 (no name, no connection) on the first attempt mean nothing was
+# sent.
+attempt=0
+while :; do
+	attempt=$((attempt + 1))
+	stage=sent
+	post "$c_BOAT_API/sandboxes" "$boat_body" "Authorization: Bearer $boat_key" \
+		application/json "Idempotency-Key: $idem"
+	retry=no
+	if [ "$curl_exit" = 0 ]; then
+		if ok; then
+			break
+		fi
+		case $status in
+		5[0-9][0-9]) retry=yes ;;
+		409)
+			code=$(field 'if (.error | type) == "object" then .error.code elif (.error | type) == "string" then .error else .code end' "$token_re") || code=
+			[ "$code" != idempotency_in_progress ] || retry=yes
+			;;
+		esac
+	else
+		case $curl_exit in
+		28 | 52 | 56) retry=yes ;;
+		6 | 7)
+			if [ "$attempt" = 1 ]; then
+				if [ "$tailnet" = on ]; then stage=unsent; else stage=before; fi
+			fi
+			;;
+		esac
+	fi
+	if [ "$retry" = no ] || [ "$attempt" -ge 3 ]; then
+		boat_key=
+		boat_body=
+		answer=
+		if [ "$curl_exit" != 0 ]; then
+			fail "could not reach Boat, or lost its answer (attempt $attempt, curl $curl_exit); $(outcome)"
+		fi
+		fail "Boat answered HTTP $status (attempt $attempt); $(outcome)"
+	fi
+	sleep "$retry_wait"
+done
+boat_key=
+boat_body=
+id=$(field .sandbox.id "$boat_id_re") || {
+	answer=
+	fail "Boat's answer held no sandbox ID it could read (HTTP $status); $(outcome)"
+}
+answer=
+printf '%s\n' "$id"

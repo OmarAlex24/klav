@@ -1,0 +1,90 @@
+---
+title: "Create an account"
+description: "Create a Klav account with the Mac app or the CLI, on Klav's server or your own, and keep the emergency kit."
+sidebar:
+  order: 2
+---
+
+This page explains how to create a Klav account with the Mac app or the CLI, on Klav's server or on your own, and what to keep afterwards: the emergency kit. You create the account once, on your first device; every other device [signs in](/get-started/add-a-device/).
+
+## Before you start
+
+- **Choose the server.** An account lives on one server. The default is klav.dev (`https://api.klav.dev`), Klav's own server. "Use my own server" in the apps, or `--server` in the CLI, points to [a server you host](/self-hosting/).
+- **Choose a master password** you can remember. Klav can't reset it, and neither can whoever runs the server.
+- **Use the Mac app or the CLI.** The iPhone app only signs in to an account that already exists.
+
+<Aside type="note" title="klav.dev isn't open for new accounts yet">
+Klav's own server will be a paid plan, 20 USD a year; to hear when it opens, join the waitlist on [klav.dev](https://klav.dev/#waitlist). Until it is, create your account on [your own server](/self-hosting/). `klav signup` asks the server first and stops before it asks for a password: "Registration on klav.dev is not open yet."
+</Aside>
+
+## With the Mac app
+
+<Steps>
+
+1. In "Set up this Mac", go to the Account step and choose "Create an account".
+2. Fill in your email, your master password twice and a name for this Mac. For your own server, choose "Use my own server" and type its address.
+3. Choose "Create the account". Klav makes your Secret Key on this Mac.
+4. Klav shows your emergency kit once. Choose "Print or save as PDF…", keep it, then choose "I've kept it". Klav keeps no copy of the kit.
+
+</Steps>
+
+The app then unlocks `klavd` with the same password, so the extension and the CLI on this Mac are signed in too.
+
+## With the CLI
+
+On your own server:
+
+```sh
+klav signup --server https://klav.example.com --email you@example.com --emergency-kit ~/Desktop/klav-kit.txt
+```
+
+It names the server first, then asks for the master password twice:
+
+```text
+Server: https://klav.example.com (klav.example.com).
+New master password:
+Repeat it:
+Deriving keys (Argon2id, 256 MiB)…
+Account created: you@example.com (account …), device your-laptop (…).
+Emergency kit written to /Users/you/Desktop/klav-kit.txt (mode 0600). It contains your Secret Key: print it or store it offline, then delete the file.
+Local state: /Users/you/Library/Application Support/klav
+```
+
+The CLI asks for a master password of at least 10 characters. The device name is the computer's host name unless you pass `--device-name`. The kit file must not exist yet: Klav writes a new one, readable only by you. Without `--emergency-kit`, the kit is shown in the terminal instead.
+
+Without `--server`, `klav signup` uses klav.dev and says so on its first line: `Server: https://api.klav.dev (klav.dev). Use --server URL for your own.`
+
+`--server` takes `https://` addresses only. Plain `http://` is allowed only for `localhost` and `127.0.0.1`, for testing. You can also set the server with the `KLAV_SERVER` environment variable.
+
+## The emergency kit
+
+The emergency kit holds your Secret Key. To sign in on a new device you need the kit and your master password; without both, nobody can recover your account. It looks like this:
+
+```text
+KLAV EMERGENCY KIT
+===================
+
+Keep this somewhere safe (printed, or in a place only you can open).
+You need it, together with your master password, to log in on a new
+device. Nobody can recover your account without it, not even the
+server operator.
+
+Server:     https://api.klav.dev
+E-mail:     you@example.com
+Account ID: …
+Secret Key: K1-XXXX-XXXX-…
+
+Master password: ______________________________ (write it here if
+you keep this kit offline)
+```
+
+Print it or keep it offline, somewhere only you can open, then delete the file.
+
+To see it again on a device that is signed in:
+
+- **CLI:** `klav account kit` asks for your master password and shows the kit, or writes it to a new file with `--emergency-kit`.
+- **iPhone:** Settings › Account › "Print the emergency kit".
+
+## Next
+
+[Import your passwords](/get-started/import/).

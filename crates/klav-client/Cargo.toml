@@ -1,0 +1,46 @@
+[package]
+name = "klav-client"
+description = "Klav client library: account, session, encrypted local cache and sync with rollback detection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# The vault health report (ADR 0022 §4): reused, weak and old passwords,
+# and the optional breach check (Have I Been Pwned, off by default).
+# zxcvbn's dictionaries weigh about 1 MB, so klav-wasm never builds this.
+health = ["dep:zxcvbn", "klav-core/breach-check"]
+
+[dependencies]
+klav-core = { workspace = true, features = ["rp-id"] }
+klav-proto.workspace = true
+klav-import.workspace = true
+data-encoding = "2.11"
+# TLS through rustls with the aws-lc-rs provider and the OS trust store (ADR 0011).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "time"] }
+zeroize = "1.9"
+# Password strength estimate for the health report; not cryptographic.
+zxcvbn = { version = "3.1", default-features = false, optional = true }
+
+[dev-dependencies]
+# A forwarder in front of the real server that plays an older one
+# (tests/older_server.rs); same version the server already locks.
+axum = "0.8"
+klav-import = { workspace = true, features = ["samples"] }
+# The end-to-end tests edit the server's SQLite file while it is stopped,
+# to play a malicious server (same features as klav-server, so the
+# workspace builds it once).
+sqlx = { version = "0.9", default-features = false, features = ["any", "sqlite-bundled", "postgres", "runtime-tokio", "migrate", "macros"] }
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

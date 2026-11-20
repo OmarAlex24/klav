@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "account_ed25519_seed": "dacabdfa8db78e01f10e71da2c94a1761681106227b4da4dd268cb2a585488aa",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "account_public_identity": "01053d7ca7369531fb2bbe203337b706b895b5c7e107c1e064335c3e639118e99b69854d534ffaf68fa7aaa3dab224c194e65f4c720668770d92426c0dd34946cb9f",
+      "account_x25519_seed": "1414c89d82bee4b2ff052841b9e3bf6e96f1f92f49e65f55d64729cc394f871b",
+      "at_ms": 1800000000000,
+      "message": "0000001a6b6c61762f76312f7369672f73616e64626f782d7265766f6b6500000010a7745fc9c1fb8daabf635acb32603f6c0000001049f8511562395a33e4db3d011a6c153700000010e3d1bf795eaba96f57b59e761349e56000000008000001a3185c5000",
+      "name": "one-sandbox",
+      "proxy_agent_id": "49f8511562395a33e4db3d011a6c1537",
+      "scope": "e3d1bf795eaba96f57b59e761349e560",
+      "signature": "7d970bdaf87bbbc76f2e3503c2d12717bf0ed5245441a8312b03511f5a4db8d1d7c025b2148942d1a226b5685518c485a4671241601ec41fac92edd6d31cb30d"
+    },
+    {
+      "account_ed25519_seed": "dacabdfa8db78e01f10e71da2c94a1761681106227b4da4dd268cb2a585488aa",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "account_public_identity": "01053d7ca7369531fb2bbe203337b706b895b5c7e107c1e064335c3e639118e99b69854d534ffaf68fa7aaa3dab224c194e65f4c720668770d92426c0dd34946cb9f",
+      "account_x25519_seed": "1414c89d82bee4b2ff052841b9e3bf6e96f1f92f49e65f55d64729cc394f871b",
+      "at_ms": 1800000000000,
+      "message": "0000001a6b6c61762f76312f7369672f73616e64626f782d7265766f6b6500000010a7745fc9c1fb8daabf635acb32603f6c0000001049f8511562395a33e4db3d011a6c153700000003616c6c00000008000001a3185c5000",
+      "name": "all",
+      "proxy_agent_id": "49f8511562395a33e4db3d011a6c1537",
+      "scope": "all",
+      "signature": "95968475943068e36269c0ca921c3374910700e39ed1350421145d7061615bc4f93f7a01e652e0f9a0592c3d62ee575dc099f4320a52278b0408f37ae30e8e08"
+    }
+  ],
+  "description": "The person's revocation of sandboxes, signed by the account: one sandbox, and every sandbox of the proxy (all)",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §13.11"
+}

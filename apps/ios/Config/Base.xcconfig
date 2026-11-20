@@ -1,0 +1,15 @@
+// Shared settings. Copy Local.xcconfig.example to Local.xcconfig (not
+// committed) to set your Apple team and bundle ID prefix.
+KLAV_BUNDLE_PREFIX = dev.klav.ios
+KLAV_APP_GROUP = group.$(KLAV_BUNDLE_PREFIX)
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Automatic
+// The Mac app (ADR 0027): one ID, the one Sparkle and the installer know.
+KLAV_MAC_BUNDLE_ID = dev.klav.mac
+// Updates of the Mac app with Sparkle (ADR 0027 §7, docs/macos.md §6).
+// The public EdDSA key of the production key (Sparkle's `klav` account,
+// docs/macos.md §6); empty, the app would not look for updates. Never a
+// test key: tests override it on the xcodebuild command line.
+KLAV_SPARKLE_FEED_URL = https:/$()/klav.dev/releases/mac/appcast.xml
+KLAV_SPARKLE_PUBLIC_KEY = aTHvmuTyrmDiml3MqEkppSQwtYCpFcWOf+Eo5Xrks9E=
+#include? "Local.xcconfig"

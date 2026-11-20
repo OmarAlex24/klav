@@ -1,0 +1,92 @@
+---
+title: "How agents work"
+description: "An agent's identity, the six words, its grant of projects and permissions, allow, ask and deny, and the only ways Klav returns a secret value to an agent."
+sidebar:
+  order: 1
+---
+
+This page explains how an AI agent uses your vault: its own identity, the six words you compare when you approve it, the projects and permissions you grant it, and the only ways Klav returns a secret value to it. It is written for you and for the agent itself.
+
+## An agent has its own identity
+
+An agent is a program that acts for you: Claude Code, Codex, Cursor, a script or a server. It never knows your master password or your Secret Key. Instead:
+
+1. It makes its own key pair and asks your account for access. It gets nothing yet.
+2. You approve it: you compare six words and choose which projects it can use and what it can do there. That choice, signed by your account, is its **grant**.
+3. It receives the keys of those projects only, and signs every request with its own key.
+
+On a Mac its private key goes in the login keychain; elsewhere, in a file only you can read. A container can pass it in the `KLAV_AGENT_KEY` environment variable.
+
+## The six words
+
+When an agent registers, it prints six pairing words. You see the same six words when you approve it, in the Mac app's Requests, on the iPhone or in `klav agent list`. If they match, the request you are approving is the one that agent made; if they don't, deny it.
+
+```text
+AGENT        STATUS   PAUSED  PROJECTS  WORDS                                             ID
+claude-code  pending                    ferocity mothproof bolt cassette gleeful seizing  …
+```
+
+The account has six words of its own too. `klav status` shows them on your devices (`words:`), and `klav agent status` shows them to the agent (`account:`): they must match. The agent pins your account's identity the first time it sees it, and stops with exit code 3 if it ever changes.
+
+## The grant: projects and permissions
+
+A grant names the projects (or whole vaults) the agent can use, and a policy that says `allow`, `ask` or `deny` for each permission. `ask` means the request waits for your [approval](/agents/approvals-and-tasks/).
+
+| Permission | What it lets the agent do | Default |
+|---|---|---|
+| `list` | See items' metadata: title, URL, username, kind. Never secrets | `allow` |
+| `fill` | Type a login or card into a browser page, without the value coming back | `allow` |
+| `inject` | Put secrets into a command's environment or a new file (`run`, `inject`) | `allow` |
+| `create` | Create items | `allow` |
+| `totp` | Get a one-time code | `ask` |
+| `update` | Edit items | `ask` |
+| `reveal` | Get a value in clear text: the only way a secret enters the agent's context | `deny` |
+| `delete` | Move items to the trash | `deny` |
+| `passkey` | Sign in with your passkey through your browser | Only inside an approved task |
+| `rotate` | Change a password in your browser (assisted password change) | Only inside an approved task |
+
+When you approve an agent you can change any default, limit `fill` to some sites (`--fill-domain`), allow it only at certain hours (`--hours`) and set an end date (`--expires`). A `deny` rule always wins. To change a grant later, see [Pause, change or revoke an agent](/agents/pause-and-revoke/#change-a-grant).
+
+## Actions, not values
+
+By default an agent gets actions, not values. Klav puts the secret where it is used, and the agent gets back only what it needs to go on:
+
+| The agent asks to… | It gets back |
+|---|---|
+| Find items (`search_items`, `get_item`) | Titles, references, kinds and field names. Never values |
+| Fill a login or card (`fill_login`, `fill_card`, `klav agent fill`) | The names of the fields it filled and, after a submit, the origin the page reached |
+| Run a command (`run_with_secrets`, `klav agent run`) | The command's output, with each value replaced by `[redacted by klav]` |
+| Write a file (`inject_file`, `klav agent inject`) | The file's path, never its content |
+| Create an item with a generated password (`create_item` with `generate`) | The item's metadata and the password's strength, never the password |
+
+Klav returns a value to the agent in only two ways:
+
+- **`reveal`**, denied by default. An agent asks for it with `request_access`, and you decide.
+- **A one-time code**, from `get_totp` without a `target` or from `klav agent totp`. `totp` is `ask` by default. With `target`, the code is typed into the page instead.
+
+`inject` and `fill` hand the value to a command, a file or a page, and an agent that writes the command, reads the file or controls the browser can get it. Grant `inject` only to agents you would trust with those values.
+
+Every request carries a reason the agent writes, and goes to the [activity log](/agents/activity-log/) with it.
+
+<Aside type="caution" title="What Klav can't prevent">
+- A command that runs with a secret has the value. The redaction of its output catches the usual ways a command prints a value by mistake (plain, base64, hex, URL or JSON encoding, pieces of 12 characters or more), not a command written to get it out.
+- An agent that also controls the browser page with scripts or DevTools can read a field after Klav fills it.
+- A file Klav writes is plain text on disk while it exists. Prefer `run` when the tool allows it.
+</Aside>
+
+## When the answer is not a yes
+
+The `klav agent` commands exit with these codes, and `klav mcp` answers with the same meaning:
+
+| Exit code | `klav mcp` answer | Meaning | What the agent does |
+|---|---|---|---|
+| 3 | an error | A security check failed: words that don't match, an account identity that changed, a grant or log that was tampered with | Stop and tell you |
+| 4 | `status: "pending"` | Waiting for your approval | Tell you what it asked for, wait in the background, retry with the approval |
+| 5 | `denied: …` | The policy or you denied it | Don't work around it; explain why it needs it, or use `request_access` |
+| 6 | — | The request expired without a decision, or the task ended | Tell you |
+| 7 | `status: "paused"` | You paused agents (`agents_paused`) | Stop and tell you it needs Klav |
+| 8 | `status: "account_deleting"` | You asked to delete the account | Stop and tell you; don't retry |
+
+## Next
+
+[Connect an agent](/agents/connect-an-agent/).

@@ -1,0 +1,255 @@
+/* The popup (360 px wide). Tokens and components: klav.css. */
+body { width: 360px; min-height: 200px; }
+.screen { display: flex; flex-direction: column; }
+
+/* ------------------------------------------------------------- header */
+.bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  height: 52px; padding: 0 16px; border-bottom: 1px solid var(--linea);
+  position: sticky; top: 0; background: var(--papel); z-index: 2;
+}
+.brand { display: inline-flex; align-items: center; gap: 7px; }
+.bar-end { display: inline-flex; align-items: center; gap: 8px; }
+.bar-end .icon-btn { width: 32px; height: 32px; }
+.brand-glyph { width: 16px; height: 10px; color: var(--tinta); display: block; }
+.brand-name { font-weight: 600; font-size: 17px; letter-spacing: -0.04em; line-height: 1; }
+
+.content { padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+/* --------------------------------------------------------------- lock */
+.lock-field { height: 290px; background: var(--marino); }
+.lock-body { padding: 22px 20px 24px; display: flex; flex-direction: column; gap: 6px; }
+.lock-body .sub { margin-bottom: 14px; }
+.actions { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.unlock-form { display: flex; gap: 8px; width: 100%; }
+.unlock-form .input { flex: 1; height: 40px; }
+.unlock-form .btn { height: 40px; }
+.message:empty { display: none; }
+.message { margin-bottom: 8px; }
+
+.plain { padding: 22px 20px 24px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.lede { color: var(--gris); }
+.steps { display: flex; flex-direction: column; gap: 8px; }
+.command {
+  display: block; padding: 10px 12px; border: 1px solid var(--linea); background: var(--niebla);
+  font: 400 12px/1.4 var(--mono); color: var(--tinta); user-select: all;
+}
+
+/* -------------------------------------------------------------- vault */
+.search-wrap { position: relative; }
+.search { height: 38px; padding-right: 36px; }
+.search::-webkit-search-cancel-button { display: none; }
+.search-key { position: absolute; right: 10px; top: 10px; }
+.group { display: flex; flex-direction: column; gap: 4px; }
+.group:empty { display: none; }
+.list { display: flex; flex-direction: column; }
+.row { position: relative; flex-wrap: wrap; column-gap: 12px; row-gap: 0; padding: 4px 0; min-height: 0; }
+.row-open {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 8px 0;
+  border: 0; background: none; text-align: left; cursor: pointer;
+}
+.row-open:hover .row-title { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--cruz); }
+.row-end { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+.row-totp { border: 0; background: none; padding: 4px; margin: -4px; cursor: pointer; color: var(--tinta); }
+.row-totp:hover { background: var(--niebla); }
+.row-totp .blocks { width: 60px; height: 3px; }
+.row-totp .code-s { font-size: 15px; }
+.empty { color: var(--gris); padding: 10px 0; }
+
+/* The type tabs: one quiet line under the search, the chosen one in ink
+   with the 2 px rule that says «chosen» everywhere else. Scrolls sideways
+   when the types do not fit. */
+.kinds {
+  display: flex; gap: 2px; margin: -6px 0 -4px; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--linea);
+}
+.kinds[hidden], .group[hidden] { display: none; }
+/* More tabs past the edge: they fade out there instead of being cut. */
+.kinds.more-end { mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.kinds.more-start { mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); }
+.kinds.more-start.more-end { mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
+.kinds::-webkit-scrollbar { display: none; }
+.kind-tab {
+  flex: none; display: inline-flex; align-items: baseline; gap: 5px; height: 30px; padding: 0 8px;
+  border: 0; background: none; color: var(--gris); font: 500 12px/30px var(--ui); cursor: pointer; position: relative;
+}
+.kind-tab:first-child { padding-left: 2px; }
+.kind-tab:hover { color: var(--tinta); }
+.kind-tab.is-on { color: var(--tinta); }
+/* The type's line icon (kit.ts), on the grid of the others. */
+.kind-tab svg { width: 14px; height: 14px; flex: none; align-self: center; }
+.kind-tab.is-on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--tinta); }
+.kind-tab:first-child.is-on::after { left: 2px; }
+.kind-tab:focus-visible { outline: 2px solid var(--cobalto); outline-offset: -2px; }
+.kind-count { font-weight: 400; font-size: 11px; color: var(--gris); font-variant-numeric: tabular-nums; }
+
+/* «Codes»: an authenticator's list. The code is the row; one click copies. */
+.list-codes { gap: 0; }
+.code-row + .code-row .code-copy { border-top: 1px solid var(--linea); }
+.code-row { margin: 0 -16px; }
+.code-copy {
+  width: 100%; display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px;
+  border: 0; background: none; text-align: left; color: var(--tinta); cursor: copy; position: relative;
+}
+.code-copy:hover, .code-copy.is-copied { background: var(--niebla); }
+.code-copy:hover::before, .code-copy.is-copied::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--cobalto);
+}
+.code-copy:focus-visible { outline-offset: -2px; }
+.code-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.code-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.code-name .row-title { flex: none; max-width: 60%; }
+.code-name .row-sub { min-width: 0; }
+.code-copy .code { font-size: 30px; }
+.code-copy .blocks { width: 100%; max-width: 236px; height: 3px; }
+.code-done { flex: none; align-self: center; width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--linea); color: var(--gris); background: var(--papel); }
+.code-done svg { width: 14px; height: 14px; }
+.code-copy:hover .code-done { color: var(--tinta); }
+.code-copy.is-copied .code-done { color: var(--tinta); border-color: var(--tinta); }
+.empty-codes { display: flex; flex-direction: column; gap: 4px; }
+.empty-title { color: var(--tinta); font-weight: 500; }
+
+/* The current site's login with a code: the code under it, at a glance. */
+.row-code { flex-basis: 100%; display: flex; align-items: center; gap: 10px; padding: 0 0 10px 40px; }
+.live { display: inline-flex; flex-direction: column; gap: 6px; }
+.live-s { flex: 1; }
+.live-s .blocks { width: 150px; height: 3px; }
+.live-l .blocks { width: 220px; }
+.row-code .kbd { margin-left: auto; }
+
+/* ---------------------------------------------------------- approvals */
+.approvals-wrap:empty { display: none; }
+.approvals { display: flex; flex-direction: column; gap: 18px; padding: 4px 0; }
+.approval { display: flex; gap: 14px; border: 1px solid var(--linea); padding: 12px 12px 12px 0; margin: 0 1px; }
+.approval-band { width: 40px; flex: none; margin: -12px 0 -12px 0; align-self: stretch; }
+.approval-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.approval-what strong { font-weight: 600; }
+.approval-reason { color: var(--gris); font-size: 12px; overflow-wrap: anywhere; }
+.approval-site { font-size: 12px; overflow-wrap: anywhere; }
+.approval-actions { display: flex; gap: 8px; margin-top: 8px; }
+.approval-password { display: flex; flex-direction: column; gap: 0; width: 100%; margin-top: 6px; }
+.approval-actions-wrap { flex-wrap: wrap; }
+.approval-outside { font-size: 12px; color: var(--gris); overflow-wrap: anywhere; }
+
+/* A task request (ADR 0021): one card for the whole job. */
+.task-name { font-weight: 600; overflow-wrap: anywhere; }
+.task-said { color: var(--gris); font-size: 11px; margin-top: -2px; }
+.task-rows { display: flex; flex-direction: column; margin: 8px 0 2px; border-top: 1px solid var(--linea); }
+.task-row { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--linea); }
+.task-item { display: flex; align-items: baseline; gap: 8px; cursor: pointer; min-width: 0; }
+.task-item .check { align-self: center; }
+.task-title { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.task-host { color: var(--gris); font-size: 12px; margin-left: auto; text-align: right; overflow-wrap: anywhere; }
+.task-user, .task-flag { font-size: 12px; color: var(--gris); padding-left: 26px; overflow-wrap: anywhere; }
+.task-flag { color: var(--rojo); }
+.perms { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 0 26px; }
+.perm-line { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; flex-wrap: wrap; }
+.perm-line .check { width: 14px; height: 14px; margin: 0; }
+.perm-line .check:checked::after { width: 7px; height: 4px; }
+.perm-tag { color: var(--cobalto); font-size: 11px; }
+.perm-why { color: var(--gris); font-size: 11px; }
+.perm.is-blocked .perm-line { cursor: default; }
+.perm.is-blocked .perm-name { color: var(--cruz); text-decoration: line-through; }
+.perm-warn { font-size: 11px; color: var(--gris); padding-left: 22px; }
+.check:disabled { border-color: var(--linea); background: var(--niebla); cursor: default; }
+.check:indeterminate::after { content: ""; width: 8px; height: 2px; background: var(--tinta); }
+.task-time { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.task-time-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.task-select { height: 30px; width: auto; padding: 0 8px; }
+
+/* A running task: the blue band is the time left, drained from the top. */
+.task-band { position: relative; }
+.task-spent { position: absolute; left: 0; right: 0; top: 0; height: 0; background: var(--niebla); border-bottom: 1px solid var(--cobalto); transition: height 0.6s linear; }
+.task-covers { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 0; }
+.task-cover { display: flex; gap: 8px; font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .task-spent { transition: none; } }
+
+/* ------------------------------------------------------------- health */
+.screen-health .title:focus { outline: none; }
+.health, .health-body, .health-running { display: flex; flex-direction: column; gap: 18px; }
+.health-running:empty { display: none; }
+.health-group { display: flex; flex-direction: column; gap: 0; padding-top: 6px; }
+.health-group + .health-group { border-top: 1px solid var(--linea); margin-top: 4px; }
+.health-fix { margin-top: 10px; }
+.health-rotate-warn { padding-left: 0; margin-top: 4px; }
+.health .row-open { cursor: default; }
+.health button.row-open { cursor: pointer; }
+.task-row.is-blocked .task-title { color: var(--gris); }
+.site-changed .task-host { color: var(--cobalto); }
+.site-failed .task-host { color: var(--rojo); }
+
+/* --------------------------------------------------------------- item */
+.screen-item .content { gap: 18px; }
+.item-head .title-l:focus { outline: none; }
+.item-head { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; }
+.fields { margin: 4px 4px 0; border-top: 1px solid var(--linea); border-bottom: 1px solid var(--linea); }
+.field-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; min-height: 56px; }
+.field-row + .field-row { border-top: 1px solid var(--linea); }
+.field-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.field-label { font-size: 11px; color: var(--gris); }
+.field-value { margin: 0; min-width: 0; }
+.value { display: block; overflow-wrap: anywhere; }
+.field-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.reference { font: 400 11px/1.4 var(--mono); color: var(--gris); }
+.btn-s { height: 28px; padding: 0 10px; font-size: 12px; }
+.item-foot { padding-top: 4px; }
+
+/* A hidden secret: noise instead of dots, dissolving into the text. */
+.secret { position: relative; min-height: 16px; }
+.secret-mask { position: absolute; inset: -1px 0; pointer-events: none; }
+.secret.is-hidden { width: 120px; height: 14px; }
+.secret.is-hidden .secret-mask { inset: 0; }
+.secret-text { font-family: var(--mono); font-size: 12.5px; }
+
+/* ----------------------------------------------------------- new item */
+.screen-new .title:focus { outline: none; }
+.new-form { display: flex; flex-direction: column; gap: 16px; }
+.new-fields, .new-where { display: flex; flex-direction: column; gap: 12px; }
+.new-where:empty, .new-message:empty { display: none; }
+.new-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.new-control { display: flex; align-items: center; gap: 6px; }
+.new-control .input { flex: 1; min-width: 0; }
+.new-control .btn-s, .new-control .icon-btn { height: 36px; flex: none; }
+.new-control .icon-btn { width: 36px; }
+.new-field .input[type="password"] { font-family: var(--mono); letter-spacing: 0.04em; }
+.new-textarea { height: auto; min-height: 120px; padding: 8px 10px; resize: vertical; font: inherit; line-height: 1.45; }
+.new-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.new-hint { overflow-wrap: anywhere; }
+.new-error:empty { display: none; }
+.input[aria-invalid="true"] { border-color: var(--rojo); }
+.new-gen { margin-top: 6px; padding: 12px; border: 1px solid var(--linea); }
+.new-gen[hidden] { display: none; }
+
+/* -------------------------------------------------------------- toast */
+.toast {
+  position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 5;
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 12px;
+}
+.toast svg { width: 14px; height: 14px; flex: none; }
+.toast-text { flex: 1; }
+
+/* ----------------------------------------------------------- settings */
+.screen-settings .title:focus { outline: none; }
+.screen-settings .content { gap: 20px; }
+.setting { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0 4px; cursor: pointer; }
+.setting-text { display: flex; flex-direction: column; gap: 4px; }
+.setting-title { font-weight: 500; }
+/* A square box in ink, like the buttons. */
+.check {
+  appearance: none; width: 18px; height: 18px; margin: 1px 0 0; flex: none; cursor: pointer;
+  border: 1px solid var(--tinta); background: var(--papel); display: grid; place-items: center;
+}
+.check:checked { background: var(--boton); }
+.check:checked::after { content: ""; width: 9px; height: 5px; border: solid var(--boton-texto); border-width: 0 0 2px 2px; transform: translateY(-1px) rotate(-45deg); }
+.settings-saved:empty { display: none; }
+.setting-button { width: 100%; border: 0; border-bottom: 1px solid var(--linea); background: none; text-align: left; padding-bottom: 12px; }
+.setting-button:hover .setting-title { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--cruz); }
+.empty-import { display: block; margin-top: 6px; }
+.shortcut { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; color: var(--tinta); }
+.shortcut .kbd { flex: none; min-width: 44px; }
+.agent-sites { padding-top: 8px; }
+.agent-sites-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.agent-sites-actions .sub { flex-basis: 100%; }
+/* The passkey window: the same square, filled. */
+.check[type="radio"]:checked::after { width: 8px; height: 8px; border: 0; background: var(--boton-texto); transform: none; }
+.uv-confirm:empty { display: none; }

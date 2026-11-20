@@ -1,0 +1,54 @@
+{
+  "cases": [
+    {
+      "expires_at_ms": 1800028800000,
+      "name": "sandbox-package",
+      "negative": [
+        {
+          "package": "ksb2_AePRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAaMaE8QA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUUAAAAcdGxzOi8vcHJveHkuZXhhbXBsZS5jb206ODQ0Mw",
+          "why": "another prefix"
+        },
+        {
+          "package": "ksb1_AuPRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAaMaE8QA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUUAAAAcdGxzOi8vcHJveHkuZXhhbXBsZS5jb206ODQ0Mw",
+          "why": "another version"
+        },
+        {
+          "package": "ksb1_AePRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAaMaE8QA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUUAAAAcdGxzOi8vcHJveHkuZXhhbXBsZS5jb206ODQ0MwA",
+          "why": "trailing byte"
+        },
+        {
+          "package": "ksb1_AePRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAaMaE8QA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUUAAAAcdGxzOi8vcHJveHkuZXhhbXBsZS5jb206ODQ0",
+          "why": "one byte short"
+        },
+        {
+          "package": "ksb1_AePRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAAAAAAAA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUUAAAAcdGxzOi8vcHJveHkuZXhhbXBsZS5jb206ODQ0Mw",
+          "why": "expiry 0"
+        },
+        {
+          "package": "ksb1_AePRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAaMaE8QA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUX_____dGxzOi8vcHJveHkuZXhhbXBsZS5jb206ODQ0Mw",
+          "why": "address length past the end"
+        },
+        {
+          "package": "ksb1_AePRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAaMaE8QA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUUAAAAeaHR0cHM6Ly9wcm94eS5leGFtcGxlLmNvbTo4NDQz",
+          "why": "address with another scheme"
+        }
+      ],
+      "package": "ksb1_AePRv3leq6lvV7WedhNJ5WCiWfvB7C0NVgyM8f_uLNrx1F3vzYjTHSlYGy6aCifhhAAAAaMaE8QA3nolIoVk4fJccmqidwT-_wYGTVIH1hO8YEbTlEjwYUUAAAAcdGxzOi8vcHJveHkuZXhhbXBsZS5jb206ODQ0Mw",
+      "package_bytes": "01e3d1bf795eaba96f57b59e761349e560a259fbc1ec2d0d560c8cf1ffee2cdaf1d45defcd88d31d29581b2e9a0a27e184000001a31a13c400de7a25228564e1f25c726aa27704feff06064d5207d613bc6046d39448f061450000001c746c733a2f2f70726f78792e6578616d706c652e636f6d3a38343433",
+      "proxy_ed25519_seed": "a19461aca3b30f3fafdd938e9d022973a39f1d6eab2527259347050131fdf9a7",
+      "proxy_pin": "de7a25228564e1f25c726aa27704feff06064d5207d613bc6046d39448f06145",
+      "proxy_public_identity": "010508fe8864dc3e1eaf0a7a982eaa7aaaa93d40b38dd4992bbd224f26c2ca860172c9886b6c30437999a6dd40f0166f9953d7d89a15e99cf2b8df286c6f42e74788",
+      "proxy_spki": "302a300506032b6570032100c9886b6c30437999a6dd40f0166f9953d7d89a15e99cf2b8df286c6f42e74788",
+      "proxy_x25519_seed": "fb8a6d831f8de86033afed466acc2fcc7b1a8cc7f5c6c5c8d5f8d200d8697664",
+      "sandbox_id": "e3d1bf795eaba96f57b59e761349e560",
+      "secret": "a259fbc1ec2d0d560c8cf1ffee2cdaf1d45defcd88d31d29581b2e9a0a27e184",
+      "secret_digest": "c3b7c99029e1558e32ac8908dc6968cd324ba0c4e703b4ac976086673b73fee7",
+      "secret_digest_input": "000000166b6c61762f76312f73616e64626f782f73656372657400000010e3d1bf795eaba96f57b59e761349e56000000020a259fbc1ec2d0d560c8cf1ffee2cdaf1d45defcd88d31d29581b2e9a0a27e184",
+      "url": "tls://proxy.example.com:8443"
+    }
+  ],
+  "description": "Sandbox package (ksb1_), the proxy pin (SHA-256 of its Ed25519 SPKI) and the digest of the one-time secret the proxy keeps",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §13.10"
+}

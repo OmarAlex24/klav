@@ -1,0 +1,18 @@
+# Code owners (https://docs.github.com/articles/about-code-owners).
+# A PR that touches the build, CI, deployment or the cryptographic core asks
+# for the owner's review. It requests the review and never blocks the merge:
+# main's ruleset doesn't require code-owner review (docs/decisiones/0040, Q10).
+# Last matching pattern wins: keep the general rules first.
+
+/.github/            @OmarAlex24
+/scripts/            @OmarAlex24
+/deploy/             @OmarAlex24
+/Dockerfile          @OmarAlex24
+/.dockerignore       @OmarAlex24
+/docker-compose.yml  @OmarAlex24
+/deny.toml           @OmarAlex24
+/Cargo.lock          @OmarAlex24
+/rust-toolchain.toml @OmarAlex24
+/crates/klav-core/   @OmarAlex24
+# Public claims about security restate the spec and the threat model (ADR 0039 §3).
+/apps/docs/src/content/docs/security/ @OmarAlex24

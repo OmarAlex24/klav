@@ -1,0 +1,59 @@
+{
+  "cases": [
+    {
+      "body": "{\"expires_at\":1800028800000,\"issuer_id\":\"323c900f-f517-b286-0a21-e02e5358a335\",\"label\":\"chat-123\",\"profiles\":[\"railway\"],\"sandbox_id\":\"e3d1bf79-5eab-a96f-57b5-9e761349e560\"}",
+      "body_sha256": "9f4acbabecae48f03ffb335693eb263afb12071d911628622f7cd0fe0cab4c24",
+      "channel_ed25519_public": "00eac31ca58ccacbf2f380d65f54dd200b5b7149b2de7cc92767deef253dce47",
+      "channel_key_sha256": "b55ec951b7dc37543f98da2cb3ce634155be6e6977c61565f9b9e6e073e21a41",
+      "method": "POST",
+      "name": "issued",
+      "nonce": "123ed5e42df109830bfd7183ece8e944",
+      "path": "/v1/agent/sandboxes",
+      "proxy_agent_id": "49f8511562395a33e4db3d011a6c1537",
+      "proxy_ed25519_seed": "a19461aca3b30f3fafdd938e9d022973a39f1d6eab2527259347050131fdf9a7",
+      "proxy_public_identity": "010508fe8864dc3e1eaf0a7a982eaa7aaaa93d40b38dd4992bbd224f26c2ca860172c9886b6c30437999a6dd40f0166f9953d7d89a15e99cf2b8df286c6f42e74788",
+      "proxy_x25519_seed": "fb8a6d831f8de86033afed466acc2fcc7b1a8cc7f5c6c5c8d5f8d200d8697664",
+      "request_message": "000000196b6c61762f76312f7369672f6167656e742d726571756573740000001049f8511562395a33e4db3d011a6c153700000004504f5354000000132f76312f6167656e742f73616e64626f78657300000008000001a3185c500000000010123ed5e42df109830bfd7183ece8e944000000209f4acbabecae48f03ffb335693eb263afb12071d911628622f7cd0fe0cab4c24",
+      "request_signature": "4b1dead6571ea7d8529af8e72a5b5c0692531df0d4b5a70e514e91b89228176d98a3b620034b69aff5d2ffaaaa49985b5ff8390bbf80f3944fcd790bf708c709",
+      "timestamp_ms": 1800000000000
+    },
+    {
+      "body": "{\"channel_key_sha256\":\"tV7JUbfcN1Q_mNoss85jQVW-bml3xhVl-bnm4HPiGkE\"}",
+      "body_sha256": "1c1e8da079084fd1ea032d94f9a832946b3d625d9c2d3b7655ea178735ab7add",
+      "channel_ed25519_public": "00eac31ca58ccacbf2f380d65f54dd200b5b7149b2de7cc92767deef253dce47",
+      "channel_key_sha256": "b55ec951b7dc37543f98da2cb3ce634155be6e6977c61565f9b9e6e073e21a41",
+      "method": "POST",
+      "name": "claimed",
+      "nonce": "50d617e75e89049c1455ad0610817efc",
+      "path": "/v1/agent/sandboxes/e3d1bf79-5eab-a96f-57b5-9e761349e560/claimed",
+      "proxy_agent_id": "49f8511562395a33e4db3d011a6c1537",
+      "proxy_ed25519_seed": "a19461aca3b30f3fafdd938e9d022973a39f1d6eab2527259347050131fdf9a7",
+      "proxy_public_identity": "010508fe8864dc3e1eaf0a7a982eaa7aaaa93d40b38dd4992bbd224f26c2ca860172c9886b6c30437999a6dd40f0166f9953d7d89a15e99cf2b8df286c6f42e74788",
+      "proxy_x25519_seed": "fb8a6d831f8de86033afed466acc2fcc7b1a8cc7f5c6c5c8d5f8d200d8697664",
+      "request_message": "000000196b6c61762f76312f7369672f6167656e742d726571756573740000001049f8511562395a33e4db3d011a6c153700000004504f5354000000402f76312f6167656e742f73616e64626f7865732f65336431626637392d356561622d613936662d353762352d3965373631333439653536302f636c61696d656400000008000001a3185d3a600000001050d617e75e89049c1455ad0610817efc000000201c1e8da079084fd1ea032d94f9a832946b3d625d9c2d3b7655ea178735ab7add",
+      "request_signature": "2f15277bb8f48355ef75fdadb46a6f07cf41eca652d3621d1c65b048b16824a4e5be1a534a7f86ce91611dc6799985e6eb703a93252e21d39a77b58527973207",
+      "timestamp_ms": 1800000060000
+    },
+    {
+      "body": "{\"reason\":\"stop\"}",
+      "body_sha256": "36fb05bee5d1e62931ec81d530c0de4d983d263348cad479be431bad47f92614",
+      "channel_ed25519_public": "00eac31ca58ccacbf2f380d65f54dd200b5b7149b2de7cc92767deef253dce47",
+      "channel_key_sha256": "b55ec951b7dc37543f98da2cb3ce634155be6e6977c61565f9b9e6e073e21a41",
+      "method": "POST",
+      "name": "revoked",
+      "nonce": "092b3c7a1fb36de87e00a7b1f0b9bca1",
+      "path": "/v1/agent/sandboxes/e3d1bf79-5eab-a96f-57b5-9e761349e560/revoked",
+      "proxy_agent_id": "49f8511562395a33e4db3d011a6c1537",
+      "proxy_ed25519_seed": "a19461aca3b30f3fafdd938e9d022973a39f1d6eab2527259347050131fdf9a7",
+      "proxy_public_identity": "010508fe8864dc3e1eaf0a7a982eaa7aaaa93d40b38dd4992bbd224f26c2ca860172c9886b6c30437999a6dd40f0166f9953d7d89a15e99cf2b8df286c6f42e74788",
+      "proxy_x25519_seed": "fb8a6d831f8de86033afed466acc2fcc7b1a8cc7f5c6c5c8d5f8d200d8697664",
+      "request_message": "000000196b6c61762f76312f7369672f6167656e742d726571756573740000001049f8511562395a33e4db3d011a6c153700000004504f5354000000402f76312f6167656e742f73616e64626f7865732f65336431626637392d356561622d613936662d353762352d3965373631333439653536302f7265766f6b656400000008000001a3185e24c000000010092b3c7a1fb36de87e00a7b1f0b9bca10000002036fb05bee5d1e62931ec81d530c0de4d983d263348cad479be431bad47f92614",
+      "request_signature": "45c118baf69d628821bc99eceff4022fd45670acb6a79f7e2f03b38a7bbfe577e6024d403c93ecb4aa0704c6e906189e600dffb6980c8ca34f3ac1a56fa43406",
+      "timestamp_ms": 1800000120000
+    }
+  ],
+  "description": "The credential proxy's signed requests for a sandbox's life (sandbox.issued, sandbox.claimed, sandbox.revoked): bodies, their section 13.3 messages and signatures, and the digest of the channel key",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §13.3, §13.7, §13.10"
+}

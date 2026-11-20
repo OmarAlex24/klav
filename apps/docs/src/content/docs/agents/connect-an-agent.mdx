@@ -1,0 +1,130 @@
+---
+title: "Connect an agent"
+description: "Connect Claude Code, Claude Desktop, Codex, Cursor or VS Code to Klav with klav client connect, register any other runtime, and keep Klav's skill up to date."
+sidebar:
+  order: 2
+---
+
+This page explains how to give an AI agent access to Klav: connect an agent client with one command, register any other program as an agent, and approve it. It also covers `klav mcp`, the MCP server agents talk to, and Klav's skill, the rules an agent follows.
+
+## Connect an agent client
+
+`klav client connect` sets up one of these clients on this computer:
+
+| Client | `klav client connect …` | Where Klav adds its MCP entry | Where the skill goes |
+|---|---|---|---|
+| Claude Code | `claude-code` | `~/.claude.json`, through `claude mcp add` | `~/.claude/skills/klav/` |
+| Claude Desktop (macOS) | `claude-desktop` | `~/Library/Application Support/Claude/claude_desktop_config.json` | No skills folder: the rules come with the tools |
+| Codex | `codex` | `~/.codex/config.toml`, through `codex mcp add` when `codex` is installed | `~/.agents/skills/klav/` |
+| Cursor | `cursor` | `~/.cursor/mcp.json` | `~/.agents/skills/klav/` |
+| VS Code | `vscode` | `~/.copilot/mcp-config.json` | `~/.agents/skills/klav/` |
+
+```sh
+klav client connect claude-code
+```
+
+It shows what it will change and asks before it writes. Then it:
+
+1. registers the client's agent, named after the client, and prints its six words;
+2. adds a `klav` entry to the client's MCP settings that runs `klav mcp --agent claude-code`, after copying the file to `client-backups/` in your Klav folder. It changes only that entry, and the entry never holds a key;
+3. installs Klav's skill in the client's skills folder.
+
+The agent gets nothing until you approve it. Approve it in the Mac app's Requests, on the iPhone, or in a terminal, after you compare the six words:
+
+```sh
+klav agent approve claude-code --project Personal/General
+```
+
+```text
+Agent claude-code approved (grant version 1): Personal/General.
+```
+
+At a terminal it asks whether the words match the ones the agent showed; in a script, pass them with `--words "…"`.
+
+Restart the client if it was open, so it loads its MCP servers again.
+
+- `klav client list` shows, for each client, whether it is installed and connected. It changes nothing.
+- `klav client disconnect claude-code` removes Klav's entry and the skill. **The agent keeps its access:** to stop it, [pause or revoke it](/agents/pause-and-revoke/).
+- `klav client restore claude-code` puts back the settings file from before Klav's last change.
+- An entry Klav didn't write is left alone unless you pass `--replace` or `--adopt`. Klav doesn't write a file it can't read, or one an organization manages.
+
+In the Mac app, Development › Clients does the same with a button per client, and shows the change before it writes.
+
+An agent can also connect itself: Klav's skill tells it to run `klav client connect <client> --yes --json`, give you the six words, and wait until you approve.
+
+## Register any other program
+
+A script, a server or a runtime that isn't one of those clients registers on its own:
+
+```sh
+klav agent register --name release-bot --note "Publishes releases of acme-api"
+```
+
+```text
+Agent "release-bot" registered (…); its key is in the file … (0600).
+Ask the owner of you@example.com to approve it within 59 minutes with the command for what it does, and to check that the words match:
+
+    ferocity mothproof bolt cassette gleeful seizing
+
+If it reads projects:
+
+    klav agent approve release-bot --project <vault/project>
+
+…
+Then check it with `klav agent status --wait`.
+```
+
+- `--server` and `--email` default to the account on this computer, if any.
+- `--key-store` chooses where the private key goes: `keychain` (the macOS login keychain; what `auto` picks on a Mac) or `file`. In a container, set `KLAV_AGENT_KEY` instead.
+- The request expires after an hour.
+
+`klav agent status` shows the agent's state, its six words and your account's words. With `--wait`, it waits until you decide:
+
+```text
+agent:     release-bot (…)
+server:    https://klav.example.com
+status:    active
+words:     ferocity mothproof bolt cassette gleeful seizing
+account:   shady hunk carry repackage pounce unnatural
+grant:     version 1, 1 project(s)
+```
+
+A registered agent works through `klav agent …` (see [Use secrets without seeing them](/agents/use-secrets-without-seeing-them/)), `klav mcp`, or Klav's SDK.
+
+## `klav mcp`
+
+`klav mcp --agent <name>` is an MCP server over standard input and output, with that agent's identity. These are its tools. Every one takes a `reason`, except `get_task` and `list_tasks`:
+
+| Tool | What it does | Permission |
+|---|---|---|
+| `search_items`, `get_item` | Find items and read their metadata, never values | `list` |
+| `fill_login`, `fill_card` | Type a login or card into a browser page | `fill` |
+| `run_with_secrets` | Run a command with secrets in its environment; the output comes back redacted | `inject` |
+| `inject_file` | Write secrets or an attachment into a new 0600 file | `inject` |
+| `get_totp` | A one-time code, typed into the page or returned | `totp` |
+| `reveal` | A value into the agent's context | `reveal` |
+| `create_item`, `update_item`, `delete_item` | Change items; `create_item` can generate a password the agent never sees | `create`, `update`, `delete` |
+| `request_access` | Ask you for a permission on an item instead of failing | — |
+| `request_task`, `get_task`, `list_tasks`, `end_task` | [Tasks](/agents/approvals-and-tasks/#tasks): one approval for a job | — |
+| `change_password_url`, `rotate_password`, `rotate_confirm`, `rotate_cancel` | Change a password in your browser without the agent seeing it | `list`; `rotate` inside a task |
+| `passkey_sign_in` | Sign in to a site with your passkey, in your browser | `passkey` inside a task |
+
+`klav mcp` uses the `klav.toml` of the folder it starts in: short references, and only that project.
+
+## Klav's skill
+
+The skill is a short set of rules an agent follows: search first, prefer actions to values, give a real reason, wait for your approval in the background instead of asking again, and never work around a denial. It is built into `klav`, so its version always matches. `klav client connect` installs it; these commands manage it:
+
+```sh
+klav skill status       # where it is installed, and whether each copy is up to date
+klav skill install      # into the folders of the clients installed here
+klav skill update       # replace Klav's copies that are older
+klav skill uninstall
+klav skill show         # print it
+```
+
+Klav never overwrites a copy you edited. The Mac app offers the skill in the last step of "Set up this Mac", and keeps it up to date.
+
+## Next
+
+[Approvals and tasks](/agents/approvals-and-tasks/).

@@ -1,0 +1,120 @@
+---
+title: "Import your passwords"
+description: "Move your passwords and one-time codes into Klav from Bitwarden, 1Password, Google Authenticator or a browser, with the extension, the iPhone app or the CLI."
+sidebar:
+  order: 3
+  label: "Import"
+---
+
+This page explains how to move your passwords and one-time codes into Klav from Bitwarden, 1Password, Google Authenticator, a browser or any app that exports a CSV file. You export a file from the other app, then import it with the browser extension, the iPhone app or the CLI. The Mac app doesn't import.
+
+Klav shows what will change before it writes anything, merges logins you already have instead of duplicating them, and never loses a password: one it replaces goes to the item's password history.
+
+## Export from the app you use now
+
+- **Bitwarden.** In the Bitwarden web vault, open Tools → Export vault. In the apps it's File → Export vault, or Settings → Export vault. Choose the file format `.json`, not ".json (Encrypted)": Klav can't read that one. You get `bitwarden_export_….json`, with one-time codes and passkeys. A `.csv` export also works.
+- **1Password.** Open 1Password on your computer and choose File → Export, then the account. Pick the 1PUX format. You get a file ending in `.1pux`. A `.csv` export also works.
+- **Google Authenticator.** On your phone, open Google Authenticator, open its menu and choose Transfer accounts → Export accounts. With many accounts, the app shows several QR codes, one after another: you need all of them. Keep a photo or screenshot of each QR code, or the `otpauth-migration://` links a QR reader shows.
+- **Chrome, Edge or Brave.** Chrome: open `chrome://password-manager/settings`. Edge: `edge://settings/passwords`. Brave: `brave://password-manager/settings`. Choose Export passwords (in Edge it's under ⋯). You get a `.csv` file.
+- **Firefox.** Open `about:logins`, then ⋯ → Export passwords. You get `logins.csv`.
+- **Safari and Passwords.** On macOS 15 or later, open the Passwords app and choose File → Export All Passwords to File. On earlier versions, in Safari choose File → Export → Passwords. You get `Passwords.csv`.
+- **Another app.** Export a CSV file. Klav reads the columns title (or name), url, username, password, notes, totp and tags.
+
+Authy has no export. See [Authy](#authy) below.
+
+## With the browser extension
+
+Open the extension's popup and choose "Import from another app": it is in the popup's settings, and on the empty vault. The import page opens in its own tab.
+
+<Steps>
+
+1. **Where are you coming from?** Choose the app. Each one shows the steps of its export.
+2. **Add the files.** Drop or choose one or several. For Google Authenticator, add the photos of its QR codes, or paste the `otpauth-migration://` links. Each file says how many entries it has and what it skips. If a Google export is missing QR codes, it says how many.
+3. **Review before importing.** You see what is new, what merges into an item you already have, and what is already in Klav, with what changes in each. Nothing is written until you choose the import button, which shows the count, such as "Import 2 items". With more than one project, you choose where the items go.
+4. **Imported.** Klav says how many items it created and updated, and reminds you to delete the export.
+
+</Steps>
+
+## With the iPhone app
+
+Open Settings › Import › "Import from another app", or choose it on the empty vault. The steps are the extension's.
+
+- **Files:** get the export onto the iPhone (AirDrop, or save it in iCloud Drive) and choose it from Files.
+- **Google Authenticator:** if it is on another phone, choose "Scan with the camera" and scan each QR code. If it is on this iPhone, take a screenshot of each QR code and choose them from Photos. You can also paste the `otpauth-migration://` links. The pictures don't leave the iPhone.
+
+## With the CLI
+
+Look first, without changing anything, with `--dry-run`:
+
+```sh
+klav import --dry-run "Chrome Passwords.csv"
+```
+
+```text
+Chrome Passwords.csv: Chrome, Edge or Brave, 2 entries
+
+ACTION  TITLE        USER             SITE         DETAILS
+new     github.com   ana              github.com
+new     example.com  ana@example.com  example.com
+
+Into Personal / General: 2 new, 0 merged, 0 already there. The same site and user merge into one item; a replaced password stays in that item's password history.
+Nothing imported (--dry-run).
+```
+
+Then import. `klav import` shows the same table and then imports:
+
+```sh
+klav import "Chrome Passwords.csv"
+```
+
+```text
+…
+Imported into Personal / General: 2 item(s) created, 0 updated, 0 already there.
+Delete the export files now (and empty the trash): they hold your passwords in plain text.
+```
+
+If `klavd` is locked or not running, `klav` asks for your master password first.
+
+- **The format is detected from the content.** `--from` (`bitwarden`, `1password`, `google`, `chrome`, `edge`, `brave`, `firefox`, `safari` or `csv`) is a hint: if the file doesn't look like that source, the import fails and says what it looks like.
+- **Several files at once** are imported together, for example all the QR codes of one Google Authenticator export: `klav import qr-1.png qr-2.png`.
+- **Google Authenticator links** never go on the command line, because they hold the secrets. Paste them on standard input, one per line, and finish with Ctrl-D:
+
+  ```sh
+  klav import -
+  ```
+
+- **Where items go:** Personal / General by default; `--vault` and `--project` choose another.
+- **For scripts:** `--json` prints the preview and the result as JSON.
+
+## How Klav merges
+
+- The same site and username make one item. What the file adds (sites, a one-time code, notes, fields, tags) is added to the item you have.
+- If the password differs, the newer one wins and the other goes to the item's password history. Here, a Safari export merges into the login that the Chrome export created:
+
+  ```text
+  ACTION  TITLE   USER  SITE              DETAILS
+  merge   GitHub  ana   github.com        into "github.com"; new password (the old one goes to its history)
+  new     Mail    ana   mail.example.org
+  ```
+
+- A Google Authenticator code joins the login for its site and account when there is exactly one; otherwise it becomes an item of its own.
+- Importing the same file twice adds nothing: every row shows `already there`.
+- Only `http` and `https` sites are imported. A site without a scheme, such as `example.com/login`, is saved as `https://example.com/login`.
+- Passkeys come from Bitwarden's `.json` export only. 1Password's export doesn't carry their keys, so Klav counts them and says which logins were imported without them: sign in to those sites and save a new passkey in Klav.
+
+## Authy
+
+Authy has no export. Move each code by making Klav the site's authenticator, one site at a time:
+
+1. Sign in to the site and open its two-factor settings.
+2. Choose to change the authenticator app, or turn two-factor off and on again. The site shows a new QR code and its setup key.
+3. Add that setup key to the site's login in Klav as its one-time code, and type the code Klav shows to confirm.
+4. Only then remove the site from Authy.
+
+## After importing
+
+The export holds your passwords in plain text. Delete it wherever you saved it, and empty the trash. For Google Authenticator, delete the photos of the QR codes too. On the iPhone, also empty Recently Deleted.
+
+## Next
+
+[Add a device](/get-started/add-a-device/).

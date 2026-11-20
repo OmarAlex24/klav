@@ -1,0 +1,129 @@
+#!/bin/bash
+# klav-tailnet-up: joins this sandbox to the person's tailnet with the
+# single-use Tailscale key on standard input (ADR 0042 §4, layer 3).
+#
+# Shell: bash, 3.2 or later. It runs on Linux, as root.
+#
+# The template installs it as /usr/local/sbin/klav-tailnet-up, owned by
+# root (build-template). The daily environment's setup script runs it
+# before the lines `klav sandbox start` prints:
+#
+#   { printenv KLAV_TAILNET_KEY || true; } | sudo -n /usr/local/sbin/klav-tailnet-up "${KLAV_TAILNET_HOSTNAME:-}"
+#
+# Without a tailnet neither variable is set: the input and the hostname are
+# empty, and it skips. The key arrives on standard input only. It is never an argument of any
+# process, never in a trace, and the one file that holds it (0600, in a new
+# directory under /run) is removed on every exit. Never run this script, or
+# the setup lines, with `-x`.
+#
+# Exit: 0 when the node is on the tailnet with tag:klav-sandbox, or when
+# there is no key and no hostname (nothing to do); 1 when it could not join
+# or joined without the tag (then it logs the node out); 2 for a wrong
+# argument or key, or a hostname without a key.
+
+set -eu
+set +x
+set -o pipefail
+umask 077
+
+# klav-test-seam: begin. Constants, never read from the environment: sudo
+# runs this file as root. The tests replace these three lines and nothing
+# else, and check that (deploy/sandbox-template/test/run-tests).
+bin_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+run_dir=/run
+socket_wait=30
+# klav-test-seam: end
+
+PATH=$bin_path
+export PATH
+IFS=$' \t\n'
+LC_ALL=C
+export LC_ALL
+
+tag=tag:klav-sandbox
+sock=$run_dir/tailscale/tailscaled.sock
+
+say() { printf 'klav-tailnet-up: %s\n' "$1"; }
+fail() {
+	printf 'klav-tailnet-up: %s\n' "$1" >&2
+	exit "${2:-1}"
+}
+
+[ "$#" -eq 1 ] || fail "usage: { printenv KLAV_TAILNET_KEY || true; } | sudo -n klav-tailnet-up \"\${KLAV_TAILNET_HOSTNAME:-}\"" 2
+
+# 2. The key file: a new directory under /run (a tmpfs a snapshot does not
+# keep), removed on every exit, also when a command fails under `set -e`.
+dir=$(mktemp -d "$run_dir/klav-tailnet.XXXXXX")
+trap 'rm -rf -- "$dir"' EXIT
+trap 'exit 1' HUP INT TERM
+
+key=
+IFS= read -r -d '' key || true
+# `printenv` ends the value with a newline.
+key=${key%$'\n'}
+if [ -z "$key" ]; then
+	# A hostname means a key was made for this sandbox: it did not arrive.
+	[ -z "$1" ] || fail "a hostname but no Tailscale key: refused" 2
+	say "no Tailscale key: skipped"
+	exit 0
+fi
+case $key in
+*[!A-Za-z0-9_-]*) fail "the Tailscale key holds characters no key has: refused" 2 ;;
+tskey-client-*) fail "that is an OAuth client secret, never an auth key: refused" 2 ;;
+esac
+host=$1
+case $host in
+"" | -* | *[!a-z0-9-]*) fail "the hostname must be lowercase letters, digits and dashes: refused" 2 ;;
+esac
+[ "${#host}" -le 63 ] || fail "the hostname is longer than 63 characters: refused" 2
+printf '%s' "$key" >"$dir/key"
+key=
+
+# Whether the node runs with the tag, and whether it has the tag, read back
+# from tailscale with the template's pinned jq.
+running_with_tag() {
+	tailscale --socket="$sock" status --json 2>/dev/null |
+		jq -e --arg tag "$tag" \
+			'.BackendState == "Running" and ((.Self.Tags // []) | index($tag) != null)' >/dev/null
+}
+has_tag() {
+	tailscale --socket="$sock" status --json 2>/dev/null |
+		jq -e --arg tag "$tag" '(.Self.Tags // []) | index($tag) != null' >/dev/null
+}
+
+# 3. Already up: a rerun of the setup script, with a key already spent.
+if running_with_tag; then
+	say "already on the tailnet with $tag: nothing to do"
+	exit 0
+fi
+
+# 4. The daemon, with its state in memory only. A transient systemd unit,
+# not a child of this script: a child shares the setup script's session and
+# control group, so a SIGHUP when sudo's terminal or the session ends, or
+# the end of the setup script's control group, would stop it, and with
+# --state=mem: a stopped daemon is a logged-out node. The unit's name is not
+# the masked tailscaled.service, and --collect unloads it if it fails, so a
+# rerun can start it again.
+if [ ! -S "$sock" ]; then
+	daemon=$(command -v tailscaled) || fail "tailscaled is not installed"
+	systemd-run --unit=klav-tailscaled --collect --quiet \
+		-- "$daemon" --state=mem: --socket="$sock" </dev/null >/dev/null 2>&1 ||
+		fail "systemd could not start tailscaled"
+	deadline=$((SECONDS + socket_wait))
+	while [ ! -S "$sock" ]; do
+		[ "$SECONDS" -lt "$deadline" ] || fail "tailscaled did not open its socket within ${socket_wait} s"
+		sleep 0.2
+	done
+fi
+
+# 5. Joining. Without --timeout, `up` blocks forever.
+tailscale --socket="$sock" up --auth-key="file:$dir/key" --hostname="$host" \
+	--accept-dns=false --accept-routes=false --timeout=60s
+rm -f -- "$dir/key"
+
+# 6. The tag: nothing else enforces it on the node.
+if ! has_tag; then
+	tailscale --socket="$sock" logout >/dev/null 2>&1 || true
+	fail "the node joined without $tag, so it was logged out"
+fi
+say "on the tailnet as $host, with $tag"

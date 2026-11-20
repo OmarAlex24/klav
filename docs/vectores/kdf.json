@@ -1,0 +1,59 @@
+{
+  "cases": [
+    {
+      "argon2id": "1487033b097f3d35c94ab8771ba84ebc7da242c19128e99fd1e2bff8e5a50804",
+      "kek": "02ef3aafcb2bf12afa9dafcdafa14788a98eadd41a94245fdd7a4397bfc76685",
+      "m_kib": 64,
+      "name": "reduced-params-ascii",
+      "note": "Parámetros reducidos (solo pruebas): m=64 KiB, t=1, p=1.",
+      "opaque_input": "812e5a62f9a21d68b52c28bc4d889e96c5abc4ab8ee7845d9ce739e0ad853035",
+      "p": 1,
+      "params_encoded": "0106000000400000000100000001f5d827928a51fae429f7d921d3e0d223",
+      "password": "correct horse battery staple",
+      "password_nfkd_utf8": "636f727265637420686f727365206261747465727920737461706c65",
+      "salt": "f5d827928a51fae429f7d921d3e0d223",
+      "secret_key": "6d5d4f3be592e97400f3669a8d5d2187",
+      "secret_key_hkdf": "2f3047391ac672c12cdbd169dec71c7091231a90dcc81e6a984a6ee539c86204",
+      "secret_key_text": "K1-NVOU-6O7F-SLUX-IAHT-M2NI-2XJB-Q44W-PDPA",
+      "t": 1
+    },
+    {
+      "argon2id": "b1f0b98bb8078c2a09d0be35a35fc2d04743709b167749603dbeb8f8f826c473",
+      "kek": "63e37e95cffb3584f6debb677da4a186bf810a7d8ed1e099101c65192b287611",
+      "m_kib": 128,
+      "name": "reduced-params-nfkd",
+      "note": "Contraseña con é precompuesta (U+00E9) y ligadura ﬁ (U+FB01); NFKD las descompone.",
+      "opaque_input": "2d613a21c1f30dffa72dc641bde9a35300e9834ee9d2cbe3b83e43c3160f57af",
+      "p": 2,
+      "params_encoded": "01060000008000000002000000025a2ee1d88c8efff33a77d2e64cddc222",
+      "password": "café ﬁesta",
+      "password_nfkd_utf8": "63616665cc8120666965737461",
+      "salt": "5a2ee1d88c8efff33a77d2e64cddc222",
+      "secret_key": "6d5d4f3be592e97400f3669a8d5d2187",
+      "secret_key_hkdf": "e1ca87ba3f353bbb285297f8c24b2b5cd960424749096ab62e11b983ebe6cf02",
+      "secret_key_text": "K1-NVOU-6O7F-SLUX-IAHT-M2NI-2XJB-Q44W-PDPA",
+      "t": 2
+    },
+    {
+      "argon2id": "a0087b36d7ee770ecd2c5ba5452cad0cfb7913a438566e85055876c6ccbcfd54",
+      "kek": "9ce161b58c2502a077bab02f7878985a431e7029b9f2c049616f8512105c2c08",
+      "m_kib": 262144,
+      "name": "production-params",
+      "note": "Parámetros de producción v1: m=256 MiB, t=3, p=4.",
+      "opaque_input": "e81e3943daaa80e6e556267afcf94b5cedc723aad2870d597f4ca606cf1cbd5c",
+      "p": 4,
+      "params_encoded": "01060004000000000003000000042a79f7126e852d2beeba28ec78ba74e0",
+      "password": "correct horse battery staple",
+      "password_nfkd_utf8": "636f727265637420686f727365206261747465727920737461706c65",
+      "salt": "2a79f7126e852d2beeba28ec78ba74e0",
+      "secret_key": "6d5d4f3be592e97400f3669a8d5d2187",
+      "secret_key_hkdf": "e5a4d68a7c4d6776fcfb643bd3dd009003b6933131bcfd35007057afc678af22",
+      "secret_key_text": "K1-NVOU-6O7F-SLUX-IAHT-M2NI-2XJB-Q44W-PDPA",
+      "t": 3
+    }
+  ],
+  "description": "Contraseña maestra + Secret Key → KEK",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §4.3"
+}

@@ -1,0 +1,37 @@
+# klav-server con SQLite en un volumen. Guía: docs/self-hosting.md.
+#
+# El puerto queda en 127.0.0.1: pon delante un proxy inverso con TLS
+# (Caddy, nginx, Traefik) y no lo publiques en claro.
+services:
+  klav:
+    # To use a prebuilt release image from GHCR once published (instead of
+    # building from source), remove `build: .` and set:
+    #   image: ghcr.io/omaralex24/klav-server:latest
+    build: .
+    image: klav-server:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      # Registro cerrado por defecto. Para crear tus cuentas, ábrelo solo en
+      # ese arranque y vuelve a cerrarlo después (docs/self-hosting.md §1):
+      #   KLAV_ALLOW_REGISTRATION=true docker compose up -d --build
+      #   docker compose up -d
+      KLAV_ALLOW_REGISTRATION: "${KLAV_ALLOW_REGISTRATION:-false}"
+      # Solo si el proxy inverso fija X-Forwarded-For (ver la guía, §3.2).
+      # La alternativa, KLAV_TRUSTED_IP_HEADER, queda sin poner: excluye a
+      # esta y solo vale si el proxy reemplaza esa cabecera.
+      KLAV_TRUST_FORWARDED_FOR: "false"
+      KLAV_LOG: info
+    volumes:
+      - klav-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  klav-data:

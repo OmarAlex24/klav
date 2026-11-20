@@ -1,0 +1,209 @@
+# Klav for iOS (ADR 0018) and macOS (ADR 0027). Generate the Xcode project with
+#   xcodegen generate
+# (the .xcodeproj is not committed). Build klav-ffi first:
+#   scripts/ios/build-xcframework.sh
+name: Klav
+options:
+  bundleIdPrefix: dev.klav
+  # English is the base; Spanish comes from the string catalogs
+  # (Shared/Localizable.xcstrings and each target's InfoPlist.xcstrings).
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+  # Package.resolved (committed here) pins Sparkle exactly; the generated
+  # project is not committed, so it gets a copy every time.
+  postGenCommand: >-
+    mkdir -p Klav.xcodeproj/project.xcworkspace/xcshareddata/swiftpm &&
+    cp Package.resolved Klav.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+packages:
+  # Updates of the Mac app (ADR 0027 §7), only in the KlavMac target.
+  # Exact version, at least two weeks old when pinned.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
+configFiles:
+  Debug: Config/Debug.xcconfig
+  Release: Config/Release.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+targets:
+  Klav:
+    type: application
+    platform: iOS
+    sources:
+      - path: Klav
+      - path: Shared
+      - path: ../../target/ios/bindings/klav_ffi.swift
+        group: Shared/Generated
+      # Site logos, the same map as the extension (scripts/site-icons.mjs).
+      - path: ../../assets/site-icons/site-icons.json
+        group: Shared/Resources
+        buildPhase: resources
+    dependencies:
+      - framework: ../../target/ios/KlavFFI.xcframework
+        embed: false
+      - target: KlavCredentials
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(KLAV_BUNDLE_PREFIX)
+        PRODUCT_NAME: Klav
+        INFOPLIST_FILE: Klav/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Klav/Klav.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        OTHER_LDFLAGS: $(inherited) -framework Security -framework SystemConfiguration
+  # The AutoFill extension (ADR 0018 §4): Face ID only, offline, read-only.
+  KlavCredentials:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Credentials
+      # Shared/App is shared by the iOS and Mac apps, not the extension.
+      - path: Shared
+        excludes:
+          - "App/**"
+      - path: ../../target/ios/bindings/klav_ffi.swift
+        group: Shared/Generated
+      - path: ../../assets/site-icons/site-icons.json
+        group: Shared/Resources
+        buildPhase: resources
+    dependencies:
+      - framework: ../../target/ios/KlavFFI.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(KLAV_BUNDLE_PREFIX).credentials
+        PRODUCT_NAME: KlavCredentials
+        INFOPLIST_FILE: Credentials/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Credentials/KlavCredentials.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        OTHER_LDFLAGS: $(inherited) -framework Security -framework SystemConfiguration
+  KlavTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: KlavTests
+    dependencies:
+      - target: Klav
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(KLAV_BUNDLE_PREFIX).tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Klav.app/Klav
+        BUNDLE_LOADER: $(TEST_HOST)
+  # The Mac app (ADR 0027): menu bar and window, a client of klavd. Same
+  # Shared/ as the iPhone, without the iPhone's keystore and core service.
+  KlavMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Mac
+        excludes:
+          - "Info.plist"
+      - path: Shared
+        excludes:
+          - "Keystore.swift"
+          - "CoreService.swift"
+      # Only build-xcframework.sh with the macOS target writes it; the iPhone
+      # archive (scripts/ios/archive.sh) builds iOS alone and never needs it.
+      - path: ../../target/macos/bindings/klav_ffi.swift
+        group: Shared/Generated
+        optional: true
+      - path: ../../assets/site-icons/site-icons.json
+        group: Shared/Resources
+        buildPhase: resources
+    dependencies:
+      - framework: ../../target/ios/KlavFFI.xcframework
+        embed: false
+      - package: Sparkle
+    postBuildScripts:
+      # klav, klavd, klav-native-host and klavd's LaunchAgent inside the
+      # bundle (ADR 0027 §4), before Xcode signs it.
+      - name: Embed the helpers
+        path: ../../scripts/macos/embed-helpers.sh
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(KLAV_MAC_BUNDLE_ID)
+        # The script copies from target/ and signs in the bundle.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        PRODUCT_NAME: Klav
+        INFOPLIST_FILE: Mac/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Mac/KlavMac.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        MARKETING_VERSION: "0.9.0"
+        CURRENT_PROJECT_VERSION: "2"
+        OTHER_LDFLAGS: $(inherited) -framework Security -framework SystemConfiguration
+        # Signed to run here; scripts/macos/build-app.sh signs the release
+        # with the Developer ID.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+  KlavMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: KlavMacTests
+    dependencies:
+      - target: KlavMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(KLAV_MAC_BUNDLE_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
+        ARCHS: arm64
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Klav.app/Contents/MacOS/Klav
+        BUNDLE_LOADER: $(TEST_HOST)
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+schemes:
+  Klav:
+    build:
+      targets:
+        Klav: all
+        KlavTests: [test]
+    test:
+      targets:
+        - KlavTests
+      gatherCoverageData: false
+      # The tests read English; they check Spanish through the es bundle.
+      commandLineArguments:
+        "-AppleLanguages (en)": true
+      # No test may reach the real server by forgetting one (ADR 0028 §2).
+      environmentVariables:
+        KLAV_NO_DEFAULT_SERVER: "1"
+  KlavMac:
+    build:
+      targets:
+        KlavMac: all
+        KlavMacTests: [test]
+    run:
+      # Never the real klavd while developing: a test home, or the sample
+      # vault with -KlavSample YES.
+      environmentVariables:
+        KLAV_NO_DEFAULT_SERVER: "1"
+    test:
+      targets:
+        - KlavMacTests
+      gatherCoverageData: false
+      commandLineArguments:
+        "-AppleLanguages (en)": true
+        # The host app runs on the sample vault: no klavd, no real home.
+        # scripts/macos/test.sh gives it a temporary KLAV_HOME,
+        # KLAV_BROWSER_HOME and KLAV_CLI_LINK_DIR (TEST_RUNNER_*); without
+        # them the sample refuses to run klav (SampleSafety).
+        "-KlavSample YES": true
+      environmentVariables:
+        KLAV_NO_DEFAULT_SERVER: "1"

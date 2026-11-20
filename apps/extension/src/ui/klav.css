@@ -1,0 +1,242 @@
+/* Klav's tokens and base components (docs/diseno-visual/README.md).
+ * White paper and near-black ink, thin lines, cross corners, square
+ * buttons. Blue means something: agents and the one-time code's time. */
+@font-face { font-family: "Geist"; src: url("fonts/geist.woff2") format("woff2"); font-weight: 100 900; font-display: block; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/geist-mono-400.woff2") format("woff2"); font-weight: 400; font-display: block; }
+@font-face { font-family: "Departure Mono"; src: url("fonts/departure-mono-400.woff2") format("woff2"); font-weight: 400; font-display: block; }
+
+:root {
+  --tinta: #09090b;
+  --papel: #ffffff;
+  --niebla: #f4f4f5;
+  --linea: #e4e4e7;
+  --cruz: #a1a1aa;
+  --gris: #71717a;
+  --marino: #0d1466;
+  --cobalto: #2337ff;
+  --rojo: #e5484d;
+  /* The primary button: ink on paper, inverted in dark. */
+  --boton: var(--tinta);
+  --boton-texto: var(--papel);
+  /* Dither palettes: navy → cobalt → paper; the mask, two light greys on paper. */
+  --dither-0: #0d1466;
+  --dither-1: #2337ff;
+  --dither-2: #ffffff;
+  --mask-0: #ffffff;
+  --mask-1: #e4e4e7;
+  --mask-2: #c8c8ce;
+
+  --ui: "Geist", system-ui, -apple-system, sans-serif;
+  --pixel: "Departure Mono", "Geist Mono", ui-monospace, monospace;
+  --mono: "Geist Mono", ui-monospace, monospace;
+  --float-shadow: 0 12px 32px -12px rgb(9 9 11 / 0.35);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tinta: #fafafa;
+    --papel: #09090b;
+    --niebla: #18181b;
+    --linea: #27272a;
+    --cruz: #52525b;
+    --gris: #a1a1aa;
+    --marino: #0a0f4d;
+    --cobalto: #4555ff;
+    --rojo: #f2555a;
+    --boton: #fafafa;
+    --boton-texto: #09090b;
+    --dither-0: #0a0f4d;
+    --dither-1: #4555ff;
+    --dither-2: #c9ceff;
+    --mask-0: #09090b;
+    --mask-1: #27272a;
+    --mask-2: #3f3f46;
+    --float-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.7);
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--papel);
+  color: var(--tinta);
+  font: 400 13px/1.45 var(--ui);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01" 0;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3, p { margin: 0; }
+ul { list-style: none; margin: 0; padding: 0; }
+
+:focus-visible { outline: 2px solid var(--cobalto); outline-offset: 2px; }
+
+/* ----------------------------------------------------------------- type */
+.title { font-size: 22px; font-weight: 600; letter-spacing: -0.045em; line-height: 1.15; }
+.title-l { font-size: 26px; font-weight: 600; letter-spacing: -0.045em; line-height: 1.1; }
+.sub { color: var(--gris); font-size: 12px; }
+.mono { font-family: var(--mono); font-size: 11px; color: var(--gris); }
+.code { font-family: var(--pixel); font-size: 30px; line-height: 1; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+.code-s { font-family: var(--pixel); font-size: 17px; line-height: 1; letter-spacing: 0.02em; }
+.agent-mark { color: var(--cobalto); font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.agent-mark::before { content: ""; width: 6px; height: 6px; background: currentColor; flex: none; }
+
+/* -------------------------------------------------------------- buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 32px; padding: 0 14px; border-radius: 0;
+  border: 1px solid var(--linea); background: var(--papel); color: var(--tinta);
+  font-weight: 500; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: var(--niebla); }
+.btn:disabled { opacity: 0.55; cursor: default; }
+.btn-primary { background: var(--boton); color: var(--boton-texto); border-color: var(--boton); }
+.btn-primary:hover { background: var(--boton); opacity: 0.88; }
+.btn-danger { color: var(--rojo); }
+.btn-block { display: flex; width: 100%; height: 40px; }
+.btn-link {
+  background: none; border: 0; padding: 2px 0; cursor: pointer; color: var(--gris);
+  text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--linea);
+}
+.btn-link:hover { color: var(--tinta); text-decoration-color: currentColor; }
+
+/* An action icon in a 28px square. */
+.icon-btn {
+  width: 28px; height: 28px; flex: none; padding: 0; display: inline-grid; place-items: center;
+  border: 1px solid var(--linea); background: var(--papel); color: var(--gris); border-radius: 0; cursor: pointer;
+}
+.icon-btn:hover { color: var(--tinta); background: var(--niebla); }
+.icon-btn svg { width: 14px; height: 14px; }
+
+/* ------------------------------------------------------------- controls */
+.input {
+  width: 100%; height: 36px; padding: 0 10px; border-radius: 0;
+  border: 1px solid var(--linea); background: var(--papel); color: var(--tinta);
+}
+.input::placeholder { color: var(--gris); }
+.input:focus { outline: none; border-color: var(--gris); }
+
+.kbd {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px;
+  border: 1px solid var(--linea); font: 400 10.5px/1 var(--mono); color: var(--gris); border-radius: 0;
+}
+
+/* ------------------------------------------------------- cross corners */
+/* 9 px marks in "Cruz" at the four corners of a block that groups data. */
+.cross { position: relative; }
+.cross::before {
+  content: ""; position: absolute; inset: -4px; pointer-events: none;
+  --c: linear-gradient(var(--cruz), var(--cruz));
+  background:
+    var(--c) left 0 top 4px / 9px 1px no-repeat,
+    var(--c) left 4px top 0 / 1px 9px no-repeat,
+    var(--c) right 0 top 4px / 9px 1px no-repeat,
+    var(--c) right 4px top 0 / 1px 9px no-repeat,
+    var(--c) left 0 bottom 4px / 9px 1px no-repeat,
+    var(--c) left 4px bottom 0 / 1px 9px no-repeat,
+    var(--c) right 0 bottom 4px / 9px 1px no-repeat,
+    var(--c) right 4px bottom 0 / 1px 9px no-repeat;
+}
+
+/* ----------------------------------------------------------- list rows */
+.label {
+  display: flex; align-items: center; gap: 10px; color: var(--gris); font-size: 12px; font-weight: 400; margin: 0;
+}
+.label::after { content: ""; flex: 1; height: 1px; background: var(--linea); }
+
+.row { display: flex; align-items: center; gap: 12px; padding: 8px 0; min-height: 52px; }
+.row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.row-title { font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-sub { color: var(--gris); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The item's initial in a 28px square. */
+.tile {
+  width: 28px; height: 28px; flex: none; display: grid; place-items: center;
+  border: 1px solid var(--linea); font-size: 12px; font-weight: 600; color: var(--tinta); background: var(--papel);
+}
+
+/* A site's logo (Simple Icons, in ink) or its favicon from the browser's
+   cache, in place of the initial (siteicon.ts). */
+.tile.tile-logo svg, .tile.tile-favicon img { width: 16px; height: 16px; display: block; }
+.tile.tile-favicon img { filter: grayscale(1); }
+
+/* -------------------------------------------- one-time code time blocks */
+/* One block per second of the 30-second period, no smooth transitions. */
+.blocks { display: flex; gap: 1px; height: 4px; }
+.blocks > i { flex: 1; background: var(--linea); }
+.blocks > i.on { background: var(--cobalto); }
+
+/* -------------------------------------------------------------- dither */
+canvas.dither { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+
+/* ------------------------------------------------------------- floating */
+.float { background: var(--papel); border: 1px solid var(--tinta); box-shadow: var(--float-shadow); }
+
+.notice { font-size: 12px; color: var(--rojo); }
+.notice-info { color: var(--gris); }
+
+.back {
+  display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 4px 0;
+  color: var(--gris); cursor: pointer; font-size: 13px;
+}
+.back svg { width: 14px; height: 14px; }
+.back:hover { color: var(--tinta); }
+
+/* ---------------------------------------------------------- generator --
+ * ADR 0022 §1. The password is the signature: Geist Mono on paper, letters
+ * in ink, digits in grey and every symbol in its own mist cell (G10). No
+ * blue: cobalt means agents and time. The popup's «Nuevo elemento» uses
+ * the same type switch (.new-kinds). */
+.gen { display: flex; flex-direction: column; gap: 10px; }
+.gen-kinds, .new-kinds { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--linea); }
+.gen-kind, .new-kind {
+  height: 30px; padding: 0 4px; border: 0; border-left: 1px solid var(--linea); background: none;
+  font: 500 12px/1 var(--ui); color: var(--gris); cursor: pointer; position: relative;
+}
+.gen-kind:first-child, .new-kind:first-child { border-left: 0; }
+.gen-kind:hover, .new-kind:hover { color: var(--tinta); background: var(--niebla); }
+.gen-kind.is-on, .new-kind.is-on { color: var(--tinta); background: var(--niebla); }
+.gen-kind.is-on::after, .new-kind.is-on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--tinta); }
+.gen-kind:focus-visible, .new-kind:focus-visible { outline: 2px solid var(--cobalto); outline-offset: -2px; }
+.gen-row { display: flex; align-items: stretch; gap: 6px; }
+.gen-value {
+  flex: 1; min-width: 0; display: block; padding: 9px 10px; border: 1px solid var(--linea); background: var(--papel);
+  font: 400 15px/1.45 var(--mono); letter-spacing: 0.02em; color: var(--tinta); overflow-wrap: anywhere; word-break: break-all;
+}
+.gen-value .ch-digit { color: var(--gris); }
+.gen-value .ch-symbol { background: var(--niebla); color: var(--tinta); box-shadow: inset 0 -1px 0 var(--linea); }
+.gen-actions { display: flex; gap: 6px; }
+.gen-actions .icon-btn { width: 36px; height: auto; min-height: 36px; }
+.strength { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--gris); }
+.meter { display: grid; grid-template-columns: repeat(4, 14px); gap: 2px; flex: none; }
+.meter > i { height: 6px; background: var(--linea); }
+.meter > i.on { background: var(--tinta); }
+.meter-weak > i.on { background: var(--rojo); }
+.strength-text { color: var(--tinta); font-weight: 500; }
+.gen-note { margin: -4px 0 0; font-size: 12px; color: var(--gris); }
+.gen-note[hidden], .gen-opts[hidden] { display: none; }
+.gen-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding-top: 2px; }
+.opt { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--tinta); }
+.opt-label { color: var(--gris); margin-right: 2px; }
+.opt-value { min-width: 22px; text-align: center; font: 400 12px/1 var(--mono); }
+.opt-step .icon-btn { width: 24px; height: 24px; font: 500 14px/1 var(--ui); }
+.opt-step .icon-btn:disabled { opacity: 0.4; cursor: default; }
+.opt-check { cursor: pointer; }
+.opt-check input { appearance: none; width: 14px; height: 14px; margin: 0; border: 1px solid var(--gris); border-radius: 0; background: var(--papel); display: grid; place-items: center; cursor: pointer; }
+.opt-check input:checked { background: var(--tinta); border-color: var(--tinta); }
+.opt-check input:checked::after { content: ""; width: 3px; height: 7px; margin-top: -2px; border: solid var(--papel); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.opt-check input:focus-visible { outline: 2px solid var(--cobalto); outline-offset: 1px; }
+.gen-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.gen-foot .opt { color: var(--gris); }
+.gen-hist { gap: 6px; }
+.gen-hist-head { display: flex; align-items: center; }
+.gen-list { display: flex; flex-direction: column; }
+.gen-entry { display: flex; align-items: center; gap: 10px; min-height: 44px; border-bottom: 1px solid var(--linea); }
+.gen-entry:last-child { border-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+.gen-history-sure { flex-basis: 100%; }

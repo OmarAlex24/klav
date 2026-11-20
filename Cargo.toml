@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/OmarAlex24/klav"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[workspace.dependencies]
+klav-core = { path = "crates/klav-core" }
+klav-proto = { path = "crates/klav-proto" }
+klav-client = { path = "crates/klav-client" }
+klav-import = { path = "crates/klav-import" }
+klav-daemon = { path = "crates/klav-daemon" }
+klav-touchid = { path = "crates/klav-touchid" }
+klav-sdk = { path = "crates/klav-sdk" }
+klav-forward = { path = "crates/klav-forward" }
+
+# Lighter debug info: line tables are enough for test backtraces in our
+# crates, and dependencies need none. Keeps target/ several times smaller.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
+
+# Optimize the heavy crypto dependencies even in dev/test builds so that the
+# test suite (Argon2id, curve arithmetic, proptest) stays fast.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.p256]
+opt-level = 3
+[profile.dev.package.primefield]
+opt-level = 3
+[profile.dev.package.primeorder]
+opt-level = 3
+[profile.dev.package.crypto-bigint]
+opt-level = 3

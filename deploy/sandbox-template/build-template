@@ -1,0 +1,281 @@
+#!/bin/bash
+# build-template: prepares a build machine to be saved as the sandbox
+# template klav-sandbox-<version> (ADR 0042 §7, layer 3).
+#
+# Shell: bash, 3.2 or later. It runs on Linux (Debian or Ubuntu, with apt
+# and systemd), as root, in a normal Boat machine (never `--no-env`, no
+# `-e`) of a build environment with everything off. Copy this folder and
+# the klav-forward binary under /run first, into a tmpfs of its own mounted
+# with `exec` (Boat mounts /run noexec): neither is saved with the template.
+#
+#   build-template --manifest FILE --forward PATH
+#
+# It refuses to run unless every manifest value is set and well formed
+# (check-template checks the allow list), this folder and the binary can be
+# executed, the binary's SHA-256 is the manifest's, and `klav-forward
+# --version` names the manifest's commit. Then it installs, in this order:
+# Tailscale from its apt repository (the repository's keyring checked
+# against the manifest) with the service masked and no state, jq,
+# klav-forward, klav-tailnet-up (owned by root), and the npm CLIs, all at
+# the manifest's exact versions, and records what it installed with the
+# allow list. It removes apt's package lists and empties the logs. Last, it
+# runs check-template, which also checks the installed files against that
+# record.
+#
+# It never saves the snapshot: the person does, from their own machine,
+# and only when this script exits 0. Exit: 0 when the machine may be saved,
+# 1 when something failed or check-template found something, 2 for a wrong
+# argument or manifest.
+
+set -eu
+set +x
+set -o pipefail
+
+# klav-test-seam: begin. Constants, never read from the environment. The
+# tests replace these two lines and nothing else, and check that
+# (deploy/sandbox-template/test/run-tests): `root` prefixes every path it
+# writes, so the tests write only inside their own directory.
+bin_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+root=
+# klav-test-seam: end
+
+PATH=$bin_path
+export PATH
+IFS=$' \t\n'
+LC_ALL=C
+export LC_ALL
+
+here=$(cd "$(dirname "$0")" && pwd)
+
+fail() {
+	printf 'build-template: %s\n' "$1" >&2
+	exit "${2:-1}"
+}
+usage() { fail "usage: build-template --manifest FILE --forward PATH" 2; }
+
+manifest=
+forward=
+while [ "$#" -gt 0 ]; do
+	case $1 in
+	--manifest)
+		[ "$#" -ge 2 ] || usage
+		manifest=$2
+		shift 2
+		;;
+	--forward)
+		[ "$#" -ge 2 ] || usage
+		forward=$2
+		shift 2
+		;;
+	*) usage ;;
+	esac
+done
+[ -n "$manifest" ] && [ -n "$forward" ] || usage
+[ -f "$manifest" ] || fail "no manifest at $manifest" 2
+[ -f "$forward" ] || fail "no klav-forward binary at $forward" 2
+
+# The manifest, read line by line, never sourced. ALLOW may repeat (the
+# allow list, one file per line); check-template checks those lines.
+keys="KLAV_VERSION KLAV_COMMIT KLAV_FORWARD_SHA256 TAILSCALE_KEYRING_SHA256 TAILSCALE_VERSION JQ_VERSION NPM_PACKAGES AGENT_LOGIN_FILES"
+m_KLAV_VERSION=
+m_KLAV_COMMIT=
+m_KLAV_FORWARD_SHA256=
+m_TAILSCALE_KEYRING_SHA256=
+m_TAILSCALE_VERSION=
+m_JQ_VERSION=
+m_NPM_PACKAGES=
+m_AGENT_LOGIN_FILES=
+allow=()
+seen=" "
+line_no=0
+while IFS= read -r line || [ -n "$line" ]; do
+	line_no=$((line_no + 1))
+	case $line in "" | "#"*) continue ;; esac
+	k=${line%%=*}
+	v=${line#*=}
+	[ "$k" != "$line" ] || fail "manifest line $line_no is not KEY=VALUE" 2
+	if [ "$k" = ALLOW ]; then
+		allow+=("$v")
+		continue
+	fi
+	case " $keys " in *" $k "*) ;; *) fail "manifest line $line_no: unknown key $k" 2 ;; esac
+	case $seen in *" $k "*) fail "manifest line $line_no: $k is set twice" 2 ;; esac
+	seen="$seen$k "
+	case $k in
+	KLAV_VERSION) m_KLAV_VERSION=$v ;;
+	KLAV_COMMIT) m_KLAV_COMMIT=$v ;;
+	KLAV_FORWARD_SHA256) m_KLAV_FORWARD_SHA256=$v ;;
+	TAILSCALE_KEYRING_SHA256) m_TAILSCALE_KEYRING_SHA256=$v ;;
+	TAILSCALE_VERSION) m_TAILSCALE_VERSION=$v ;;
+	JQ_VERSION) m_JQ_VERSION=$v ;;
+	NPM_PACKAGES) m_NPM_PACKAGES=$v ;;
+	AGENT_LOGIN_FILES) m_AGENT_LOGIN_FILES=$v ;;
+	esac
+done <"$manifest"
+
+need() { # key, regex, what
+	local var=m_$1
+	local value=${!var}
+	[ -n "$value" ] || fail "the manifest has no $1: $3" 2
+	[[ $value =~ $2 ]] || fail "the manifest's $1 is not $3" 2
+}
+need KLAV_VERSION '^[0-9][0-9a-z.-]{0,39}$' "a version (digits, lowercase letters, dots and dashes)"
+need KLAV_COMMIT '^[0-9a-f]{40}$' "a full commit (40 lowercase hex)"
+need KLAV_FORWARD_SHA256 '^[0-9a-f]{64}$' "a SHA-256 (64 lowercase hex)"
+need TAILSCALE_KEYRING_SHA256 '^[0-9a-f]{64}$' "a SHA-256 (64 lowercase hex)"
+need TAILSCALE_VERSION '^[0-9][0-9A-Za-z.+:~-]*$' "an exact apt version"
+need JQ_VERSION '^[0-9][0-9A-Za-z.+:~-]*$' "an exact apt version"
+need NPM_PACKAGES '^[@a-z0-9]' "a list of name@version"
+need AGENT_LOGIN_FILES '^[A-Za-z0-9._/ -]+$' "a list of paths, or none"
+npm_re='^(@[a-z0-9._-]+/)?[a-z0-9._-]+@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+for p in $m_NPM_PACKAGES; do
+	[[ $p =~ $npm_re ]] || fail "the manifest's NPM_PACKAGES has $p, which is not name@version with an exact version" 2
+done
+if [ "$m_AGENT_LOGIN_FILES" != none ]; then
+	for p in $m_AGENT_LOGIN_FILES; do
+		case $p in
+		/* | *..* | none) fail "the manifest's AGENT_LOGIN_FILES has $p: paths relative to a home, or only none" 2 ;;
+		esac
+	done
+fi
+template=klav-sandbox-$m_KLAV_VERSION
+
+# check-template and the binary must run from where they are. Boat mounts
+# /run noexec, and there a file with its execute bit still cannot run: exec
+# fails, and bash exits 126. The folder belongs in a tmpfs of its own,
+# mounted with exec (README, "Copy in"). A binary built for another
+# machine also exits 126, so the message names every cause. check-template
+# runs first, and only reads the manifest: the allow list and the login
+# files, checked by the script that uses them.
+noexec="exec failed (exit 126): its folder is mounted noexec, it has no execute bit, or it is built for another machine. Boat mounts $root/run noexec: copy the folder and the binary into a tmpfs of their own under $root/run, mounted with exec (the README's Copy in step). Nothing installed"
+# Its exit code is read with set +e: bash 3.2 under set -e gives 1, not
+# the command's code, inside `cmd || { ... }`.
+set +e
+"$here/check-template" --manifest "$manifest" --validate >/dev/null
+code=$?
+set -e
+[ "$code" != 126 ] || fail "cannot execute $here/check-template: $noexec"
+[ "$code" = 0 ] || fail "the manifest's ALLOW or AGENT_LOGIN_FILES lines are not well formed (above): nothing installed" 2
+
+# The binary: its hash before anything runs it, then the commit it names.
+sha=$(sha256sum <"$forward")
+sha=${sha%% *}
+[ "$sha" = "$m_KLAV_FORWARD_SHA256" ] ||
+	fail "klav-forward's SHA-256 is not the manifest's: not installed"
+set +e
+named=$("$forward" --version 2>/dev/null)
+code=$?
+set -e
+[ "$code" != 126 ] || fail "cannot execute $forward: $noexec"
+[ "$code" = 0 ] || fail "klav-forward --version failed"
+short=${m_KLAV_COMMIT:0:12}
+case $named in
+*"($short "*) ;;
+*) fail "klav-forward --version does not name the manifest's commit $short: not installed" ;;
+esac
+
+[ "$(id -u)" = 0 ] || fail "run it as root (sudo): it installs into the system"
+
+printf 'build-template: building %s\n' "$template"
+
+# Tailscale, from its apt repository (Tailscale's own steps for Debian and
+# Ubuntu), at the exact version, with jq. The keyring comes over HTTPS into
+# a side file, and takes its place only when it is the manifest's. The apt
+# list is written here, never downloaded: its `signed-by` is what makes apt
+# check every Tailscale package's signature with that keyring.
+# shellcheck disable=SC1091
+. "$root/etc/os-release"
+case ${ID:-} in debian | ubuntu) ;; *) fail "this builds on Debian or Ubuntu only" ;; esac
+[ -n "${VERSION_CODENAME:-}" ] || fail "the os-release file has no VERSION_CODENAME"
+keyring=$root/usr/share/keyrings/tailscale-archive-keyring.gpg
+curl -fsSL --proto =https "https://pkgs.tailscale.com/stable/$ID/$VERSION_CODENAME.noarmor.gpg" \
+	-o "$keyring.new"
+sha=$(sha256sum <"$keyring.new")
+if [ "${sha%% *}" != "$m_TAILSCALE_KEYRING_SHA256" ]; then
+	rm -f -- "$keyring.new"
+	fail "Tailscale's keyring is not the manifest's TAILSCALE_KEYRING_SHA256: removed, nothing installed"
+fi
+mv -f -- "$keyring.new" "$keyring"
+# apt reads the keyring's path as the machine has it, without `root`.
+printf 'deb [signed-by=%s] https://pkgs.tailscale.com/stable/%s %s main\n' \
+	"${keyring#"$root"}" "$ID" "$VERSION_CODENAME" >"$root/etc/apt/sources.list.d/tailscale.list"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+	"tailscale=$m_TAILSCALE_VERSION" "jq=$m_JQ_VERSION"
+apt-mark hold tailscale jq
+# The service stopped and masked, and no state: an enabled or disabled unit
+# can start again after a snapshot; each sandbox starts its own
+# `tailscaled --state=mem:` (klav-tailnet-up).
+systemctl disable --now tailscaled.service
+systemctl mask tailscaled.service
+rm -rf -- "$root/var/lib/tailscale"
+mkdir -m 0700 -- "$root/var/lib/tailscale"
+
+# klav-forward and klav-tailnet-up. check-template checks both against the
+# record below.
+install -o root -g root -m 0755 "$forward" "$root/usr/local/bin/klav-forward"
+install -o root -g root -m 0755 "$here/klav-tailnet-up" "$root/usr/local/sbin/klav-tailnet-up"
+
+# The CLIs, at their exact versions.
+if [ -n "$m_NPM_PACKAGES" ]; then
+	command -v npm >/dev/null || fail "npm is not installed, and the manifest lists npm packages"
+	for p in $m_NPM_PACKAGES; do
+		npm install -g "$p"
+	done
+fi
+
+# What went in, for the person to keep with the release, and for
+# check-template to check the installed files against.
+sha=$(sha256sum <"$here/klav-tailnet-up")
+tailnet_up_sha=${sha%% *}
+mkdir -p -- "$root/etc/klav-sandbox-template"
+{
+	printf '# klav-sandbox template %s, written by build-template\n' "$template"
+	for k in $keys; do
+		var=m_$k
+		printf '%s=%s\n' "$k" "${!var}"
+	done
+	printf 'KLAV_TAILNET_UP_SHA256=%s\n' "$tailnet_up_sha"
+	printf 'INSTALLED_KLAV_FORWARD=%s\n' "$("$root/usr/local/bin/klav-forward" --version)"
+	printf 'INSTALLED_TAILSCALE=%s\n' "$(tailscale version | head -n 1)"
+	printf 'INSTALLED_JQ=%s\n' "$(jq --version)"
+	# npm for root may be a user's install (nvm): the CLIs are where it says.
+	printf 'NPM_GLOBAL_PREFIX=%s\n' "$(npm prefix -g)"
+	for a in ${allow[@]+"${allow[@]}"}; do
+		printf 'ALLOW=%s\n' "$a"
+	done
+} >"$root/etc/klav-sandbox-template/manifest"
+chmod 0644 "$root/etc/klav-sandbox-template/manifest"
+apt-get clean
+
+# apt's package lists name packages, one of them with `boat_` in its file
+# name. A sandbox runs `apt-get update` itself before it installs anything.
+shopt -s nullglob dotglob
+lists=("$root/var/lib/apt/lists"/*)
+shopt -u nullglob dotglob
+if [ "${#lists[@]}" -gt 0 ]; then
+	rm -rf -- "${lists[@]}" || fail "apt's package lists could not be removed: do not save it"
+fi
+
+# The build machine's logs: sudo's log and the journal keep every command
+# line run here, so a command that named one of the strings would be in the
+# template. journald rotates its files, and the archived ones go; every
+# other file under the log folder is emptied in place, as its daemon keeps
+# it open. Any failure stops the build.
+command -v journalctl >/dev/null || fail "no journalctl, so the journal cannot be emptied: do not save it"
+journalctl --rotate || fail "journalctl --rotate failed, so the journal is not emptied: do not save it"
+if [ -d "$root/var/log/journal" ]; then
+	find "$root/var/log/journal" -xdev -type f \( -name '*@*.journal' -o -name '*.journal~' \) \
+		-exec rm -f -- {} + || fail "the journal's archived files could not be removed: do not save it"
+fi
+if [ -d "$root/var/log" ]; then
+	find "$root/var/log" -xdev -type f ! -path "$root/var/log/journal/*" \
+		-exec truncate -s 0 -- {} + || fail "the log files could not be emptied: do not save it"
+fi
+
+# Last: everything check-template checks. Only when it passes does this
+# script say the machine may be saved.
+if ! "$here/check-template" --root "${root:-/}" --manifest "$root/etc/klav-sandbox-template/manifest"; then
+	fail "$template is not ready: do not save it"
+fi
+printf 'build-template: %s is ready. Save this machine as %s from your own machine.\n' "$template" "$template"

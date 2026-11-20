@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "ed25519_seed": "83fd7174f127dc26a6cd70328027da873811189b76c6ee02cdb2873510d016bd",
+      "fields": [
+        "6669727374206669656c64",
+        "",
+        "49ccdbbc9b4ecfa9c467a02bab7cce69"
+      ],
+      "label": "klav/v1/sig/test-vector",
+      "message": "000000176b6c61762f76312f7369672f746573742d766563746f720000000b6669727374206669656c64000000000000001049ccdbbc9b4ecfa9c467a02bab7cce69",
+      "name": "two-fields",
+      "public_identity": "010551a528c839b824313fd7f074037358b4a6ac5054ce6bd6e228662f354bf9d1726700b468b0611f071ed0785ae1e3e666baedc3a8c3ae80abfffadff7938544d4",
+      "signature": "a776d5d43421c7f8258090b65ef96edd575645726014cbbccaf1ac00a308b9b1115c4ff657eefa280b8677725127d1f1be4e42c9e7afaa075dd5bb1e28d3e50e",
+      "x25519_seed": "335c02b5c1da604eb6d770ca9adc7505453d0a42b01ce2addf3fc01ec70a3578"
+    }
+  ],
+  "description": "Firmas Ed25519 con separación de dominio",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §9"
+}

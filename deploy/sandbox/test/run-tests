@@ -1,0 +1,675 @@
+#!/bin/bash
+# shellcheck disable=SC2016 # each case's setup is single-quoted for eval
+# Tests of deploy/sandbox/new-sandbox (ADR 0042 §10, row 4), against a fake
+# curl only: it records its arguments, its standard input, the file it was
+# told to read with -K, and its environment, and answers from files.
+#
+# Shell: bash, 3.2 or later. Needs, already installed: jq and the usual
+# tools (mktemp, mkfifo, rm, grep, ls, od, env, cat, chmod, ln, sed, cmp,
+# sleep, kill). It installs nothing and reaches no network.
+#
+#   deploy/sandbox/test/run-tests
+#   KLAV_TEST_BASH=/bin/bash deploy/sandbox/test/run-tests
+#
+# new-sandbox fixes its own PATH, so the tests run a copy whose test seam
+# (two marked lines) points at the fakes and waits no time between
+# attempts; the shipped file never runs here. The fakes: curl, and logging
+# wrappers around ls, jq, od and sleep. A guard fails a case when anything
+# else ran. The package is the one of docs/vectores/sandbox.json.
+
+set -eu
+set -o pipefail
+IFS=$' \t\n'
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../../.." && pwd)
+shipped=$repo/deploy/sandbox/new-sandbox
+vectors=$repo/docs/vectores/sandbox.json
+bash_under_test=$(command -v "${KLAV_TEST_BASH:-bash}") || {
+	echo "no bash at ${KLAV_TEST_BASH:-bash}" >&2
+	exit 1
+}
+
+real() {
+	command -v "$1" || {
+		echo "run-tests needs $1" >&2
+		exit 1
+	}
+}
+REAL_BASH=$(real bash)
+REAL_ENV=$(real env)
+REAL_GREP=$(real grep)
+REAL_LS=$(real ls)
+REAL_MKDIR=$(real mkdir)
+REAL_RM=$(real rm)
+REAL_JQ=$(real jq)
+REAL_SLEEP=$(real sleep)
+
+tmp=$(mktemp -d /tmp/kns.XXXXXX)
+cleanup() {
+	# A fake curl the kill case left waiting is let go first.
+	if [ -n "${CASE:-}" ]; then : >"$CASE/release" 2>/dev/null || true; fi
+	"$REAL_RM" -rf -- "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+PLAIN=$tmp/plain
+"$REAL_MKDIR" -p "$PLAIN"
+for t in cat ls grep env mkdir sleep; do ln -s "$(real "$t")" "$PLAIN/$t"; done
+
+passed=0
+failed=0
+current=
+pass() { passed=$((passed + 1)); }
+shown=
+fail() {
+	failed=$((failed + 1))
+	printf 'FAIL %s: %s\n' "$current" "$1" >&2
+	# The script's standard error, once per case (made-up secrets only).
+	if [ "$shown" != "$current" ] && [ -s "${CASE:-}/err" ]; then
+		shown=$current
+		sed 's/^/    stderr: /' "$CASE/err" | head -n 5 >&2
+	fi
+}
+check() {
+	local what=$1
+	shift
+	if "$@"; then pass; else fail "$what"; fi
+}
+contains() { "$REAL_GREP" -qF -- "$2" "$1"; }
+lacks() { ! "$REAL_GREP" -rqsF -- "$2" "$1"; }
+same() { [ "$(cat "$1")" = "$2" ]; }
+
+# --- The seam ---------------------------------------------------------------
+
+seam_re='/^# klav-test-seam: begin/,/^# klav-test-seam: end/'
+current="seam"
+check "the shipped seam's PATH" "$REAL_GREP" -qx 'bin_path=/usr/bin:/bin' "$shipped"
+check "the shipped seam's wait between attempts" "$REAL_GREP" -qx 'retry_wait=3' "$shipped"
+check "one seam, two assignments" test "$(sed -n "${seam_re}p" "$shipped" | "$REAL_GREP" -c '^[a-z_]*=')" = 2
+check "no absolute command paths" test -z "$(sed "${seam_re}d" "$shipped" | "$REAL_GREP" -vE '^[[:space:]]*#' | "$REAL_GREP" -E '(^|[[:space:];|&(])/(usr|bin|sbin|opt)/' || true)"
+
+# The copy a case runs: the shipped file with only the seam's values
+# changed, proven by comparing both without the seam block.
+script_copy() { # case dir
+	local c=$1
+	sed -e "s|^bin_path=.*|bin_path=$c/bin|" -e 's|^retry_wait=.*|retry_wait=0|' "$shipped" >"$c/new-sandbox"
+	if ! "$REAL_GREP" -qxF "bin_path=$c/bin" "$c/new-sandbox" || ! "$REAL_GREP" -qx 'retry_wait=0' "$c/new-sandbox"; then
+		echo "the seam rewrite did not apply: refusing to run" >&2
+		exit 1
+	fi
+	cmp -s <(sed "${seam_re}d" "$shipped") <(sed "${seam_re}d" "$c/new-sandbox") || {
+		echo "the copy differs from the shipped file outside the seam" >&2
+		exit 1
+	}
+}
+
+# --- The values -------------------------------------------------------------
+
+# The package and its sandbox ID from the spec's vectors, never typed here.
+PACKAGE=$("$REAL_JQ" -r '.cases[] | select(.name == "sandbox-package") | .package' "$vectors")
+SANDBOX_ID=$("$REAL_JQ" -r '.cases[] | select(.name == "sandbox-package") | .sandbox_id' "$vectors")
+HOSTNAME_WANTED=klav-${SANDBOX_ID:0:8}
+negative() { "$REAL_JQ" -r --arg why "$1" '.cases[] | select(.name == "sandbox-package") | .negative[] | select(.why == $why) | .package' "$vectors"; }
+[ -n "$PACKAGE" ] && [ "${#SANDBOX_ID}" = 32 ] || {
+	echo "cannot read the vector" >&2
+	exit 1
+}
+
+# Made-up secrets, each easy to find.
+CLIENT_ID=kFAKEclientID0123CNTRL
+CLIENT_SECRET=tskey-client-kFAKEclient-SECRET0123456789
+BOAT_KEY=boat_FAKEboatKEY0123456789abcdef
+ACCESS=tskey-api-FAKEaccessTOKEN0123456789
+TKEY=tskey-auth-FAKEnewKEY0123456789
+# Boat's ID shape (`bx_` and 8 of [0-9a-z]), made up.
+BOAT_ID=bx_fake0123
+LEAK=RESPONSE-BODY-0xdeadbeef
+
+TEMPLATE=klav-sandbox-0.9.0
+ENVIRONMENT=klav-daily
+KEY_BODY='{"keyType":"auth","description":"klav sandbox","expirySeconds":3600,"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["tag:klav-sandbox"]}}}}'
+# Boat's documented success: 202, the sandbox nested under `sandbox`.
+created() { # status word: provisioning | ready
+	printf '{"ok":true,"type":"sandbox.created","status":"%s","ttlSeconds":3600,"sandbox":{"id":"%s","name":"klav-test","state":"%s"}}' "$1" "$BOAT_ID" "$1"
+}
+
+# --- Fakes ------------------------------------------------------------------
+
+wrap() { # bin, name, real path
+	cat >"$1/$2" <<EOF
+#!$REAL_BASH
+printf '%s\n' "$2 \$*" >>"\$KLAV_TEST_CASE/calls"
+exec "$3" "\$@"
+EOF
+	chmod 0755 "$1/$2"
+}
+
+# The fake curl. Per call n: curl.n.args (one argument per line),
+# curl.n.stdin, curl.n.config (what -K named), curl.n.env. The answer for
+# the endpoint E (token, keys, boat), on its k-th call, comes from E.k.exit
+# (curl's exit code), E.k.status and E.k.body, or else E.exit, E.status and
+# E.body; it prints the body, then "\n" and the status, as
+# `-w '\n%{http_code}'` does. With E.hang it waits for `release` first (at
+# most 30 s), its pid in E.pid.
+fake_curl() { # bin
+	cat >"$1/curl" <<EOF
+#!$REAL_BASH
+set -eu
+PATH=$PLAIN
+c=\$KLAV_TEST_CASE
+n=\$(ls "\$c" | grep -c '^curl\..*\.args\$' || true)
+n=\$((n + 1))
+printf '%s\n' "curl \$*" >>"\$c/calls"
+: >"\$c/curl.\$n.args"
+for a in "\$@"; do printf '%s\n' "\$a" >>"\$c/curl.\$n.args"; done
+env >"\$c/curl.\$n.env"
+cat >"\$c/curl.\$n.stdin"
+config=
+prev=
+url=
+for a in "\$@"; do
+	[ "\$prev" != -K ] || config=\$a
+	prev=\$a
+	url=\$a
+done
+if [ -n "\$config" ]; then cat "\$config" >"\$c/curl.\$n.config"; fi
+case \$url in
+*/oauth/token) e=token ;;
+*/keys) e=keys ;;
+*/sandboxes) e=boat ;;
+*) exit 3 ;;
+esac
+k=\$(cat "\$c/\$e.calls" 2>/dev/null || echo 0)
+k=\$((k + 1))
+printf '%s' "\$k" >"\$c/\$e.calls"
+pick() {
+	if [ -e "\$c/\$e.\$k.\$1" ]; then cat "\$c/\$e.\$k.\$1"
+	elif [ -e "\$c/\$e.\$1" ]; then cat "\$c/\$e.\$1"
+	else printf '%s' "\$2"; fi
+}
+if [ -e "\$c/\$e.hang" ]; then
+	printf '%s' "\$\$" >"\$c/\$e.pid"
+	i=0
+	while [ ! -e "\$c/release" ] && [ "\$i" -lt 300 ]; do sleep 0.1; i=\$((i + 1)); done
+fi
+code=\$(pick exit 0)
+[ "\$code" = 0 ] || exit "\$code"
+pick body ""
+printf '\n%s' "\$(pick status 000)"
+EOF
+	chmod 0755 "$1/curl"
+}
+
+# ls, through a wrapper that can say a path is someone else's: the one
+# whose name ends with the text of `other-owner`.
+fake_ls() { # bin
+	cat >"$1/ls" <<EOF
+#!$REAL_BASH
+set -eu
+PATH=$PLAIN
+printf '%s\n' "ls \$*" >>"\$KLAV_TEST_CASE/calls"
+out=\$("$REAL_LS" "\$@")
+for last in "\$@"; do :; done
+if [ -e "\$KLAV_TEST_CASE/other-owner" ]; then
+	suffix=\$(cat "\$KLAV_TEST_CASE/other-owner")
+	case \$last in
+	*"\$suffix")
+		set -f
+		p=(\$out)
+		p[2]=4242
+		out="\${p[*]}"
+		;;
+	esac
+fi
+printf '%s\n' "\$out"
+EOF
+	chmod 0755 "$1/ls"
+}
+
+COMMANDS="curl ls jq od sleep"
+guard() {
+	local name
+	while IFS=' ' read -r name _; do
+		case " $COMMANDS " in *" $name "*) ;; *) return 1 ;; esac
+	done <"$CASE/calls"
+}
+
+# --- Cases ------------------------------------------------------------------
+
+n=0
+# A case: configuration, the two 0600 files and good answers.
+new_case() { # name, tailnet on|off
+	n=$((n + 1))
+	current=$1
+	CASE=$tmp/n$n
+	CFG=$CASE/cfg
+	"$REAL_MKDIR" -p "$CASE/bin" "$CFG" "$CASE/home"
+	chmod 0755 "$CFG"
+	: >"$CASE/calls"
+	fake_curl "$CASE/bin"
+	fake_ls "$CASE/bin"
+	wrap "$CASE/bin" jq "$REAL_JQ"
+	wrap "$CASE/bin" od "$(real od)"
+	wrap "$CASE/bin" sleep "$REAL_SLEEP"
+	script_copy "$CASE"
+	printf '# test\nBOAT_TEMPLATE=%s\nBOAT_ENVIRONMENT=%s\nTAILNET=%s\n' \
+		"$TEMPLATE" "$ENVIRONMENT" "$2" >"$CFG/config"
+	chmod 0644 "$CFG/config"
+	(
+		umask 077
+		printf '%s\n' "$BOAT_KEY" >"$CFG/boat-api-key"
+		printf 'client_id=%s\nclient_secret=%s\n' "$CLIENT_ID" "$CLIENT_SECRET" >"$CFG/tailscale-oauth"
+	)
+	answer token 200 "{\"access_token\":\"$ACCESS\",\"token_type\":\"Bearer\",\"expires_in\":3600}"
+	answer keys 200 "{\"id\":\"kFAKE\",\"key\":\"$TKEY\",\"expires\":\"2026-11-17T01:00:00Z\"}"
+	answer boat 202 "$(created provisioning)"
+	PKG=$PACKAGE
+}
+answer() { # endpoint (or endpoint.attempt), status, body
+	printf '%s' "$2" >"$CASE/$1.status"
+	printf '%s' "$3" >"$CASE/$1.body"
+}
+curl_exit() { echo "$2" >"$CASE/$1.exit"; } # endpoint (or endpoint.attempt), code
+unreachable() { curl_exit "$1" 7; }
+
+run() { # extra env assignments...
+	set +e
+	"$REAL_ENV" -i HOME="$CASE/home" KLAV_TEST_CASE="$CASE" PATH="$CASE/bin" \
+		KLAV_SANDBOX="$PKG" KLAV_SANDBOX_CONFIG_DIR="$CFG" "$@" \
+		"$bash_under_test" "$CASE/new-sandbox" </dev/null >"$CASE/out" 2>"$CASE/err"
+	CODE=$?
+	set -e
+}
+
+curl_calls() { "$REAL_LS" "$CASE" | "$REAL_GREP" -c '^curl\..*\.args$' || true; }
+boat_calls() { cat "$CASE/boat.calls" 2>/dev/null || echo 0; }
+# No secret in any argument of any process, in any environment but where
+# it belongs, on standard output or standard error. The list is read on
+# every call: a case may have set another token or key.
+no_secret_leaks() {
+	local s f
+	for s in $CLIENT_SECRET $BOAT_KEY $ACCESS $TKEY $PACKAGE; do
+		lacks "$CASE/calls" "$s" || return 1
+		for f in "$CASE"/curl.*.args "$CASE"/curl.*.env; do
+			[ ! -e "$f" ] || lacks "$f" "$s" || return 1
+		done
+		lacks "$CASE/err" "$s" || return 1
+	done
+	for s in $CLIENT_SECRET $BOAT_KEY $ACCESS $TKEY $PACKAGE $LEAK; do
+		lacks "$CASE/out" "$s" || return 1
+	done
+	lacks "$CASE/err" "$LEAK"
+}
+one_line() { [ "$("$REAL_GREP" -c '' "$CASE/err")" = 1 ]; }
+arg_line() { "$REAL_GREP" -qxF -- "$2" "$CASE/curl.$1.args"; }
+first_arg() { [ "$(head -n 1 "$CASE/curl.$1.args")" = "$2" ]; }
+last_arg() { [ "$(tail -n 1 "$CASE/curl.$1.args")" = "$2" ]; }
+idem_of() { "$REAL_GREP" -E '^Idempotency-Key: ' "$CASE/curl.$1.args"; }
+
+BOAT_BODY_ON="{\"from\":\"$TEMPLATE\",\"environment\":\"$ENVIRONMENT\",\"env\":{\"KLAV_SANDBOX\":\"$PACKAGE\",\"KLAV_TAILNET_KEY\":\"$TKEY\",\"KLAV_TAILNET_HOSTNAME\":\"$HOSTNAME_WANTED\"}}"
+
+# 1. With the tailnet: the three calls, their exact bodies, the secrets
+# only on standard input or the -K descriptor.
+new_case "the tailnet on: three calls" on
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "prints only Boat's sandbox ID" test "$(cat "$CASE/out")" = "$BOAT_ID"
+check "nothing on standard error" test ! -s "$CASE/err"
+check "three calls" test "$(curl_calls)" = 3
+check "the trade's URL" last_arg 1 "https://api.tailscale.com/api/v2/oauth/token"
+check "the trade's body: client_id and client_secret in the form" same "$CASE/curl.1.stdin" "client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET"
+check "the trade's content type" arg_line 1 "content-type: application/x-www-form-urlencoded"
+check "the trade reads no -K" test ! -e "$CASE/curl.1.config"
+check "the key's URL" last_arg 2 "https://api.tailscale.com/api/v2/tailnet/-/keys"
+check "the key's body is the fixed one" same "$CASE/curl.2.stdin" "$KEY_BODY"
+check "the access token only on the -K descriptor" same "$CASE/curl.2.config" "header = \"Authorization: Bearer $ACCESS\""
+check "the key's -K is a file descriptor" arg_line 2 "/dev/fd/3"
+check "Boat's URL" last_arg 3 "https://boat.dev/api/v1/sandboxes"
+check "Boat's body, with no ttlSeconds" same "$CASE/curl.3.stdin" "$BOAT_BODY_ON"
+check "the Boat key only on the -K descriptor" same "$CASE/curl.3.config" "header = \"Authorization: Bearer $BOAT_KEY\""
+check "an Idempotency-Key" "$REAL_GREP" -qxE 'Idempotency-Key: [0-9a-f]{32}' "$CASE/curl.3.args"
+for i in 1 2 3; do
+	check "call $i: -q first" first_arg "$i" -q
+	check "call $i: https only" arg_line "$i" "=https"
+	check "call $i: the body from standard input" arg_line "$i" "@-"
+done
+check "the hostname is the vector's ID" test "$HOSTNAME_WANTED" = "klav-e3d1bf79"
+check "no secret in any argument, environment or output" no_secret_leaks
+check "the package in no child's environment" lacks "$CASE" "KLAV_SANDBOX=$PACKAGE"
+check "only fakes ran" guard
+
+# Tailscale's access tokens are longer than 255 characters, the most the
+# other values may have: the whole token and the whole key go through, on
+# the same descriptors.
+SHORT_ACCESS=$ACCESS
+SHORT_TKEY=$TKEY
+long() { # prefix, characters in all
+	local v=$1
+	while [ "${#v}" -lt "$2" ]; do v=${v}0123456789abcdefABCDEF_-; done
+	printf '%s' "${v:0:$2}"
+}
+ACCESS=$(long tskey-api-FAKElong 442)
+TKEY=$(long tskey-auth-FAKElong 442)
+new_case "a long token and a long key" on
+answer token 200 "{\"access_token\":\"$ACCESS\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"auth_keys\"}"
+answer keys 200 "{\"id\":\"kFAKE\",\"key\":\"$TKEY\"}"
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "prints only Boat's sandbox ID" test "$(cat "$CASE/out")" = "$BOAT_ID"
+check "nothing on standard error" test ! -s "$CASE/err"
+check "the whole token on the -K descriptor" same "$CASE/curl.2.config" "header = \"Authorization: Bearer $ACCESS\""
+check "the whole key in Boat's body" same "$CASE/curl.3.stdin" "${BOAT_BODY_ON/$SHORT_TKEY/$TKEY}"
+check "no secret in any argument, environment or output" no_secret_leaks
+check "only fakes ran" guard
+
+ACCESS=$(long tskey-api-FAKElong 4096)
+TKEY=$(long tskey-auth-FAKElong 4096)
+new_case "the longest token and key" on
+answer token 200 "{\"access_token\":\"$ACCESS\"}"
+answer keys 200 "{\"key\":\"$TKEY\"}"
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "the whole token on the -K descriptor" same "$CASE/curl.2.config" "header = \"Authorization: Bearer $ACCESS\""
+check "the whole key in Boat's body" same "$CASE/curl.3.stdin" "${BOAT_BODY_ON/$SHORT_TKEY/$TKEY}"
+check "no secret in any argument, environment or output" no_secret_leaks
+ACCESS=$SHORT_ACCESS
+TKEY=$SHORT_TKEY
+
+# Boat's other documented success: the machine already `ready`.
+new_case "Boat answers ready" on
+answer boat 202 "$(created ready)"
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "prints only Boat's sandbox ID" test "$(cat "$CASE/out")" = "$BOAT_ID"
+
+# A trace stops before anything secret is read.
+new_case "a trace shows nothing secret" on
+set +e
+"$REAL_ENV" -i HOME="$CASE/home" KLAV_TEST_CASE="$CASE" PATH="$CASE/bin" \
+	KLAV_SANDBOX="$PKG" KLAV_SANDBOX_CONFIG_DIR="$CFG" \
+	"$bash_under_test" -x "$CASE/new-sandbox" </dev/null >"$CASE/out" 2>"$CASE/err"
+CODE=$?
+set -e
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "the trace stopped" test "$("$REAL_GREP" -c '' "$CASE/err")" -le 4
+check "no secret in the trace" no_secret_leaks
+
+# The issuer's environment, inherited (no `env -i`): proxies, CA and key-log
+# variables and a hostile PATH reach no child, and change nothing it runs.
+SCRUBBED="HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY https_proxy http_proxy all_proxy no_proxy CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR SSLKEYLOGFILE CURL_HOME"
+new_case "an inherited environment is scrubbed" on
+"$REAL_MKDIR" -p "$CASE/evil"
+for t in curl jq od ls sleep; do
+	printf '#!%s\necho EVIL >>"%s/evil.ran"\n' "$REAL_BASH" "$CASE" >"$CASE/evil/$t"
+	chmod 0755 "$CASE/evil/$t"
+done
+assignments=()
+for v in $SCRUBBED; do assignments+=("$v=https://scrubbed.invalid/$v"); done
+set +e
+"$REAL_ENV" "${assignments[@]}" PATH="$CASE/evil" HOME="$CASE/home" KLAV_TEST_CASE="$CASE" \
+	KLAV_SANDBOX="$PKG" KLAV_SANDBOX_CONFIG_DIR="$CFG" \
+	"$bash_under_test" "$CASE/new-sandbox" </dev/null >"$CASE/out" 2>"$CASE/err"
+CODE=$?
+set -e
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "prints only Boat's sandbox ID" test "$(cat "$CASE/out")" = "$BOAT_ID"
+check "nothing from the hostile PATH ran" test ! -e "$CASE/evil.ran"
+check "three calls, through the fakes" test "$(curl_calls)" = 3
+for i in 1 2 3; do
+	for v in $SCRUBBED; do
+		check "call $i: no $v" test -z "$("$REAL_GREP" "^$v=" "$CASE/curl.$i.env" || true)"
+	done
+done
+check "no secret leaks" no_secret_leaks
+check "only fakes ran" guard
+
+# An inherited `allexport` (through SHELLOPTS) would put every variable the
+# script assigns, each secret included, in every child's environment.
+new_case "an inherited allexport exports no secret" on
+run SHELLOPTS=allexport
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "prints only Boat's sandbox ID" test "$(cat "$CASE/out")" = "$BOAT_ID"
+check "three calls" test "$(curl_calls)" = 3
+check "no secret leaks" no_secret_leaks
+check "only fakes ran" guard
+
+# 2. Without the tailnet: one call, only the package; the OAuth file is
+# not even read.
+new_case "the tailnet off: Boat only" off
+"$REAL_RM" "$CFG/tailscale-oauth"
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "prints only Boat's sandbox ID" test "$(cat "$CASE/out")" = "$BOAT_ID"
+check "one call" test "$(curl_calls)" = 1
+check "Boat's body has only the package" same "$CASE/curl.1.stdin" "{\"from\":\"$TEMPLATE\",\"environment\":\"$ENVIRONMENT\",\"env\":{\"KLAV_SANDBOX\":\"$PACKAGE\"}}"
+check "no KLAV_TAILNET_ anything" lacks "$CASE/curl.1.stdin" "KLAV_TAILNET_"
+check "no secret leaks" no_secret_leaks
+check "only fakes ran" guard
+
+# Other API addresses and tailnet name, from the configuration, only with
+# ALLOW_OTHER_API=yes (a test seam).
+new_case "addresses from the configuration" on
+printf 'BOAT_API=https://boat.example/api/v9\nTAILSCALE_API=https://ts.example:8443/api/v2\nTAILNET_NAME=example.com\nALLOW_OTHER_API=yes\n' >>"$CFG/config"
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "the trade's URL" last_arg 1 "https://ts.example:8443/api/v2/oauth/token"
+check "the key's URL" last_arg 2 "https://ts.example:8443/api/v2/tailnet/example.com/keys"
+check "Boat's URL" last_arg 3 "https://boat.example/api/v9/sandboxes"
+
+# The machine's lifetime, when the person sets one.
+new_case "BOAT_TTL_SECONDS goes in the body" off
+printf 'BOAT_TTL_SECONDS=86400\n' >>"$CFG/config"
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "ttlSeconds after the environment" same "$CASE/curl.1.stdin" "{\"from\":\"$TEMPLATE\",\"environment\":\"$ENVIRONMENT\",\"ttlSeconds\":86400,\"env\":{\"KLAV_SANDBOX\":\"$PACKAGE\"}}"
+new_case "the longest BOAT_TTL_SECONDS" off
+printf 'BOAT_TTL_SECONDS=2592000\n' >>"$CFG/config"
+run
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "ttlSeconds 2592000" contains "$CASE/curl.1.stdin" '"ttlSeconds":2592000,'
+
+# 3. Retries: the same Idempotency-Key and the same body on every attempt,
+# at most 3, only when Boat says so or its answer was lost.
+same_attempts() { # how many boat calls; first curl call of Boat
+	local first=$2 last=$(($2 + $1 - 1)) i
+	[ "$(boat_calls)" = "$1" ] || return 1
+	for ((i = first + 1; i <= last; i++)); do
+		[ "$(idem_of "$i")" = "$(idem_of "$first")" ] || return 1
+		cmp -s "$CASE/curl.$i.stdin" "$CASE/curl.$first.stdin" || return 1
+		cmp -s "$CASE/curl.$i.config" "$CASE/curl.$first.config" || return 1
+	done
+}
+retried() { # name, setup command, boat calls
+	new_case "$1" on
+	eval "$2"
+	run
+	check "exit 0 ($CODE)" test "$CODE" = 0
+	check "prints only Boat's sandbox ID" test "$(cat "$CASE/out")" = "$BOAT_ID"
+	check "nothing on standard error" test ! -s "$CASE/err"
+	check "$3 Boat calls, same key, body and header" same_attempts "$3" 3
+	check "one token trade, one key" test "$(curl_calls)" = $((2 + $3))
+	check "no secret leaks" no_secret_leaks
+	check "only fakes ran" guard
+}
+retried "a 503, then created" 'answer boat.1 503 "{\"error\":\"$LEAK\"}"' 2
+retried "two 500s, then created" 'answer boat.1 500 "x"; answer boat.2 502 "$LEAK"' 3
+retried "curl timed out (28), then created" 'curl_exit boat.1 28' 2
+retried "no answer (52), then created" 'curl_exit boat.1 52' 2
+retried "the answer cut off (56), then created" 'curl_exit boat.1 56' 2
+retried "409 in progress (error.code), then created" 'answer boat.1 409 "{\"ok\":false,\"error\":{\"code\":\"idempotency_in_progress\",\"message\":\"$LEAK\"}}"' 2
+retried "409 in progress (error), then created" 'answer boat.1 409 "{\"error\":\"idempotency_in_progress\"}"' 2
+
+# 4. Failures: non-zero, one line, nothing on standard output, nothing
+# secret and no response body anywhere, and whether a machine may exist.
+failure() { # name, tailnet, setup command, expected calls, message part
+	new_case "$1" "$2"
+	eval "$3"
+	run
+	check "exit 1 ($CODE)" test "$CODE" = 1
+	check "nothing on standard output" test ! -s "$CASE/out"
+	check "one line on standard error" one_line
+	check "says what failed" contains "$CASE/err" "$5"
+	check "$4 call(s)" test "$(curl_calls)" = "$4"
+	check "no secret and no response body leaks" no_secret_leaks
+	check "only fakes ran" guard
+}
+NONE="no Boat machine was created"
+MAYBE="a Boat machine may exist: check Boat"
+GOES="$MAYBE (the Tailscale key goes to that machine if it exists)"
+UNUSED="the Tailscale key made for it expires unused within an hour"
+MAYBE_KEY="$NONE (if Tailscale made a key, it expires unused within an hour)"
+failure "the trade unreachable" on 'unreachable token' 1 "could not reach Tailscale for the token trade; $NONE"
+failure "the trade refused" on 'answer token 401 "{\"message\":\"$LEAK $CLIENT_SECRET\"}"' 1 "Tailscale refused the token trade (HTTP 401); $NONE"
+failure "the trade with no token" on 'answer token 200 "{\"note\":\"$LEAK\"}"' 1 "held no token it could read; $NONE"
+failure "the trade with a token that is not one" on 'answer token 200 "{\"access_token\":\"a\\\"b $LEAK\"}"' 1 "held no token it could read; $NONE"
+failure "the key unreachable" on 'unreachable keys' 2 "could not reach Tailscale to create the key; $MAYBE_KEY"
+failure "the key refused" on 'answer keys 403 "{\"message\":\"$LEAK $ACCESS\"}"' 2 "Tailscale refused to create the key (HTTP 403); $NONE"
+failure "the key answer with no key" on 'answer keys 200 "{\"id\":\"$LEAK\"}"' 2 "held no key it could read; $MAYBE_KEY"
+# One character past the most a token or a key may have is refused, and
+# the value stays out of the line.
+ACCESS=$(long tskey-api-FAKElong 4097)
+failure "a token too long" on 'answer token 200 "{\"access_token\":\"$ACCESS\"}"' 1 "held no token it could read; $NONE"
+ACCESS=$SHORT_ACCESS
+TKEY=$(long tskey-auth-FAKElong 4097)
+failure "a key too long" on 'answer keys 200 "{\"key\":\"$TKEY\"}"' 2 "held no key it could read; $MAYBE_KEY"
+TKEY=$SHORT_TKEY
+# Boat: only curl's 6 and 7 on the first attempt say nothing was made.
+failure "Boat unreachable on the first attempt (7)" on 'unreachable boat' 3 "could not reach Boat, or lost its answer (attempt 1, curl 7); $NONE ($UNUSED)"
+failure "Boat's name unknown on the first attempt (6)" on 'curl_exit boat 6' 3 "(attempt 1, curl 6); $NONE ($UNUSED)"
+failure "Boat unreachable, tailnet off" off 'unreachable boat' 1 "(attempt 1, curl 7); $NONE"
+failure "Boat unreachable after a lost answer" on 'curl_exit boat.1 28; unreachable boat.2' 4 "(attempt 2, curl 7); $GOES"
+failure "Boat timed out three times" on 'curl_exit boat 28' 5 "could not reach Boat, or lost its answer (attempt 3, curl 28); $GOES"
+failure "Boat answered 500 three times" on 'answer boat 500 "{\"error\":\"$LEAK $BOAT_KEY $TKEY\"}"' 5 "Boat answered HTTP 500 (attempt 3); $GOES"
+failure "Boat refused with a 400" on 'answer boat 400 "{\"error\":\"$LEAK\"}"' 3 "Boat answered HTTP 400 (attempt 1); $GOES"
+failure "Boat refused with a 401" on 'answer boat 401 "{\"error\":\"$LEAK\"}"' 3 "HTTP 401 (attempt 1); $GOES"
+failure "Boat: another body for the key (409)" on 'answer boat 409 "{\"ok\":false,\"error\":{\"code\":\"idempotency_key_reused\"}}"' 3 "HTTP 409 (attempt 1); $GOES"
+failure "Boat: in progress three times" on 'answer boat 409 "{\"error\":{\"code\":\"idempotency_in_progress\"}}"' 5 "HTTP 409 (attempt 3); $GOES"
+failure "Boat answered 503 then 400" on 'answer boat.1 503 "x"; answer boat.2 400 "$LEAK"' 4 "HTTP 400 (attempt 2); $GOES"
+failure "Boat answered without the nested ID" on 'answer boat 202 "{\"ok\":true,\"id\":\"$BOAT_ID\",\"note\":\"$LEAK\"}"' 3 "Boat's answer held no sandbox ID it could read (HTTP 202); $GOES"
+failure "Boat answered an ID that is not one" on 'answer boat 202 "{\"sandbox\":{\"id\":\"bx_x y $LEAK\"}}"' 3 "Boat's answer held no sandbox ID it could read"
+failure "Boat answered an ID of another shape" on 'answer boat 202 "{\"sandbox\":{\"id\":\"sbx-FAKE-0123\"}}"' 3 "Boat's answer held no sandbox ID it could read"
+failure "Boat refused, tailnet off" off 'answer boat 403 "{\"error\":\"$LEAK\"}"' 1 "HTTP 403 (attempt 1); $MAYBE"
+check "  and no word about a key" lacks "$CASE/err" "Tailscale"
+
+# 5. A signal while a call is out: one line that says what may exist, at
+# once, without waiting for curl. Standard error is a pipe, as it is under
+# `klav sandbox start`, which stops reading soon after the script exits: the
+# pipe must close with the script, while curl is still out.
+killed() { # name, endpoint that hangs, message part
+	new_case "$1" on
+	: >"$CASE/$2.hang"
+	mkfifo "$CASE/err.pipe"
+	(
+		cat <"$CASE/err.pipe" >"$CASE/err"
+		: >"$CASE/err.closed"
+	) &
+	local reader=$!
+	set +e
+	"$REAL_ENV" -i HOME="$CASE/home" KLAV_TEST_CASE="$CASE" PATH="$CASE/bin" \
+		KLAV_SANDBOX="$PKG" KLAV_SANDBOX_CONFIG_DIR="$CFG" \
+		"$bash_under_test" "$CASE/new-sandbox" </dev/null >"$CASE/out" 2>"$CASE/err.pipe" &
+	local pid=$! i=0
+	while [ ! -e "$CASE/$2.pid" ] && [ "$i" -lt 100 ]; do "$REAL_SLEEP" 0.1; i=$((i + 1)); done
+	local start=$SECONDS
+	kill -TERM "$pid"
+	wait "$pid"
+	CODE=$?
+	local took=$((SECONDS - start))
+	set -e
+	# The fake curl still waits (30 s at most): the pipe closes without it.
+	local closed=no
+	i=0
+	while [ ! -e "$CASE/err.closed" ] && [ "$i" -lt 50 ]; do "$REAL_SLEEP" 0.1; i=$((i + 1)); done
+	[ ! -e "$CASE/err.closed" ] || closed=yes
+	# Let the fake curl go and wait for it, so nothing is left running.
+	: >"$CASE/release"
+	local cpid
+	cpid=$(cat "$CASE/$2.pid" 2>/dev/null || true)
+	i=0
+	while [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null && [ "$i" -lt 100 ]; do "$REAL_SLEEP" 0.1; i=$((i + 1)); done
+	wait "$reader" || true
+	check "the call was out" test -n "$cpid"
+	check "standard error closed with the script, curl still out" test "$closed" = yes
+	check "exit 143 ($CODE)" test "$CODE" = 143
+	check "without waiting for curl, which hangs 30 s ($took s)" test "$took" -le 10
+	check "one line on standard error" one_line
+	check "says what may exist" contains "$CASE/err" "$3"
+	check "nothing on standard output" test ! -s "$CASE/out"
+	check "no secret leaks" no_secret_leaks
+	check "only fakes ran" guard
+	check "the fake curl is gone" test -n "$cpid" -a -z "$(kill -0 "$cpid" 2>/dev/null && echo up)"
+}
+killed "killed during Boat's call" boat "stopped by TERM; $GOES"
+killed "killed during the token trade" token "stopped by TERM; $NONE"
+killed "killed while the key is made" keys "stopped by TERM; $MAYBE_KEY"
+
+# 6. Refusals before any call: exit 2, nothing called.
+refusal() { # name, tailnet, setup command, message part
+	new_case "$1" "$2"
+	eval "$3"
+	run
+	check "exit 2 ($CODE)" test "$CODE" = 2
+	check "nothing on standard output" test ! -s "$CASE/out"
+	check "one line on standard error" one_line
+	check "says why" contains "$CASE/err" "$4"
+	check "says no machine was made" contains "$CASE/err" "$NONE"
+	check "no call" test "$(curl_calls)" = 0
+	check "no secret leaks" no_secret_leaks
+	check "only fakes ran" guard
+}
+refusal "the Boat key readable by the group" on 'chmod 0640 "$CFG/boat-api-key"' "boat-api-key is readable by others (it must be 0600): refused"
+refusal "the Boat key readable by all" off 'chmod 0644 "$CFG/boat-api-key"' "boat-api-key is readable by others"
+refusal "the OAuth client readable by others" on 'chmod 0604 "$CFG/tailscale-oauth"' "tailscale-oauth is readable by others"
+refusal "the Boat key someone else's" on 'printf /boat-api-key >"$CASE/other-owner"' "boat-api-key belongs to another user: refused"
+refusal "the Boat key a symlink" on 'mv "$CFG/boat-api-key" "$CASE/k"; ln -s "$CASE/k" "$CFG/boat-api-key"' "/cfg/boat-api-key; no Boat machine"
+refusal "no Boat key" on 'rm "$CFG/boat-api-key"' "no file at"
+refusal "a Boat key that is not one" on '(umask 077; printf "boat_\"x\n" >"$CFG/boat-api-key")' "does not hold one key"
+refusal "no OAuth client, tailnet on" on 'rm "$CFG/tailscale-oauth"' "/cfg/tailscale-oauth; no Boat machine"
+refusal "an OAuth secret with a quote" on '(umask 077; printf "client_id=a\nclient_secret=b\"c\n" >"$CFG/tailscale-oauth")' "no valid client_secret"
+# The values from the script's own files keep the 255 characters.
+refusal "an OAuth secret of 256 characters" on '(umask 077; printf "client_id=a\nclient_secret=%s\n" "$(long s 256)" >"$CFG/tailscale-oauth")' "no valid client_secret"
+refusal "a Boat key of 256 characters" off '(umask 077; printf "%s\n" "$(long b 256)" >"$CFG/boat-api-key")' "does not hold one key"
+refusal "an OAuth file with another line" on '(umask 077; printf "client_id=a\nsecret=b\n" >"$CFG/tailscale-oauth")' "a line other than client_id= or client_secret="
+# The configuration decides where the secrets go: only its owner writes it.
+refusal "config writable by the group" on 'chmod 0664 "$CFG/config"' "/cfg/config is writable by others: refused"
+refusal "config writable by all" on 'chmod 0646 "$CFG/config"' "/cfg/config is writable by others: refused"
+refusal "config someone else's" on 'printf /cfg/config >"$CASE/other-owner"' "/cfg/config belongs to another user: refused"
+refusal "config a symlink" on 'mv "$CFG/config" "$CASE/c"; ln -s "$CASE/c" "$CFG/config"' "/cfg/config is a link: refused"
+refusal "its directory writable by the group" on 'chmod 0775 "$CFG"' "/cfg is writable by others: refused"
+refusal "its directory writable by all" on 'chmod 0757 "$CFG"' "/cfg is writable by others: refused"
+refusal "its directory someone else's" on 'printf /cfg >"$CASE/other-owner"' "/cfg belongs to another user: refused"
+refusal "its directory a symlink" on 'mv "$CFG" "$CASE/real-cfg"; ln -s "$CASE/real-cfg" "$CFG"' "/cfg is a link: refused"
+refusal "no package" on 'PKG=' "no package in KLAV_SANDBOX"
+refusal "a package of another prefix (vector)" on 'PKG=$(negative "another prefix")' "is not a ksb1_ package"
+refusal "a package of another version (vector)" on 'PKG=$(negative "another version")' "a package of another version"
+refusal "a package with a quote" on 'PKG="ksb1_AePR\"v3le"' "is not a ksb1_ package"
+refusal "a package too short" on 'PKG=ksb1_AeP' "is not a ksb1_ package"
+refusal "no configuration" on 'rm "$CFG/config"' "no configuration at"
+refusal "no configuration directory" on 'rm -r "$CFG"' "no configuration directory at"
+refusal "no template" on 'printf "BOAT_ENVIRONMENT=e\nTAILNET=on\n" >"$CFG/config"' "BOAT_TEMPLATE in"
+refusal "no environment" on 'printf "BOAT_TEMPLATE=t\nTAILNET=on\n" >"$CFG/config"' "BOAT_ENVIRONMENT in"
+refusal "no tailnet choice" on 'printf "BOAT_TEMPLATE=t\nBOAT_ENVIRONMENT=e\n" >"$CFG/config"' "TAILNET in"
+refusal "a template name that breaks JSON" on 'printf "BOAT_TEMPLATE=t\"x\nBOAT_ENVIRONMENT=e\nTAILNET=on\n" >"$CFG/config"' "BOAT_TEMPLATE in"
+refusal "an http API" on 'printf "BOAT_API=http://boat.example/api\nALLOW_OTHER_API=yes\n" >>"$CFG/config"' "BOAT_API in"
+refusal "another Boat API without ALLOW_OTHER_API" on 'printf "BOAT_API=https://boat.example/api/v1\n" >>"$CFG/config"' "names another BOAT_API or TAILSCALE_API without ALLOW_OTHER_API=yes"
+refusal "another Tailscale API without ALLOW_OTHER_API" on 'printf "TAILSCALE_API=https://ts.example/api/v2\nALLOW_OTHER_API=no\n" >>"$CFG/config"' "names another BOAT_API or TAILSCALE_API"
+refusal "ALLOW_OTHER_API neither yes nor no" on 'printf "ALLOW_OTHER_API=1\n" >>"$CFG/config"' "ALLOW_OTHER_API in"
+refusal "a . segment in an API URL" on 'printf "BOAT_API=https://boat.dev/./api/v1\nALLOW_OTHER_API=yes\n" >>"$CFG/config"' "/cfg/config has a . or .. segment"
+refusal "a .. segment in an API URL" on 'printf "TAILSCALE_API=https://api.tailscale.com/api/../v2\nALLOW_OTHER_API=yes\n" >>"$CFG/config"' "/cfg/config has a . or .. segment"
+refusal "a tailnet named ." on 'printf "TAILNET_NAME=.\n" >>"$CFG/config"' "TAILNET_NAME in"
+refusal "a tailnet named .." on 'printf "TAILNET_NAME=..\n" >>"$CFG/config"' "TAILNET_NAME in"
+for ttl in 0 2592001 null infinite 012 -1 1.5; do
+	refusal "BOAT_TTL_SECONDS=$ttl" off "printf 'BOAT_TTL_SECONDS=%s\n' '$ttl' >>\"\$CFG/config\"" "BOAT_TTL_SECONDS in"
+done
+refusal "an unknown key" on 'printf "EXTRA=1\n" >>"$CFG/config"' "unknown key EXTRA"
+
+# The other vector negatives (a byte short, expiry 0, the address) are
+# not refused here: the decode reads only the first bytes, and the proxy
+# and the forwarder refuse them.
+
+# --- Done -------------------------------------------------------------------
+
+printf '%d passed, %d failed (bash: %s)\n' "$passed" "$failed" "$("$bash_under_test" -c 'echo $BASH_VERSION')"
+[ "$failed" -eq 0 ]

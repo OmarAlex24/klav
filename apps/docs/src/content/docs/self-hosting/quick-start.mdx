@@ -1,0 +1,74 @@
+---
+title: "Quick start with Docker Compose"
+description: "Run klav-server with Docker Compose and SQLite, create your accounts with registration open, then close it."
+sidebar:
+  order: 1
+---
+
+This page runs your own Klav server with Docker Compose and SQLite, creates your accounts, and closes registration so nobody else can make one. You need Docker with the `compose` plugin, and a copy of Klav's source code, which has `docker-compose.yml` at its root.
+
+## Start it
+
+<Steps>
+
+1. From the folder with Klav's source code, start the server with registration open, only for this start:
+
+   ```sh
+   KLAV_ALLOW_REGISTRATION=true docker compose up -d --build
+   ```
+
+2. Check that it answers:
+
+   ```sh
+   curl http://127.0.0.1:8080/v1/health
+   ```
+
+   ```text
+   {"status":"ok","version":"…","registration_open":true,"account_deletion":true}
+   ```
+
+3. Put a reverse proxy with TLS in front of it before any device connects from another machine: see [TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/).
+
+4. Create your accounts against your server's address, with the Mac app ("Use my own server") or the CLI. See [Create an account](/get-started/create-an-account/):
+
+   ```sh
+   klav signup --server https://klav.example.com --email you@example.com
+   ```
+
+5. Close registration by starting the server again without the variable:
+
+   ```sh
+   docker compose up -d
+   ```
+
+   `/v1/health` then says `"registration_open":false`, and a client tells you before it asks for a password. Check that `KLAV_ALLOW_REGISTRATION` isn't left in your shell or in a `.env` file next to `docker-compose.yml`: Compose reads both.
+
+</Steps>
+
+## What the Compose file does
+
+- **Publishes the port on `127.0.0.1:8080` only.** The server speaks plain HTTP: never expose it to the internet without TLS in front.
+- **Keeps everything in the `klav-data` volume** (`/data` in the container): the SQLite database and the attachments.
+- **Runs locked down:** as an unprivileged user (`klav`, UID 10001), with a read-only file system, no capabilities and `no-new-privileges`.
+- **Has a health check** (`klav-server healthcheck`), so `docker ps` shows `healthy` when it answers.
+- **Keeps registration closed** unless you set `KLAV_ALLOW_REGISTRATION=true` for one start.
+
+## Without Docker
+
+Build and run the binary; SQLite is built in:
+
+```sh
+cargo build --release -p klav-server
+./target/release/klav-server --config /etc/klav/server.toml
+```
+
+```sh
+klav-server --version
+klav-server healthcheck
+```
+
+`klav-server healthcheck` exits with code 0 when the configured server answers on `/v1/health`, and 1 when it doesn't. Without a file or variables, the server listens on `127.0.0.1:8080` and keeps its data in `./data`. See [Configuration](/self-hosting/configuration/).
+
+## Next
+
+[Configuration](/self-hosting/configuration/).

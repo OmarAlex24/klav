@@ -1,0 +1,225 @@
+name: Docker release publish
+
+# Prebuilt container images of a release, published to GitHub Container
+# Registry so self-hosters do not have to compile Rust from source:
+#   - ghcr.io/omaralex24/klav-server (root Dockerfile, AGPL-3.0-only)
+#   - ghcr.io/omaralex24/klav-proxy  (deploy/proxy/Dockerfile, Apache-2.0)
+#
+# Run by hand only, from the Actions tab or:
+#   gh workflow run release-docker.yml -f sha=<SHA> -f version=<X.Y.Z>
+# Never on a push or a pull request, because each run is a paid Boat machine
+# (ADR 0034). It builds only a commit on main, without a remote compile cache,
+# and logs in to ghcr.io only after both images are built and checked.
+# Its job is called "docker release publish", so its check can't be taken for
+# `ci` or one of ci.yml's task checks.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full 40-character SHA of the commit to build (must be on main)"
+        required: true
+        type: string
+      version:
+        description: "SemVer release version without a leading v (e.g. 0.9.0)"
+        required: true
+        type: string
+      tag_latest:
+        description: "Also update the :latest tag for both images"
+        required: false
+        default: true
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: release-docker
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: docker release publish
+    runs-on: boat-large
+    # Cold release builds of klav-server and klav-proxy on boat-large (the
+    # second build shares the local BuildKit cargo/target cache mounts with the
+    # first). Boat bills every second; this bounds a hung run.
+    timeout-minutes: 60
+    permissions:
+      contents: read # check out the commit
+      packages: write # push images to ghcr.io
+    env:
+      SERVER_IMAGE: ghcr.io/omaralex24/klav-server
+      PROXY_IMAGE: ghcr.io/omaralex24/klav-proxy
+    steps:
+      - name: Check the inputs
+        env:
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+          TAG_LATEST: ${{ inputs.tag_latest }}
+        run: |
+          set -euo pipefail
+          if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit SHA in lowercase hex"
+            exit 1
+          fi
+          version_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ $VERSION =~ $version_re ]]; then
+            echo "::error::version must be a SemVer version without a leading v (for example, 0.9.0)"
+            exit 1
+          fi
+          if [[ $TAG_LATEST != "true" && $TAG_LATEST != "false" ]]; then
+            echo "::error::tag_latest must be true or false"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.sha }}
+          # Every branch's history, so origin/main is here for the check below.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Only a commit on main is published: a commit from any other branch,
+      # or a fork's, never reaches GHCR.
+      - name: Check the commit
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$SHA" ]; then
+            echo "::error::checked out $head, not $SHA"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main: publish only a commit on main"
+            exit 1
+          fi
+
+      # Built and smoke-tested before logging in to ghcr.io, so neither
+      # GITHUB_TOKEN nor registry credentials exist while cargo runs build
+      # scripts.
+      - name: Build and verify images
+        env:
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+          TAG_LATEST: ${{ inputs.tag_latest }}
+        run: |
+          set -euo pipefail
+          if ! timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done'; then
+            echo "::error::Docker did not answer within 60 s"
+            exit 1
+          fi
+
+          created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          server_tags=(-t "$SERVER_IMAGE:$VERSION")
+          proxy_tags=(-t "$PROXY_IMAGE:$VERSION")
+          if [ "$TAG_LATEST" = "true" ]; then
+            server_tags+=(-t "$SERVER_IMAGE:latest")
+            proxy_tags+=(-t "$PROXY_IMAGE:latest")
+          fi
+
+          docker build --platform linux/amd64 \
+            --label "org.opencontainers.image.title=klav-server" \
+            --label "org.opencontainers.image.description=Klav sync server (zero-knowledge storage of encrypted vaults)" \
+            --label "org.opencontainers.image.url=https://klav.dev" \
+            --label "org.opencontainers.image.source=https://github.com/OmarAlex24/klav" \
+            --label "org.opencontainers.image.revision=$SHA" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.created=$created" \
+            --label "org.opencontainers.image.licenses=AGPL-3.0-only" \
+            "${server_tags[@]}" \
+            .
+
+          docker build --platform linux/amd64 \
+            -f deploy/proxy/Dockerfile \
+            --label "org.opencontainers.image.title=klav-proxy" \
+            --label "org.opencontainers.image.description=Klav credential proxy (injects granted credentials into upstream HTTPS requests)" \
+            --label "org.opencontainers.image.url=https://klav.dev" \
+            --label "org.opencontainers.image.source=https://github.com/OmarAlex24/klav" \
+            --label "org.opencontainers.image.revision=$SHA" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.created=$created" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
+            "${proxy_tags[@]}" \
+            .
+
+          # Smoke-check both images before pushing: binary runs, unprivileged
+          # UID 10001, and system CA roots are present.
+          for image in "$SERVER_IMAGE" "$PROXY_IMAGE"; do
+            docker run --rm "$image:$VERSION" --version
+            test "$(docker run --rm --entrypoint id "$image:$VERSION" -u)" = 10001
+            docker run --rm --entrypoint test "$image:$VERSION" -s /etc/ssl/certs/ca-certificates.crt
+          done
+
+      - name: Push to GHCR and write summary
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+          TAG_LATEST: ${{ inputs.tag_latest }}
+        run: |
+          set -euo pipefail
+          logout() {
+            docker logout ghcr.io >/dev/null 2>&1 || true
+          }
+          trap logout EXIT
+
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+          for image in "$SERVER_IMAGE" "$PROXY_IMAGE"; do
+            docker push "$image:$VERSION"
+            if [ "$TAG_LATEST" = "true" ]; then
+              docker push "$image:latest"
+            fi
+          done
+
+          pushed_ref() {
+            local image=$1
+            local ref
+            ref=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image:$VERSION" \
+              | awk -v pfx="${image}@sha256:" '!found && index($0, pfx) == 1 { print; found = 1 }')
+            if [ -z "$ref" ]; then
+              local digest
+              digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$VERSION" 2>/dev/null || true)
+              if [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                ref="${image}@${digest}"
+              fi
+            fi
+            if [ -z "$ref" ]; then
+              echo "::error::could not determine pushed digest for $image:$VERSION" >&2
+              exit 1
+            fi
+            printf '%s\n' "$ref"
+          }
+
+          server_ref=$(pushed_ref "$SERVER_IMAGE")
+          proxy_ref=$(pushed_ref "$PROXY_IMAGE")
+          server_digest="${server_ref#*@}"
+          proxy_digest="${proxy_ref#*@}"
+
+          printf -v tags '`%s`' "$VERSION"
+          if [ "$TAG_LATEST" = "true" ]; then
+            printf -v tags '`%s`, `latest`' "$VERSION"
+          fi
+
+          {
+            echo "## Docker release publish"
+            echo
+            echo "Commit \`$SHA\`, version \`$VERSION\` (\`linux/amd64\`)."
+            echo
+            echo "| Image | Tags | Digest |"
+            echo "|---|---|---|"
+            echo "| \`$SERVER_IMAGE\` | $tags | \`$server_digest\` |"
+            echo "| \`$PROXY_IMAGE\` | $tags | \`$proxy_digest\` |"
+            echo
+            echo "Pull by immutable digest:"
+            echo
+            echo '```sh'
+            echo "docker pull $server_ref"
+            echo "docker pull $proxy_ref"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

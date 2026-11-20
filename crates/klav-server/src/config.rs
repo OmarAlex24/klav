@@ -1,0 +1,719 @@
+//! Server configuration: an optional TOML file plus `KLAV_*` environment
+//! overrides. Every field has a safe default for self-hosting with SQLite.
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+use secrecy::SecretString;
+use serde::{Deserialize, Deserializer};
+use thiserror::Error;
+
+/// Error while loading the configuration.
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    /// The TOML file could not be read.
+    #[error("cannot read config file {path}: {source}")]
+    Read {
+        /// Path of the file.
+        path: PathBuf,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// The TOML file is invalid.
+    #[error("invalid config file: {0}")]
+    Parse(String),
+    /// An environment variable has an invalid value.
+    #[error("invalid value for {name}")]
+    Env {
+        /// Variable name.
+        name: &'static str,
+    },
+    /// A value is out of range.
+    #[error("invalid configuration: {0}")]
+    Invalid(&'static str),
+}
+
+/// Log output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// One JSON object per line (default; for production).
+    Json,
+    /// Human-readable lines (for development).
+    Pretty,
+}
+
+/// Logging settings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LogConfig {
+    /// Output format.
+    pub format: LogFormat,
+    /// `tracing` filter directive, e.g. `info` or `klav_server=debug`.
+    pub filter: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            format: LogFormat::Json,
+            filter: "info".into(),
+        }
+    }
+}
+
+/// Size limits.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Limits {
+    /// Maximum size of a JSON request body, in bytes.
+    pub max_json_body_bytes: usize,
+    /// Maximum size of encrypted vault or project metadata, in bytes.
+    pub max_meta_bytes: usize,
+    /// Maximum size of an item overview section, in bytes.
+    pub max_overview_bytes: usize,
+    /// Maximum size of an item details section, in bytes.
+    pub max_details_bytes: usize,
+    /// Previous versions kept per item (older ones are dropped).
+    pub max_item_versions: u32,
+    /// Maximum size of one encrypted attachment, in bytes.
+    pub max_attachment_bytes: u64,
+    /// Maximum size of one upload chunk (request body), in bytes.
+    pub max_attachment_chunk_bytes: usize,
+    /// Declared bytes of unfinished uploads allowed at once in the vaults
+    /// of one account (uploads idle for a day are removed).
+    pub max_pending_upload_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_json_body_bytes: 4 * 1024 * 1024,
+            max_meta_bytes: 64 * 1024,
+            max_overview_bytes: 64 * 1024,
+            max_details_bytes: 1024 * 1024,
+            max_item_versions: 50,
+            max_attachment_bytes: 100 * 1024 * 1024,
+            max_attachment_chunk_bytes: 8 * 1024 * 1024,
+            max_pending_upload_bytes: 1024 * 1024 * 1024,
+        }
+    }
+}
+
+/// How long deleted things are kept before they are purged.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetentionConfig {
+    /// Days an item stays in the trash (and a deleted vault stays
+    /// restorable) before it is purged for good.
+    pub trash_days: u32,
+    /// Seconds between purge runs.
+    pub purge_interval_secs: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            trash_days: 30,
+            purge_interval_secs: 3600,
+        }
+    }
+}
+
+/// Rate limits (token buckets; `per_minute` is the refill rate and `burst`
+/// the bucket size).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RateLimitConfig {
+    /// Every request, per client IP.
+    pub ip_per_minute: u32,
+    /// Burst allowance per client IP.
+    pub ip_burst: u32,
+    /// Authentication endpoints (pre-login, sign-up, login, refresh), per IP.
+    pub auth_ip_per_minute: u32,
+    /// Burst for authentication endpoints, per IP.
+    pub auth_ip_burst: u32,
+    /// Authentication attempts per account e-mail (any IP).
+    pub auth_email_per_minute: u32,
+    /// Burst of authentication attempts per account e-mail.
+    pub auth_email_burst: u32,
+    /// Authenticated requests per account (all devices together).
+    pub account_per_minute: u32,
+    /// Burst of authenticated requests per account.
+    pub account_burst: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            ip_per_minute: 600,
+            ip_burst: 120,
+            auth_ip_per_minute: 30,
+            auth_ip_burst: 10,
+            auth_email_per_minute: 10,
+            auth_email_burst: 5,
+            account_per_minute: 1200,
+            account_burst: 300,
+        }
+    }
+}
+
+/// Session lifetimes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionConfig {
+    /// Lifetime of an access token, in seconds.
+    pub access_ttl_secs: u64,
+    /// Lifetime of a refresh token, in seconds (sliding: every refresh
+    /// starts a new period).
+    pub refresh_ttl_secs: u64,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            access_ttl_secs: 15 * 60,
+            refresh_ttl_secs: 30 * 24 * 60 * 60,
+        }
+    }
+}
+
+/// Push notifications for approvals (ADR 0018 §5). Without `apns`, the
+/// server sends nothing and everything else works as before.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PushConfig {
+    /// Apple Push Notification service (token-based, `.p8`).
+    pub apns: Option<ApnsConfig>,
+}
+
+/// APNs with a token signing key (`.p8`) from the Apple Developer account.
+///
+/// The key comes from exactly one of `key_path` (a file) or `key` (its PEM
+/// contents, for hosts without file secrets). `Debug` is safe: `key` is a
+/// [`SecretString`] and prints redacted.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApnsConfig {
+    /// The `.p8` file (PKCS#8 P-256 key). Read once at start-up; its
+    /// contents are never logged.
+    #[serde(default)]
+    pub key_path: Option<PathBuf>,
+    /// The `.p8` contents (PEM), instead of `key_path`. Never logged.
+    #[serde(default, deserialize_with = "secret_string")]
+    pub key: Option<SecretString>,
+    /// Its key ID (10 characters, shown next to the key in the account).
+    pub key_id: String,
+    /// The Apple team ID.
+    pub team_id: String,
+    /// The app's bundle ID (`apns-topic`).
+    pub topic: String,
+    /// Sends every push to this base URL instead of Apple's (mock APNs in
+    /// in-process tests). Not settable from the file or the environment.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub endpoint_override: Option<String>,
+}
+
+/// Full server configuration.
+///
+/// `Debug` is written by hand: `database_url` can carry the database
+/// password (`postgres://user:password@host/db`) and prints redacted.
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    /// Address to listen on.
+    pub listen: SocketAddr,
+    /// `sqlite://…` or `postgres://…`.
+    pub database_url: String,
+    /// Directory for server data (attachments; the SQLite file by default).
+    pub data_dir: PathBuf,
+    /// Use the rightmost `X-Forwarded-For` address as the client IP. Enable
+    /// only behind a reverse proxy that sets the header.
+    pub trust_forwarded_for: bool,
+    /// Take the client IP from this header (e.g. `x-real-ip` on Railway),
+    /// which the reverse proxy in front sets to the client address,
+    /// replacing whatever the client sent. Off by default: no header is
+    /// trusted. Excludes `trust_forwarded_for`.
+    pub trusted_ip_header: Option<String>,
+    /// Accept new accounts. Turn off once your own accounts exist.
+    pub allow_registration: bool,
+    /// Session lifetimes.
+    pub sessions: SessionConfig,
+    /// Trash and purge.
+    pub retention: RetentionConfig,
+    /// Logging.
+    pub log: LogConfig,
+    /// Size limits.
+    pub limits: Limits,
+    /// Rate limits.
+    pub rate_limit: RateLimitConfig,
+    /// Push notifications.
+    pub push: PushConfig,
+    /// Accept Argon2id parameters below the production floor at sign-up.
+    ///
+    /// **Only for in-process test suites**, which use reduced parameters to
+    /// stay fast. It cannot be set from the TOML file or the environment, so
+    /// a deployed server always enforces the floor (ADR 0010).
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub insecure_accept_weak_kdf: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            database_url: "sqlite://data/klav.db".into(),
+            data_dir: PathBuf::from("data"),
+            trust_forwarded_for: false,
+            trusted_ip_header: None,
+            allow_registration: true,
+            sessions: SessionConfig::default(),
+            retention: RetentionConfig::default(),
+            log: LogConfig::default(),
+            limits: Limits::default(),
+            rate_limit: RateLimitConfig::default(),
+            push: PushConfig::default(),
+            insecure_accept_weak_kdf: false,
+        }
+    }
+}
+
+impl Config {
+    /// Loads the configuration: defaults, then the TOML file at `path` (if
+    /// any), then overrides from `env` (`KLAV_*` variables).
+    ///
+    /// `env` is passed in (normally `std::env::vars()`) so tests never have to
+    /// mutate the process environment.
+    pub fn load(
+        path: Option<&Path>,
+        env: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, ConfigError> {
+        let mut config = match path {
+            Some(path) => {
+                let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+                Self::from_toml(&text)?
+            }
+            None => Self::default(),
+        };
+        config.apply_env(env)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Parses a TOML document (missing keys take their defaults).
+    pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
+        toml::from_str(text).map_err(|e| ConfigError::Parse(e.message().to_owned()))
+    }
+
+    fn apply_env(
+        &mut self,
+        env: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<(), ConfigError> {
+        let mut apns: [Option<String>; 4] = Default::default();
+        let mut apns_key: Option<SecretString> = None;
+        for (key, value) in env {
+            match key.as_str() {
+                "KLAV_LISTEN" => self.listen = parse(&value, "KLAV_LISTEN")?,
+                "KLAV_DATABASE_URL" => self.database_url = value,
+                "KLAV_DATA_DIR" => self.data_dir = PathBuf::from(value),
+                "KLAV_TRUST_FORWARDED_FOR" => {
+                    self.trust_forwarded_for = parse_bool(&value, "KLAV_TRUST_FORWARDED_FOR")?
+                }
+                "KLAV_TRUSTED_IP_HEADER" => {
+                    // Empty means "none", so a template can leave it blank.
+                    self.trusted_ip_header = Some(value).filter(|v| !v.trim().is_empty());
+                }
+                "KLAV_ALLOW_REGISTRATION" => {
+                    self.allow_registration = parse_bool(&value, "KLAV_ALLOW_REGISTRATION")?
+                }
+                "KLAV_LOG_FORMAT" => {
+                    self.log.format = match value.as_str() {
+                        "json" => LogFormat::Json,
+                        "pretty" => LogFormat::Pretty,
+                        _ => {
+                            return Err(ConfigError::Env {
+                                name: "KLAV_LOG_FORMAT",
+                            });
+                        }
+                    }
+                }
+                "KLAV_LOG" => self.log.filter = value,
+                "KLAV_APNS_KEY_PATH" => apns[0] = Some(value),
+                "KLAV_APNS_KEY" => apns_key = Some(SecretString::from(value)),
+                "KLAV_APNS_KEY_ID" => apns[1] = Some(value),
+                "KLAV_APNS_TEAM_ID" => apns[2] = Some(value),
+                "KLAV_APNS_TOPIC" => apns[3] = Some(value),
+                _ => {}
+            }
+        }
+        if apns.iter().any(Option::is_some) || apns_key.is_some() {
+            let [key_path, key_id, team_id, topic] = apns;
+            let base = self.push.apns.take();
+            if key_path.is_some() && apns_key.is_some() {
+                return Err(ConfigError::Invalid(
+                    "APNs: set KLAV_APNS_KEY_PATH or KLAV_APNS_KEY, not both",
+                ));
+            }
+            // A key source from the environment replaces the file's.
+            let (key_path, key) = match (key_path, apns_key) {
+                (None, None) => base
+                    .as_ref()
+                    .map(|b| (b.key_path.clone(), b.key.clone()))
+                    .unwrap_or_default(),
+                (path, key) => (path.map(PathBuf::from), key),
+            };
+            let pick = |env: Option<String>, file: Option<String>| env.or(file);
+            let (Some(key_id), Some(team_id), Some(topic), true) = (
+                pick(key_id, base.as_ref().map(|b| b.key_id.clone())),
+                pick(team_id, base.as_ref().map(|b| b.team_id.clone())),
+                pick(topic, base.as_ref().map(|b| b.topic.clone())),
+                key_path.is_some() || key.is_some(),
+            ) else {
+                return Err(ConfigError::Invalid(
+                    "APNs needs KLAV_APNS_KEY_PATH or KLAV_APNS_KEY, KLAV_APNS_KEY_ID, KLAV_APNS_TEAM_ID and KLAV_APNS_TOPIC",
+                ));
+            };
+            self.push.apns = Some(ApnsConfig {
+                key_path,
+                key,
+                key_id,
+                team_id,
+                topic,
+                endpoint_override: None,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate(&mut self) -> Result<(), ConfigError> {
+        if let Some(name) = &self.trusted_ip_header {
+            let name = name.trim().to_ascii_lowercase();
+            if axum::http::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                return Err(ConfigError::Invalid(
+                    "trusted_ip_header (KLAV_TRUSTED_IP_HEADER) is not a valid header name",
+                ));
+            }
+            if self.trust_forwarded_for {
+                return Err(ConfigError::Invalid(
+                    "set trusted_ip_header (KLAV_TRUSTED_IP_HEADER) or trust_forwarded_for (KLAV_TRUST_FORWARDED_FOR), not both",
+                ));
+            }
+            self.trusted_ip_header = Some(name);
+        }
+        let l = &self.limits;
+        if l.max_json_body_bytes < 1024 {
+            return Err(ConfigError::Invalid("limits.max_json_body_bytes < 1024"));
+        }
+        if l.max_overview_bytes < 64 || l.max_details_bytes < 64 || l.max_meta_bytes < 64 {
+            return Err(ConfigError::Invalid(
+                "limits: blob limits must be at least 64 bytes",
+            ));
+        }
+        if l.max_attachment_chunk_bytes < 1024 || l.max_attachment_bytes < 1024 {
+            return Err(ConfigError::Invalid(
+                "limits: attachment limits must be at least 1 KiB",
+            ));
+        }
+        if l.max_pending_upload_bytes < l.max_attachment_bytes {
+            return Err(ConfigError::Invalid(
+                "limits.max_pending_upload_bytes must be at least max_attachment_bytes",
+            ));
+        }
+        if self.retention.purge_interval_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "retention.purge_interval_secs must be positive",
+            ));
+        }
+        let r = &self.rate_limit;
+        if [
+            r.ip_per_minute,
+            r.ip_burst,
+            r.auth_ip_per_minute,
+            r.auth_ip_burst,
+            r.auth_email_per_minute,
+            r.auth_email_burst,
+            r.account_per_minute,
+            r.account_burst,
+        ]
+        .contains(&0)
+        {
+            return Err(ConfigError::Invalid("rate limits must be positive"));
+        }
+        if let Some(apns) = &self.push.apns {
+            if apns.key_path.is_some() == apns.key.is_some() {
+                return Err(ConfigError::Invalid(
+                    "push.apns: set exactly one of key_path (KLAV_APNS_KEY_PATH) or key (KLAV_APNS_KEY)",
+                ));
+            }
+            let ok = |s: &str, max: usize| {
+                !s.is_empty() && s.len() <= max && s.chars().all(|c| c.is_ascii_graphic())
+            };
+            if !ok(&apns.key_id, 32) || !ok(&apns.team_id, 32) || !ok(&apns.topic, 255) {
+                return Err(ConfigError::Invalid(
+                    "push.apns: key_id, team_id and topic must be short printable ASCII",
+                ));
+            }
+        }
+        if self.sessions.access_ttl_secs == 0
+            || self.sessions.refresh_ttl_secs < self.sessions.access_ttl_secs
+        {
+            return Err(ConfigError::Invalid(
+                "sessions: access_ttl_secs > 0 and refresh_ttl_secs >= access_ttl_secs",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("listen", &self.listen)
+            .field("database_url", &redacted_url(&self.database_url))
+            .field("data_dir", &self.data_dir)
+            .field("trust_forwarded_for", &self.trust_forwarded_for)
+            .field("trusted_ip_header", &self.trusted_ip_header)
+            .field("allow_registration", &self.allow_registration)
+            .field("sessions", &self.sessions)
+            .field("retention", &self.retention)
+            .field("log", &self.log)
+            .field("limits", &self.limits)
+            .field("rate_limit", &self.rate_limit)
+            .field("push", &self.push)
+            .field("insecure_accept_weak_kdf", &self.insecure_accept_weak_kdf)
+            .finish()
+    }
+}
+
+/// A database URL without its credentials and query (which can carry a
+/// password too): `postgres://[redacted]@host:5432/db`.
+fn redacted_url(url: &str) -> String {
+    let url = url.split_once('?').map_or(url, |(base, _)| base);
+    match url.split_once("://") {
+        Some((scheme, rest)) => match rest.rsplit_once('@') {
+            Some((_, host)) => format!("{scheme}://[redacted]@{host}"),
+            None => format!("{scheme}://{rest}"),
+        },
+        None => "[redacted]".into(),
+    }
+}
+
+/// Deserializes an optional string straight into a [`SecretString`].
+fn secret_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SecretString>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.map(SecretString::from))
+}
+
+fn parse<T: std::str::FromStr>(value: &str, name: &'static str) -> Result<T, ConfigError> {
+    value.parse().map_err(|_| ConfigError::Env { name })
+}
+
+fn parse_bool(value: &str, name: &'static str) -> Result<bool, ConfigError> {
+    match value {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        _ => Err(ConfigError::Env { name }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use secrecy::ExposeSecret;
+
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn defaults_are_valid() {
+        let config = Config::load(None, env(&[])).unwrap();
+        assert_eq!(config.listen.port(), 8080);
+        assert!(config.database_url.starts_with("sqlite:"));
+        assert_eq!(config.log.format, LogFormat::Json);
+    }
+
+    #[test]
+    fn toml_then_env_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("klav.toml");
+        std::fs::write(
+            &path,
+            "listen = \"0.0.0.0:9000\"\n[limits]\nmax_json_body_bytes = 2048\n[log]\nformat = \"pretty\"\n",
+        )
+        .unwrap();
+        let config = Config::load(
+            Some(&path),
+            env(&[
+                ("KLAV_DATABASE_URL", "postgres://db/klav"),
+                ("KLAV_TRUST_FORWARDED_FOR", "true"),
+                ("KLAV_ALLOW_REGISTRATION", "0"),
+                ("UNRELATED", "x"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(config.listen.port(), 9000);
+        assert_eq!(config.limits.max_json_body_bytes, 2048);
+        assert_eq!(config.log.format, LogFormat::Pretty);
+        assert_eq!(config.database_url, "postgres://db/klav");
+        assert!(config.trust_forwarded_for);
+        assert!(!config.allow_registration);
+    }
+
+    #[test]
+    fn apns_comes_from_the_file_or_the_environment() {
+        assert!(Config::default().push.apns.is_none());
+        let config = Config::load(
+            None,
+            env(&[
+                ("KLAV_APNS_KEY_PATH", "/run/secrets/AuthKey.p8"),
+                ("KLAV_APNS_KEY_ID", "ABC123DEFG"),
+                ("KLAV_APNS_TEAM_ID", "SZ3F58F8LX"),
+                ("KLAV_APNS_TOPIC", "dev.klav.ios"),
+            ]),
+        )
+        .unwrap();
+        let apns = config.push.apns.unwrap();
+        assert_eq!(apns.key_id, "ABC123DEFG");
+        assert_eq!(apns.topic, "dev.klav.ios");
+        assert!(apns.endpoint_override.is_none());
+        // Half a configuration is an error, not a silent "no pushes".
+        assert!(Config::load(None, env(&[("KLAV_APNS_KEY_ID", "ABC123DEFG")])).is_err());
+        // The file can hold it and the environment override one value.
+        let file = Config::from_toml(
+            "[push.apns]\nkey_path = \"k.p8\"\nkey_id = \"K\"\nteam_id = \"T\"\ntopic = \"a.b\"\n",
+        )
+        .unwrap();
+        assert_eq!(file.push.apns.unwrap().team_id, "T");
+        assert!(Config::from_toml("[push.apns]\nendpoint_override = \"http://x\"\n").is_err());
+    }
+
+    #[test]
+    fn the_apns_key_can_come_from_a_variable_but_not_from_two_places() {
+        let pem = "-----BEGIN PRIVATE KEY-----\nS3NTINELpemBODY\n-----END PRIVATE KEY-----\n";
+        let rest = [
+            ("KLAV_APNS_KEY_ID", "ABC123DEFG"),
+            ("KLAV_APNS_TEAM_ID", "SZ3F58F8LX"),
+            ("KLAV_APNS_TOPIC", "dev.klav.ios"),
+        ];
+        let mut vars = rest.to_vec();
+        vars.push(("KLAV_APNS_KEY", pem));
+        let config = Config::load(None, env(&vars)).unwrap();
+        let apns = config.push.apns.as_ref().unwrap();
+        assert!(apns.key_path.is_none());
+        assert_eq!(apns.key.as_ref().unwrap().expose_secret(), pem);
+        // `Debug` of the whole configuration never shows the key.
+        assert!(!format!("{config:?}").contains("S3NTINEL"));
+
+        // Both sources at once is an error, from the environment or the file.
+        vars.push(("KLAV_APNS_KEY_PATH", "/run/secrets/AuthKey.p8"));
+        let err = Config::load(None, env(&vars)).unwrap_err().to_string();
+        assert!(err.contains("not both"), "{err}");
+        assert!(!err.contains("S3NTINEL"));
+        let both = "[push.apns]\nkey_path = \"k.p8\"\nkey = \"x\"\nkey_id = \"K\"\nteam_id = \"T\"\ntopic = \"a.b\"\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("klav.toml");
+        std::fs::write(&path, both).unwrap();
+        assert!(Config::load(Some(&path), env(&[])).is_err());
+        // Neither: the three other values alone are half a configuration.
+        assert!(Config::load(None, env(&rest)).is_err());
+
+        // A key source in the environment replaces the file's.
+        std::fs::write(
+            &path,
+            "[push.apns]\nkey_path = \"k.p8\"\nkey_id = \"K\"\nteam_id = \"T\"\ntopic = \"a.b\"\n",
+        )
+        .unwrap();
+        let config = Config::load(Some(&path), env(&[("KLAV_APNS_KEY", pem)])).unwrap();
+        let apns = config.push.apns.unwrap();
+        assert!(apns.key_path.is_none() && apns.key.is_some());
+        assert_eq!(apns.key_id, "K");
+        // And the file can hold the contents too.
+        std::fs::write(
+            &path,
+            "[push.apns]\nkey = \"x\"\nkey_id = \"K\"\nteam_id = \"T\"\ntopic = \"a.b\"\n",
+        )
+        .unwrap();
+        assert!(
+            Config::load(Some(&path), env(&[]))
+                .unwrap()
+                .push
+                .apns
+                .unwrap()
+                .key
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn debug_never_shows_the_database_password() {
+        let config = Config::load(
+            None,
+            env(&[(
+                "KLAV_DATABASE_URL",
+                "postgres://klav:S3NTINEL-pw@db.internal:5432/klav?password=S3NTINEL-q",
+            )]),
+        )
+        .unwrap();
+        let shown = format!("{config:?}");
+        assert!(!shown.contains("S3NTINEL"), "{shown}");
+        assert!(shown.contains("db.internal:5432/klav"), "{shown}");
+        assert_eq!(
+            redacted_url("sqlite:///data/klav.db"),
+            "sqlite:///data/klav.db"
+        );
+        assert_eq!(redacted_url("garbage"), "[redacted]");
+    }
+
+    #[test]
+    fn a_trusted_ip_header_is_opt_in_and_exclusive() {
+        assert!(Config::default().trusted_ip_header.is_none());
+        let config = Config::load(None, env(&[("KLAV_TRUSTED_IP_HEADER", "X-Real-IP")])).unwrap();
+        assert_eq!(config.trusted_ip_header.as_deref(), Some("x-real-ip"));
+        // Blank is "none" (a template can leave it empty).
+        let config = Config::load(None, env(&[("KLAV_TRUSTED_IP_HEADER", " ")])).unwrap();
+        assert!(config.trusted_ip_header.is_none());
+        assert!(Config::load(None, env(&[("KLAV_TRUSTED_IP_HEADER", "bad header")])).is_err());
+        let err = Config::load(
+            None,
+            env(&[
+                ("KLAV_TRUSTED_IP_HEADER", "x-real-ip"),
+                ("KLAV_TRUST_FORWARDED_FOR", "true"),
+            ]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not both"), "{err}");
+        assert_eq!(
+            Config::from_toml("trusted_ip_header = \"x-real-ip\"")
+                .unwrap()
+                .trusted_ip_header
+                .as_deref(),
+            Some("x-real-ip")
+        );
+    }
+
+    #[test]
+    fn the_kdf_floor_cannot_be_disabled_by_configuration() {
+        assert!(!Config::default().insecure_accept_weak_kdf);
+        assert!(Config::from_toml("insecure_accept_weak_kdf = true").is_err());
+        let config = Config::load(None, env(&[("KLAV_INSECURE_ACCEPT_WEAK_KDF", "true")])).unwrap();
+        assert!(!config.insecure_accept_weak_kdf);
+    }
+
+    #[test]
+    fn rejects_unknown_keys_and_bad_values() {
+        assert!(Config::from_toml("lisen = \"x\"").is_err());
+        assert!(Config::load(None, env(&[("KLAV_LISTEN", "nope")])).is_err());
+        assert!(Config::load(None, env(&[("KLAV_LOG_FORMAT", "xml")])).is_err());
+        assert!(Config::load(None, env(&[("KLAV_TRUST_FORWARDED_FOR", "maybe")])).is_err());
+    }
+}

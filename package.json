@@ -1,0 +1,14 @@
+{
+  "name": "klav-workspace",
+  "private": true,
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --filter @klav/extension build",
+    "lint": "pnpm --filter @klav/extension lint",
+    "typecheck": "pnpm --filter @klav/extension typecheck",
+    "test": "pnpm --filter @klav/extension test"
+  }
+}

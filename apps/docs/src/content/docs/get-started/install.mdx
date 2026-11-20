@@ -1,0 +1,235 @@
+---
+title: "Install Klav"
+description: "Where to download the Mac app, the CLI, the browser extension and the iPhone app, what each one needs, and how to set it up."
+sidebar:
+  order: 1
+  label: "Install"
+---
+
+This page says where to get each part of Klav, what each one needs, and how to set it up: the Mac app, the CLI, the browser extension and the iPhone app. They are free to download, for everyone.
+
+| Part of Klav | Runs on | Where to get it |
+|---|---|---|
+| Mac app | macOS 15 or later, Apple silicon | A disk image: `https://klav.dev/download/mac` |
+| CLI (`klav`, with `klavd`) | macOS; Linux x86_64 with glibc 2.36 or later | On a Mac, with the Mac app. On Linux: `https://klav.dev/download/linux` |
+| Browser extension | Chrome, Brave, Edge, Arc and Dia (Chromium 120 or later); Firefox 140 or later | For Chromium browsers, a zip you load by hand; for Firefox, an add-on file Mozilla signed. It isn't in the browser stores yet |
+| iPhone app | iOS 18 or later | A beta on TestFlight. It isn't in the App Store yet |
+
+<Aside type="note" title="Which downloads are out">
+The downloads open with Klav's first release. The [downloads section on klav.dev](https://klav.dev/#download) shows which ones are out: one marked "Coming soon" isn't yet, and its address leads back to that section. Until then, or for a computer the downloads don't cover, [build Klav from source](#build-from-source).
+</Aside>
+
+You don't need all of them. The extension talks to `klavd`, Klav's local daemon, so it needs the Mac app on the same computer or, on Linux, the CLI download, which includes `klavd`.
+
+Every app signs in to a Klav server, which keeps only encrypted data. Klav's own, a paid plan, [isn't open yet](/on-the-way/stores-and-hosted-server/#klavs-own-server), so today you [host your own](/self-hosting/).
+
+## Mac app
+
+Download `Klav.dmg` from `https://klav.dev/download/mac`. It is signed with Klav's Developer ID and notarized by Apple.
+
+Open the disk image and drag Klav to the Applications folder, then open it from there. Opened from the disk image or from Downloads, it changes nothing and asks you to move it first. With no account on the Mac, the app opens "Set up this Mac", which puts the rest of Klav in place. Each step says what it changes before it does it:
+
+<Steps>
+
+1. **Background service.** Adds Klav to System Settings › General › Login Items & Extensions, so `klavd` starts when you log in.
+2. **Command line.** Creates `/usr/local/bin/klav`, a link to the `klav` inside the app, so updates update it too. macOS asks for an administrator's password once. "Copy the command instead" gives you the command to run yourself. If there's another `klav` your terminal may run instead of the app's, the step names it and compares its build with the app's, read from its file without running it. For an older one installed with `cargo install`, it shows the command to run in Terminal; the app never runs it.
+3. **Browsers.** "Connect the browsers" writes one small file in each browser's folder so the extension can reach `klavd`. Firefox can connect now. Chrome, Dia and the other Chromium browsers wait until Klav is in the Chrome Web Store, unless you turn on "Development extension" (see [Browser extension](#browser-extension)).
+4. **Extension.** "How to install it" shows how to load the extension by hand in each browser.
+5. **Account.** "Sign in" with your emergency kit, or "Create an account". See [Create an account](/get-started/create-an-account/).
+6. **Agents.** Installs Klav's skill in your agent clients' folders, so their agents know how to use Klav. It writes no MCP settings and registers no agent. "Not now" skips it.
+
+</Steps>
+
+The same steps, and "Uninstall Klav from this Mac…", are in the app's Settings (⌘,), under This Mac.
+
+The app updates itself. "Check for Updates…" is in the Klav menu, next to "About Klav". An update installs only if Klav signed it.
+
+## CLI
+
+The CLI runs on macOS and Linux.
+
+### On a Mac
+
+The Mac app's "Command line" step gives you `klav`. There is no separate macOS download: the app keeps `klav` and `klavd` signed and updated. On an Intel Mac, [build from source](#build-from-source).
+
+### On Linux
+
+The Linux download is for x86_64 with glibc 2.36 or later: Debian 12, Ubuntu 23.04 and newer, or another distribution with glibc 2.36 or later. It doesn't run on Ubuntu 22.04. To see your glibc:
+
+```sh
+ldd --version
+```
+
+The first line ends with the version, such as `2.36`.
+
+Download `klav-linux-x86_64.tar.gz` from `https://klav.dev/download/linux` and unpack it:
+
+```sh
+tar -xzf klav-linux-x86_64.tar.gz
+```
+
+It makes a folder `klav-linux-x86_64` with three programs:
+
+- `klav`, the command;
+- `klavd`, the daemon that keeps your vault unlocked;
+- `klav-native-host`, the bridge the browser extension uses to reach `klavd`.
+
+Put all three in one folder in your `PATH`, such as `~/.local/bin`. Keep them together: `klav` starts the `klavd` next to it, or else the one in your `PATH`. To check:
+
+```sh
+klav status
+```
+
+Before you sign in, it prints:
+
+```text
+home:      /home/you/.config/klav
+account:   none (run `klav signup` or `klav login`)
+daemon:    not running
+```
+
+There is no installer on Linux, so nothing starts `klavd` for you at login. What that means:
+
+- **`klav unlock` starts it.** It asks for your master password and keeps the vault unlocked until `klavd` locks it: after 15 minutes without use (`klav unlock --idle-lock 5m` sets another time), when the computer sleeps, or with `klav lock`. Without `klavd`, each command asks for the password.
+- **The extension starts it too,** through `klav-native-host`, if it isn't running. You unlock it with the master password in the extension.
+- **No Touch ID or fingerprint.** On Linux you always unlock with the master password, and `klavd` doesn't lock when the screen locks; it locks when it's idle or the computer sleeps.
+- **To start it with your session,** optional, with systemd. Create `~/.config/systemd/user/klavd.service`, with the path to your `klavd` in `ExecStart` (`%h` is your home folder):
+
+  ```ini
+  [Unit]
+  Description=Klav daemon
+
+  [Service]
+  ExecStart=%h/.local/bin/klavd --idle-lock 15m
+  Restart=on-failure
+
+  [Install]
+  WantedBy=default.target
+  ```
+
+  Then run `systemctl --user enable --now klavd`. It still starts locked: `klav unlock` or the extension unlocks it.
+
+The download doesn't update itself. For a new release, download it again and replace the three files. If `klavd` was running, `klav lock --stop` stops it first.
+
+### Check a download
+
+`https://klav.dev/download/checksums` gives `SHA256SUMS`, the SHA-256 of every file in the release. In the folder with your download:
+
+```sh
+grep klav-linux-x86_64.tar.gz SHA256SUMS | shasum -a 256 -c
+```
+
+It prints the file's name and `OK`. Put the name of your download in place of `klav-linux-x86_64.tar.gz`. On Linux, `sha256sum -c` works the same as `shasum -a 256 -c`.
+
+## Browser extension
+
+The extension isn't in the Chrome Web Store or on addons.mozilla.org yet, so you install it by hand. Install the Mac app first or, on Linux, the [CLI download](#on-linux): the extension asks `klavd` for everything and holds no keys itself.
+
+### Chrome, Brave, Edge, Arc and Dia
+
+1. Download `klav-extension-chromium.zip` from `https://klav.dev/download/extension/chromium` and unzip it into a folder of its own, such as `unzip klav-extension-chromium.zip -d ~/klav-extension`. Keep the folder: the browser runs Klav from it.
+2. Open the browser's extensions page (`chrome://extensions`; in Edge, `edge://extensions`) and turn on Developer mode.
+3. Choose "Load unpacked" and pick the folder.
+4. Let the extension you loaded reach `klavd`:
+
+   ```sh
+   klav extension install-host --dev
+   ```
+
+   With the Mac app, open "Advanced options" in the Browsers step of "Set up this Mac" and turn on "Development extension" instead.
+
+   If you ran the command and then open the Mac app, the Browsers step says which browsers let the development extension in. Before it connects the browsers again, it asks whether to keep it: "Keep it" turns on "Development extension", and "Remove it" shuts it out: it removes the app's manifests that let it into Chromium browsers and the host wrapper in Klav's folder, and any wrapper Klav writes again no longer lists the development extension's ID.
+5. Restart the browser.
+
+<Aside type="caution" title="What --dev allows">
+This build's ID comes from a public key in Klav's source code. With `--dev`, any unpacked extension that carries that key could talk to `klavd` too, not only Klav's. Klav allows it only when you ask, and it stays this way until Klav is [in the Chrome Web Store](/on-the-way/stores-and-hosted-server/#the-browser-extension-in-the-stores).
+</Aside>
+
+`klav extension install-host --dev` prints the files it wrote, one line per browser. On a Mac, with only Chrome installed:
+
+```text
+Native messaging host: /Users/you/Library/Application Support/klav/native-host/klav-native-host (for KLAV_HOME /Users/you/Library/Application Support/klav)
+  chrome    /Users/you/Library/Application Support/Google/Chrome/NativeMessagingHosts/dev.klav.host.json
+Restart the browser if the extension was already open.
+```
+
+### Firefox
+
+The Firefox build is an add-on file (`.xpi`) that Mozilla signs without listing it on addons.mozilla.org. Firefox keeps a signed add-on installed. Until Mozilla has signed a release's build, the downloads section shows Firefox as not out yet; meanwhile you can [build it from source](#the-extension).
+
+1. Download `klav-extension-firefox.xpi` from `https://klav.dev/download/extension/firefox`.
+2. Open `about:addons`, click the gear, choose "Install Add-on From File…" and pick the `.xpi`. Confirm with "Add".
+3. Let the extension reach `klavd`. Firefox doesn't need `--dev`:
+
+   ```sh
+   klav extension install-host --browser firefox
+   ```
+
+   If you also loaded the extension in a Chromium browser, run `klav extension install-host --dev` instead: it connects Firefox too. Each run rewrites the host, and a run without `--dev` shuts out the Chromium build; `klav extension host-status` then says that Chrome's host would refuse it.
+
+   On Linux, if Firefox is a Snap, also name it: `klav extension install-host --dev --browser firefox --browser chrome` (list the browsers you use). Without `--browser`, `install-host` writes only for browsers whose folder exists, and a Snap Firefox doesn't create `~/.mozilla`.
+
+   With the Mac app, "Connect the browsers" does this. It passes `--dev` only while "Development extension" is on (the Browsers step of "Set up this Mac", "Advanced options"). If you connected the Chromium build with `--dev` from the CLI, the Browsers step says so and asks before it connects the browsers again: "Keep it" turns on "Development extension", and "Remove it" shuts that build out: afterwards the host Klav installed no longer lists its ID.
+4. Restart Firefox.
+
+On Linux, `install-host` writes only to the browsers' standard folders: `~/.config/google-chrome`, `~/.config/chromium`, `~/.config/BraveSoftware/Brave-Browser`, `~/.config/microsoft-edge` and `~/.mozilla`. Klav hasn't been tested with a browser installed as a Snap or a Flatpak, which keeps its files in its own folder; Ubuntu installs Firefox as a Snap by default.
+
+`klav extension host-status` shows which file each browser has and whether it points to this `klav`. It changes nothing.
+
+### Updating the extension
+
+An extension installed by hand doesn't update itself. When a new release is out, download it again:
+
+- **Chromium browsers:** unzip it into the same folder (`unzip -o klav-extension-chromium.zip -d ~/klav-extension`), then choose Reload on Klav's card in the extensions page. The build's key keeps its ID, so `klavd` still lets it in.
+- **Firefox:** install the new `.xpi` the same way, with "Install Add-on From File…". It replaces the one you have, and keeps its ID.
+
+## iPhone app
+
+The iPhone app is in beta on TestFlight; it isn't in the App Store yet. It needs iOS 18 or later.
+
+1. Install TestFlight from the App Store.
+2. Open the beta's public link on your iPhone. It is at `https://klav.dev/download/iphone`, from when the public beta opens.
+3. In TestFlight, install Klav.
+
+The iPhone app signs in to an account; it doesn't create one. Create your account with the Mac app or the CLI first, then [add the iPhone](/get-started/add-a-device/).
+
+After you sign in, the app shows how to turn on AutoFill: in the iPhone's Settings, open General, then AutoFill & Passwords, and turn on Klav.
+
+## Build from source
+
+For an Intel Mac, a Linux computer that isn't x86_64 or has an older glibc, or before the downloads are out, build Klav from its source code.
+
+### The CLI and klavd
+
+With Rust: the source pins its Rust version in `rust-toolchain.toml`, and `rustup` installs that version the first time you run `cargo` there.
+
+```sh
+cargo build --release -p klav-cli -p klav-daemon
+```
+
+This builds three programs in `target/release`:
+
+- `klav`, the command;
+- `klavd`, the daemon that keeps your vault unlocked and asks for Touch ID on a Mac;
+- `klav-native-host`, the bridge the browser extension uses to reach `klavd`.
+
+Put all three in one folder in your `PATH`. `klav` starts the `klavd` next to it, or else the one in your `PATH`.
+
+On a Mac, a `klavd` you build shows Touch ID without Klav's name and icon; the one in the Mac app shows them.
+
+### The extension
+
+Building it needs Rust with the `wasm32-unknown-unknown` target, `wasm-bindgen-cli` 0.2.130, Node 22 and pnpm. From the root of the source:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+pnpm install
+pnpm build
+```
+
+`pnpm build` writes `apps/extension/dist/chromium` and `apps/extension/dist/firefox`. In Chromium browsers, load `apps/extension/dist/chromium` with "Load unpacked", as in [Browser extension](#browser-extension). Release Firefox installs only add-ons Mozilla signed, so a build of your own loads as a temporary add-on: open `about:debugging#/runtime/this-firefox`, choose "Load Temporary Add-on…" and pick `apps/extension/dist/firefox/manifest.json`. Firefox removes it when it closes.
+
+## Next
+
+[Create an account](/get-started/create-an-account/).

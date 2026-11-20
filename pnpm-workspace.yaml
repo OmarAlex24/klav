@@ -1,0 +1,9 @@
+# apps/extension: the browser extension (docs/extension.md); packages/sdk: the Node SDK.
+# apps/docs is its own pnpm project with its own lockfile (ADR 0039 §1).
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "!apps/docs"
+# No install scripts: esbuild's binary comes from its optional dependency.
+allowBuilds:
+  esbuild: false

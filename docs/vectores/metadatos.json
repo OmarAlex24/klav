@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "aad": "0112000000126b6c61762f76312f7661756c742f6d65746100000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f1000000080000000000000001",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ciphertext": "01129f3806f64e3d6bcf49245dc8d45b23dd9b827f14e6e6aa615425f55342a4ee97c5b22a51db790571a6393d3ac918700aa7a16e0aef3f7a58e140578f4b069907",
+      "key": "caca4c18ca17ca64600f82fee024c0b726b0ca5ba8edbe659d4b871ef8aab689",
+      "name": "vault-meta",
+      "nonce": "9f3806f64e3d6bcf49245dc8d45b23dd9b827f14e6e6aa61",
+      "plaintext": "{\"v\":1,\"name\":\"Trabajo\"}",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "version": 1
+    },
+    {
+      "aad": "0113000000146b6c61762f76312f70726f6a6563742f6d65746100000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010d2abd46d0943b279f5de4688a9006f64000000080000000000000002",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "ciphertext": "0113b382c3be1bddd28c264191f735c936fc0ac9348b34559bea813b174c215b251457e156fbfa62a872676dbb8d52d9b00e8f230e2c5e2be5a21bd4438c374067cadc33b1227dd5bc009d34336b2308f3c65564c8fdf6fbc4cae7891d9315",
+      "key": "043fc5b9e4bc64d826f2d9e2baef7587dc08854963e0d876350fd17ff2651955",
+      "name": "project-meta",
+      "nonce": "b382c3be1bddd28c264191f735c936fc0ac9348b34559bea",
+      "plaintext": "{\"v\":1,\"name\":\"acme-api\",\"description\":\"API de Acme\"}",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "version": 2
+    }
+  ],
+  "description": "Metadatos de bóvedas y proyectos",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §7.2"
+}

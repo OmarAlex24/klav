@@ -1,0 +1,12 @@
+{
+  "tasks": [
+    { "name": "fmt", "uses": ["rust"] },
+    { "name": "cargo-deny", "uses": ["rust"] },
+    { "name": "extension", "uses": ["rust", "node"] },
+    { "name": "docs", "uses": ["node"] },
+    { "name": "test", "uses": ["rust", "nextest"] },
+    { "name": "docker" },
+    { "name": "clippy", "uses": ["rust"] },
+    { "name": "test-postgres", "uses": ["rust", "nextest"] }
+  ]
+}

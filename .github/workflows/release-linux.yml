@@ -1,0 +1,169 @@
+name: Linux release build
+
+# The Linux binaries of a release (docs/releasing.md §6). Run by hand only,
+# from the Actions tab or `gh workflow run release-linux.yml -f sha=<SHA>`:
+# never on a push or a pull request, because each run is a paid Boat machine
+# (ADR 0034). It publishes nothing. It leaves two artifacts on the run, kept
+# a while:
+#   - klav-linux-x86_64 (7 days): the public tarball (klav, klavd,
+#     klav-native-host) and its SHA-256, for
+#     `scripts/release/kit.mjs assemble --linux`;
+#   - klav-sandbox-linux-x86_64 (1 day): klav-forward and klav-proxy (a
+#     tarball with a folder `sandbox/`), for testing agent sandboxes; not
+#     part of a release. Once the repository is public, any signed-in GitHub
+#     user can download a run's artifacts while they are kept.
+# It builds only a commit on main, and without a compile cache: the job
+# holds no token beyond checkout's read access.
+# Its job is called "linux release build", so its check can't be taken for
+# `ci` or one of ci.yml's task checks.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full 40-character SHA of the commit to build (the release commit)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-linux-${{ inputs.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: linux release build
+    runs-on: boat-large
+    # A fat-LTO release build of five binaries: the first run (2026-11-16)
+    # took 2 min 46 s in all, about 145 s of it the build (docs/releasing.md
+    # §6). Boat bills every second; this bounds a hung run.
+    timeout-minutes: 60
+    permissions:
+      contents: read # check out the commit
+    steps:
+      - name: Check the input
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit SHA in lowercase hex"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.sha }}
+          # Every branch's history, so origin/main is here for the check below.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Only a commit on main is a release commit: a commit from any other
+      # branch, or a fork's, is never built and handed to the kit.
+      - name: Check the commit
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$SHA" ]; then
+            echo "::error::checked out $head, not $SHA"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main: build only the release commit, a commit on main"
+            exit 1
+          fi
+
+      - name: Build
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          if ! timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done'; then
+            echo "::error::Docker did not answer within 60 s"
+            exit 1
+          fi
+          # The build identity (docs/releasing.md §6): the commit and its
+          # committer time, which klav --version prints.
+          commit_time=$(git show -s --format=%ct "$SHA")
+          docker build --platform linux/amd64 -f deploy/linux/Dockerfile \
+            --build-arg KLAV_BUILD_COMMIT="$SHA" \
+            --build-arg KLAV_BUILD_COMMIT_TIME="$commit_time" \
+            --target export --output "type=local,dest=$RUNNER_TEMP/out" .
+          # The tarball's klav must name this commit; a commit without the
+          # build identity (PR #385) builds binaries that don't.
+          status=0
+          version=$("$RUNNER_TEMP/out/klav-linux-x86_64/klav" --version 2>&1) || status=$?
+          if [[ $status -ne 0 || $version != *"${SHA:0:12}"* ]]; then
+            echo "::error::klav --version should contain ${SHA:0:12}, but it printed (exit $status): $version"
+            exit 1
+          fi
+          echo "klav --version: $version"
+          # The sandbox binaries carry the same build identity.
+          for bin in klav-forward klav-proxy; do
+            status=0
+            version=$("$RUNNER_TEMP/out/sandbox/$bin" --version 2>&1) || status=$?
+            if [[ $status -ne 0 || $version != *"${SHA:0:12}"* ]]; then
+              echo "::error::$bin --version should contain ${SHA:0:12}, but it printed (exit $status): $version"
+              exit 1
+            fi
+            echo "$bin --version: $version"
+          done
+
+      - name: Package
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/out"
+          for bin in klav klavd klav-native-host; do
+            test -x "$out/klav-linux-x86_64/$bin"
+          done
+          for bin in klav-forward klav-proxy; do
+            test -x "$out/sandbox/$bin"
+          done
+          mkdir -p "$RUNNER_TEMP/public" "$RUNNER_TEMP/sandbox"
+          # ustar headers, as scripts/release/kit.mjs reads them; root-owned
+          # and in name order, so the archive doesn't carry the runner's user.
+          tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
+            -C "$out" -czf "$RUNNER_TEMP/public/klav-linux-x86_64.tar.gz" klav-linux-x86_64
+          (cd "$RUNNER_TEMP/public" && sha256sum klav-linux-x86_64.tar.gz > klav-linux-x86_64.tar.gz.sha256)
+          # A tarball here too: an artifact's zip drops the executable bit.
+          tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
+            -C "$out" -czf "$RUNNER_TEMP/sandbox/klav-sandbox-linux-x86_64.tar.gz" sandbox
+          {
+            echo "## Linux release build"
+            echo
+            echo "Commit \`$SHA\`. Nothing was published."
+            echo
+            echo "**klav-linux-x86_64** (the public tarball):"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/public/klav-linux-x86_64.tar.gz.sha256"
+            echo '```'
+            echo
+            echo "Newest glibc symbol each binary needs (the floor is 2.36):"
+            echo
+            echo '```'
+            cat "$out/glibc.txt"
+            echo '```'
+            echo
+            echo "**klav-sandbox-linux-x86_64** holds klav-forward and klav-proxy, for testing agent sandboxes. It is not part of a release, and it is kept 1 day: once the repository is public, any signed-in GitHub user can download it while it is kept."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the public tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: klav-linux-x86_64
+          path: ${{ runner.temp }}/public/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload the sandbox binaries (not part of a release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: klav-sandbox-linux-x86_64
+          path: ${{ runner.temp }}/sandbox/
+          retention-days: 1
+          if-no-files-found: error

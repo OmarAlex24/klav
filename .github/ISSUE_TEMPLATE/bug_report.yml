@@ -1,0 +1,96 @@
+name: Bug report
+description: Something in Klav doesn't work as documented. Not for vulnerabilities (see SECURITY.md).
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One problem per report. **Security issues never go here:** follow [SECURITY.md](https://github.com/OmarAlex24/klav/blob/main/SECURITY.md).
+        **Never paste a real password, Secret Key, master password, token or vault content.** Redact logs before you paste them.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and this isn't a duplicate.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed every secret and personal detail from this report.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Component
+      options:
+        - klav-core (cryptography, items, generator)
+        - klav-server
+        - CLI (klav)
+        - klavd (daemon) or Touch ID
+        - Agents (MCP, SDK, skill)
+        - Browser extension
+        - iOS app or AutoFill
+        - Mac app
+        - Importers
+        - Website (klav.dev)
+        - Docs
+        - Build, CI or release
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "`klav --version`, the app's version and build, or the commit you built from."
+      placeholder: "0.6.0 (3), or 70750b3"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and version, browser, device, and which server (self-hosted, api.klav.dev, local).
+      placeholder: macOS 26.1, Chrome 142, self-hosted with SQLite
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the problem, starting from a fresh account if you can.
+      placeholder: |
+        1. klav item add login --title Example --url https://example.com
+        2. Open the extension popup on https://example.com
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead. Include the exact error message or exit code.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (redacted)
+      description: Relevant output only. Klav never logs secrets; if you see one in a log, stop and report it through SECURITY.md instead.
+      render: text

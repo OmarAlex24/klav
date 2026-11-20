@@ -1,0 +1,64 @@
+# klav-proxy, Klav's credential proxy (ADR 0036), as a systemd service on a
+# Linux host. Guide: docs/self-hosting.md §9. Once, as root:
+#
+#   useradd --system --home-dir /var/lib/klav-proxy --shell /usr/sbin/nologin klav-proxy
+#   install -d -o klav-proxy -g klav-proxy -m 700 /var/lib/klav-proxy
+#   install -m 755 klav-proxy /usr/local/bin/klav-proxy
+#   cp klav-proxy.service /etc/systemd/system/
+#   systemd-run --pipe --wait --collect --uid=klav-proxy --gid=klav-proxy \
+#       -p LimitMEMLOCK=infinity -p LimitCORE=0 -E KLAV_HOME=/var/lib/klav-proxy \
+#       /usr/local/bin/klav-proxy init --email you@example.com --server https://klav.example.com
+#   systemctl daemon-reload && systemctl enable --now klav-proxy
+#
+# `init` makes the proxy's key, so it runs with the same limits as the
+# service: `sudo -u klav-proxy` would give it the login limits instead (a
+# finite memlock limit on most distributions), and the key would be made
+# in unlocked memory. Then the same `systemd-run …` line with `status`
+# instead of `init …` shows `memory`. For sandboxes, add `--channel
+# HOST:PORT` to ExecStart (docs/self-hosting.md §9.2); a port under 1024
+# won't bind, because CapabilityBoundingSet below is empty (no
+# CAP_NET_BIND_SERVICE): use 1024 or above.
+
+[Unit]
+Description=Klav credential proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=klav-proxy
+Group=klav-proxy
+Environment=KLAV_HOME=/var/lib/klav-proxy
+Environment=KLAV_LOG_FORMAT=json
+ExecStart=/usr/local/bin/klav-proxy serve
+Restart=on-failure
+RestartSec=5s
+
+# ADR 0044 §3.2: an unlimited memlock limit lets the proxy lock its memory
+# out of swap on fault: each page once it touches it, so nothing is made
+# resident only to be locked (`status` shows `locked: true`). Without it,
+# it starts unlocked and says why. Uncomment the first variable to refuse
+# an unlocked start, or the second to start without locking (never both).
+# No core files: the proxy turns them off itself, and is not dumpable, so a
+# piped core_pattern (systemd-coredump) gets nothing either.
+# Locked, every page it touches stays resident, the binary's own pages
+# included: a MemoryMax= becomes a hard wall, and the kernel kills the
+# proxy when it reaches it. If you add MemoryMax= or a SystemCallFilter=
+# (without SystemCallErrorNumber=, a call outside it kills the proxy with
+# SIGSYS before it logs anything), dry-run it first: docs/self-hosting.md
+# §9.2, "Antes de actualizar un proxy que ya corre".
+LimitMEMLOCK=infinity
+LimitCORE=0
+#Environment=KLAV_PROXY_REQUIRE_MEMORY_LOCK=1
+#Environment=KLAV_PROXY_MEMORY_LOCK=off
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/klav-proxy
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

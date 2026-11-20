@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist of Klav.app/Contents/Helpers/klavd.app (ADR 0027, note of
+  2026-11-05). macOS names the process asking for Touch ID after the bundle
+  that holds its executable, so klavd lives in this bundle: the dialog says
+  "Klav", with Klav's icon, instead of "klavd" and a terminal icon.
+  embed-helpers.sh fills in the versions and the minimum macOS from the
+  app's build settings; it lives here, not under apps/ios/Mac, so XcodeGen
+  does not copy it into the app as a resource.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.klav.klavd</string>
+	<key>CFBundleName</key>
+	<string>Klav</string>
+	<key>CFBundleDisplayName</key>
+	<string>Klav</string>
+	<key>CFBundleExecutable</key>
+	<string>klavd</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0</string>
+	<key>CFBundleVersion</key>
+	<string>0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<!-- A background service: no Dock icon, no menu bar. -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>

@@ -1,0 +1,90 @@
+---
+title: "How Klav protects your data"
+description: "End-to-end encryption, the master password and the Secret Key, signing in with OPAQUE, the keys inside your account, your devices, and what the server sees."
+sidebar:
+  order: 1
+---
+
+This page explains how Klav keeps your vault readable only on your devices: what it encrypts and with what, the two secrets that open your account, how you sign in without the server learning your password, how keys reach your devices and your agents, and what the server still sees. For the byte-level formats and test vectors, see Klav's [cryptography specification](https://github.com/OmarAlex24/klav/blob/main/docs/especificacion-cripto.md).
+
+## Encrypted on your devices
+
+Your devices encrypt every item before it goes to the server and decrypt it after it comes back. The server stores and syncs encrypted data it can't open, and the metadata listed under [What the server sees](/security/how-klav-protects-your-data/#what-the-server-sees).
+
+- **Items** are encrypted in two parts: the overview (kind, title, site addresses, username, tags) and the details (passwords, codes, notes and the other fields). Listing and searching need only the overview, so the secrets stay encrypted until something needs them. The names of vaults and projects are encrypted too.
+- **The cipher** is XChaCha20-Poly1305, with a new random 192-bit nonce every time something is encrypted. Attachments are encrypted in chunks, so a chunk that is reordered, removed or cut off makes the whole attachment fail to open.
+- **Every encrypted piece names its place:** the account, vault, project, item and version it belongs to. If the server hands a piece to another item, or an old version under a newer number, it doesn't open. Every failure gives the same error, which doesn't say what failed.
+- **No cryptography of Klav's own.** Klav uses standard primitives from the RustCrypto libraries, `hpke` and `opaque-ke`, such as XChaCha20-Poly1305, Argon2id, HKDF-SHA256, X25519, Ed25519, HPKE and OPAQUE. All the code that encrypts your vault lives in one library, `klav-core`, compiled for every platform, and its formats come with test vectors.
+
+## Your master password and Secret Key
+
+Opening your account takes two secrets:
+
+- **Your master password,** which you choose.
+- **Your Secret Key,** 128 random bits that Klav makes on your first device. It is in your [emergency kit](/get-started/create-an-account/#the-emergency-kit), and on each device you sign in on, in Klav's own folder.
+
+Neither one is sent to the server. On your device, Klav runs your master password through Argon2id (256 MiB of memory, 3 passes, 4 lanes) and combines the result with your Secret Key. That gives the key that opens your account's private keys. The server keeps the Argon2id settings for your account, and your device refuses settings weaker than Klav's minimum, so a server can't make your password cheaper to guess. It also refuses settings so costly that they would block your device.
+
+**Why two secrets.** Someone who copies the server's database can't try to guess your master password alone: each guess also needs your Secret Key, 128 random bits. Only someone who also has your Secret Key, from your emergency kit or from a copy of one of your devices, can guess, and then each guess costs a full Argon2id run.
+
+**Nobody can reset them.** If you forget your master password, nobody can reset it, and your account can't be opened once your devices ask for it again: after a restart, every 14 days, and on every unlock where Klav doesn't use Touch ID or Face ID. If you lose your emergency kit, a signed-in device shows your Secret Key again (`klav account kit`); without the kit and every signed-in device, no new device can sign in. Klav has no back door, and there is no way yet to change your master password or your Secret Key.
+
+## Signing in with OPAQUE
+
+The server checks that you know your password with OPAQUE, a protocol in which it never receives your password, nor anything it could use to guess it offline. Your device doesn't even run OPAQUE with your master password: it uses another value derived from your master password and your Secret Key, separate from the key that opens your account.
+
+For an email that has no account, the server answers sign-in as it would for a real one, so signing in doesn't reveal whether an account exists. Creating an account does: the server refuses an email that is already taken.
+
+After you sign in, the server gives the device a short access token (15 minutes, by default) and a refresh token that works once and is renewed on each use (30 days, by default). The server keeps only a hash of each, so a copy of its database holds no token anyone can use. If the refresh token it just replaced comes back, the server ends that whole session; an older one is only refused. Revoking a device ends all its sessions. It doesn't change any key: a revoked device keeps its encrypted copy of your vaults and your Secret Key, and opens them with your master password. No app or command revokes a device yet.
+
+## The keys inside your account
+
+Each vault, project, item and attachment has its own random 256-bit key, and each key is encrypted with the one above it: vault, then project, then item, then attachment. No key is derived from another.
+
+- **Your account's identity** is a key pair for receiving keys (X25519) and a key pair for signing (Ed25519). Its private keys are sealed with the key from your master password and Secret Key.
+- **Your vault keys** are encrypted to your account's identity with HPKE, and your account signs each one. Your devices don't use a vault whose key your account didn't sign, so a server can't slip in a vault whose key it chose.
+- **An agent** has its own identity. When you approve it, your device encrypts to it the keys of the projects in its grant, and your account signs the grant. An agent never receives a vault key. Your account also signs your approvals and task decisions, and the agent checks those signatures against your account's identity, so a server can't make up a grant, an approval or a task. Revocations and pauses are signed too.
+- **Earlier passwords and passkeys' private keys** are sealed with the vault key, not the item key. An agent that can use an item works with its current password; it can't read the item's earlier passwords, and it never gets a passkey's private key. The generator's history lives in a project that no grant can include.
+
+## On your devices
+
+- **A local key** derived from your master password and Secret Key, for each device, seals what the device keeps on disk: its copy of your vaults and its session tokens. It never leaves the device.
+- **Klav's folder** on each device (on a Mac, `~/Library/Application Support/klav`), readable only by your user, holds your Secret Key in plain text, your email and server, and your vaults, session tokens and pending uploads sealed with the local key. Someone who copies it can guess your master password offline, at a full Argon2id run per guess. Where you use Touch ID or Face ID, the key they unlock is wrapped by that device's Secure Enclave, so it doesn't work on a copy. The folder also keeps, in clear, state that holds none of your secrets, such as the audit log head it verified and its settings, and two things to know about:
+  - an agent that runs on the same computer with its key in a file keeps that key in plain text, under `agents/` (on a Mac, agents use the Keychain by default);
+  - `klav client connect` keeps copies of the agent clients' configurations it changed, under `client-backups/`, with any secrets of other programs they held.
+
+  Klav doesn't exclude the folder from the Mac's or the iPhone's backups.
+- **Touch ID and Face ID** unlock with a key kept in the Mac's or iPhone's Secure Enclave, which works only after Touch ID or Face ID and stops working if the enrolled fingerprints or faces change. Klav still asks for your master password after a restart and every 14 days, and that rule is sealed with the key, so editing a file doesn't extend it.
+- **On a Mac or Linux computer,** `klavd` keeps your vault unlocked in memory. It locks after 15 minutes without use (by default), when the computer sleeps and, on a Mac, when the screen locks. Only programs running as your user can talk to it.
+- **On the iPhone,** Klav's files can't be read while the iPhone is locked, and the app has its own auto-lock.
+- **Secrets are wiped from memory** by Klav's core as soon as it no longer needs them. Some copies can't be wiped: text in the browser extension's JavaScript and in the apps' Swift code stays in memory until it is reused. Klav never writes secrets to its logs.
+- **Each device remembers the newest version** of each vault and item it has seen, and refuses older data from the server. A device that has never synced can't tell; the [next page](/security/what-klav-defends-against/#a-dishonest-server) explains that limit.
+
+## What the server sees
+
+The server never sees:
+
+- your master password or your Secret Key;
+- the contents of your items: passwords, codes, notes, cards, addresses, keys and attachments;
+- your items' titles, usernames, site addresses and tags, except the sites and tags your agents' use shows it (below);
+- the names of your vaults and projects.
+
+The server sees, because it needs it to sync:
+
+- your email address, which is your account;
+- each device's name and kind, when it was added and when it was last used;
+- how many items, vaults and versions you have, how large they are, and when they were created or changed;
+- the random identifiers of vaults, projects and items, and which accounts can open each vault;
+- when each device syncs and signs in;
+- for agents: each agent's name and note, its status, the permissions it asks for, and in plain text the reason and the site it gives in each request, and the title and reason of each task it asks for or that you offer it, so that they can be shown to you and kept in the audit log. An agent shouldn't put secrets there;
+- the permissions you give each agent, including any sites and tags they name; the tags of each item an agent uses, writes or asks about; the sites of the items in each task you approve; and the site of each password change an agent makes;
+- the audit log: which action, on which item, when, and by which agent;
+- if you use the iPhone app with notifications, that iPhone's push token. A notification carries only its kind and a random identifier: Apple sees that your server notified a device, not the agent, its reason or the item.
+
+`klav-server` uses your IP address only to limit attempts, such as someone guessing passwords. Those counts live in memory and expire by themselves; the server doesn't write IP addresses to its database or its log. Whoever hosts the server, or a proxy in front of it, may keep logs of their own.
+
+When you delete your account, the server deletes it and all its data 7 days after the request. That depends on whoever runs the server: one that wants to can keep the encrypted data and what it saw. Backups keep the account until they expire. Without your master password and Secret Key, what they keep stays encrypted.
+
+## Next
+
+[What Klav defends against](/security/what-klav-defends-against/).

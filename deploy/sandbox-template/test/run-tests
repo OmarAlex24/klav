@@ -1,0 +1,1602 @@
+#!/bin/bash
+# Tests of deploy/sandbox-template (ADR 0042 §10, row 3): klav-tailnet-up,
+# check-template and build-template, against fakes only.
+#
+# Shell: bash, 3.2 or later. Needs, already installed: jq, sha256sum,
+# md5sum, python3 or node (to make a Unix socket), and the usual tools
+# (mktemp, rm, mv, sleep, grep, sed, cmp, env, ls, cp, chmod, find, xargs,
+# printenv). It installs nothing.
+#
+#   deploy/sandbox-template/test/run-tests
+#   KLAV_TEST_BASH=/bin/bash deploy/sandbox-template/test/run-tests
+#
+# KLAV_TEST_BASH picks the bash that runs the scripts under test (default:
+# the bash on PATH).
+#
+# Never a real tool that matters: every script under test runs with a PATH
+# that holds only fakes (tailscale, tailscaled, systemd-run, systemctl,
+# sudo, pgrep, id, apt-get, curl, npm, install...) and logging wrappers
+# around a few plain tools. klav-tailnet-up and build-template fix their
+# own PATH, so the tests run copies whose test seams (marked lines) point
+# at the fakes and at the case's own directory; neither shipped file runs
+# here. A guard fails a case if a script under test executed anything that
+# is not one of those, and the wrappers that write refuse any path outside
+# the case's directory.
+
+set -eu
+set -o pipefail
+IFS=$' \t\n'
+
+here=$(cd "$(dirname "$0")" && pwd)
+src=$(dirname "$here")
+bash_under_test=$(command -v "${KLAV_TEST_BASH:-bash}") || {
+	echo "no bash at ${KLAV_TEST_BASH:-bash}" >&2
+	exit 1
+}
+
+# The real plain tools, resolved once, before any PATH is narrowed.
+real() {
+	command -v "$1" || {
+		echo "run-tests needs $1" >&2
+		exit 1
+	}
+}
+REAL_BASH=$(real bash)
+REAL_ENV=$(real env)
+REAL_JQ=$(real jq)
+REAL_MKTEMP=$(real mktemp)
+REAL_RM=$(real rm)
+REAL_SLEEP=$(real sleep)
+REAL_GREP=$(real grep)
+REAL_LS=$(real ls)
+REAL_SHA=$(real sha256sum)
+REAL_MKDIR=$(real mkdir)
+REAL_MD5=$(real md5sum)
+REAL_CP=$(real cp)
+socket_tool=${KLAV_TEST_SOCKET_TOOL:-}
+if [ -z "$socket_tool" ]; then
+	if command -v python3 >/dev/null 2>&1; then socket_tool=python3; else socket_tool=node; fi
+fi
+if [ "$socket_tool" = python3 ] && command -v python3 >/dev/null 2>&1; then
+	MKSOCK="$(command -v python3) -I -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])'"
+elif [ "$socket_tool" = node ] && command -v node >/dev/null 2>&1; then
+	MKSOCK="$(command -v node) -e 'require(\"net\").createServer().listen(process.argv[1], () => process.exit(0))'"
+else
+	echo "run-tests needs python3 or node to make a Unix socket" >&2
+	exit 1
+fi
+
+# Short paths: a Unix socket's path has at most 104 bytes on macOS.
+tmp=$("$REAL_MKTEMP" -d /tmp/kst.XXXXXX)
+cleanup() { "$REAL_RM" -rf -- "$tmp"; }
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+# The only tools a fake itself may use: links to plain ones.
+PLAIN=$tmp/plain
+"$REAL_MKDIR" -p "$PLAIN"
+for t in cat cut ls grep mkdir env sha256sum cp chmod mv; do
+	ln -s "$(real "$t")" "$PLAIN/$t"
+done
+
+passed=0
+failed=0
+current=
+pass() { passed=$((passed + 1)); }
+fail() {
+	failed=$((failed + 1))
+	printf 'FAIL %s: %s\n' "$current" "$1" >&2
+}
+check() { # description, command...
+	local what=$1
+	shift
+	if "$@"; then pass; else fail "$what"; fi
+}
+contains() { "$REAL_GREP" -qF -- "$2" "$1"; }
+lacks() { ! "$REAL_GREP" -rqsF -- "$2" "$1"; }
+
+# --- Fakes and wrappers -----------------------------------------------------
+
+# A logging wrapper around a real tool: one line per run, its name and
+# arguments, in the case's log, a newline in an argument written as \n.
+wrap() { # bin, name, real path
+	cat >"$1/$2" <<EOF
+#!$REAL_BASH
+args="\$*"
+printf '%s\n' "$2 \${args//\$'\n'/\\\\n}" >>"\$KLAV_TEST_CASE/calls"
+exec "$3" "\$@"
+EOF
+	chmod 0755 "$1/$2"
+}
+
+# A logging wrapper that refuses, before running the real tool, any
+# absolute path argument outside the case's directory.
+guarded() { # bin, name, real path
+	cat >"$1/$2" <<EOF
+#!$REAL_BASH
+printf '%s\n' "$2 \$*" >>"\$KLAV_TEST_CASE/calls"
+for a in "\$@"; do
+	case \$a in
+	/*) case \$a in "\$KLAV_TEST_CASE"/*) ;; *)
+		printf '%s\n' "$2 \$a" >>"\$KLAV_TEST_CASE/outside"
+		exit 99 ;;
+	esac ;;
+	esac
+done
+exec "$3" "\$@"
+EOF
+	chmod 0755 "$1/$2"
+}
+
+# A fake: logs its arguments and its environment, then runs its body.
+fake() { # bin, name, body
+	cat >"$1/$2" <<EOF
+#!$REAL_BASH
+set -eu
+PATH=$PLAIN
+n=\$("$REAL_LS" "\$KLAV_TEST_CASE" | "$REAL_GREP" -c '^env\.' || true)
+"$REAL_ENV" >"\$KLAV_TEST_CASE/env.\$n.$2"
+printf '%s\n' "$2 \$*" >>"\$KLAV_TEST_CASE/calls"
+$3
+EOF
+	chmod 0755 "$1/$2"
+}
+
+# The fakes of klav-tailnet-up. State in files of the case directory:
+#   state     down | tagged | untagged (what `status --json` says)
+#   after_up  the state after a successful `up`
+#   up_exit   the exit code of `up`
+#   no_socket tailscaled never opens its socket
+tailnet_bin() {
+	local bin=$1
+	"$REAL_MKDIR" -p "$bin"
+	fake "$bin" tailscale "
+sock=
+for a in \"\$@\"; do case \$a in --socket=*) sock=\${a#--socket=} ;; esac; done
+[ -n \"\$sock\" ] || { echo 'no --socket' >&2; exit 64; }
+sub=
+for a in \"\$@\"; do case \$a in --*) ;; *) sub=\$a; break ;; esac; done
+state=\$(cat \"\$KLAV_TEST_CASE/state\")
+case \$sub in
+status)
+	case \$state in
+	down) echo 'failed to connect to local tailscaled' >&2; exit 1 ;;
+	tagged) echo '{\"BackendState\":\"Running\",\"Self\":{\"Tags\":[\"tag:klav-sandbox\"]}}' ;;
+	untagged) echo '{\"BackendState\":\"Running\",\"Self\":{\"Tags\":[\"tag:other\"]}}' ;;
+	esac ;;
+up)
+	file=
+	for a in \"\$@\"; do case \$a in --auth-key=file:*) file=\${a#--auth-key=file:} ;; esac; done
+	if [ -n \"\$file\" ] && [ -f \"\$file\" ]; then
+		printf 'key-file %s\n' \"\$file\" >>\"\$KLAV_TEST_CASE/seen\"
+		\"$REAL_LS\" -ln \"\$file\" | cut -c1-10 >>\"\$KLAV_TEST_CASE/seen\"
+		\"$REAL_SHA\" <\"\$file\" | cut -d' ' -f1 >>\"\$KLAV_TEST_CASE/seen\"
+	else
+		echo 'no key file' >>\"\$KLAV_TEST_CASE/seen\"
+	fi
+	code=\$(cat \"\$KLAV_TEST_CASE/up_exit\")
+	[ \"\$code\" != 0 ] || cat \"\$KLAV_TEST_CASE/after_up\" >\"\$KLAV_TEST_CASE/state\"
+	exit \"\$code\" ;;
+logout) echo down >\"\$KLAV_TEST_CASE/state\" ;;
+*) echo \"unexpected: \$*\" >&2; exit 64 ;;
+esac"
+	fake "$bin" tailscaled "
+sock=
+for a in \"\$@\"; do case \$a in --socket=*) sock=\${a#--socket=} ;; esac; done
+[ -n \"\$sock\" ] || exit 64
+[ ! -e \"\$KLAV_TEST_CASE/no_socket\" ] || exit 0
+\"$REAL_MKDIR\" -p \"\${sock%/*}\"
+$MKSOCK \"\$sock\""
+	# systemd-run: starts the unit's command (here, the fake tailscaled) and
+	# returns, as a transient service does; fails with `systemd_fails`.
+	# shellcheck disable=SC2016 # expanded by the fake
+	fake "$bin" systemd-run '
+[ ! -e "$KLAV_TEST_CASE/systemd_fails" ] || exit 1
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+[ "$#" -gt 1 ] || exit 64
+shift
+"$@"'
+	wrap "$bin" jq "$REAL_JQ"
+	wrap "$bin" mktemp "$REAL_MKTEMP"
+	wrap "$bin" rm "$REAL_RM"
+	wrap "$bin" sleep "$REAL_SLEEP"
+}
+
+# Everything klav-tailnet-up may execute: the guard checks the calls log
+# against this, and that the script names no command by absolute path.
+TAILNET_COMMANDS="tailscale tailscaled systemd-run jq mktemp rm sleep"
+
+guard() { # case dir, allowed command names
+	local name
+	while IFS=' ' read -r name _; do
+		case " $2 " in *" $name "*) ;; *) return 1 ;; esac
+	done <"$1/calls"
+	return 0
+}
+
+# --- klav-tailnet-up --------------------------------------------------------
+
+shipped=$src/klav-tailnet-up
+current="seam"
+seam_re='/^# klav-test-seam: begin/,/^# klav-test-seam: end/'
+# The shipped seam holds exactly these values.
+check "the shipped seam's PATH" "$REAL_GREP" -qx 'bin_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' "$shipped"
+check "the shipped seam's run directory" "$REAL_GREP" -qx 'run_dir=/run' "$shipped"
+check "the shipped seam's socket wait" "$REAL_GREP" -qx 'socket_wait=30' "$shipped"
+check "one seam, three assignments" test "$(sed -n "${seam_re}p" "$shipped" | "$REAL_GREP" -c '^[a-z_]*=')" = 3
+# Nothing outside the seam names a command by absolute path.
+check "no absolute command paths" test -z "$(sed "${seam_re}d" "$shipped" | "$REAL_GREP" -vE '^[[:space:]]*#' | "$REAL_GREP" -E '(^|[[:space:];|&(])/(usr|bin|sbin|opt)/' || true)"
+
+# The copy the tests run: the shipped file with only the seam's values
+# changed. Proven by comparing both without the seam block.
+tailnet_copy() { # case dir -> path of the copy
+	local case=$1 copy=$1/klav-tailnet-up
+	sed -e "s|^bin_path=.*|bin_path=$case/bin|" \
+		-e "s|^run_dir=.*|run_dir=$case/run|" \
+		-e 's|^socket_wait=.*|socket_wait=3|' "$shipped" >"$copy"
+	# The rewrite applied: the copy must not reach a real tool.
+	if "$REAL_GREP" -q '^bin_path=/usr' "$copy" || "$REAL_GREP" -qx 'run_dir=/run' "$copy"; then
+		echo "the seam rewrite did not apply: refusing to run" >&2
+		exit 1
+	fi
+	cmp -s <(sed "${seam_re}d" "$shipped") <(sed "${seam_re}d" "$copy") || {
+		echo "the copy differs from the shipped file outside the seam" >&2
+		exit 1
+	}
+	printf '%s\n' "$copy"
+}
+
+KEY=tskey-auth-kTESTFAKE0123-ZZsecretpartAB9876
+KEY_SHA=$(printf '%s' "$KEY" | "$REAL_SHA" | cut -d' ' -f1)
+HOST=klav-e3d1bf79
+n=0
+
+# A new case directory with the fakes, in a given state.
+new_case() { # name, state, after_up, up_exit
+	n=$((n + 1))
+	current="klav-tailnet-up: $1"
+	CASE=$tmp/t$n
+	"$REAL_MKDIR" -p "$CASE/run"
+	: >"$CASE/calls"
+	printf '%s\n' "$2" >"$CASE/state"
+	printf '%s\n' "$3" >"$CASE/after_up"
+	printf '%s\n' "$4" >"$CASE/up_exit"
+	tailnet_bin "$CASE/bin"
+	COPY=$(tailnet_copy "$CASE")
+}
+
+# Runs the copy in an empty environment, as sudo would, with stdin from a
+# file; extra `env` assignments come first.
+run_tailnet() { # stdin file, then env assignments and args after --
+	local input=$1
+	shift
+	local envs=()
+	while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+		envs+=("$1")
+		shift
+	done
+	shift
+	set +e
+	"$REAL_ENV" -i KLAV_TEST_CASE="$CASE" ${envs[@]+"${envs[@]}"} \
+		"$bash_under_test" "$COPY" "$@" <"$input" >"$CASE/out" 2>"$CASE/err"
+	CODE=$?
+	set -e
+}
+
+key_input() { printf '%s\n' "$KEY" >"$CASE/key.in"; }
+no_leftover() {
+	local left=("$CASE"/run/klav-tailnet.*)
+	[ ! -e "${left[0]}" ]
+}
+# The key is nowhere: not in any argument, environment, output or file of
+# the case except the input the test wrote.
+key_nowhere() {
+	"$REAL_RM" -f "$CASE/key.in"
+	lacks "$CASE" "$KEY"
+}
+up_args() { "$REAL_GREP" '^tailscale .* up ' "$CASE/calls" || true; }
+
+# 1. The key is never an argument; the happy path.
+new_case "joins, and the key is never an argument" down tagged 0
+key_input
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "tailscaled as a transient systemd unit, not a child" contains "$CASE/calls" "systemd-run --unit=klav-tailscaled --collect --quiet -- $CASE/bin/tailscaled --state=mem: --socket=$CASE/run/tailscale/tailscaled.sock"
+check "tailscaled with its state in memory" contains "$CASE/calls" "tailscaled --state=mem: --socket=$CASE/run/tailscale/tailscaled.sock"
+check "up with the file, hostname, no DNS, no routes, a timeout" test "$(up_args)" = "tailscale --socket=$CASE/run/tailscale/tailscaled.sock up --auth-key=file:$(sed -n 's/^key-file //p' "$CASE/seen") --hostname=$HOST --accept-dns=false --accept-routes=false --timeout=60s"
+check "the key file sat in a new directory under the run directory" "$REAL_GREP" -q "^key-file $CASE/run/klav-tailnet\.[A-Za-z0-9]*/key$" "$CASE/seen"
+check "the key file was 0600" "$REAL_GREP" -qx -- '-rw-------' "$CASE/seen"
+check "the key file held the key" "$REAL_GREP" -qx "$KEY_SHA" "$CASE/seen"
+check "no key file left" no_leftover
+check "says it joined" contains "$CASE/out" "on the tailnet as $HOST, with tag:klav-sandbox"
+check "only fakes ran" guard "$CASE" "$TAILNET_COMMANDS"
+check "the key in no argument, environment, output or file" key_nowhere
+
+# The same under `bash -x`: the trace stops before the key is read.
+new_case "a trace never shows the key" down tagged 0
+key_input
+set +e
+"$REAL_ENV" -i KLAV_TEST_CASE="$CASE" "$bash_under_test" -x "$COPY" "$HOST" \
+	<"$CASE/key.in" >"$CASE/out" 2>"$CASE/err"
+CODE=$?
+set -e
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "the trace stopped" test "$(wc -l <"$CASE/err")" -le 4
+check "the key in no trace" key_nowhere
+
+# The environment changes nothing it runs or where it writes.
+new_case "the caller's environment cannot redirect it" down tagged 0
+key_input
+"$REAL_MKDIR" -p "$CASE/evil"
+# shellcheck disable=SC2016 # expanded by the fake
+fake "$CASE/evil" tailscale 'echo EVIL >>"$KLAV_TEST_CASE/evil.ran"'
+# shellcheck disable=SC2016 # expanded by the fake
+fake "$CASE/evil" tailscaled 'echo EVIL >>"$KLAV_TEST_CASE/evil.ran"'
+run_tailnet "$CASE/key.in" PATH="$CASE/evil" bin_path="$CASE/evil" run_dir="$CASE/evil" socket_wait=0 -- "$HOST"
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "no evil command ran" test ! -e "$CASE/evil.ran"
+check "nothing written in the evil directory" test -z "$("$REAL_LS" -A "$CASE/evil" | "$REAL_GREP" -v '^tailscale' || true)"
+check "the key nowhere" key_nowhere
+
+# 2. `up` fails: the key file is removed, and nothing else runs.
+new_case "up fails: the key file is removed" down tagged 1
+key_input
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "a non-zero exit ($CODE)" test "$CODE" != 0
+check "up had the key file" "$REAL_GREP" -qx "$KEY_SHA" "$CASE/seen"
+check "no key file left" no_leftover
+check "no logout" test -z "$("$REAL_GREP" ' logout' "$CASE/calls" || true)"
+check "only fakes ran" guard "$CASE" "$TAILNET_COMMANDS"
+check "the key nowhere" key_nowhere
+
+# 3. The socket wait: tailscaled never opens it.
+new_case "the socket never comes" down tagged 0
+key_input
+: >"$CASE/no_socket"
+start=$SECONDS
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "it waited, and not forever" test "$((SECONDS - start))" -le 8
+check "says why" contains "$CASE/err" "tailscaled did not open its socket within 3 s"
+check "never called up" test -z "$(up_args)"
+check "no key file left" no_leftover
+check "the key nowhere" key_nowhere
+
+# systemd cannot start the unit: exit 1, never up.
+new_case "systemd cannot start tailscaled" down tagged 0
+key_input
+: >"$CASE/systemd_fails"
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says why" contains "$CASE/err" "systemd could not start tailscaled"
+check "never called up" test -z "$(up_args)"
+check "no key file left" no_leftover
+check "only fakes ran" guard "$CASE" "$TAILNET_COMMANDS"
+check "the key nowhere" key_nowhere
+
+# A socket already there: no second tailscaled.
+new_case "a running tailscaled is used" down tagged 0
+key_input
+"$REAL_MKDIR" -p "$CASE/run/tailscale"
+eval "$MKSOCK \"\$CASE/run/tailscale/tailscaled.sock\""
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "no tailscaled started" test -z "$("$REAL_GREP" -E '^(tailscaled|systemd-run) ' "$CASE/calls" || true)"
+check "up ran with its timeout" contains "$CASE/calls" "--timeout=60s"
+
+# 4. A node without the tag: logout, exit 1.
+new_case "a missing tag logs out" down untagged 0
+key_input
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "logged out" "$REAL_GREP" -q '^tailscale .* logout$' "$CASE/calls"
+check "says why" contains "$CASE/err" "joined without tag:klav-sandbox"
+check "no key file left" no_leftover
+check "the key nowhere" key_nowhere
+
+# 5. An empty input: skipped, exit 0, nothing called.
+for input in empty newline; do
+	new_case "an empty input skips ($input)" down tagged 0
+	if [ "$input" = empty ]; then : >"$CASE/key.in"; else printf '\n' >"$CASE/key.in"; fi
+	run_tailnet "$CASE/key.in" -- ""
+	check "exit 0 ($CODE)" test "$CODE" = 0
+	check "says it skipped" contains "$CASE/out" "no Tailscale key: skipped"
+	check "no tailscale, no tailscaled" test -z "$("$REAL_GREP" '^tailscale' "$CASE/calls" || true)"
+	check "no key file left" no_leftover
+done
+
+# A hostname with an empty input: the key made for this sandbox did not
+# arrive, which is an error, never a skip.
+for input in empty newline; do
+	new_case "a hostname but no key ($input)" down tagged 0
+	if [ "$input" = empty ]; then : >"$CASE/key.in"; else printf '\n' >"$CASE/key.in"; fi
+	run_tailnet "$CASE/key.in" -- "$HOST"
+	check "exit 2 ($CODE)" test "$CODE" = 2
+	check "says why" contains "$CASE/err" "a hostname but no Tailscale key: refused"
+	check "never says it skipped" lacks "$CASE/out" "skipped"
+	check "no tailscale, no tailscaled" test -z "$("$REAL_GREP" '^tailscale' "$CASE/calls" || true)"
+	check "no key file left" no_leftover
+done
+
+# 6. Already up with the tag: a rerun with a spent key.
+new_case "already up: a rerun" tagged tagged 1
+key_input
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "says so" contains "$CASE/out" "already on the tailnet with tag:klav-sandbox"
+check "never called up" test -z "$(up_args)"
+check "no tailscaled started" test -z "$("$REAL_GREP" -E '^(tailscaled|systemd-run) ' "$CASE/calls" || true)"
+check "no key file left" no_leftover
+check "the key nowhere" key_nowhere
+
+# Up with another tag only: not a rerun, it joins.
+new_case "up without the tag is not a rerun" untagged tagged 0
+key_input
+"$REAL_MKDIR" -p "$CASE/run/tailscale"
+eval "$MKSOCK \"\$CASE/run/tailscale/tailscaled.sock\""
+run_tailnet "$CASE/key.in" -- "$HOST"
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "called up" test -n "$(up_args)"
+
+# The setup line as the README documents it, run as a setup script would
+# (`set -euo pipefail`, an empty environment, a PATH of fakes), with a fake
+# sudo that accepts exactly the documented arguments and runs the copy.
+current="the documented setup line"
+SETUP_LINE=$("$REAL_GREP" -E '^ *\{ printenv KLAV_TAILNET_KEY' "$src/README.md" | sed 's/^ *//' || true)
+check "the README has one setup line" test "$(printf '%s\n' "$SETUP_LINE" | wc -l | tr -d ' ')" = 1
+# shellcheck disable=SC2016 # the line's text, expanded by the setup script
+check "it tolerates a missing key and hostname" test "$SETUP_LINE" = '{ printenv KLAV_TAILNET_KEY || true; } | sudo -n /usr/local/sbin/klav-tailnet-up "${KLAV_TAILNET_HOSTNAME:-}"'
+check "klav-tailnet-up's header gives the same line" "$REAL_GREP" -qxF "#   $SETUP_LINE" "$shipped"
+check "ADR 0042 gives the same line" "$REAL_GREP" -qF "$SETUP_LINE" "$src/../../docs/decisiones/0042-sandboxes-for-daily-use.md"
+setup_bin() {
+	wrap "$CASE/bin" printenv "$(real printenv)"
+	fake "$CASE/bin" sudo "
+[ \"\$#\" = 3 ] && [ \"\$1\" = -n ] && [ \"\$2\" = /usr/local/sbin/klav-tailnet-up ] || exit 64
+exec $REAL_ENV -i KLAV_TEST_CASE=\"\$KLAV_TEST_CASE\" \"$bash_under_test\" \"$COPY\" \"\$3\""
+}
+run_setup() { # env assignments...
+	set +e
+	"$REAL_ENV" -i KLAV_TEST_CASE="$CASE" PATH="$CASE/bin" "$@" \
+		"$bash_under_test" -c "set -euo pipefail; $SETUP_LINE" </dev/null >"$CASE/out" 2>"$CASE/err"
+	CODE=$?
+	set -e
+}
+new_case "the setup line without a tailnet" down tagged 0
+setup_bin
+run_setup
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "says it skipped" contains "$CASE/out" "no Tailscale key: skipped"
+check "sudo got an empty hostname" "$REAL_GREP" -qx 'sudo -n /usr/local/sbin/klav-tailnet-up ' "$CASE/calls"
+check "no tailscale, no tailscaled" test -z "$("$REAL_GREP" -E '^(tailscale|systemd-run)' "$CASE/calls" || true)"
+check "only fakes ran" guard "$CASE" "printenv sudo $TAILNET_COMMANDS"
+new_case "the setup line with a hostname but no key" down tagged 0
+setup_bin
+run_setup KLAV_TAILNET_HOSTNAME="$HOST"
+check "exit 2 ($CODE)" test "$CODE" = 2
+check "says why" contains "$CASE/err" "a hostname but no Tailscale key: refused"
+check "no tailscale, no tailscaled" test -z "$("$REAL_GREP" -E '^(tailscale|systemd-run)' "$CASE/calls" || true)"
+check "only fakes ran" guard "$CASE" "printenv sudo $TAILNET_COMMANDS"
+new_case "the setup line with a tailnet" down tagged 0
+setup_bin
+run_setup KLAV_TAILNET_KEY="$KEY" KLAV_TAILNET_HOSTNAME="$HOST"
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "joined" contains "$CASE/out" "on the tailnet as $HOST, with tag:klav-sandbox"
+check "sudo got the hostname only" "$REAL_GREP" -qx "sudo -n /usr/local/sbin/klav-tailnet-up $HOST" "$CASE/calls"
+check "up had the key file" "$REAL_GREP" -qx "$KEY_SHA" "$CASE/seen"
+check "only fakes ran" guard "$CASE" "printenv sudo $TAILNET_COMMANDS"
+# The key was in the setup script's environment, as Boat sets it; it is
+# never an argument, and never in an output.
+check "the key in no argument" lacks "$CASE/calls" "$KEY"
+check "the key in no output" lacks "$CASE/out" "$KEY"
+check "the key in no error" lacks "$CASE/err" "$KEY"
+
+# Refusals before anything runs.
+refusal() { # name, input, args...
+	local name=$1 input=$2
+	shift 2
+	new_case "$name" down tagged 0
+	printf '%s\n' "$input" >"$CASE/key.in"
+	run_tailnet "$CASE/key.in" -- "$@"
+	check "exit 2 ($CODE)" test "$CODE" = 2
+	check "no tailscale, no tailscaled" test -z "$("$REAL_GREP" '^tailscale' "$CASE/calls" || true)"
+	check "no key file left" no_leftover
+	check "the input in no output" lacks "$CASE/err" "$input"
+}
+refusal "no hostname" "$KEY"
+refusal "a key but an empty hostname" "$KEY" ""
+refusal "two arguments" "$KEY" "$HOST" extra
+refusal "a hostname that is an option" "$KEY" "--accept-routes"
+refusal "a hostname with odd characters" "$KEY" "klav e3d1"
+refusal "a key with odd characters" 'tskey-auth-k1;rm' "$HOST"
+refusal "a key on two lines" $'tskey-auth-k1\ntskey-auth-k2' "$HOST"
+refusal "an OAuth client secret" "tskey-client-kTESTFAKE-secret0123" "$HOST"
+
+# --- check-template ---------------------------------------------------------
+
+# systemctl, as check-template and build-template use it: the tailscaled
+# unit's state lives in the case's `unit` file; with `mask_noop`, masking
+# does nothing. `is-enabled` exits 0 only for an enabled unit, as systemd's.
+# shellcheck disable=SC2016 # expanded by the fake
+SYSTEMCTL_BODY='
+case "$*" in
+"disable --now tailscaled.service") printf "disabled\n" >"$KLAV_TEST_CASE/unit" ;;
+"mask tailscaled.service") [ -e "$KLAV_TEST_CASE/mask_noop" ] || printf "masked\n" >"$KLAV_TEST_CASE/unit" ;;
+"is-enabled tailscaled.service")
+	u=$(cat "$KLAV_TEST_CASE/unit" 2>/dev/null || true)
+	[ -z "$u" ] || printf "%s\n" "$u"
+	[ "$u" = enabled ] ;;
+*) exit 64 ;;
+esac'
+# ls: the real listing with the owner's uid from the case's `owner` file,
+# 0 (root) by default: the test's files belong to whoever runs the tests.
+# Without macOS's `@` (extended attributes), which Linux never prints.
+# shellcheck disable=SC2016 # expanded by the fake
+LS_BODY='
+out=$(ls "$@") || exit
+set -f
+f=($out)
+set +f
+owner=0
+[ ! -e "$KLAV_TEST_CASE/owner" ] || owner=$(cat "$KLAV_TEST_CASE/owner")
+f[0]=${f[0]%@}
+f[2]=$owner
+printf "%s\n" "${f[*]}"'
+
+check_bin() { # bin, pgrep exit code
+	"$REAL_MKDIR" -p "$1"
+	fake "$1" pgrep "exit $2"
+	fake "$1" id 'echo 0'
+	fake "$1" systemctl "$SYSTEMCTL_BODY"
+	fake "$1" ls "$LS_BODY"
+	wrap "$1" grep "$REAL_GREP"
+	wrap "$1" sha256sum "$REAL_SHA"
+	wrap "$1" md5sum "$REAL_MD5"
+	wrap "$1" find "$(real find)"
+	wrap "$1" xargs "$(real xargs)"
+}
+CHECK_COMMANDS="pgrep id systemctl ls grep sha256sum md5sum find xargs"
+
+sha_of() { "$REAL_SHA" <"$1" | cut -d' ' -f1; }
+
+# A clean tree, as build-template leaves it: homes with harmless files, the
+# strings' neighbors, and the three files that name the strings on purpose
+# (klav-forward, klav-tailnet-up and a Debian package's tailscale), each
+# matching the build record or the package's MD5 list.
+clean_root() {
+	local r=$1
+	"$REAL_MKDIR" -p "$r/var/lib/tailscale" "$r/etc" "$r/root/.ssh" "$r/home/user/.ssh" \
+		"$r/home/user/.claude" "$r/home/user/.config/gh" "$r/var/log" \
+		"$r/usr/local/bin" "$r/usr/local/sbin" "$r/usr/bin" "$r/var/lib/dpkg/info" \
+		"$r/etc/klav-sandbox-template"
+	printf 'ssh-ed25519 AAAA test\n' >"$r/home/user/.ssh/id_ed25519.pub"
+	printf 'host ssh-ed25519 AAAA\n' >"$r/home/user/.ssh/known_hosts"
+	printf '{}\n' >"$r/home/user/.claude/settings.json"
+	printf 'git_protocol: https\n' >"$r/home/user/.config/gh/config.yml"
+	printf 'ksb2 tskey boat\n' >"$r/etc/near-misses"
+	printf 'klav-forward: reads ksb1_ packages\n' >"$r/usr/local/bin/klav-forward"
+	chmod 0755 "$r/usr/local/bin/klav-forward"
+	"$REAL_CP" "$shipped" "$r/usr/local/sbin/klav-tailnet-up"
+	chmod 0755 "$r/usr/local/sbin/klav-tailnet-up"
+	printf 'tailscale: takes tskey-auth- keys\n' >"$r/usr/bin/tailscale"
+	printf '%s  usr/bin/tailscale\n' "$("$REAL_MD5" <"$r/usr/bin/tailscale" | cut -d' ' -f1)" \
+		>"$r/var/lib/dpkg/info/tailscale.md5sums"
+	{
+		printf '# klav-sandbox template klav-sandbox-0.9.0, written by build-template\n'
+		printf 'KLAV_FORWARD_SHA256=%s\n' "$(sha_of "$r/usr/local/bin/klav-forward")"
+		printf 'KLAV_TAILNET_UP_SHA256=%s\n' "$(sha_of "$r/usr/local/sbin/klav-tailnet-up")"
+	} >"$r/etc/klav-sandbox-template/manifest"
+}
+
+# A new check case: a clean tree in `root`, the fakes in `CASE`, the unit
+# masked and nothing running. Change either before run_check.
+check_case() { # name
+	n=$((n + 1))
+	current="check-template: $1"
+	root=$tmp/r$n
+	clean_root "$root"
+	CASE=$tmp/c$n
+	"$REAL_MKDIR" -p "$CASE"
+	: >"$CASE/calls"
+	printf 'masked\n' >"$CASE/unit"
+	check_bin "$CASE/bin" 1
+}
+SECRET_MARK=contents-never-printed-0f9e
+run_check() { # extra args...
+	set +e
+	"$REAL_ENV" -i KLAV_TEST_CASE="$CASE" PATH="$CASE/bin" \
+		"$bash_under_test" "$src/check-template" --root "$root" "$@" >"$CASE/out" 2>"$CASE/err"
+	CODE=$?
+	set -e
+}
+finds() { # finding, path relative to the root
+	"$REAL_GREP" -qxF "check-template: $1: $root/$2" "$CASE/err"
+}
+refused_check() { # finding, path relative to the root
+	check "exit 1 ($CODE)" test "$CODE" = 1
+	check "names the finding and the path" finds "$1" "$2"
+	check "says not to save" contains "$CASE/err" "do not save it"
+	check "never the content" lacks "$CASE" "$SECRET_MARK"
+	check "only fakes ran" guard "$CASE" "$CHECK_COMMANDS"
+}
+clean_check() {
+	check "exit 0 ($CODE)" test "$CODE" = 0
+	check "says so" contains "$CASE/out" "nothing forbidden found"
+	check "only fakes ran" guard "$CASE" "$CHECK_COMMANDS"
+}
+
+check_case "a clean tree"
+run_check
+clean_check
+check "asked systemd about the unit" contains "$CASE/calls" "systemctl is-enabled tailscaled.service"
+check "asked pgrep for tailscaled" contains "$CASE/calls" "pgrep -x tailscaled"
+
+# Each forbidden file or string, one case each: refused, the path named,
+# the content never printed.
+seeded() { # name, relative path, content, finding, reported path, extra args...
+	local name=$1 path=$2 content=$3 finding=$4 reported=$5
+	shift 5
+	check_case "$name"
+	"$REAL_MKDIR" -p "$root/$(dirname "$path")"
+	printf '%s %s\n' "$content" "$SECRET_MARK" >"$root/$path"
+	run_check "$@"
+	refused_check "$finding" "$reported"
+}
+STRING="a ksb1_, tskey- or boat_ string"
+seeded "Tailscale state" var/lib/tailscale/tailscaled.state x "Tailscale state (it must be empty)" var/lib/tailscale
+seeded "the forwarder's directory" home/user/.klav-forward/claimed-e3d1 x "forwarder state from a run" home/user/.klav-forward
+seeded "the forwarder's directory in /root" root/.klav-forward/env.sh x "forwarder state from a run" root/.klav-forward
+seeded "the skill, for Claude" home/user/.claude/skills/klav/SKILL.md x "forwarder state from a run" home/user/.claude/skills/klav
+seeded "the skill, for other agents" home/user/.agents/skills/klav/SKILL.md x "forwarder state from a run" home/user/.agents/skills/klav
+seeded "Claude's login" home/user/.claude/.credentials.json x "an agent login" home/user/.claude/.credentials.json
+seeded "Codex's login" root/.codex/auth.json x "an agent login" root/.codex/auth.json
+seeded "git credentials" home/user/.git-credentials x "git or GitHub credentials" home/user/.git-credentials
+seeded "GitHub's hosts.yml" home/user/.config/gh/hosts.yml x "git or GitHub credentials" home/user/.config/gh/hosts.yml
+seeded "an SSH key by name" home/user/.ssh/id_ed25519 x "an SSH private key" home/user/.ssh/id_ed25519
+seeded "an SSH key by content" root/.ssh/deploy "-----BEGIN OPENSSH PRIVATE KEY-----" "an SSH private key" root/.ssh/deploy
+seeded "Boat's in-sandbox key" home/user/.config/ascii/boat/config.json x "a file in Boat's folder that the allow list does not cover" home/user/.config/ascii/boat/config.json
+seeded "a package string in a home" home/user/notes.txt "KLAV_SANDBOX=ksb1_AAAA" "$STRING" home/user/notes.txt
+seeded "a Tailscale key string in /etc" etc/profile.d/x.sh "tskey-auth-kFAKE" "$STRING" etc/profile.d/x.sh
+seeded "a Boat key string in /var" var/log/setup.log "Bearer boat_FAKE" "$STRING" var/log/setup.log
+seeded "a string in /root" root/.bash_history "boat_FAKE" "$STRING" root/.bash_history
+# The whole disk, not only the homes, /etc and /var.
+seeded "a string in /opt" opt/tool/config "boat_FAKE" "$STRING" opt/tool/config
+seeded "a string in /usr/local" usr/local/share/x/notes "tskey-auth-kFAKE" "$STRING" usr/local/share/x/notes
+seeded "a string in /srv" srv/data/env "ksb1_AAAA" "$STRING" srv/data/env
+seeded "a string in /tmp" tmp/setup.out "ksb1_AAAA" "$STRING" tmp/setup.out
+seeded "a string in a file at the top" leftover.txt "boat_FAKE" "$STRING" leftover.txt
+
+# A string inside a binary file.
+check_case "a string in a binary file"
+printf '\000\001\002ksb1_AAAA\000\377' >"$root/var/cache.bin"
+run_check
+refused_check "$STRING" var/cache.bin
+
+# Not on the disk a snapshot saves: /proc, /sys, /dev and /run.
+check_case "strings outside the saved disk are not scanned"
+for d in proc sys dev run; do
+	"$REAL_MKDIR" -p "$root/$d/x"
+	printf 'ksb1_AAAA tskey-auth-k boat_x\n' >"$root/$d/x/f"
+done
+run_check
+clean_check
+
+# tailscaled running.
+check_case "tailscaled running"
+fake "$CASE/bin" pgrep 'exit 0'
+run_check
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says so" contains "$CASE/err" "tailscaled is running"
+
+# The tailscaled unit: only `masked` passes. `masked-runtime` is under /run
+# and gone after a snapshot; no answer means no unit, or no systemd.
+for state in enabled disabled masked-runtime static ""; do
+	check_case "the tailscaled unit is '${state:-unknown}'"
+	printf '%s' "$state" >"$CASE/unit"
+	run_check
+	check "exit 1 ($CODE)" test "$CODE" = 1
+	check "names the unit's state" "$REAL_GREP" -qxF "check-template: the tailscaled unit must be masked, it is '${state:-unknown}': tailscaled.service" "$CASE/err"
+done
+check_case "no systemctl"
+"$REAL_RM" -f "$CASE/bin/systemctl"
+run_check
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says it cannot show the unit masked" "$REAL_GREP" -qxF "check-template: no systemctl, so the tailscaled unit cannot be shown masked: tailscaled.service" "$CASE/err"
+
+# klav-forward and klav-tailnet-up against the build record.
+check_case "klav-forward changed by hand"
+printf 'more\n' >>"$root/usr/local/bin/klav-forward"
+run_check
+refused_check "klav-forward's SHA-256 is not the build record's" usr/local/bin/klav-forward
+check "and its string is no longer excused" finds "$STRING" usr/local/bin/klav-forward
+
+check_case "no klav-forward"
+"$REAL_RM" -f "$root/usr/local/bin/klav-forward"
+run_check
+refused_check "no klav-forward" usr/local/bin/klav-forward
+
+NOT_ROOT_0755="klav-tailnet-up must be a file owned by root with mode 0755"
+check_case "klav-tailnet-up writable by its group"
+chmod 0775 "$root/usr/local/sbin/klav-tailnet-up"
+run_check
+refused_check "$NOT_ROOT_0755" usr/local/sbin/klav-tailnet-up
+check "and its string is not excused" finds "$STRING" usr/local/sbin/klav-tailnet-up
+
+check_case "klav-tailnet-up not executable by others"
+chmod 0750 "$root/usr/local/sbin/klav-tailnet-up"
+run_check
+refused_check "$NOT_ROOT_0755" usr/local/sbin/klav-tailnet-up
+
+check_case "klav-tailnet-up owned by another user"
+printf '1000\n' >"$CASE/owner"
+run_check
+refused_check "$NOT_ROOT_0755" usr/local/sbin/klav-tailnet-up
+check "listed it to read its owner" contains "$CASE/calls" "ls -lnd -- $root/usr/local/sbin/klav-tailnet-up"
+
+check_case "klav-tailnet-up is a link"
+"$REAL_RM" -f "$root/usr/local/sbin/klav-tailnet-up"
+ln -s "$shipped" "$root/usr/local/sbin/klav-tailnet-up"
+run_check
+refused_check "$NOT_ROOT_0755" usr/local/sbin/klav-tailnet-up
+
+check_case "klav-tailnet-up changed by hand"
+printf '# more\n' >>"$root/usr/local/sbin/klav-tailnet-up"
+run_check
+refused_check "klav-tailnet-up's SHA-256 is not the build record's" usr/local/sbin/klav-tailnet-up
+
+check_case "no build record"
+"$REAL_RM" -f "$root/etc/klav-sandbox-template/manifest"
+run_check
+refused_check "no build record (build-template writes it)" etc/klav-sandbox-template/manifest
+check "and the strings of the two files are not excused" finds "$STRING" usr/local/bin/klav-forward
+
+check_case "a build record without klav-tailnet-up's hash"
+"$REAL_GREP" -v '^KLAV_TAILNET_UP_SHA256=' "$root/etc/klav-sandbox-template/manifest" >"$CASE/m" || true
+"$REAL_CP" "$CASE/m" "$root/etc/klav-sandbox-template/manifest"
+run_check
+refused_check "the build record has no KLAV_TAILNET_UP_SHA256" etc/klav-sandbox-template/manifest
+
+check_case "a build record with a malformed hash"
+printf 'KLAV_FORWARD_SHA256=%s\nKLAV_TAILNET_UP_SHA256=%s\n' "nothex" "$(sha_of "$root/usr/local/sbin/klav-tailnet-up")" \
+	>"$root/etc/klav-sandbox-template/manifest"
+run_check
+refused_check "the build record has no KLAV_FORWARD_SHA256" etc/klav-sandbox-template/manifest
+
+# A Debian package's file: excused only while it is unchanged.
+check_case "a package's file changed"
+printf 'more\n' >>"$root/usr/bin/tailscale"
+run_check
+refused_check "$STRING" usr/bin/tailscale
+
+check_case "a file no package lists"
+"$REAL_RM" -f "$root/var/lib/dpkg/info/tailscale.md5sums"
+run_check
+refused_check "$STRING" usr/bin/tailscale
+
+# Login files come from the manifest or the record only.
+check_case "--login is not an option"
+run_check --login .northflank/token
+check "exit 2 ($CODE)" test "$CODE" = 2
+check "says how to use it" contains "$CASE/err" "usage: check-template"
+
+# --- check-template: the allow list ----------------------------------------
+
+# After a build: the manifest's lists in the build record, as build-template
+# writes them, and a run by hand without --manifest, which uses the record.
+run_recorded() {
+	"$REAL_GREP" -E '^(ALLOW|AGENT_LOGIN_FILES)=' "$CASE/manifest" >>"$root/etc/klav-sandbox-template/manifest" || true
+	run_check
+}
+# An ALLOW line for a file of the case's root, by its machine path.
+allow_entry() { # machine path
+	printf 'ALLOW=%s  %s\n' "$(sha_of "$root$1")" "$1"
+}
+# Files of Boat's base image as a normal machine has them: no key, but two
+# name `boat_`, and Boat's folder is there.
+base_image() {
+	"$REAL_MKDIR" -p "$root/root/.ascii/bin" "$root/root/.local/lib/rich" \
+		"$root/home/user/.config/ascii/boat"
+	printf 'cli: reads boat_api_url\n' >"$root/root/.ascii/bin/boat"
+	printf 'EMOJI = {"boat_dark_skin_tone": 1}\n' >"$root/root/.local/lib/rich/_emoji_codes.py"
+	printf '{"api_url":"https://example.invalid","channel":"stable"}\n' >"$root/home/user/.config/ascii/boat/config.json"
+	printf 'print("mcp")\n' >"$root/home/user/.config/ascii/computer-mcp.py"
+	chmod 0600 "$root/home/user/.config/ascii/computer-mcp.py"
+}
+BASE_FILES="/root/.ascii/bin/boat /root/.local/lib/rich/_emoji_codes.py /home/user/.config/ascii/boat/config.json /home/user/.config/ascii/computer-mcp.py"
+base_manifest() { # file
+	local f
+	for f in $BASE_FILES; do allow_entry "$f"; done >"$1"
+}
+BOAT_FOLDER="a file in Boat's folder that the allow list does not cover"
+
+check_case "the base image, without an allow list"
+base_image
+run_check
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "Boat's CLI is a finding" finds "$STRING" root/.ascii/bin/boat
+check "pip's emoji names are a finding" finds "$STRING" root/.local/lib/rich/_emoji_codes.py
+check "each file in Boat's folder is a finding" finds "$BOAT_FOLDER" home/user/.config/ascii/boat/config.json
+check "each file in Boat's folder is a finding (2)" finds "$BOAT_FOLDER" home/user/.config/ascii/computer-mcp.py
+check "never the folder itself" test "$("$REAL_GREP" -cxF "check-template: $BOAT_FOLDER: $root/home/user/.config/ascii" "$CASE/err" || true)" = 0
+check "no ALLOW line without --hashes" lacks "$CASE/out" "ALLOW="
+check "only fakes ran" guard "$CASE" "$CHECK_COMMANDS"
+
+check_case "the base image, on the allow list"
+base_image
+base_manifest "$CASE/manifest"
+run_recorded
+clean_check
+check "no note" lacks "$CASE/err" "note:"
+
+# --hashes: the findings it could excuse as ALLOW lines, and the round trip.
+check_case "--hashes prints the entries, and they pass"
+base_image
+"$REAL_MKDIR" -p "$root/var/log" "$root/var/lib/apt/lists"
+printf 'sudo: COMMAND=/usr/bin/grep boat_\n' >"$root/var/log/auth.log"
+printf 'Filename: pool/x/xboat_1.0_amd64.deb\n' >"$root/var/lib/apt/lists/x_Packages"
+"$REAL_MKDIR" -p "$root/root/.ssh"
+printf 'boat_FAKE\n' >"$root/root/.ssh/id_rsa"
+run_check --hashes
+check "exit 1 ($CODE)" test "$CODE" = 1
+for f in $BASE_FILES; do
+	check "an ALLOW line for $f" "$REAL_GREP" -qxF "$(allow_entry "$f")" "$CASE/out"
+done
+check "only ALLOW lines and comments on stdout" test -z "$("$REAL_GREP" -vE '^(ALLOW=[0-9a-f]{64}  /|# no entry for /)' "$CASE/out" || true)"
+check "no entry for a log" "$REAL_GREP" -qxF "# no entry for /var/log/auth.log: in a folder build-template empties" "$CASE/out"
+check "no entry for apt's lists" "$REAL_GREP" -qxF "# no entry for /var/lib/apt/lists/x_Packages: in a folder build-template empties" "$CASE/out"
+check "an SSH key stays a finding" finds "an SSH private key" root/.ssh/id_rsa
+check "no entry for the SSH key" "$REAL_GREP" -qxF "# no entry for /root/.ssh/id_rsa: the allow list never excuses it" "$CASE/out"
+"$REAL_GREP" '^ALLOW=' "$CASE/out" >"$CASE/manifest"
+"$REAL_RM" -rf "$root/var/log/auth.log" "$root/var/lib/apt/lists/x_Packages" "$root/root/.ssh/id_rsa"
+: >"$CASE/calls"
+run_recorded
+clean_check
+check "the printed lines are a valid allow list" test "$("$REAL_GREP" -c '^ALLOW=' "$CASE/manifest")" = 4
+
+# A file in Boat's folder that also names a string is two findings, and
+# one ALLOW line.
+check_case "--hashes prints a path once"
+base_image
+printf '{"note":"boat_x"}\n' >"$root/home/user/.config/ascii/computer-mcp.py"
+run_check --hashes
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "a finding for Boat's folder" finds "$BOAT_FOLDER" home/user/.config/ascii/computer-mcp.py
+check "and one for the string" finds "$STRING" home/user/.config/ascii/computer-mcp.py
+check "one ALLOW line for it" test "$("$REAL_GREP" -c ' /home/user/.config/ascii/computer-mcp.py$' "$CASE/out")" = 1
+"$REAL_GREP" '^ALLOW=' "$CASE/out" >"$CASE/manifest"
+: >"$CASE/calls"
+run_recorded
+clean_check
+
+# Boat's folder that find cannot list is a finding, never a pass.
+check_case "Boat's folder cannot be listed"
+base_image
+cat >"$CASE/bin/find" <<EOF
+#!$REAL_BASH
+args="\$*"
+printf '%s\n' "find \${args//\$'\n'/\\\\n}" >>"\$KLAV_TEST_CASE/calls"
+case \$1 in */.config/ascii) exit 1 ;; esac
+exec $(real find) "\$@"
+EOF
+chmod 0755 "$CASE/bin/find"
+base_manifest "$CASE/manifest"
+run_recorded
+refused_check "Boat's folder could not be listed" home/user/.config/ascii
+
+check_case "a manifest that is not there"
+run_check --manifest "$CASE/none"
+check "exit 2 ($CODE)" test "$CODE" = 2
+check "says why" contains "$CASE/err" "no manifest at $CASE/none"
+check "nothing ran" test ! -s "$CASE/calls"
+
+check_case "an allowed file whose bytes changed"
+base_image
+base_manifest "$CASE/manifest"
+printf 'boat_NEW\n' >>"$root/root/.ascii/bin/boat"
+run_recorded
+refused_check "$STRING, and not the allow list's SHA-256" root/.ascii/bin/boat
+check "and a note" contains "$CASE/err" "check-template: note: the allow list's entry is not this file's SHA-256, so it excuses nothing: $root/root/.ascii/bin/boat"
+
+check_case "a file in Boat's folder whose bytes changed"
+base_image
+base_manifest "$CASE/manifest"
+printf '{"key":"x"}\n' >"$root/home/user/.config/ascii/boat/config.json"
+run_recorded
+refused_check "$BOAT_FOLDER" home/user/.config/ascii/boat/config.json
+
+check_case "a new file in Boat's folder"
+base_image
+base_manifest "$CASE/manifest"
+printf 'x %s\n' "$SECRET_MARK" >"$root/home/user/.config/ascii/boat/credentials.json"
+run_recorded
+refused_check "$BOAT_FOLDER" home/user/.config/ascii/boat/credentials.json
+
+check_case "a link in Boat's folder, to an allowed file"
+base_image
+base_manifest "$CASE/manifest"
+ln -s "$root/home/user/.config/ascii/computer-mcp.py" "$root/home/user/.config/ascii/boat/link"
+run_recorded
+refused_check "$BOAT_FOLDER" home/user/.config/ascii/boat/link
+
+# The listed path itself turned into a link to a file with the same bytes.
+check_case "an allowed path that is now a link"
+base_image
+base_manifest "$CASE/manifest"
+"$REAL_CP" "$root/home/user/.config/ascii/boat/config.json" "$root/srv-config.json"
+"$REAL_RM" -f "$root/home/user/.config/ascii/boat/config.json"
+ln -s "$root/srv-config.json" "$root/home/user/.config/ascii/boat/config.json"
+run_recorded
+refused_check "$BOAT_FOLDER" home/user/.config/ascii/boat/config.json
+
+check_case "Boat's folder is a link"
+"$REAL_MKDIR" -p "$root/home/user/.config" "$root/srv/elsewhere"
+ln -s "$root/srv/elsewhere" "$root/home/user/.config/ascii"
+run_check
+refused_check "$BOAT_FOLDER" home/user/.config/ascii
+
+check_case "an empty Boat folder"
+"$REAL_MKDIR" -p "$root/home/user/.config/ascii/boat"
+run_check
+clean_check
+
+check_case "an entry for a file that is not there"
+allow_entry /usr/bin/tailscale | sed 's|/usr/bin/tailscale|/opt/gone|' >"$CASE/manifest"
+run_recorded
+clean_check
+check "a note, not a finding" contains "$CASE/err" "check-template: note: the allow list names a file that is not there, so it excuses nothing: $root/opt/gone"
+
+check_case "an entry excuses only its own path"
+base_image
+allow_entry /root/.ascii/bin/boat | sed 's|/root/.ascii/bin/boat|/root/.ascii/bin/other|' >"$CASE/manifest"
+run_recorded
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "the file is still a finding" finds "$STRING" root/.ascii/bin/boat
+
+# The allow list never excuses these, even with the file's own SHA-256.
+never_excused() { # name, relative path, finding, reported path
+	check_case "the allow list never excuses $1"
+	"$REAL_MKDIR" -p "$root/$(dirname "$2")"
+	printf 'boat_FAKE %s\n' "$SECRET_MARK" >"$root/$2"
+	allow_entry "/$2" >"$CASE/manifest"
+	run_recorded
+	refused_check "$3" "$4"
+	check "only the category is left" test "$("$REAL_GREP" -vc -e 'do not save it' "$CASE/err")" = 1
+}
+never_excused "an agent login" home/user/.claude/.credentials.json "an agent login" home/user/.claude/.credentials.json
+never_excused "an SSH key" home/user/.ssh/id_ed25519 "an SSH private key" home/user/.ssh/id_ed25519
+never_excused "git credentials" home/user/.git-credentials "git or GitHub credentials" home/user/.git-credentials
+never_excused "forwarder state" root/.klav-forward/env.sh "forwarder state from a run" root/.klav-forward
+never_excused "Tailscale state" var/lib/tailscale/tailscaled.state "Tailscale state (it must be empty)" var/lib/tailscale
+
+# The manifest's AGENT_LOGIN_FILES, as build-template's record passes them.
+check_case "a hand run checks the record's logins"
+"$REAL_MKDIR" -p "$root/home/user/.northflank"
+printf 'x %s\n' "$SECRET_MARK" >"$root/home/user/.northflank/config.json"
+printf 'AGENT_LOGIN_FILES=.other/token .northflank/config.json\n' >"$CASE/manifest"
+run_recorded
+refused_check "an agent login" home/user/.northflank/config.json
+check_case "the record's logins are none"
+printf 'AGENT_LOGIN_FILES=none\n' >"$CASE/manifest"
+run_recorded
+clean_check
+
+# The record's lists are in force once it exists: a --manifest must match.
+HASH_A=$(printf '%064d' 1)
+HASH_B=$(printf '%064d' 2)
+record_lists() { # lines appended to the build record
+	printf '%s\n' "$@" >>"$root/etc/klav-sandbox-template/manifest"
+}
+check_case "a --manifest with the record's lists, in another order"
+record_lists "ALLOW=$HASH_A  /root/a" "ALLOW=$HASH_B  /root/b" "AGENT_LOGIN_FILES=.x/t .y/t"
+printf 'ALLOW=%s  /root/b\nAGENT_LOGIN_FILES=.y/t .x/t\nALLOW=%s  /root/a\n' "$HASH_B" "$HASH_A" >"$CASE/manifest"
+run_check --manifest "$CASE/manifest"
+clean_check
+mismatch() { # name, manifest lines
+	check_case "$1"
+	record_lists "ALLOW=$HASH_A  /root/a" "AGENT_LOGIN_FILES=.x/t"
+	printf '%s\n' "$2" >"$CASE/manifest"
+	run_check --manifest "$CASE/manifest"
+	check "exit 2 ($CODE)" test "$CODE" = 2
+	check "says the lists differ" contains "$CASE/err" "the allow list or the login files of $CASE/manifest are not the build record's ($root/etc/klav-sandbox-template/manifest): after a build, run it without --manifest, and it uses the record's"
+	check "nothing ran" test ! -s "$CASE/calls"
+}
+mismatch "a --manifest with a wider allow list" "ALLOW=$HASH_A  /root/a
+ALLOW=$HASH_B  /root/b
+AGENT_LOGIN_FILES=.x/t"
+mismatch "a --manifest with a narrower allow list" "AGENT_LOGIN_FILES=.x/t"
+mismatch "a --manifest with another hash" "ALLOW=$HASH_B  /root/a
+AGENT_LOGIN_FILES=.x/t"
+mismatch "a --manifest with fewer logins" "ALLOW=$HASH_A  /root/a
+AGENT_LOGIN_FILES=none"
+mismatch "a --manifest with more logins" "ALLOW=$HASH_A  /root/a
+AGENT_LOGIN_FILES=.x/t .northflank/config.json"
+
+check_case "a malformed line in the record"
+record_lists "ALLOW=$HASH_A  relative/a"
+run_check
+check "exit 2 ($CODE)" test "$CODE" = 2
+check "says which line" contains "$CASE/err" "the build record line 4: ALLOW names relative/a: not an absolute path"
+
+# Before a build there is no record, and the --manifest's lists are used.
+check_case "before a build, the manifest's lists"
+base_image
+"$REAL_RM" -f "$root/etc/klav-sandbox-template/manifest"
+"$REAL_MKDIR" -p "$root/home/user/.northflank"
+printf 'x\n' >"$root/home/user/.northflank/config.json"
+base_manifest "$CASE/manifest"
+printf 'AGENT_LOGIN_FILES=.northflank/config.json\n' >>"$CASE/manifest"
+run_check --manifest "$CASE/manifest"
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "no record, as expected before a build" finds "no build record (build-template writes it)" etc/klav-sandbox-template/manifest
+check "the manifest's login is checked" finds "an agent login" home/user/.northflank/config.json
+check "the manifest's allow list excuses" test -z "$("$REAL_GREP" -F "$root/root/.ascii/bin/boat" "$CASE/err" || true)"
+check "and Boat's folder" test -z "$("$REAL_GREP" -F "$root/home/user/.config/ascii" "$CASE/err" || true)"
+
+# A name with a newline: a folder named `<name>\n` beside an excused file
+# `<name>`, holding the folders of `<path>`, makes the scan read the file
+# `<name>\n<path>/<name>` as two paths that are both the excused file.
+NL=$'\n'
+NEWLINE_NAME="a file name with a newline (the checks read paths by line)"
+twin() { # name, folder of the twin, name in it, file in the twin, content
+	check_case "a name with a newline, through $1"
+	local folder=$root/$2
+	"$REAL_MKDIR" -p "$folder/$3$NL$folder"
+	printf '%s %s\n' "$5" "$SECRET_MARK" >"$folder/$3$NL$folder/$4"
+}
+twin_refused() { # folder of the twin, name in it
+	check "exit 1 ($CODE)" test "$CODE" = 1
+	check "names the folder on one line" "$REAL_GREP" -qxF "check-template: $NEWLINE_NAME: $root/$1/$2\\n" "$CASE/err"
+	check "never the content" lacks "$CASE" "$SECRET_MARK"
+	check "only fakes ran" guard "$CASE" "$CHECK_COMMANDS"
+}
+twin "an allow-list entry" root/.ascii/bin boat boat "ksb1_AAAA"
+base_image
+base_manifest "$CASE/manifest"
+run_recorded
+twin_refused root/.ascii/bin boat
+run_check --hashes
+check "--hashes gives it no entry" "$REAL_GREP" -qxF "# no entry for /root/.ascii/bin/boat\\n: a name with a newline" "$CASE/out"
+
+twin "Boat's folder" home/user/.config/ascii computer-mcp.py computer-mcp.py "boat_key"
+base_image
+base_manifest "$CASE/manifest"
+run_recorded
+twin_refused home/user/.config/ascii computer-mcp.py
+
+twin "klav-forward" usr/local/bin klav-forward klav-forward "tskey-auth-kFAKE"
+run_check
+twin_refused usr/local/bin klav-forward
+
+# --hashes prints no entry under a folder the allow list never excuses.
+check_case "--hashes under the forwarder's folder"
+"$REAL_MKDIR" -p "$root/root/.klav-forward"
+printf 'boat_FAKE\n' >"$root/root/.klav-forward/env.sh"
+run_check --hashes
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "no entry for a file in it" "$REAL_GREP" -qxF "# no entry for /root/.klav-forward/env.sh: the allow list never excuses it" "$CASE/out"
+
+# A malformed entry exits 2 before anything runs, also with --validate.
+HASH=$(printf '%064d' 7)
+bad_manifest() { # name, manifest line(s), message part
+	local mode
+	for mode in check validate; do
+		check_case "$1 ($mode)"
+		printf '%s\n' "$2" >"$CASE/manifest"
+		if [ "$mode" = check ]; then run_check --manifest "$CASE/manifest"; else run_check --manifest "$CASE/manifest" --validate; fi
+		check "exit 2 ($CODE)" test "$CODE" = 2
+		check "says why" contains "$CASE/err" "$3"
+		check "nothing ran" test ! -s "$CASE/calls"
+	done
+}
+ALLOW_SHAPE="ALLOW is not <SHA-256 in 64 lowercase hex>, two spaces, <absolute path>"
+bad_manifest "a relative path" "ALLOW=$HASH  root/x" "ALLOW names root/x: not an absolute path"
+bad_manifest "a .. part" "ALLOW=$HASH  /root/../etc/x" "ALLOW names /root/../etc/x: an empty, . or .. part"
+bad_manifest "a . part" "ALLOW=$HASH  /root/./x" "ALLOW names /root/./x: an empty, . or .. part"
+bad_manifest "an empty part" "ALLOW=$HASH  /root//x" "ALLOW names /root//x: an empty, . or .. part"
+bad_manifest "a trailing slash" "ALLOW=$HASH  /root/x/" "ALLOW names /root/x/: an empty, . or .. part"
+bad_manifest "a space in the path" "ALLOW=$HASH  /root/a b" "ALLOW names /root/a b: a character other than"
+bad_manifest "a glob in the path" "ALLOW=$HASH  /root/*" "ALLOW names /root/*: a character other than"
+bad_manifest "one space" "ALLOW=$HASH /root/x" "$ALLOW_SHAPE"
+bad_manifest "a hash in capitals" "ALLOW=$(printf '%064d' 0 | tr 0 A)  /root/x" "$ALLOW_SHAPE"
+bad_manifest "a short hash" "ALLOW=abc123  /root/x" "$ALLOW_SHAPE"
+bad_manifest "no path" "ALLOW=$HASH" "$ALLOW_SHAPE"
+bad_manifest "a path twice" "ALLOW=$HASH  /root/x
+ALLOW=$HASH  /root/x" "manifest line 2: ALLOW names /root/x twice"
+bad_manifest "a log" "ALLOW=$HASH  /var/log/auth.log" "ALLOW names /var/log/auth.log: in a folder build-template empties"
+bad_manifest "apt's lists" "ALLOW=$HASH  /var/lib/apt/lists/x_Packages" "ALLOW names /var/lib/apt/lists/x_Packages: in a folder build-template empties"
+bad_manifest "a path under /run" "ALLOW=$HASH  /run/x" "ALLOW names /run/x: not on the disk a snapshot saves"
+bad_manifest "a path under /proc" "ALLOW=$HASH  /proc/x" "ALLOW names /proc/x: not on the disk a snapshot saves"
+bad_manifest "klav-forward" "ALLOW=$HASH  /usr/local/bin/klav-forward" "checked against the build record, never allowed"
+bad_manifest "klav-tailnet-up" "ALLOW=$HASH  /usr/local/sbin/klav-tailnet-up" "checked against the build record, never allowed"
+bad_manifest "the build record" "ALLOW=$HASH  /etc/klav-sandbox-template/manifest" "checked against the build record, never allowed"
+bad_manifest "a login out of the home" "AGENT_LOGIN_FILES=../x" "AGENT_LOGIN_FILES has ../x"
+bad_manifest "none with a login" "AGENT_LOGIN_FILES=none .x" "AGENT_LOGIN_FILES has none"
+
+check_case "--validate on a good manifest"
+printf 'KLAV_VERSION=0.9.0\nALLOW=%s  /root/x\nALLOW=%s  /root/y\nAGENT_LOGIN_FILES=.x/token\n' "$HASH" "$HASH" >"$CASE/manifest"
+run_check --manifest "$CASE/manifest" --validate
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "says so" contains "$CASE/out" "the allow list (2 entries) and the login files are well formed"
+check "nothing ran" test ! -s "$CASE/calls"
+
+check_case "--validate without a manifest"
+run_check --validate
+check "exit 2 ($CODE)" test "$CODE" = 2
+
+# --- build-template ---------------------------------------------------------
+
+shipped_build=$src/build-template
+current="build-template's seam"
+check "the shipped seam's PATH" "$REAL_GREP" -qx 'bin_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' "$shipped_build"
+check "the shipped seam's root" "$REAL_GREP" -qx 'root=' "$shipped_build"
+check "one seam, two assignments" test "$(sed -n "${seam_re}p" "$shipped_build" | "$REAL_GREP" -c '^[a-z_]*=')" = 2
+# Every path it writes or reads on the system goes through `root`, so the
+# copy cannot touch the real one.
+check "no absolute system path outside the seam" test -z "$(sed "${seam_re}d" "$shipped_build" | "$REAL_GREP" -vE '^[[:space:]]*#' | "$REAL_GREP" -E '(^|[^A-Za-z0-9_}.$])/(etc|usr|var|run|opt|home|root|bin|sbin|tmp|lib|srv)([/"[:space:]]|$)' || true)"
+
+# The copy the tests run, with check-template and klav-tailnet-up next to it
+# as the person copies the folder: the shipped files, the seam pointing at
+# the case's fakes and at the case's root.
+build_copy() { # case dir
+	local c=$1
+	sed -e "s|^bin_path=.*|bin_path=$c/bin|" -e "s|^root=\$|root=$c/root|" "$shipped_build" >"$c/build-template"
+	if ! "$REAL_GREP" -qxF "bin_path=$c/bin" "$c/build-template" || ! "$REAL_GREP" -qxF "root=$c/root" "$c/build-template"; then
+		echo "the seam rewrite of build-template did not apply: refusing to run" >&2
+		exit 1
+	fi
+	cmp -s <(sed "${seam_re}d" "$shipped_build") <(sed "${seam_re}d" "$c/build-template") || {
+		echo "the copy of build-template differs from the shipped file outside the seam" >&2
+		exit 1
+	}
+	"$REAL_CP" "$src/check-template" "$src/klav-tailnet-up" "$c/"
+}
+
+# Everything build-template could run, as fakes that only log: reaching one
+# of the install commands in a refusal case is a failure.
+INSTALL_COMMANDS="apt-get apt-mark curl systemctl install npm mkdir chmod rm mv tailscale journalctl truncate find"
+build_bin() { # bin, uid
+	"$REAL_MKDIR" -p "$1"
+	local c
+	for c in $INSTALL_COMMANDS; do fake "$1" "$c" 'exit 0'; done
+	fake "$1" id "echo $2"
+	fake "$1" jq 'exit 0'
+	wrap "$1" sha256sum "$REAL_SHA"
+	wrap "$1" dirname "$(real dirname)"
+}
+BUILD_COMMANDS="id sha256sum dirname klav-forward"
+COMMIT=0123456789abcdef0123456789abcdef01234567
+KEYRING_TEXT="a fake Tailscale keyring"
+KEYRING_SHA=$(printf '%s\n' "$KEYRING_TEXT" | "$REAL_SHA" | cut -d' ' -f1)
+
+# A fake klav-forward naming a commit, a manifest for it, and the copy.
+build_case() { # name, commit the binary names
+	n=$((n + 1))
+	current="build-template: $1"
+	CASE=$tmp/b$n
+	"$REAL_MKDIR" -p "$CASE"
+	: >"$CASE/calls"
+	build_bin "$CASE/bin" 1000
+	fake "$CASE" klav-forward "echo 'klav-forward 0.0.0 (${2:0:12} 2026-11-17T00:00:00Z)'"
+	FORWARD_SHA=$(sha_of "$CASE/klav-forward")
+	printf '%s\n' "$KEYRING_TEXT" >"$CASE/keyring"
+	{
+		printf '# a test manifest\n'
+		printf 'KLAV_VERSION=0.9.0\n'
+		printf 'KLAV_COMMIT=%s\n' "$COMMIT"
+		printf 'KLAV_FORWARD_SHA256=%s\n' "$FORWARD_SHA"
+		printf 'TAILSCALE_KEYRING_SHA256=%s\n' "$KEYRING_SHA"
+		printf 'TAILSCALE_VERSION=1.0.0\n'
+		printf 'JQ_VERSION=1.0-1\n'
+		printf 'NPM_PACKAGES=@example/cli@1.2.3 other-cli@0.1.0\n'
+		printf 'AGENT_LOGIN_FILES=.example/token\n'
+	} >"$CASE/manifest"
+	build_copy "$CASE"
+}
+run_build() { # args...
+	set +e
+	"$REAL_ENV" -i KLAV_TEST_CASE="$CASE" PATH="$CASE/bin" \
+		"$bash_under_test" "$CASE/build-template" "$@" >"$CASE/out" 2>"$CASE/err"
+	CODE=$?
+	set -e
+}
+nothing_installed() {
+	local c
+	for c in $INSTALL_COMMANDS; do
+		! "$REAL_GREP" -q "^$c " "$CASE/calls" || return 1
+	done
+}
+refused_build() { # expected exit, message part
+	check "exit $1 ($CODE)" test "$CODE" = "$1"
+	check "says why" contains "$CASE/err" "$2"
+	check "installed nothing" nothing_installed
+	check "only fakes ran" guard "$CASE" "$BUILD_COMMANDS"
+	check "never says to save" lacks "$CASE/out" "Save this machine"
+}
+set_key() { # key, value
+	sed "s|^$1=.*|$1=$2|" "$CASE/manifest" >"$CASE/m2"
+	cat "$CASE/m2" >"$CASE/manifest"
+}
+
+build_case "no arguments" "$COMMIT"
+run_build
+refused_build 2 "usage: build-template"
+
+build_case "the shipped manifest, still empty" "$COMMIT"
+run_build --manifest "$src/manifest" --forward "$CASE/klav-forward"
+refused_build 2 "the manifest has no KLAV_VERSION"
+
+for key in KLAV_VERSION KLAV_COMMIT KLAV_FORWARD_SHA256 TAILSCALE_KEYRING_SHA256 TAILSCALE_VERSION JQ_VERSION NPM_PACKAGES AGENT_LOGIN_FILES; do
+	build_case "no $key" "$COMMIT"
+	set_key "$key" ""
+	run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+	refused_build 2 "the manifest has no $key"
+done
+malformed() { # name, key, value, message
+	build_case "$1" "$COMMIT"
+	set_key "$2" "$3"
+	run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+	refused_build 2 "$4"
+}
+malformed "a short commit" KLAV_COMMIT 0123456789ab "the manifest's KLAV_COMMIT is not a full commit"
+malformed "a hash in capitals" KLAV_FORWARD_SHA256 "$(printf '%064d' 0 | tr 0 A)" "the manifest's KLAV_FORWARD_SHA256 is not a SHA-256"
+malformed "a short keyring hash" TAILSCALE_KEYRING_SHA256 "abc123" "the manifest's TAILSCALE_KEYRING_SHA256 is not a SHA-256"
+malformed "a version with a slash" KLAV_VERSION "0.9/1" "the manifest's KLAV_VERSION is not a version"
+malformed "an npm range" NPM_PACKAGES "@example/cli@^1.2.3" "NPM_PACKAGES has @example/cli@^1.2.3"
+malformed "an npm tag" NPM_PACKAGES "other-cli@latest" "NPM_PACKAGES has other-cli@latest"
+malformed "an npm package without a version" NPM_PACKAGES "other-cli" "NPM_PACKAGES has other-cli"
+malformed "a login path out of the home" AGENT_LOGIN_FILES "../x" "AGENT_LOGIN_FILES has ../x"
+malformed "an absolute login path" AGENT_LOGIN_FILES "/etc/x" "AGENT_LOGIN_FILES has /etc/x"
+
+build_case "an unknown key" "$COMMIT"
+printf 'EXTRA=1\n' >>"$CASE/manifest"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 2 "unknown key EXTRA"
+
+build_case "a key set twice" "$COMMIT"
+printf 'JQ_VERSION=2\n' >>"$CASE/manifest"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 2 "JQ_VERSION is set twice"
+
+build_case "a manifest line that runs a command" "$COMMIT"
+# shellcheck disable=SC2016 # the text a manifest line must never run
+printf '$(touch %s/ran)\n' "$CASE" >>"$CASE/manifest"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 2 "is not KEY=VALUE"
+check "nothing ran" test ! -e "$CASE/ran"
+
+build_case "the binary's hash is not the manifest's" "$COMMIT"
+set_key KLAV_FORWARD_SHA256 "$(printf '%064d' 0)"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "klav-forward's SHA-256 is not the manifest's"
+check "never ran the binary" test -z "$("$REAL_GREP" '^klav-forward' "$CASE/calls" || true)"
+
+build_case "the binary names another commit" fedcba9876543210fedcba9876543210fedcba98
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "does not name the manifest's commit 0123456789ab"
+
+build_case "everything right, but not root" "$COMMIT"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "run it as root"
+check "checked the binary's version" contains "$CASE/calls" "klav-forward --version"
+
+# The allow list: check-template checks it, before anything is installed.
+build_case "a malformed allow-list entry" "$COMMIT"
+printf 'ALLOW=%s  /var/log/auth.log\n' "$(printf '%064d' 7)" >>"$CASE/manifest"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 2 "ALLOW or AGENT_LOGIN_FILES lines are not well formed"
+check "check-template says which line" contains "$CASE/err" "ALLOW names /var/log/auth.log: in a folder build-template empties"
+check "never hashed the binary" test -z "$("$REAL_GREP" '^sha256sum' "$CASE/calls" || true)"
+
+build_case "an allow-list path given twice" "$COMMIT"
+printf 'ALLOW=%s  /root/x\nALLOW=%s  /root/x\n' "$(printf '%064d' 7)" "$(printf '%064d' 8)" >>"$CASE/manifest"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 2 "ALLOW names /root/x twice"
+
+# Boat mounts /run noexec: neither the folder nor the binary can run there,
+# and the build says so before it installs anything.
+NOEXEC="exec failed (exit 126): its folder is mounted noexec, it has no execute bit, or it is built for another machine"
+build_case "check-template cannot be executed" "$COMMIT"
+chmod 0644 "$CASE/check-template"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "cannot execute $CASE/check-template: $NOEXEC"
+check "names the fix" contains "$CASE/err" "a tmpfs of their own under $CASE/root/run, mounted with exec"
+check "never hashed the binary" test -z "$("$REAL_GREP" '^sha256sum' "$CASE/calls" || true)"
+
+build_case "the binary cannot be executed" "$COMMIT"
+chmod 0644 "$CASE/klav-forward"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "cannot execute $CASE/klav-forward: $NOEXEC"
+check "never ran the binary" test -z "$("$REAL_GREP" '^klav-forward' "$CASE/calls" || true)"
+
+# The execute bit is there, but exec fails (126), as on a noexec mount.
+build_case "the binary's exec is refused" "$COMMIT"
+fake "$CASE" klav-forward 'exit 126'
+set_key KLAV_FORWARD_SHA256 "$(sha_of "$CASE/klav-forward")"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "cannot execute $CASE/klav-forward: $NOEXEC"
+
+build_case "the binary's --version fails" "$COMMIT"
+fake "$CASE" klav-forward 'exit 1'
+set_key KLAV_FORWARD_SHA256 "$(sha_of "$CASE/klav-forward")"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "klav-forward --version failed"
+check "not taken for noexec" lacks "$CASE/err" "mounted noexec"
+
+build_case "check-template's exec is refused" "$COMMIT"
+printf '#!%s\nexit 126\n' "$REAL_BASH" >"$CASE/check-template"
+run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+refused_build 1 "cannot execute $CASE/check-template: $NOEXEC"
+
+# The whole run, as root, against fakes that act: the install commands
+# write only inside the case's root (and refuse anything else), systemctl
+# keeps the unit's state, and check-template runs last on that root.
+# shellcheck disable=SC2016 # expanded by the fake
+CURL_BODY='
+out=
+url=
+while [ "$#" -gt 0 ]; do
+	case $1 in
+	-o) out=$2; shift 2 ;;
+	--proto) shift 2 ;;
+	-*) shift ;;
+	*) url=$1; shift ;;
+	esac
+done
+case $out in "$KLAV_TEST_CASE"/*) ;; *) printf "curl %s\n" "$out" >>"$KLAV_TEST_CASE/outside"; exit 99 ;; esac
+case $url in
+https://pkgs.tailscale.com/*.noarmor.gpg) cat "$KLAV_TEST_CASE/keyring" >"$out" ;;
+*) exit 22 ;;
+esac'
+# shellcheck disable=SC2016 # expanded by the fake
+INSTALL_BODY='
+mode=
+args=()
+while [ "$#" -gt 0 ]; do
+	case $1 in
+	-o | -g) shift 2 ;;
+	-m) mode=$2; shift 2 ;;
+	*) args+=("$1"); shift ;;
+	esac
+done
+[ "${#args[@]}" = 2 ] && [ -n "$mode" ] || exit 64
+case ${args[1]} in "$KLAV_TEST_CASE"/*) ;; *) printf "install %s\n" "${args[1]}" >>"$KLAV_TEST_CASE/outside"; exit 99 ;; esac
+cp "${args[0]}" "${args[1]}"
+chmod "$mode" "${args[1]}"'
+# apt-get: `update` writes a package list that names `boat_`, as Ubuntu's
+# universe list does.
+# shellcheck disable=SC2016 # expanded by the fake
+APT_GET_BODY='
+[ "$1" = update ] || exit 0
+lists=$KLAV_TEST_CASE/root/var/lib/apt/lists
+mkdir -p "$lists/partial"
+printf "Filename: pool/universe/x/xboat/xboat_1.0_amd64.deb\n" >"$lists/archive_dists_noble_universe_binary-amd64_Packages"'
+# journalctl --rotate: each active journal file becomes an archived one
+# (name@...) and a new, empty one takes its place; fails with
+# `journal_fails`.
+# shellcheck disable=SC2016 # expanded by the fake
+JOURNALCTL_BODY='
+[ "$*" = --rotate ] || exit 64
+[ ! -e "$KLAV_TEST_CASE/journal_fails" ] || exit 1
+for f in "$KLAV_TEST_CASE"/root/var/log/journal/*/*.journal; do
+	[ -e "$f" ] || continue
+	case ${f##*/} in *@*) continue ;; esac
+	mv "$f" "${f%.journal}@0001-rotated.journal"
+	printf "journal started\n" >"$f"
+done'
+# truncate -s 0 -- FILE...: only inside the case; fails with
+# `truncate_fails`.
+# shellcheck disable=SC2016 # expanded by the fake
+TRUNCATE_BODY='
+[ ! -e "$KLAV_TEST_CASE/truncate_fails" ] || exit 1
+[ "$1" = -s ] && [ "$2" = 0 ] && [ "$3" = -- ] || exit 64
+shift 3
+for f in "$@"; do
+	case $f in "$KLAV_TEST_CASE"/*) ;; *) printf "truncate %s\n" "$f" >>"$KLAV_TEST_CASE/outside"; exit 99 ;; esac
+	: >"$f"
+done'
+build_bin_full() { # bin
+	local b=$1
+	"$REAL_MKDIR" -p "$b"
+	fake "$b" id 'echo 0'
+	fake "$b" apt-get "$APT_GET_BODY"
+	fake "$b" apt-mark 'exit 0'
+	fake "$b" npm '[ "$*" != "prefix -g" ] || echo /usr/local'
+	fake "$b" journalctl "$JOURNALCTL_BODY"
+	fake "$b" truncate "$TRUNCATE_BODY"
+	fake "$b" tailscale 'echo 1.0.0'
+	fake "$b" jq 'echo jq-1.0'
+	fake "$b" pgrep 'exit 1'
+	fake "$b" systemctl "$SYSTEMCTL_BODY"
+	fake "$b" ls "$LS_BODY"
+	fake "$b" curl "$CURL_BODY"
+	fake "$b" install "$INSTALL_BODY"
+	guarded "$b" rm "$REAL_RM"
+	guarded "$b" mv "$(real mv)"
+	guarded "$b" mkdir "$REAL_MKDIR"
+	guarded "$b" chmod "$(real chmod)"
+	wrap "$b" sha256sum "$REAL_SHA"
+	wrap "$b" md5sum "$REAL_MD5"
+	wrap "$b" dirname "$(real dirname)"
+	wrap "$b" head "$(real head)"
+	wrap "$b" grep "$REAL_GREP"
+	wrap "$b" find "$(real find)"
+	wrap "$b" xargs "$(real xargs)"
+}
+BUILD_FULL_COMMANDS="id apt-get apt-mark npm tailscale jq pgrep systemctl ls curl install rm mv mkdir chmod sha256sum md5sum dirname head grep find xargs klav-forward journalctl truncate"
+# A machine as the person starts it: Debian, the unit enabled by the
+# package, and state left in /var/lib/tailscale.
+full_build_case() { # name
+	build_case "$1" "$COMMIT"
+	"$REAL_RM" -rf "$CASE/bin"
+	build_bin_full "$CASE/bin"
+	local r=$CASE/root
+	"$REAL_MKDIR" -p "$r/etc/apt/sources.list.d" "$r/usr/share/keyrings" "$r/usr/local/bin" \
+		"$r/usr/local/sbin" "$r/var/lib/tailscale" "$r/var/lib/dpkg/info" "$r/root" "$r/home/user"
+	printf 'ID=debian\nVERSION_CODENAME=bookworm\n' >"$r/etc/os-release"
+	printf 'old state\n' >"$r/var/lib/tailscale/tailscaled.state"
+	printf 'enabled\n' >"$CASE/unit"
+	# The logs of the person's commands on the build machine, one of which
+	# named a string, and an old package list.
+	"$REAL_MKDIR" -p "$r/var/log/apt" "$r/var/log/journal/m1" "$r/var/lib/apt/lists"
+	printf 'sudo: COMMAND=/usr/bin/grep -r boat_ /root\n' >"$r/var/log/auth.log"
+	printf 'Commandline: apt-get install xboat_1\n' >"$r/var/log/apt/history.log"
+	printf 'grep boat_\n' >"$r/var/log/journal/m1/system.journal"
+	printf 'grep boat_\n' >"$r/var/log/journal/m1/user-1000.journal"
+	printf 'grep boat_\n' >"$r/var/log/journal/m1/user-1000@0000-old.journal"
+	printf 'old list\n' >"$r/var/lib/apt/lists/old_Packages"
+}
+run_full_build() {
+	run_build --manifest "$CASE/manifest" --forward "$CASE/klav-forward"
+}
+nothing_outside() { test ! -e "$CASE/outside"; }
+
+full_build_case "a whole build"
+run_full_build
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "says it may be saved, by name" "$REAL_GREP" -qxF "build-template: klav-sandbox-0.9.0 is ready. Save this machine as klav-sandbox-0.9.0 from your own machine." "$CASE/out"
+check "the keyring over https only, into a side file" contains "$CASE/calls" "curl -fsSL --proto =https https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg -o $CASE/root/usr/share/keyrings/tailscale-archive-keyring.gpg.new"
+check "the checked keyring in place" cmp -s "$CASE/keyring" "$CASE/root/usr/share/keyrings/tailscale-archive-keyring.gpg"
+check "no side file left" test ! -e "$CASE/root/usr/share/keyrings/tailscale-archive-keyring.gpg.new"
+# The apt list is the script's own line, never a download: `signed-by` is
+# what ties apt to the checked keyring.
+check "the apt list names the keyring" "$REAL_GREP" -qxF 'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian bookworm main' "$CASE/root/etc/apt/sources.list.d/tailscale.list"
+check "the apt list is one line" test "$(wc -l <"$CASE/root/etc/apt/sources.list.d/tailscale.list" | tr -d ' ')" = 1
+check "one download, the keyring" test "$("$REAL_GREP" -c '^curl ' "$CASE/calls")" = 1
+check "the exact versions" contains "$CASE/calls" "apt-get install -y tailscale=1.0.0 jq=1.0-1"
+check "held" contains "$CASE/calls" "apt-mark hold tailscale jq"
+check "the unit stopped" contains "$CASE/calls" "systemctl disable --now tailscaled.service"
+check "the unit masked" contains "$CASE/calls" "systemctl mask tailscaled.service"
+check "the unit is masked" test "$(cat "$CASE/unit")" = masked
+check "no Tailscale state" test -z "$("$REAL_LS" -A "$CASE/root/var/lib/tailscale")"
+check "each npm CLI at its version" contains "$CASE/calls" "npm install -g @example/cli@1.2.3"
+check "each npm CLI at its version (2)" contains "$CASE/calls" "npm install -g other-cli@0.1.0"
+check "klav-forward installed" test "$(sha_of "$CASE/root/usr/local/bin/klav-forward")" = "$FORWARD_SHA"
+check "klav-tailnet-up installed" cmp -s "$shipped" "$CASE/root/usr/local/sbin/klav-tailnet-up"
+check "klav-tailnet-up 0755" test "$("$REAL_LS" -l "$CASE/root/usr/local/sbin/klav-tailnet-up" | cut -c1-10)" = -rwxr-xr-x
+check "the record has klav-forward's hash" "$REAL_GREP" -qx "KLAV_FORWARD_SHA256=$FORWARD_SHA" "$CASE/root/etc/klav-sandbox-template/manifest"
+check "the record has klav-tailnet-up's hash" "$REAL_GREP" -qx "KLAV_TAILNET_UP_SHA256=$(sha_of "$shipped")" "$CASE/root/etc/klav-sandbox-template/manifest"
+check "check-template ran last, on that root" contains "$CASE/calls" "systemctl is-enabled tailscaled.service"
+check "check-template's checks passed" contains "$CASE/out" "check-template: nothing forbidden found"
+check "the record says where npm put the CLIs" "$REAL_GREP" -qx "NPM_GLOBAL_PREFIX=/usr/local" "$CASE/root/etc/klav-sandbox-template/manifest"
+check "no allow list, none recorded" lacks "$CASE/root/etc/klav-sandbox-template/manifest" "ALLOW="
+check "apt's package lists removed" test -z "$("$REAL_LS" -A "$CASE/root/var/lib/apt/lists")"
+check "the journal rotated" contains "$CASE/calls" "journalctl --rotate"
+check "the archived journal files removed" test -z "$("$REAL_LS" "$CASE/root/var/log/journal/m1" | "$REAL_GREP" '@' || true)"
+check "a new journal file in place, never emptied" test -s "$CASE/root/var/log/journal/m1/system.journal"
+check "sudo's log emptied" test ! -s "$CASE/root/var/log/auth.log"
+check "apt's log emptied" test ! -s "$CASE/root/var/log/apt/history.log"
+check "the logs emptied before the check" test "$("$REAL_GREP" -n -m1 '^truncate ' "$CASE/calls" | cut -d: -f1)" -lt "$("$REAL_GREP" -n -m1 '^systemctl is-enabled' "$CASE/calls" | cut -d: -f1)"
+check "nothing written outside the case" nothing_outside
+check "only fakes ran" guard "$CASE" "$BUILD_FULL_COMMANDS"
+
+full_build_case "the unit is not masked"
+: >"$CASE/mask_noop"
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "check-template says why" contains "$CASE/err" "the tailscaled unit must be masked, it is 'disabled'"
+check "says not to save" contains "$CASE/err" "klav-sandbox-0.9.0 is not ready: do not save it"
+check "never says to save" lacks "$CASE/out" "Save this machine"
+check "never says ready" lacks "$CASE/out" "is ready"
+check "nothing written outside the case" nothing_outside
+
+full_build_case "a login left on the machine"
+"$REAL_MKDIR" -p "$CASE/root/home/user/.example"
+printf 'token\n' >"$CASE/root/home/user/.example/token"
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "check-template names it, from the manifest's logins" contains "$CASE/err" "an agent login: $CASE/root/home/user/.example/token"
+check "says not to save" contains "$CASE/err" "do not save it"
+check "never says to save" lacks "$CASE/out" "Save this machine"
+
+# Boat's base image: files that name `boat_` and Boat's folder, all on the
+# manifest's allow list, which the record carries to check-template.
+base_image_build() {
+	local r=$CASE/root
+	"$REAL_MKDIR" -p "$r/root/.ascii/bin" "$r/home/user/.config/ascii/boat"
+	printf 'cli: reads boat_api_url\n' >"$r/root/.ascii/bin/boat"
+	printf '{"api_url":"https://example.invalid","channel":"stable"}\n' >"$r/home/user/.config/ascii/boat/config.json"
+}
+full_build_case "the base image, on the allow list"
+base_image_build
+{
+	printf 'ALLOW=%s  /root/.ascii/bin/boat\n' "$(sha_of "$CASE/root/root/.ascii/bin/boat")"
+	printf 'ALLOW=%s  /home/user/.config/ascii/boat/config.json\n' "$(sha_of "$CASE/root/home/user/.config/ascii/boat/config.json")"
+} >"$CASE/allow"
+"$REAL_CP" "$CASE/manifest" "$CASE/m0"
+cat "$CASE/m0" "$CASE/allow" >"$CASE/manifest"
+run_full_build
+check "exit 0 ($CODE)" test "$CODE" = 0
+check "says it may be saved" contains "$CASE/out" "is ready. Save this machine as klav-sandbox-0.9.0"
+check "the record carries the allow list" cmp -s "$CASE/allow" <("$REAL_GREP" '^ALLOW=' "$CASE/root/etc/klav-sandbox-template/manifest")
+
+full_build_case "the base image, without an allow list"
+base_image_build
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "names Boat's CLI" contains "$CASE/err" "a ksb1_, tskey- or boat_ string: $CASE/root/root/.ascii/bin/boat"
+check "names the file in Boat's folder" contains "$CASE/err" "a file in Boat's folder that the allow list does not cover: $CASE/root/home/user/.config/ascii/boat/config.json"
+check "never says to save" lacks "$CASE/out" "Save this machine"
+
+# Emptying the logs and removing apt's lists fail closed. rm_fails_on makes
+# rm fail for any argument holding a pattern, and pass the rest to the
+# guarded rm (never a permission trick: the tests may run as root).
+rm_fails_on() { # pattern
+	"$REAL_CP" "$CASE/bin/rm" "$CASE/rm-guarded"
+	cat >"$CASE/bin/rm" <<EOF
+#!$REAL_BASH
+for a in "\$@"; do case \$a in *"$1"*) exit 1 ;; esac; done
+exec "$CASE/rm-guarded" "\$@"
+EOF
+	chmod 0755 "$CASE/bin/rm"
+}
+full_build_case "the journal cannot rotate"
+: >"$CASE/journal_fails"
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says why" contains "$CASE/err" "journalctl --rotate failed, so the journal is not emptied: do not save it"
+check "check-template never ran" lacks "$CASE/calls" "systemctl is-enabled"
+check "never says to save" lacks "$CASE/out" "Save this machine"
+
+full_build_case "an archived journal file cannot be removed"
+rm_fails_on .journal
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says why" contains "$CASE/err" "the journal's archived files could not be removed: do not save it"
+check "check-template never ran" lacks "$CASE/calls" "systemctl is-enabled"
+
+full_build_case "a log cannot be emptied"
+: >"$CASE/truncate_fails"
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says why" contains "$CASE/err" "the log files could not be emptied: do not save it"
+check "check-template never ran" lacks "$CASE/calls" "systemctl is-enabled"
+check "never says to save" lacks "$CASE/out" "Save this machine"
+
+full_build_case "apt's lists cannot be removed"
+rm_fails_on /var/lib/apt/lists/
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says why" contains "$CASE/err" "apt's package lists could not be removed: do not save it"
+check "check-template never ran" lacks "$CASE/calls" "systemctl is-enabled"
+
+full_build_case "no journalctl"
+"$REAL_RM" -f "$CASE/bin/journalctl"
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says why" contains "$CASE/err" "no journalctl, so the journal cannot be emptied: do not save it"
+
+full_build_case "a keyring that is not the manifest's"
+printf 'another keyring\n' >"$CASE/keyring"
+run_full_build
+check "exit 1 ($CODE)" test "$CODE" = 1
+check "says why" contains "$CASE/err" "Tailscale's keyring is not the manifest's TAILSCALE_KEYRING_SHA256"
+check "the keyring removed" test ! -e "$CASE/root/usr/share/keyrings/tailscale-archive-keyring.gpg.new"
+check "never put in place" test ! -e "$CASE/root/usr/share/keyrings/tailscale-archive-keyring.gpg"
+check "no apt list written" test ! -e "$CASE/root/etc/apt/sources.list.d/tailscale.list"
+check "nothing from apt" test -z "$("$REAL_GREP" -E '^(apt-get|apt-mark) ' "$CASE/calls" || true)"
+check "never says to save" lacks "$CASE/out" "Save this machine"
+
+# --- Done -------------------------------------------------------------------
+
+# shellcheck disable=SC2016 # expanded by the bash under test
+printf '%d passed, %d failed (bash: %s)\n' "$passed" "$failed" "$("$bash_under_test" -c 'echo $BASH_VERSION')"
+[ "$failed" -eq 0 ]

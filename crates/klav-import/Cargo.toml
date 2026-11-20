@@ -1,0 +1,50 @@
+[package]
+name = "klav-import"
+description = "Reads exports of other password managers and plans how they merge into a Klav project (ADR 0024)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Reads Google Authenticator export QR codes from PNG images (`klav import`
+# in the CLI, the extension through klavd). The iOS app scans with
+# AVFoundation instead and does not build this.
+qr-image = ["dep:png", "dep:rqrr"]
+# Synthetic exports (`samples`) and the example that writes them to
+# examples/import/.
+samples = ["dep:png", "dep:qrcode"]
+
+[dependencies]
+# `rp-id`: an imported passkey's rpId is checked while reading (ADR 0020 §6).
+klav-core = { workspace = true, features = ["rp-id"] }
+csv = "1.4"
+data-encoding = "2.11"
+# Inflate for the 1Password `.1pux` ZIP; the same major that `png` uses.
+miniz_oxide = "0.9"
+percent-encoding = "2.3"
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+zeroize = { version = "1.9", features = ["serde"] }
+png = { version = "0.18", optional = true }
+rqrr = { version = "0.11", default-features = false, optional = true }
+qrcode = { version = "0.14", default-features = false, optional = true }
+
+[dev-dependencies]
+# The samples module in the tests.
+qrcode = { version = "0.14", default-features = false }
+png = "0.18"
+# Compile-time checks that types holding secrets are not `Debug` (T34);
+# the same version klav-core already uses.
+static_assertions = "1.1"
+
+[lints]
+workspace = true
+
+[[example]]
+name = "import-samples"
+required-features = ["samples", "qr-image"]

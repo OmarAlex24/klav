@@ -1,0 +1,17 @@
+# cargo-nextest (https://nexte.st). CI runs the `ci` profile in the `test`
+# and `test (postgres)` tasks (.github/workflows/ci.yml): one process per
+# test, as many at once as the machine has CPUs, across every test binary.
+# Plain `cargo test --workspace` keeps working the same.
+
+[profile.ci]
+# Run everything and report every failure, not only the first one.
+fail-fast = false
+# SLOW at 2 min, killed at 6 min. The slowest tests take up to ~75 s on
+# boat-large with the other tasks running, so anything still going at 2 min
+# is worth a look, and a hang costs 6 min instead of the task's 80 min wait.
+# A killed test fails as TIMEOUT, with its output.
+slow-timeout = { period = "120s", terminate-after = 3 }
+# A failing test's output goes right after its FAIL line and again after the
+# summary, at the end of the log: the trimmed failure in the task's check
+# run is the end of the log.
+failure-output = "immediate-final"

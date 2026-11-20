@@ -1,0 +1,1669 @@
+{
+  "locale": {
+    "message": "en",
+    "description": "The catalog's language code, for Intl and the pages' lang attribute."
+  },
+  "ext_name": {
+    "message": "Klav"
+  },
+  "ext_description": {
+    "message": "Fill your passwords from Klav, and let your agents do it without seeing the values."
+  },
+  "command_fill": {
+    "message": "Fill with Klav on this page",
+    "description": "The keyboard shortcut's description."
+  },
+  "quote": {
+    "message": "“$1”",
+    "description": "Quotes around a reason or a search."
+  },
+  "stop_no_password": {
+    "message": "Klav filled the username, but the password never showed up. Check the page and choose the login again."
+  },
+  "stop_captcha": {
+    "message": "The page wants to check you’re a person. Solve it yourself and choose the login again."
+  },
+  "stop_other_site": {
+    "message": "The password is asked for in a frame of another site: Klav won’t type it there."
+  },
+  "error_host_missing": {
+    "message": "This browser can’t talk to Klav on your computer yet."
+  },
+  "error_not_logged_in": {
+    "message": "There’s no account on this computer."
+  },
+  "error_wrong_credentials": {
+    "message": "The master password isn’t correct."
+  },
+  "error_biometry_failed": {
+    "message": "Touch ID didn’t recognize you, or you cancelled it."
+  },
+  "error_biometry_unavailable": {
+    "message": "Touch ID isn’t available right now: use your master password."
+  },
+  "error_locked": {
+    "message": "Klav locked. Unlock it to continue."
+  },
+  "error_network": {
+    "message": "Can’t reach your Klav server; using this computer’s copy."
+  },
+  "error_security": {
+    "message": "Klav stopped this for safety: $1",
+    "description": "$1: the reason, from Klav’s daemon."
+  },
+  "error_timeout": {
+    "message": "Klav took too long to answer. Try again."
+  },
+  "error_disconnected": {
+    "message": "The connection to Klav closed. Try again."
+  },
+  "covered": {
+    "message": "The page is covering part of this box. Klav won’t fill like this: use the shortcut or the toolbar icon."
+  },
+  "field_username": {
+    "message": "Username"
+  },
+  "field_password": {
+    "message": "Password"
+  },
+  "field_totp": {
+    "message": "One-time code"
+  },
+  "field_cardholder": {
+    "message": "Cardholder"
+  },
+  "field_number": {
+    "message": "Number"
+  },
+  "field_expiry": {
+    "message": "Expiry date"
+  },
+  "field_cvv": {
+    "message": "Security code"
+  },
+  "field_pin": {
+    "message": "PIN"
+  },
+  "field_first_name": {
+    "message": "First name"
+  },
+  "field_last_name": {
+    "message": "Last name"
+  },
+  "field_email": {
+    "message": "Email"
+  },
+  "field_phone": {
+    "message": "Phone"
+  },
+  "field_address": {
+    "message": "Address"
+  },
+  "field_city": {
+    "message": "City"
+  },
+  "field_region": {
+    "message": "State or region"
+  },
+  "field_postal_code": {
+    "message": "Postal code"
+  },
+  "field_country": {
+    "message": "Country"
+  },
+  "field_birth_date": {
+    "message": "Birth date"
+  },
+  "field_private_key": {
+    "message": "Private key"
+  },
+  "field_public_key": {
+    "message": "Public key"
+  },
+  "field_fingerprint": {
+    "message": "Fingerprint"
+  },
+  "field_passphrase": {
+    "message": "Passphrase"
+  },
+  "field_api_key": {
+    "message": "API key"
+  },
+  "field_key_id": {
+    "message": "Key ID"
+  },
+  "field_base_url": {
+    "message": "Base URL"
+  },
+  "field_expires": {
+    "message": "Expires"
+  },
+  "kind_login": {
+    "message": "Login"
+  },
+  "kind_card": {
+    "message": "Card"
+  },
+  "kind_identity": {
+    "message": "Address"
+  },
+  "kind_ssh_key": {
+    "message": "SSH key"
+  },
+  "kind_file": {
+    "message": "File"
+  },
+  "kind_totp": {
+    "message": "Code"
+  },
+  "kind_note": {
+    "message": "Note"
+  },
+  "kind_api_key": {
+    "message": "API key"
+  },
+  "kind_short_login": {
+    "message": "login",
+    "description": "The item's kind at the end of a list row, in small monospace."
+  },
+  "kind_short_card": {
+    "message": "card"
+  },
+  "kind_short_identity": {
+    "message": "address"
+  },
+  "kind_short_ssh_key": {
+    "message": "ssh key"
+  },
+  "kind_short_file": {
+    "message": "file"
+  },
+  "kind_short_totp": {
+    "message": "code"
+  },
+  "kind_short_note": {
+    "message": "note"
+  },
+  "kind_short_api_key": {
+    "message": "api key"
+  },
+  "master_password": {
+    "message": "Master password"
+  },
+  "unlock": {
+    "message": "Unlock"
+  },
+  "unlock_touch_id": {
+    "message": "Unlock with Touch ID"
+  },
+  "close": {
+    "message": "Close"
+  },
+  "this_page": {
+    "message": "this page",
+    "description": "Stands in for a host: “No Klav login is for this page.”"
+  },
+  "on_host": {
+    "message": "On $1",
+    "description": "A list heading: the logins of the site $1."
+  },
+  "fill": {
+    "message": "Fill"
+  },
+  "fill_item": {
+    "message": "Fill $1",
+    "description": "Button label for screen readers; $1: the item’s title."
+  },
+  "fill_on_host": {
+    "message": "Fill on $1"
+  },
+  "fill_with_klav": {
+    "message": "Fill with Klav",
+    "description": "The glyph at the end of a field."
+  },
+  "nowhere_page": {
+    "message": "Klav couldn’t find where to type it on this page. Click the field and try again."
+  },
+  "nowhere_form": {
+    "message": "Klav couldn’t find where to type it in this form."
+  },
+  "nowhere_form_password": {
+    "message": "Klav couldn’t find where to type it in this form.",
+    "description": "The generated password."
+  },
+  "no_account_run": {
+    "message": "There’s no Klav account on this computer: run $1.",
+    "description": "$1: the command, klav login."
+  },
+  "no_login_for": {
+    "message": "No Klav login is for $1."
+  },
+  "group_passkeys": {
+    "message": "Passkeys"
+  },
+  "passkey": {
+    "message": "Passkey"
+  },
+  "group_logins": {
+    "message": "Logins"
+  },
+  "group_cards": {
+    "message": "Cards"
+  },
+  "group_addresses": {
+    "message": "Addresses"
+  },
+  "shortcut_opens": {
+    "message": "$1 opens Klav on this page"
+  },
+  "locked_short": {
+    "message": "Klav is locked."
+  },
+  "frame_save": {
+    "message": "Save to Klav",
+    "description": "Title of the frame Klav puts in the page."
+  },
+  "frame_card": {
+    "message": "Sign in with Klav"
+  },
+  "frame_find": {
+    "message": "Search Klav"
+  },
+  "frame_notice": {
+    "message": "Klav notice"
+  },
+  "unavailable_title": {
+    "message": "Klav isn’t responding"
+  },
+  "unavailable_install": {
+    "message": "Install Klav on this computer and run this in a terminal:"
+  },
+  "unavailable_restart": {
+    "message": "Then quit and reopen the browser."
+  },
+  "retry": {
+    "message": "Try again"
+  },
+  "no_account_title": {
+    "message": "No account on this computer"
+  },
+  "no_account_lede": {
+    "message": "Sign in once with the CLI and come back here:"
+  },
+  "checking": {
+    "message": "Checking…"
+  },
+  "touch_id_needs_password": {
+    "message": "Touch ID needs the password: $1.",
+    "description": "$1: why, from Klav’s daemon."
+  },
+  "waiting_touch_id": {
+    "message": "Waiting for Touch ID…"
+  },
+  "use_master_password": {
+    "message": "Use the master password"
+  },
+  "locked_title": {
+    "message": "Klav is locked"
+  },
+  "copied": {
+    "message": "Copied"
+  },
+  "copy_failed": {
+    "message": "The browser didn’t let Klav copy. Try again."
+  },
+  "live_code": {
+    "message": "One-time code for $1"
+  },
+  "copy_code_of": {
+    "message": "Copy code for $1"
+  },
+  "copy_key_hint": {
+    "message": "$1 copies this code"
+  },
+  "lock": {
+    "message": "Lock"
+  },
+  "search_vault": {
+    "message": "Search your vault"
+  },
+  "agent_requests": {
+    "message": "Agent requests"
+  },
+  "on_this_page": {
+    "message": "On this page"
+  },
+  "your_vault": {
+    "message": "Your vault"
+  },
+  "settings": {
+    "message": "Settings"
+  },
+  "nothing_with": {
+    "message": "Nothing matches $1.",
+    "description": "$1: the search, in quotes."
+  },
+  "vault_empty": {
+    "message": "Your vault is empty. Save a login when you sign in on a page."
+  },
+  "sites_one": {
+    "message": "Site"
+  },
+  "sites_other": {
+    "message": "Sites"
+  },
+  "show": {
+    "message": "Show"
+  },
+  "hide": {
+    "message": "Hide"
+  },
+  "show_field": {
+    "message": "Show $1"
+  },
+  "hide_field": {
+    "message": "Hide $1"
+  },
+  "copy_field": {
+    "message": "Copy $1"
+  },
+  "show_note": {
+    "message": "Show the note"
+  },
+  "note": {
+    "message": "Note"
+  },
+  "for_agents": {
+    "message": "For agents"
+  },
+  "agent_reference": {
+    "message": "the reference for agents",
+    "description": "In “Copy $1”."
+  },
+  "kind_where": {
+    "message": "$1 · $2 / $3",
+    "description": "Under an item’s title: its kind, vault and project."
+  },
+  "settings_only_fill_on": {
+    "message": "Klav will fill each step and you’ll press the buttons."
+  },
+  "settings_only_fill_off": {
+    "message": "Klav will press “Continue” and “Sign in” for you."
+  },
+  "settings_save_failed": {
+    "message": "Couldn’t save the setting."
+  },
+  "settings_steps": {
+    "message": "Sign-ins in several steps"
+  },
+  "only_fill": {
+    "message": "Only fill, don’t press"
+  },
+  "only_fill_text": {
+    "message": "When a site asks for the email first and then the password, Klav fills each step and presses “Continue” and “Sign in” for you. With this on, you press them."
+  },
+  "shortcuts": {
+    "message": "Shortcuts"
+  },
+  "shortcut_page": {
+    "message": "On a page: the field’s menu, or the search when no field is focused."
+  },
+  "shortcut_copy": {
+    "message": "In this popup: copies the current site’s code."
+  },
+  "want_list": {
+    "message": "Wants to list $1"
+  },
+  "want_fill": {
+    "message": "Wants to fill $1"
+  },
+  "want_inject": {
+    "message": "Wants to use $1"
+  },
+  "want_totp": {
+    "message": "Wants the one-time code of $1"
+  },
+  "want_reveal": {
+    "message": "Wants to see the value of $1"
+  },
+  "want_create": {
+    "message": "Wants to create in $1"
+  },
+  "want_update": {
+    "message": "Wants to change $1"
+  },
+  "want_delete": {
+    "message": "Wants to delete $1"
+  },
+  "site_claimed": {
+    "message": "Site: $1 (according to the agent)",
+    "description": "$1: the host the agent says it is for; nothing checked it."
+  },
+  "approve": {
+    "message": "Approve"
+  },
+  "approve_touch_id": {
+    "message": "Approve with Touch ID"
+  },
+  "deny": {
+    "message": "Deny"
+  },
+  "confirm": {
+    "message": "Confirm"
+  },
+  "password_to_approve": {
+    "message": "Master password to approve"
+  },
+  "agent_waits": {
+    "message": "$1 is waiting for your permission",
+    "description": "$1: the agent’s name."
+  },
+  "code": {
+    "message": "Code"
+  },
+  "one_time_code": {
+    "message": "One-time code"
+  },
+  "find_other": {
+    "message": "Find another item"
+  },
+  "find_other_sub": {
+    "message": "Another account, or something not listed here"
+  },
+  "generated_password": {
+    "message": "Generated password"
+  },
+  "generate_another": {
+    "message": "Generate another"
+  },
+  "another": {
+    "message": "Another",
+    "description": "Generates another password."
+  },
+  "use_this_password": {
+    "message": "Use this password"
+  },
+  "new_password": {
+    "message": "New password"
+  },
+  "new_password_hint": {
+    "message": "Goes into both fields; Klav then offers to save it."
+  },
+  "no_login_for_site": {
+    "message": "No Klav login is for $1. Klav only fills on the addresses saved in each login."
+  },
+  "no_cards": {
+    "message": "You have no cards in Klav."
+  },
+  "no_addresses": {
+    "message": "You have no addresses in Klav."
+  },
+  "sign_in": {
+    "message": "Sign in"
+  },
+  "sign_in_as": {
+    "message": "Sign in as $1",
+    "description": "$1: the username, in bold."
+  },
+  "other_accounts_one": {
+    "message": "Another account"
+  },
+  "other_accounts_other": {
+    "message": "$1 other accounts"
+  },
+  "title_taken": {
+    "message": "There’s already a login with that title in that project: change the title or choose another project."
+  },
+  "save_question": {
+    "message": "Save this login to Klav?"
+  },
+  "update_question": {
+    "message": "Update the password of $1?"
+  },
+  "no_username": {
+    "message": "no username"
+  },
+  "saved": {
+    "message": "Saved to Klav: $1"
+  },
+  "not_now": {
+    "message": "Not now"
+  },
+  "unlock_to_decide": {
+    "message": "Unlock Klav to decide."
+  },
+  "update": {
+    "message": "Update"
+  },
+  "save": {
+    "message": "Save"
+  },
+  "title": {
+    "message": "Title"
+  },
+  "where": {
+    "message": "Where",
+    "description": "The project to save in."
+  },
+  "no_site": {
+    "message": "no site"
+  },
+  "back": {
+    "message": "Back"
+  },
+  "fill_question": {
+    "message": "Fill $1 on $2?"
+  },
+  "login_is_for": {
+    "message": "The login is for"
+  },
+  "another_site": {
+    "message": "another site"
+  },
+  "typing_on": {
+    "message": "You’re about to type on"
+  },
+  "mismatch": {
+    "message": "They don’t match"
+  },
+  "phishing_note": {
+    "message": "This is what a page pretending to be another one looks like, to keep your password. Fill only if you know it’s the same site under another address."
+  },
+  "search_login": {
+    "message": "Search for a login…"
+  },
+  "search_login_label": {
+    "message": "Search for a login"
+  },
+  "other_logins": {
+    "message": "Other logins"
+  },
+  "nothing_matches": {
+    "message": "Nothing matches $1.",
+    "description": "$1: the search, in quotes."
+  },
+  "find_choose": {
+    "message": "choose"
+  },
+  "find_fill": {
+    "message": "fill"
+  },
+  "find_only_host": {
+    "message": "Only $1’s logins fill without asking"
+  },
+  "agent_filled": {
+    "message": "Klav filled this page for “$1” (the name the agent gave)",
+    "description": "$1: the agent’s name."
+  },
+  "agent_passkey": {
+    "message": "Klav signed in with the passkey of “$1” for “$2” (the name the agent gave)",
+    "description": "$1: the login’s title. $2: the agent’s name."
+  },
+  "close_notice": {
+    "message": "Close notice"
+  },
+  "site_icons": {
+    "message": "Site icons"
+  },
+  "ask_sites": {
+    "message": "Ask each site for its icon"
+  },
+  "ask_sites_text": {
+    "message": "Klav shows the logos of well-known sites it ships with and, in Chrome and similar browsers, the icons the browser already saved. With this on, when there’s neither, Klav asks each site in your vault for its own icon, and that site sees the request. Klav never asks another service."
+  },
+  "ask_sites_on": {
+    "message": "Klav will ask each site for its icon."
+  },
+  "ask_sites_off": {
+    "message": "Klav won’t contact any site for its icon."
+  },
+  "gen_kind_smart": {
+    "message": "Smart",
+    "description": "Generator type: follows the site's rules."
+  },
+  "gen_kind_random": {
+    "message": "Random",
+    "description": "Generator type: random characters."
+  },
+  "gen_kind_memorable": {
+    "message": "Memorable",
+    "description": "Generator type: words."
+  },
+  "gen_kind_pin": {
+    "message": "PIN",
+    "description": "Generator type: digits only."
+  },
+  "gen_type": {
+    "message": "Password type"
+  },
+  "gen_copy": {
+    "message": "Copy"
+  },
+  "gen_copy_label": {
+    "message": "Copy the generated password"
+  },
+  "gen_length": {
+    "message": "Length"
+  },
+  "gen_words": {
+    "message": "Words"
+  },
+  "gen_digits": {
+    "message": "Digits"
+  },
+  "gen_symbols": {
+    "message": "Symbols"
+  },
+  "gen_less": {
+    "message": "Fewer"
+  },
+  "gen_more": {
+    "message": "More"
+  },
+  "gen_default": {
+    "message": "Use as default for suggestions"
+  },
+  "strength_weak": {
+    "message": "Weak"
+  },
+  "strength_fair": {
+    "message": "Fair"
+  },
+  "strength_strong": {
+    "message": "Strong"
+  },
+  "strength_very_strong": {
+    "message": "Very strong"
+  },
+  "gen_strength": {
+    "message": "$1 · $2 bits",
+    "description": "Strength label, then bits of entropy."
+  },
+  "gen_rules_field": {
+    "message": "Follows the rules this field gives."
+  },
+  "gen_rules_bundled": {
+    "message": "Follows the rules of $1.",
+    "description": "$1: a domain."
+  },
+  "gen_rules_lengths": {
+    "message": "Fits the length this field allows."
+  },
+  "gen_rules_none": {
+    "message": "No rules from the site: 20 characters."
+  },
+  "gen_limited": {
+    "message": "The site does not allow a stronger one."
+  },
+  "gen_fallback_unreadable": {
+    "message": "The site’s rules could not be read, so this is a random password."
+  },
+  "gen_fallback_impossible": {
+    "message": "No password fits the site’s rules, so this is a random password."
+  },
+  "gen_not_kept": {
+    "message": "Klav could not keep it in the generator history: $1",
+    "description": "$1: why."
+  },
+  "gen_history": {
+    "message": "Generator history"
+  },
+  "gen_history_sub": {
+    "message": "Every password Klav generated, for a year"
+  },
+  "gen_history_empty": {
+    "message": "Klav has not generated any password yet."
+  },
+  "gen_history_no_site": {
+    "message": "No site"
+  },
+  "gen_history_saved_in": {
+    "message": "Saved in $1",
+    "description": "$1: a login's title."
+  },
+  "gen_history_pending": {
+    "message": "Not synced yet"
+  },
+  "gen_history_clear": {
+    "message": "Delete history"
+  },
+  "gen_history_cleared": {
+    "message": "Generator history deleted."
+  },
+  "gen_copy_entry": {
+    "message": "Copy the password generated $1",
+    "description": "$1: when."
+  },
+  "gen_open": {
+    "message": "Generate a password"
+  },
+  "gen_title": {
+    "message": "Password generator"
+  },
+  "previous_passwords": {
+    "message": "Previous passwords"
+  },
+  "previous_until": {
+    "message": "$1, until $2",
+    "description": "$1: field; $2: a date."
+  },
+  "previous_range": {
+    "message": "$1, $2 – $3",
+    "description": "$1: field; $2 and $3: dates."
+  },
+  "previous_show": {
+    "message": "Show the previous $1 of $2",
+    "description": "$1: field; $2: date."
+  },
+  "previous_copy": {
+    "message": "Copy the previous $1 of $2",
+    "description": "$1: field; $2: date."
+  },
+  "gen_history_short": {
+    "message": "History",
+    "description": "Short label of the link to the generator history."
+  },
+  "want_passkey": {
+    "message": "Wants to sign in to $1 with your passkey",
+    "description": "$1: item title."
+  },
+  "want_rotate": {
+    "message": "Wants to change the password of $1",
+    "description": "$1: item title."
+  },
+  "task_asks": {
+    "message": "$1 asks for a task",
+    "description": "$1: agent name. Heading of a task request card."
+  },
+  "task_running": {
+    "message": "$1 is working on a task",
+    "description": "$1: agent name. Heading of a running task."
+  },
+  "task_by_agent": {
+    "message": "According to the agent",
+    "description": "Marks the task title and reason as the agent's words."
+  },
+  "task_lasts": {
+    "message": "$1 from approval, until $2",
+    "description": "$1: duration; $2: time."
+  },
+  "task_left": {
+    "message": "$1 left · ends at $2",
+    "description": "$1: duration; $2: time."
+  },
+  "task_shorten": {
+    "message": "Duration",
+    "description": "Label of the select that shortens a task."
+  },
+  "task_added_by_klav": {
+    "message": "Added by Klav",
+    "description": "A permission Klav added to the agent's request."
+  },
+  "task_denied_by_policy": {
+    "message": "Your policy denies it",
+    "description": "A permission the agent's policy denies: struck through."
+  },
+  "task_site_mismatch": {
+    "message": "The site does not match the item ($1)",
+    "description": "$1: the host the agent gave."
+  },
+  "task_no_site": {
+    "message": "No site"
+  },
+  "task_no_site_row": {
+    "message": "No site: the item has no URL, so it cannot be filled in a task"
+  },
+  "task_host_claimed": {
+    "message": "$1 (according to the agent)"
+  },
+  "task_missing": {
+    "message": "Not in your vault or outside the agent's projects",
+    "description": "An item that cannot be approved."
+  },
+  "task_warn_totp": {
+    "message": "2FA stops being a second factor for this agent",
+    "description": "Warning next to totp in a task."
+  },
+  "task_warn_passkey": {
+    "message": "The agent will sign in with your passkey; your approval counts as verification",
+    "description": "Warning next to passkey in a task."
+  },
+  "task_warn_rotate": {
+    "message": "The agent will change this password",
+    "description": "Warning next to rotate in a task."
+  },
+  "task_nothing": {
+    "message": "Check at least one permission, or deny the task",
+    "description": "Approving with everything unchecked."
+  },
+  "task_end": {
+    "message": "End task",
+    "description": "Button that ends a running task."
+  },
+  "task_outside": {
+    "message": "Outside the task “$1”",
+    "description": "$1: task title. Heading of a request a running task does not cover."
+  },
+  "approve_once": {
+    "message": "Approve once",
+    "description": "Button: approve a request a single time."
+  },
+  "add_to_task": {
+    "message": "Add to the task",
+    "description": "Button: add a request to the agent's running task."
+  },
+  "perm_fill": {
+    "message": "fill",
+    "description": "Permission name on a task card."
+  },
+  "perm_totp": {
+    "message": "one-time code",
+    "description": "Permission name on a task card."
+  },
+  "perm_inject": {
+    "message": "inject",
+    "description": "Permission name on a task card."
+  },
+  "perm_update": {
+    "message": "update",
+    "description": "Permission name on a task card."
+  },
+  "perm_passkey": {
+    "message": "passkey",
+    "description": "Permission name on a task card."
+  },
+  "perm_rotate": {
+    "message": "change password",
+    "description": "Permission name on a task card."
+  },
+  "imp_page_title": {
+    "message": "Import into Klav"
+  },
+  "imp_heading": {
+    "message": "Import",
+    "description": "The page's header next to the logo."
+  },
+  "imp_title": {
+    "message": "Where are you coming from?"
+  },
+  "imp_lede": {
+    "message": "Export your passwords from the other app or browser, add the file here and check what changes before anything is imported."
+  },
+  "imp_rule": {
+    "message": "Logins for the same site and user become one item. When their passwords differ, the newer one stays and the other goes to the item’s password history: no password is lost."
+  },
+  "imp_src_bitwarden": {
+    "message": "Bitwarden"
+  },
+  "imp_src_1password": {
+    "message": "1Password"
+  },
+  "imp_src_google": {
+    "message": "Google Authenticator"
+  },
+  "imp_src_chrome": {
+    "message": "Chrome, Edge or Brave"
+  },
+  "imp_src_firefox": {
+    "message": "Firefox"
+  },
+  "imp_src_safari": {
+    "message": "Safari and Passwords"
+  },
+  "imp_src_authy": {
+    "message": "Authy"
+  },
+  "imp_src_csv": {
+    "message": "Another app (CSV)"
+  },
+  "imp_sub_bitwarden": {
+    "message": "The .json export, with one-time codes"
+  },
+  "imp_sub_1password": {
+    "message": "The .1pux export"
+  },
+  "imp_sub_google": {
+    "message": "The QR codes of Transfer accounts"
+  },
+  "imp_sub_chrome": {
+    "message": "The browser’s .csv export"
+  },
+  "imp_sub_firefox": {
+    "message": "logins.csv"
+  },
+  "imp_sub_safari": {
+    "message": "Passwords.csv"
+  },
+  "imp_sub_authy": {
+    "message": "No export: move each code by hand"
+  },
+  "imp_sub_csv": {
+    "message": "Columns title, url, username, password…"
+  },
+  "imp_from": {
+    "message": "From $1",
+    "description": "$1: where the passwords come from (Bitwarden…)."
+  },
+  "imp_how": {
+    "message": "How to export"
+  },
+  "imp_steps_bitwarden_1": {
+    "message": "In the Bitwarden web vault, open Tools → Export vault. In the apps it’s File → Export vault, or Settings → Export vault."
+  },
+  "imp_steps_bitwarden_2": {
+    "message": "Choose the file format .json. Not “.json (Encrypted)”: Klav can’t read that one."
+  },
+  "imp_steps_bitwarden_3": {
+    "message": "Confirm with your master password. Bitwarden saves bitwarden_export_….json."
+  },
+  "imp_steps_1password_1": {
+    "message": "Open 1Password on your computer and choose File → Export, then the account."
+  },
+  "imp_steps_1password_2": {
+    "message": "Pick the 1PUX format and enter your password."
+  },
+  "imp_steps_1password_3": {
+    "message": "1Password saves a file ending in .1pux."
+  },
+  "imp_steps_google_1": {
+    "message": "On your phone, open Google Authenticator, open its menu and choose Transfer accounts → Export accounts."
+  },
+  "imp_steps_google_2": {
+    "message": "Select the accounts. With many, the app shows several QR codes, one after another: you need all of them."
+  },
+  "imp_steps_google_3": {
+    "message": "Take a photo of each QR code with another device and add the pictures here. Or paste the otpauth-migration:// links a QR reader shows. On iPhone, Klav scans them with the camera."
+  },
+  "imp_steps_chrome_1": {
+    "message": "Chrome: open chrome://password-manager/settings. Edge: edge://settings/passwords. Brave: brave://password-manager/settings."
+  },
+  "imp_steps_chrome_2": {
+    "message": "Choose Export passwords (in Edge it’s under ⋯) and confirm with your computer’s password."
+  },
+  "imp_steps_chrome_3": {
+    "message": "The browser saves a .csv file."
+  },
+  "imp_steps_firefox_1": {
+    "message": "Open about:logins in Firefox."
+  },
+  "imp_steps_firefox_2": {
+    "message": "Click ⋯ → Export passwords and confirm."
+  },
+  "imp_steps_firefox_3": {
+    "message": "Firefox saves logins.csv."
+  },
+  "imp_steps_safari_1": {
+    "message": "On macOS 15 or later, open the Passwords app and choose File → Export All Passwords to File."
+  },
+  "imp_steps_safari_2": {
+    "message": "On earlier versions, in Safari choose File → Export → Passwords."
+  },
+  "imp_steps_safari_3": {
+    "message": "Confirm with Touch ID or your password. It saves Passwords.csv."
+  },
+  "imp_steps_csv_1": {
+    "message": "Export a CSV file from the other app."
+  },
+  "imp_steps_csv_2": {
+    "message": "Klav reads the columns title (or name), url, username, password, notes, totp and tags."
+  },
+  "imp_drop_file": {
+    "message": "Drop the export here"
+  },
+  "imp_drop_images": {
+    "message": "Drop the QR pictures here"
+  },
+  "imp_choose_file": {
+    "message": "Choose file"
+  },
+  "imp_choose_images": {
+    "message": "Choose pictures"
+  },
+  "imp_paste_label": {
+    "message": "Or paste the otpauth-migration:// links, one per line"
+  },
+  "imp_add_links": {
+    "message": "Add links"
+  },
+  "imp_pasted": {
+    "message": "Pasted links",
+    "description": "The name of pasted links in the list of files."
+  },
+  "imp_reading": {
+    "message": "Reading $1…",
+    "description": "$1: a file name."
+  },
+  "imp_entries_one": {
+    "message": "1 entry"
+  },
+  "imp_entries_other": {
+    "message": "$1 entries"
+  },
+  "imp_skipped": {
+    "message": "$1: not imported ($2)",
+    "description": "$1: where in the file (row 4). $2: why, from Klav’s daemon."
+  },
+  "imp_note": {
+    "message": "$1: $2",
+    "description": "$1: where in the file. $2: what was left out."
+  },
+  "imp_more_remarks": {
+    "message": "$1 more rows skipped or shortened."
+  },
+  "imp_missing": {
+    "message": "This export has $1 QR codes and $2 aren’t here yet. Add them too.",
+    "description": "$1: how many QR codes. $2: which ones, 2, 3."
+  },
+  "imp_passkeys_one": {
+    "message": "1 passkey won’t be imported: this file doesn’t carry its key, or it isn’t valid. Sign in on the site and save a new passkey."
+  },
+  "imp_passkeys_other": {
+    "message": "$1 passkeys won’t be imported: this file doesn’t carry their keys, or they aren’t valid. Sign in on each site and save a new passkey."
+  },
+  "imp_into": {
+    "message": "Import into"
+  },
+  "imp_review": {
+    "message": "Review import"
+  },
+  "imp_start_over": {
+    "message": "Start over"
+  },
+  "imp_all_sources": {
+    "message": "All sources"
+  },
+  "imp_review_title": {
+    "message": "Review before importing"
+  },
+  "imp_new_one": {
+    "message": "1 new item"
+  },
+  "imp_new_other": {
+    "message": "$1 new items"
+  },
+  "imp_merged_one": {
+    "message": "1 merged into an item you have"
+  },
+  "imp_merged_other": {
+    "message": "$1 merged into items you have"
+  },
+  "imp_dupes_one": {
+    "message": "1 already in Klav"
+  },
+  "imp_dupes_other": {
+    "message": "$1 already in Klav"
+  },
+  "imp_into_place": {
+    "message": "Into $1.",
+    "description": "$1: vault / project."
+  },
+  "imp_group_new": {
+    "message": "New"
+  },
+  "imp_group_merge": {
+    "message": "Merged"
+  },
+  "imp_group_duplicate": {
+    "message": "Already in Klav"
+  },
+  "imp_into_item": {
+    "message": "into “$1”",
+    "description": "$1: the title of the item it joins."
+  },
+  "imp_as_item": {
+    "message": "as “$1”",
+    "description": "$1: the title it gets."
+  },
+  "imp_same_as": {
+    "message": "same as “$1”",
+    "description": "$1: the title of the item it repeats."
+  },
+  "imp_ch_password_added": {
+    "message": "password added"
+  },
+  "imp_ch_password_replaced": {
+    "message": "new password, the old one goes to its history"
+  },
+  "imp_ch_password_kept": {
+    "message": "Klav’s password is newer, the imported one goes to its history"
+  },
+  "imp_ch_history_added": {
+    "message": "earlier passwords kept in its history"
+  },
+  "imp_ch_totp_added": {
+    "message": "one-time code added"
+  },
+  "imp_ch_totp_second": {
+    "message": "a second one-time code added"
+  },
+  "imp_ch_urls_added": {
+    "message": "sites added"
+  },
+  "imp_ch_urls_added_named": {
+    "message": "sites added: $1",
+    "description": "$1: the hosts added, separated by commas."
+  },
+  "imp_ch_notes_added": {
+    "message": "notes added"
+  },
+  "imp_ch_fields_added": {
+    "message": "fields added"
+  },
+  "imp_ch_tags_added": {
+    "message": "tags added"
+  },
+  "imp_ch_renamed": {
+    "message": "the title was taken"
+  },
+  "imp_ch_totp_item": {
+    "message": "no matching login, its own one-time code item"
+  },
+  "imp_ch_passkey_added": {
+    "message": "passkey added"
+  },
+  "imp_ch_passkey_kept": {
+    "message": "it already has another passkey, which stays"
+  },
+  "imp_ch_passkey_other_site": {
+    "message": "its passkey is for another site: not imported"
+  },
+  "imp_more_rows": {
+    "message": "And $1 more."
+  },
+  "imp_apply_one": {
+    "message": "Import 1 item"
+  },
+  "imp_apply_other": {
+    "message": "Import $1 items"
+  },
+  "imp_nothing": {
+    "message": "Nothing new to import: it’s all in Klav already."
+  },
+  "imp_importing": {
+    "message": "Importing…"
+  },
+  "imp_back_files": {
+    "message": "Back to the files"
+  },
+  "imp_done_title": {
+    "message": "Imported"
+  },
+  "imp_done_text": {
+    "message": "Created $1, updated $2, into $3.",
+    "description": "$1, $2: counts. $3: vault / project."
+  },
+  "imp_passkeys_failed": {
+    "message": "Some passkeys could not be saved; their logins were imported without them:"
+  },
+  "imp_delete_title": {
+    "message": "Now delete the export"
+  },
+  "imp_delete_text": {
+    "message": "It holds your passwords in plain text. Delete it and empty the trash:"
+  },
+  "imp_delete_google": {
+    "message": "The QR codes hold your one-time code secrets: delete their photos too, and the recently deleted ones."
+  },
+  "imp_again": {
+    "message": "Import from somewhere else"
+  },
+  "imp_close": {
+    "message": "Close"
+  },
+  "imp_authy_title": {
+    "message": "Authy has no export"
+  },
+  "imp_authy_text": {
+    "message": "Authy never offered a way to take your codes out, and its desktop apps closed in 2024. Move each code by making Klav the site’s authenticator, one site at a time:"
+  },
+  "imp_authy_1": {
+    "message": "Sign in to the site and open its two-factor settings."
+  },
+  "imp_authy_2": {
+    "message": "Choose to change the authenticator app, or turn two-factor off and on again. The site shows a new QR code and its setup key."
+  },
+  "imp_authy_3": {
+    "message": "Add that setup key to the site’s login in Klav as its one-time code, and type the code Klav shows to confirm."
+  },
+  "imp_authy_4": {
+    "message": "Only then remove the site from Authy."
+  },
+  "imp_authy_note": {
+    "message": "Klav doesn’t read the file Twilio sends on a data request: its codes are encrypted with a scheme Twilio doesn’t document."
+  },
+  "imp_locked_title": {
+    "message": "Unlock Klav to import"
+  },
+  "imp_too_large": {
+    "message": "$1 is too large to import.",
+    "description": "$1: a file name."
+  },
+  "imp_not_image": {
+    "message": "$1 isn’t a picture this browser can open.",
+    "description": "$1: a file name."
+  },
+  "imp_open": {
+    "message": "Import from another app"
+  },
+  "imp_open_text": {
+    "message": "Bitwarden, 1Password, Google Authenticator and browsers."
+  },
+  "agent_rotated": {
+    "message": "Klav typed a new password into this page for $1",
+    "description": "$1: the agent’s name."
+  },
+  "pending_title": {
+    "message": "Pending change: did the new password work?"
+  },
+  "pending_body": {
+    "message": "An agent changed this password on its site and nobody confirmed whether the site took the new one. Both are saved."
+  },
+  "pending_body_since": {
+    "message": "An agent changed this password on its site on $1 and nobody confirmed whether the site took the new one. Both are saved.",
+    "description": "$1: a date."
+  },
+  "pending_use_new": {
+    "message": "Use the new one"
+  },
+  "pending_keep": {
+    "message": "Keep the current one"
+  },
+  "pending_used_new": {
+    "message": "The new password is now current; the old one is in Previous passwords"
+  },
+  "pending_kept": {
+    "message": "The current one stays; the new one is in Previous passwords"
+  },
+  "pending_choice": {
+    "message": "New password, not confirmed"
+  },
+  "previous_unconfirmed": {
+    "message": "$1 · generated, not confirmed",
+    "description": "$1: the field and its dates."
+  },
+  "health_open": {
+    "message": "Vault health"
+  },
+  "health_title": {
+    "message": "Health"
+  },
+  "health_checking": {
+    "message": "Checking your passwords…"
+  },
+  "health_checked": {
+    "message": "Checked $1 passwords in $2 items. Klav does it on this device; nothing leaves it.",
+    "description": "$1: passwords; $2: items."
+  },
+  "health_skipped": {
+    "message": "$1 items could not be opened.",
+    "description": "$1: a number."
+  },
+  "health_reused": {
+    "message": "Reused · $1",
+    "description": "$1: groups of items that share a password."
+  },
+  "health_reused_none": {
+    "message": "No password is used in two places."
+  },
+  "health_same_in": {
+    "message": "Same password in $1 items",
+    "description": "$1: a number."
+  },
+  "health_fix": {
+    "message": "Fix my reused passwords"
+  },
+  "health_fix_hint": {
+    "message": "An agent changes them one site at a time in this browser. You approve once."
+  },
+  "health_fix_lede": {
+    "message": "The agent changes each password on its site through this browser, without seeing the current one or the new one. It gets the sites, never which ones share a password."
+  },
+  "health_weak": {
+    "message": "Weak · $1",
+    "description": "$1: a number."
+  },
+  "health_weak_none": {
+    "message": "No weak password."
+  },
+  "health_score": {
+    "message": "strength $1/4",
+    "description": "$1: zxcvbn score, 0 to 4."
+  },
+  "health_bits": {
+    "message": "$1 bits",
+    "description": "$1: bits of a generated password."
+  },
+  "health_old": {
+    "message": "Old · $1",
+    "description": "$1: a number."
+  },
+  "health_old_none": {
+    "message": "None unchanged for over a year."
+  },
+  "health_since": {
+    "message": "since $1",
+    "description": "$1: a date."
+  },
+  "health_breached": {
+    "message": "Breached"
+  },
+  "health_breached_n": {
+    "message": "Breached · $1",
+    "description": "$1: a number."
+  },
+  "health_breached_none": {
+    "message": "None seen in known breaches."
+  },
+  "health_seen": {
+    "message": "seen $1 times",
+    "description": "$1: a number."
+  },
+  "health_breach_failed": {
+    "message": "The breach check failed: $1",
+    "description": "$1: the error."
+  },
+  "health_breach_switch": {
+    "message": "Look for breached passwords"
+  },
+  "health_breach_notice": {
+    "message": "Klav asks Have I Been Pwned (api.pwnedpasswords.com) about each password. It sends only the first 5 characters of the password's SHA-1 hash, never the password or the whole hash, and the answer is padded so its size gives nothing away. Have I Been Pwned sees your IP address and the time. This device only."
+  },
+  "health_clean": {
+    "message": "Nothing needs attention."
+  },
+  "health_block_not_granted": {
+    "message": "Its project is not among the agent's projects"
+  },
+  "health_block_no_site": {
+    "message": "It has no website: the change happens on the item's site"
+  },
+  "health_block_not_login": {
+    "message": "It is not a login with a password"
+  },
+  "health_block_other_field": {
+    "message": "The shared password is not the login's main one"
+  },
+  "health_offer_task": {
+    "message": "Change passwords",
+    "description": "The task's title, as the agent reads it. Neutral on purpose."
+  },
+  "health_offer_reason": {
+    "message": "Give each of these sites a new password that Klav generates and keeps",
+    "description": "The task's reason, as the agent reads it."
+  },
+  "health_site_changed": {
+    "message": "changed"
+  },
+  "health_site_pending": {
+    "message": "pending"
+  },
+  "health_site_running": {
+    "message": "in progress"
+  },
+  "health_site_failed": {
+    "message": "failed"
+  },
+  "health_no_agent": {
+    "message": "No agent can take it yet. Register one and approve it first:"
+  },
+  "health_agent": {
+    "message": "Agent"
+  },
+  "health_pick_agent": {
+    "message": "Choose an agent"
+  },
+  "health_group": {
+    "message": "group $1",
+    "description": "$1: which group of logins share one password."
+  },
+  "health_change_at": {
+    "message": "Changes it at $1",
+    "description": "$1: the change-password page."
+  },
+  "health_until": {
+    "message": "until $1",
+    "description": "$1: a time."
+  },
+  "health_nothing": {
+    "message": "Check at least one login"
+  },
+  "health_running": {
+    "message": "$1 is changing your passwords",
+    "description": "$1: the agent."
+  },
+  "health_counts": {
+    "message": "Changed $1 · pending $2 · failed $3",
+    "description": "$1, $2, $3: numbers."
+  },
+  "health_offered": {
+    "message": "Offered to $1",
+    "description": "$1: the agent."
+  },
+  "health_cancel": {
+    "message": "Cancel"
+  },
+  "health_rotate_warn": {
+    "message": "The agent will change the passwords you leave checked"
+  },
+  "group_parent": {
+    "message": "Saved for a subdomain"
+  },
+  "saved_for": {
+    "message": "Saved for $1"
+  },
+  "add_site_question": {
+    "message": "Add $1 to this item?"
+  },
+  "add_site_hint": {
+    "message": "$1 is saved for $2. Next time Klav offers it here first."
+  },
+  "add_site": {
+    "message": "Add this site"
+  },
+  "site_added": {
+    "message": "Added $1 to $2"
+  },
+  "frame_passkey": {
+    "message": "Klav passkey"
+  },
+  "passkey_sign_in_title": {
+    "message": "Sign in with a passkey"
+  },
+  "passkey_save_for": {
+    "message": "Save a passkey for $1 in Klav",
+    "description": "$1: the account's user name, in bold."
+  },
+  "passkey_save": {
+    "message": "Save passkey"
+  },
+  "passkey_save_in": {
+    "message": "Save in"
+  },
+  "passkey_new_login": {
+    "message": "A new login"
+  },
+  "passkey_other_device": {
+    "message": "Use another device"
+  },
+  "passkey_other_device_sub": {
+    "message": "Your browser’s passkeys, a phone or a security key"
+  },
+  "passkey_replace_question": {
+    "message": "“$1” already has a passkey for this account. Replace it?",
+    "description": "$1: the login's title."
+  },
+  "passkey_replace": {
+    "message": "Replace"
+  },
+  "passkey_keep": {
+    "message": "Keep it"
+  },
+  "passkey_confirm_hint": {
+    "message": "Confirm with your master password"
+  },
+  "new_open": {
+    "message": "New item",
+    "description": "Popup header button: add an item by hand"
+  },
+  "new_title": {
+    "message": "New item"
+  },
+  "new_kind": {
+    "message": "Type of item"
+  },
+  "new_kind_note": {
+    "message": "Secure note"
+  },
+  "new_site": {
+    "message": "Website"
+  },
+  "new_site_invalid": {
+    "message": "Write a website address, like example.com."
+  },
+  "new_title_missing": {
+    "message": "Give it a title."
+  },
+  "new_title_taken": {
+    "message": "There’s already an item with that title in that project: change the title or choose another project."
+  },
+  "new_expiry_placeholder": {
+    "message": "MM/YY"
+  },
+  "new_expiry_invalid": {
+    "message": "Write it as it is on the card: MM/YY."
+  },
+  "new_totp_key": {
+    "message": "Setup key or otpauth:// link"
+  },
+  "new_totp_hint": {
+    "message": "The key the site shows under its QR code, or the link of the QR code."
+  },
+  "new_totp_ok": {
+    "message": "$1 digits every $2 s"
+  },
+  "new_totp_invalid": {
+    "message": "That isn’t a one-time code key: check that you copied all of it."
+  },
+  "new_totp_missing": {
+    "message": "Paste the key or the otpauth:// link."
+  },
+  "filter_by_type": {
+    "message": "Filter by type"
+  },
+  "filter_all": {
+    "message": "All"
+  },
+  "filter_login": {
+    "message": "Logins"
+  },
+  "filter_codes": {
+    "message": "Codes",
+    "description": "Items with a one-time code, of any type."
+  },
+  "filter_card": {
+    "message": "Cards"
+  },
+  "filter_note": {
+    "message": "Notes"
+  },
+  "filter_ssh_key": {
+    "message": "SSH keys"
+  },
+  "filter_api_key": {
+    "message": "API keys"
+  },
+  "filter_identity": {
+    "message": "Addresses"
+  },
+  "filter_file": {
+    "message": "Files"
+  },
+  "filter_tab": {
+    "message": "$1, $2",
+    "description": "A type tab for screen readers. $1: the type; $2: how many items."
+  },
+  "nothing_in": {
+    "message": "Nothing in $1 matches $2.",
+    "description": "$1: the type tab; $2: the search, in quotes."
+  },
+  "filter_empty": {
+    "message": "Nothing in $1.",
+    "description": "$1: the type tab."
+  },
+  "codes_none": {
+    "message": "No one-time codes yet."
+  },
+  "codes_none_text": {
+    "message": "Add one to a login, or bring yours from Google Authenticator."
+  },
+  "codes_copy_hint": {
+    "message": "Click a code to copy it."
+  },
+  "gen_history_clear_sure": {
+    "message": "Delete the whole generator history? Passwords you did not save in any item are lost."
+  },
+  "gen_history_clear_yes": {
+    "message": "Delete all"
+  },
+  "gen_history_clear_keep": {
+    "message": "Cancel"
+  },
+  "save_update_which": {
+    "message": "Which one"
+  },
+  "save_update_pick": {
+    "message": "Choose the login to update"
+  },
+  "agent_sites_title": {
+    "message": "Sites added by an agent"
+  },
+  "agent_sites_hint": {
+    "message": "Not confirmed: Klav does not suggest or fill this login there."
+  },
+  "agent_sites_confirm": {
+    "message": "Confirm"
+  },
+  "agent_sites_confirm_sure": {
+    "message": "Klav will fill this login on $1. Confirm only if you asked for it or trust that site.",
+    "description": "$1: the sites (hosts)."
+  },
+  "agent_sites_confirm_yes": {
+    "message": "Yes, confirm"
+  },
+  "agent_sites_remove": {
+    "message": "Remove"
+  },
+  "passkeys_heading": {
+    "message": "Passkeys"
+  },
+  "passkey_uv_intro": {
+    "message": "When signing in with a passkey asks for Touch ID or your master password again. On this device only."
+  },
+  "passkey_uv_always": {
+    "message": "Every time"
+  },
+  "passkey_uv_always_text": {
+    "message": "Touch ID or the master password on every sign-in. Unlocking Klav in its passkey window counts for that sign-in."
+  },
+  "passkey_uv_5m": {
+    "message": "Every 5 minutes"
+  },
+  "passkey_uv_5m_text": {
+    "message": "Not again for 5 minutes after the last time."
+  },
+  "passkey_uv_unlocked": {
+    "message": "While Klav is unlocked"
+  },
+  "passkey_uv_unlocked_text": {
+    "message": "Unlocking counts until Klav locks again."
+  },
+  "passkey_uv_confirm": {
+    "message": "Confirm with your master password to ask less often."
+  },
+  "passkey_uv_saved": {
+    "message": "Saved."
+  },
+  "passkey_uv_cancel": {
+    "message": "Cancel"
+  }
+}

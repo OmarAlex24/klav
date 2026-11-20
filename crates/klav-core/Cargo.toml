@@ -1,0 +1,68 @@
+[package]
+name = "klav-core"
+description = "Klav core: cryptography, item model, references, TOTP and agent policy evaluation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Exposes `KdfParams::insecure_for_tests`, which accepts Argon2id parameters
+# below the production floor. Only for test suites of downstream crates.
+insecure-test-kdf = []
+# The SHA-1 prefix and suffix of Have I Been Pwned's range API, for the
+# optional breach check of the vault health report (ADR 0022 §4). SHA-1
+# serves only that lookup (and TOTP, which uses it regardless).
+breach-check = []
+# Validation of a passkey's rpId against the Public Suffix List (ADR 0020
+# §7). Only `klav-client` (and so `klavd`) turns it on: `klav-wasm` does not
+# compile it, so the extension does not carry the list.
+rp-id = ["dep:psl"]
+
+[dependencies]
+aead-stream = { version = "0.6", default-features = false, features = ["alloc"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+data-encoding = "2.11"
+# ES256 for passkeys (ADR 0020 §6): RFC 6979 nonces come with `algorithm`.
+ecdsa = { version = "0.17", default-features = false, features = ["algorithm", "der"] }
+# Not used directly: pins the floor of the curve stack so that crypto-bigint
+# resolves to >= 0.7.8, past RUSTSEC-2026-0387 (ADR 0020 §6). elliptic-curve
+# 0.14.1, which p256 0.14.0 accepts, still allows the vulnerable 0.7.5.
+elliptic-curve = { version = "0.14.3", default-features = false }
+ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
+getrandom = { version = "0.4", features = ["sys_rng"] }
+hkdf = "0.13"
+hmac = "0.13"
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "alloc"] }
+opaque-ke = { version = "4.0.1", default-features = false, features = ["ristretto255"] }
+hpke = { version = "0.15", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha", "hkdfsha2"] }
+percent-encoding = "2.3"
+# Public Suffix List, only for the rpId of passkeys (feature `rp-id`).
+psl = { version = "2.1", optional = true }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.11"
+sha2 = "0.11"
+# SHA-512 for the OPAQUE cipher suite: opaque-ke 4 is built on the digest 0.10 traits.
+sha2-v010 = { package = "sha2", version = "0.10" }
+subtle = "2.6"
+thiserror = "2"
+unicode-normalization = "0.1"
+# WHATWG URL parsing for the site matching rule (`site`); not cryptographic.
+url = "2.5"
+uuid = { version = "1.29", default-features = false, features = ["std"] }
+zeroize = "1.9"
+
+[dev-dependencies]
+# Independent CBOR decoder for the tests of the WebAuthn encoder (ADR 0020 §6).
+ciborium = "0.2"
+hex = "0.4"
+proptest = "1.12"
+static_assertions = "1.1"
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+{
+  "cases": [
+    {
+      "account_ed25519_seed": "cdaa4aae5ec988e7b3bee89e0b214c7b0001360fd0ac1a850092f0d0cd5bae81",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "account_public_identity": "010556902fdc6e557ad6acc7c803ad601eb64f435c58aae2fb6b7d37fef8cb775d38c296660959f04eb3153b4d16280c529ec4197b9f00df94ee290a0025fe4711aa",
+      "account_x25519_seed": "f3d728ac1fb94fcc9bea3d00d0c0eddace9b655dbdbf40f5cdf39cd38f4dcd1d",
+      "ikm_e": "6ea509046c87e4d7e38a6d0687448a14738e086edb3fde59260e9628cadef323",
+      "key": "428319049a830600713a9673c7c43f42e64c7812f0f9f9b972a1b26af63907b1",
+      "message": "000000156b6c61762f76312f7369672f7661756c742d6b657900000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000052012039eb5f1bd0277c2fca57ce698560e97ad9880e427eed2a447b8fe97bd00d4b7e2c7747d91e2eabd40bf86547c869b4cb97ab21d59dae1dc6ef60a5d2373327865f53cdb051d9c5ea2d81bb98d89d685d",
+      "name": "owner-signs-shared-vault-key",
+      "shared": "012039eb5f1bd0277c2fca57ce698560e97ad9880e427eed2a447b8fe97bd00d4b7e2c7747d91e2eabd40bf86547c869b4cb97ab21d59dae1dc6ef60a5d2373327865f53cdb051d9c5ea2d81bb98d89d685d",
+      "signature": "540ae90edb640e1cba5242744504c64408c02e1e645eb157f09f7e6a444bd0e2f3e427bef2037bb7be87bf5010d450bca366aa7a910204ea5a2c63eb07897902",
+      "vault_id": "be95de59b617035725a062fdf46a63f1"
+    }
+  ],
+  "description": "Firma de la cuenta dueña sobre su llave de bóveda compartida (ADR 0030 §1)",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §8.3"
+}

@@ -1,0 +1,3 @@
+#include "Base.xcconfig"
+// Development builds receive pushes from the APNs sandbox.
+KLAV_APS_ENVIRONMENT = development

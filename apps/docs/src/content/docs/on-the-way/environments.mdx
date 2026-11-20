@@ -1,0 +1,27 @@
+---
+title: "Environments per repository"
+description: "An accepted design: one set of variables per environment for a repository, such as development and production, imported from a .env once, with production behind Touch ID and agent policy."
+sidebar:
+  order: 2
+---
+
+<Aside>Not available yet. This page describes an accepted design.</Aside>
+
+This page explains a design for keeping a repository's variables in Klav per environment, such as `development` and `production`: what is missing today, and how environments would work. The commands on this page are the design's, and they may change before they ship.
+
+## The problem
+
+Today a repository connects to Klav through its `klav.toml`, which gives each variable a `klav://` reference, and `klav run` puts the values in the command's environment. That falls short in three ways:
+
+- **No environments.** One repository needs `development`, `staging` and `production`, with the same variable names and different values. Today that means three files, or three sets of names kept by hand.
+- **One item per variable.** Each value lives in an item of its own, so a `.env` of 30 lines becomes 30 items, and there is no way to import it.
+- **Production looks like everything else.** A production variable is injected the same way as a development one, and an agent gets it with the same permission as the rest of the project.
+
+## The idea
+
+- **An environment is an item.** One per project and environment, with its variables inside. Each variable holds its own value or a `klav://` reference to a field of another item, so a key lives in one place, and changing it there changes it in every environment that uses it.
+- **Import a `.env` once.** `klav env import .env --env development` reads the file, never prints a value, shows which variables are new or changed, and offers to delete the file afterwards.
+- **Run with an environment.** `klav run --env production -- <command>`. For a tool that wants a `.env` file, `klav inject` writes one, or hands it over through a pipe that is read once and never touches the disk.
+- **Production is protected.** An environment named `production` or `prod` is protected from the start, and you can protect any other. Each run with it asks for Touch ID or your master password, and so does copying or showing one of its values in the apps. An item a protected environment points to is protected too.
+- **Agents get a permission per environment.** For example: allowed in `development`, asking you in `staging`, and never `production` without your approval each time, with Touch ID or Face ID.
+- **The repository and the project know each other, as a hint.** Klav remembers which repositories belong to a project, and warns you when a `klav.toml` asks for secrets from a project this repository isn't linked to. The link never grants anything.

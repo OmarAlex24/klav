@@ -1,0 +1,130 @@
+---
+title: "Approvals and tasks"
+description: "What happens when an agent's policy says ask: how you approve once, for a while, or a whole task, and how the agent waits."
+sidebar:
+  order: 3
+---
+
+This page explains what happens when an agent asks for something its policy marks `ask`: the request waits for you, you approve or deny it, and the agent goes on. For a job over several items or sites, the agent asks once for a **task** instead.
+
+## An approval
+
+When the policy says `ask`, the request waits. On the command line the agent gets exit code 4, with the commands to approve and to wait:
+
+```sh
+klav agent totp klav://Personal/General/GitHub --reason "Finish signing in to GitHub to open the release PR"
+```
+
+```text
+klav: waiting for approval 800d8b83-…: `totp` needs the person's approval: they approve it with `klav approval approve 800d8b83-…`; wait for it with `klav approval wait 800d8b83-…`, then retry with this approval (`--approval 800d8b83-…` or approval_id)
+```
+
+Through `klav mcp`, the tool waits up to 60 seconds, then answers `status: "pending"` with `approve_command`, `wait_command` and `next`.
+
+### You decide
+
+You see the request in the Mac app's Requests, as a notification on the iPhone, in the extension's popup, or in a terminal:
+
+```sh
+klav approval list
+```
+
+```text
+ID          STATUS   AGENT        WANTS  ON                              SITE (AGENT SAYS)  REASON                                              TASK
+800d8b83-…  pending  claude-code  totp   klav://Personal/General/GitHub                     Finish signing in to GitHub to open the release PR
+```
+
+`klav approval approve` prints the whole request before it signs anything. The site and the reason are marked "according to the agent", because the agent wrote them:
+
+```sh
+klav approval approve 800d8b83 --for 15m
+```
+
+```text
+Request 800d8b83-…
+  agent:   claude-code  (bfa85942…)
+  wants:   totp
+  on:      klav://Personal/General/GitHub
+  site:    none given
+  reason:  Finish signing in to GitHub to open the release PR   (according to the agent)
+  decide:  before 2026-11-12 23:13:00Z
+Approved for 15 min: claude-code may `totp` klav://Personal/General/GitHub.
+```
+
+- **Once:** without `--for`, the approval is good for one request that matches it (same permission, item and site), within 10 minutes.
+- **For a while:** `--for 15m` (at most `24h`) lets the agent repeat the same action on the same item without asking.
+- **Deny:** `klav approval deny <id>`.
+- In your commands (`klav approval approve` and `deny`, `klav task show`, `approve`, `deny` and `end`), an ID can be shortened to its first 6 characters or more. The agent's commands (`klav approval wait`, `--approval`, `klav agent task wait`, `show` and `end`) need the full ID, as Klav printed it.
+- Approving asks for Touch ID, Face ID or your master password. Denying asks for nothing.
+- Your account signs the decision, so the server can't approve for you. If the request changes while you are looking at it, nothing is signed.
+
+### The agent goes on
+
+The agent waits in the background, so you don't have to tell it you decided:
+
+```sh
+klav approval wait 800d8b83-… --json
+```
+
+```text
+{"approval_id":"800d8b83-…","expires_at":…,"lease_until":…,"status":"approved","used":false}
+```
+
+It exits with 0 when you approve, 5 when you deny, and 6 when the request expires; 4 means nobody decided before `--timeout`. Then the agent repeats the same request with `--approval <id>` (or `approval_id` in `klav mcp`). An approval for another action, item or site doesn't work.
+
+## Tasks
+
+Before a job that touches several items or sites, an agent asks for one task, and you approve it on one card instead of one request at a time. With `klav agent`, the task is a file:
+
+```toml
+task = "Download October's invoices"
+reason = "Reconcile the month's expenses"
+duration = "2h"
+
+[[access]]
+ref = "klav://Invoices/General/AWS"
+permissions = ["fill", "totp"]
+
+[[access]]
+ref = "klav://Invoices/General/Telmex"
+permissions = ["fill"]
+domain = "telmex.com"
+```
+
+```sh
+klav agent task request task.toml --wait
+```
+
+Through `klav mcp`, it is `request_task` with the same fields.
+
+- `duration` is between `5m` and `24h`, from your approval. A task holds 1 to 50 items.
+- A task can ask for `fill`, `totp`, `inject`, `update`, `passkey` and `rotate`. `reveal` and `delete` never go in a task.
+- `passkey` and `rotate` work only inside a task.
+
+### You review the card
+
+```sh
+klav task list
+klav task show <id>
+klav task approve <id> [--without REF[:permission]]… [--for 1h]
+klav task deny <id>
+```
+
+The card comes from your own vault, not from what the agent says: each item's title, username and sites. Klav marks what you should look at:
+
+- an item whose sites don't match the `domain` the agent gave can't be approved;
+- `fill` on a login with a one-time code adds `totp`, marked "added by Klav": for that agent, two-factor stops being a second factor;
+- what your policy denies with a `deny` rule can't be approved.
+
+`--without` leaves out an item or one of its permissions; `--for` makes the task shorter, never longer. The Mac app, the iPhone and the popup show the same card, where you uncheck what you don't want.
+
+### While it runs
+
+- Inside the task, the agent's `fill`, `totp`, `inject` and `update` on what you approved don't ask again, even where the policy says `ask`.
+- A request outside the task follows the usual path. You can approve it once, or add it to the task with `klav approval approve <id> --add-to-task` ("Add to the task" in the apps): it ends when the task ends.
+- A task ends when its time is up, when the agent ends it (`end_task`), when you end it (`klav task end <id>`, "End task" in the apps), or when you revoke the agent.
+- Each agent can have at most 5 pending and 10 running tasks. A request nobody decides expires after 10 minutes.
+
+## Next
+
+[Use secrets without seeing them](/agents/use-secrets-without-seeing-them/).

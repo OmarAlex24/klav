@@ -1,0 +1,71 @@
+name: ci-cache setup
+description: >-
+  Pide una sesión al Worker ci-cache con el OIDC de GitHub Actions y deja listos
+  Turbo (TURBO_API/TURBO_TOKEN/TURBO_TEAM) y, si hay Rust, sccache por WebDAV.
+  El job necesita `permissions: id-token: write`.
+
+inputs:
+  url:
+    description: URL del Worker ci-cache, sin barra final (p. ej. https://ci-cache.<cuenta>.workers.dev).
+    required: true
+  audience:
+    description: Audiencia del token OIDC; debe coincidir con CACHE_AUDIENCE del Worker.
+    required: false
+    default: ci-cache
+  sccache:
+    description: "auto (si hay un Cargo.toml), true o false."
+    required: false
+    default: auto
+  sccache-version:
+    description: Versión de sccache a instalar.
+    required: false
+    default: 0.19.0
+  sccache-sha256:
+    description: >-
+      SHA-256 del tarball sccache-v<versión>-<arch>-unknown-linux-musl.tar.gz. Obligatorio si
+      cambias sccache-version; para la versión por defecto ya va fijado (x86_64 y aarch64).
+    required: false
+    default: ""
+  mount-workdir:
+    description: >-
+      true para montar el checkout en /home/user/<repo> (sudo mount --bind), la misma ruta
+      que usan los sandboxes de Boat, para que las llaves de sccache coincidan.
+    required: false
+    default: "false"
+  fingerprint:
+    description: true para imprimir la huella de caché (scripts/cache-fingerprint.sh).
+    required: false
+    default: "true"
+
+outputs:
+  tier:
+    description: Nivel de la sesión (main, main-ro o rama).
+    value: ${{ steps.session.outputs.tier }}
+  branch:
+    description: Rama de la sesión.
+    value: ${{ steps.session.outputs.branch }}
+  expires-at:
+    description: Expiración del token de sesión (ISO 8601).
+    value: ${{ steps.session.outputs.expires-at }}
+  workdir:
+    description: Directorio donde compilar (/home/user/<repo> si mount-workdir, si no GITHUB_WORKSPACE).
+    value: ${{ steps.session.outputs.workdir }}
+
+runs:
+  using: composite
+  steps:
+    - id: session
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_AUDIENCE: ${{ inputs.audience }}
+        INPUT_SCCACHE: ${{ inputs.sccache }}
+        INPUT_SCCACHE_VERSION: ${{ inputs.sccache-version }}
+        INPUT_SCCACHE_SHA256: ${{ inputs.sccache-sha256 }}
+        INPUT_MOUNT_WORKDIR: ${{ inputs.mount-workdir }}
+      run: bash "$GITHUB_ACTION_PATH/setup.sh"
+
+    - if: inputs.fingerprint == 'true'
+      shell: bash
+      working-directory: ${{ steps.session.outputs.workdir }}
+      run: bash "$GITHUB_ACTION_PATH/../scripts/cache-fingerprint.sh"

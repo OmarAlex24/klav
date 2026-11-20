@@ -1,0 +1,1030 @@
+name: CI
+
+# One job on a Boat runner (boat.dev, ADR 0034; ADR 0023 for the design)
+# instead of seven jobs. Boat bills one start per job that gets a machine, plus
+# its seconds. The seven old jobs are background tasks of that job, on one
+# machine and one shared target/, and each one still publishes its own check
+# with its old name (fmt, clippy, test, test (postgres), docker, extension,
+# cargo-deny): the PR orchestrator merges by those names. An eighth task,
+# docs (the public docs site, ADR 0039 §6), publishes a check of that name.
+# The engine is the "boated CI" one in .github/boated-ci/ (ci-task.ts); the
+# tasks are listed in .github/ci-tasks.json.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Per-start billing: a run cancelled after it got a machine already paid its
+# start. On a PR a new push makes the old run moot, so it is cancelled. On main
+# a started run is never cancelled: GitHub keeps one run in progress and one
+# pending per group, and a newer push replaces the pending one before it gets
+# a machine, so a burst of merges costs no extra starts.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  CI_SCRIPTS: .github/boated-ci
+
+jobs:
+  ci:
+    # Must not be one of the task names: those are the task checks.
+    name: ci
+    # Size by repository variable, so it changes without a PR:
+    #   gh variable set CI_RUNS_ON --body boat-xlarge
+    # Exactly one Boat label, without `self-hosted`; Boat refuses an unknown
+    # one. boat-small is 2 vCPU / 4 GB, boat 4 / 8, boat-large 8 / 16 and
+    # boat-xlarge 16 / 32. 8 GB is too little for the workspace build plus
+    # Chromium plus the Docker image; the metrics table at the end of the job
+    # says whether to go up or down.
+    runs-on: ${{ vars.CI_RUNS_ON || 'boat-large' }}
+    # Paid runners only for this repository's own code: pushes to main and
+    # PRs whose head branch lives here (gh stack PRs included, whatever their
+    # base). A PR from a fork gets no machine; a maintainer pushes its
+    # branch here to test it. Checked before the runner is requested.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Boat stops a job at 6 h, but it bills every second: this bounds what a
+    # hung run costs. Green runs on celesto-large (4 vCPU) took 8 min on
+    # average and 15 at most; the tasks' `wait ... 4800` (80 min) fits inside.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write # publish one check per task and read them back on reruns
+      actions: read # link each task check to this job's log
+      id-token: write # OIDC for the ci-cache session (sccache)
+    services:
+      # Data in memory (tmpfs at postgres:17's PGDATA). Every test creates its
+      # own database (a copy of template1 plus its WAL), and on disk the first
+      # connection to it waited out the server's 10 s acquire timeout when the
+      # other tasks' builds stalled the shared disk. Test data needs no
+      # durability; the whole klav-server suite leaves about 1.2 GB in it.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: klav
+        ports:
+          - 5432:5432
+        options: >-
+          --tmpfs /var/lib/postgresql/data
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CHECK_JOB_NAME: ci # must equal `name:` above
+      # The sccache server must outlive the cargo tasks so its stats are
+      # still there at the end of the job (default: stops after 600 s idle).
+      SCCACHE_IDLE_TIMEOUT: "0"
+      CI_TASKS_FILE: .github/ci-tasks.json
+      # Task -> exact check name. Task names only allow [a-z0-9-].
+      CI_TASK_CHECK_NAMES: >-
+        {"fmt": "fmt", "clippy": "clippy", "test": "test",
+        "test-postgres": "test (postgres)", "docker": "docker",
+        "extension": "extension", "cargo-deny": "cargo-deny",
+        "docs": "docs"}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun (task engine)
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+
+      - name: Sample the machine in the background
+        continue-on-error: true
+        run: bash "$CI_SCRIPTS/machine-sampler.sh"
+
+      - name: Runner
+        run: |
+          echo "vCPU: $(nproc)"
+          grep -E '^(MemTotal|MemAvailable):' /proc/meminfo
+          df -h "$GITHUB_WORKSPACE" | tail -1
+          if sudo -n true 2>/dev/null; then echo "sudo: yes"; else echo "sudo: no"; fi
+
+      # On a PR rerun, tasks whose check already passed on this exact merge
+      # commit do not run again. Empty outputs (step failed, not a PR) mean
+      # everything runs. Kill switch: repository variable CI_TASK_SKIP_PASSED=false.
+      - name: Skip tasks that already passed
+        id: skip
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_TASK_SKIP_PASSED: ${{ vars.CI_TASK_SKIP_PASSED }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" plan
+
+      # --- Rust toolchain and the ci-cache session, before the docker task ---
+      # The docker build compiles klav-server through sccache with this same
+      # session, so the session must exist when that task starts.
+
+      # Boat's image ships rustup: use it as it is, never
+      # `rustup self update`. A runner without rustup (Celesto's image, for
+      # one) gets rustup-init pinned by version and SHA-256. Either way the
+      # toolchain and components come from rust-toolchain.toml, which pins
+      # an exact release: the image's when it ships that one, otherwise
+      # rustup downloads it here.
+      - name: "rust: install rustup and the toolchain"
+        if: steps.skip.outputs.rust != 'true'
+        env:
+          RUSTUP_VERSION: 1.29.3
+          RUSTUP_SHA256: b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+        run: |
+          set -euo pipefail
+          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$cargo_bin:$PATH"
+          if command -v rustup >/dev/null 2>&1; then
+            echo "rustup already installed: $(command -v rustup)"
+          else
+            echo "No rustup on the runner: installing rustup-init ${RUSTUP_VERSION}"
+            init="$RUNNER_TEMP/rustup-init"
+            curl --proto '=https' --tlsv1.2 -fsSL -o "$init" \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_SHA256}  ${init}" | sha256sum -c -
+            chmod +x "$init"
+            "$init" -y --no-modify-path --profile minimal --default-toolchain none
+            rm -f "$init"
+          fi
+          # Later steps and the background tasks find cargo here; if a
+          # preinstalled rustup lives elsewhere, its directory goes first.
+          echo "$cargo_bin" >>"$GITHUB_PATH"
+          rustup_bin=$(dirname "$(command -v rustup)")
+          if [ "$rustup_bin" != "$cargo_bin" ]; then
+            echo "$rustup_bin" >>"$GITHUB_PATH"
+          fi
+          # rust-toolchain.toml pins an exact release, and rustup knows
+          # toolchains only by name: even when the image's `stable` is that
+          # release, it downloads it again under the pinned name (5–150 s on
+          # Boat). When the image's rustc reports exactly the pinned version,
+          # rename its toolchain to the pinned name and leave `stable` as a
+          # symlink to it. Any other case leaves things as they are, and
+          # `rustup toolchain install` downloads the pinned release. This
+          # runs before any rustup command that resolves the active toolchain:
+          # `rustup --version` already installs the pinned one (run 42638338138).
+          pin=$(sed -nE 's/^channel *= *"([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' rust-toolchain.toml)
+          toolchains="${RUSTUP_HOME:-$HOME/.rustup}/toolchains"
+          echo "Toolchains in $toolchains: $(cd "$toolchains" 2>/dev/null && echo *)"
+          for stable in "$toolchains"/stable-*; do
+            [ -n "$pin" ] && [ -d "$stable" ] && [ ! -L "$stable" ] || continue
+            pinned="$toolchains/$pin-${stable##*/stable-}"
+            image=$("$stable/bin/rustc" -V 2>/dev/null || true)
+            if [ -e "$pinned" ]; then
+              echo "${pinned##*/} is already installed"
+            elif [[ $image == "rustc $pin "* ]]; then
+              mv "$stable" "$pinned" && ln -s "${pinned##*/}" "$stable" &&
+                echo "The image's stable is rustc $pin: reused as ${pinned##*/}"
+            else
+              echo "::warning::The runner image's stable is '${image:-unknown}', not the pinned $pin, so every run downloads $pin (5–150 s on Boat). Pin the image's release instead (rust-toolchain.toml says how)."
+            fi
+          done
+          rustup --version
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+          rustc --version
+          cargo --version
+
+      # Remote compile cache (ci-cache Worker on R2) through sccache. The
+      # checkout is mounted at /home/user/klav, the path where Boat sandboxes
+      # build, because sccache hashes the working directory: a PR then reuses
+      # what an agent built on the same branch, and main's builds. Sandboxes
+      # need the same RUSTFLAGS and CARGO_TERM_COLOR as the `env:` above (set
+      # in the `klav` Boat environment). The docker task's build uses the
+      # same session (see its comments).
+      # The action is a byte-for-byte copy of the private OmarAlex24/ci-cache
+      # at c8972d60665c09e92455a710e406308f9e1bcbbd: a public repository can't
+      # use an action from a private one. It is local, so it needs the
+      # checkout above. To update it, see .github/actions/ci-cache/README.md.
+      - name: "rust: ci-cache"
+        id: cache
+        continue-on-error: true # a cache problem is a slow run, not a red one
+        uses: ./.github/actions/ci-cache/setup
+        with:
+          url: ${{ secrets.CI_CACHE_URL }}
+          mount-workdir: "true"
+
+      - name: "rust: build directory for the tasks"
+        if: steps.cache.outputs.workdir != ''
+        env:
+          WORKDIR: ${{ steps.cache.outputs.workdir }}
+        run: echo "CI_WORKDIR=$WORKDIR" >>"$GITHUB_ENV"
+
+      # --- docker: before the rest of the setup, which it does not need -------
+      # Both images build inside Docker: rust-cache and the host's target/
+      # don't reach them, only the ci-cache session above does. Started
+      # before the remaining setup steps, the build runs while they do.
+
+      # BuildKit's cache in this repository's GitHub Actions cache
+      # (type=gha). The runner hands the cache runtime (token and URLs) to
+      # actions only, not to `run:` steps; this exports it for the docker
+      # task. It is this job's own token: a PR reads main's entries and
+      # writes only to its own ref, as actions/cache does. Only the names go
+      # to the log; the token is masked.
+      - name: "docker: Actions cache runtime for BuildKit"
+        if: steps.skip.outputs.docker != 'true'
+        continue-on-error: true # without it the images build uncached
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ["ACTIONS_RUNTIME_TOKEN", "ACTIONS_CACHE_URL", "ACTIONS_RESULTS_URL", "ACTIONS_CACHE_SERVICE_V2"]) {
+              const value = process.env[name];
+              if (!value) {
+                core.info(`${name}: not set`);
+                continue;
+              }
+              if (name === "ACTIONS_RUNTIME_TOKEN") core.setSecret(value);
+              core.exportVariable(name, value);
+              core.info(`${name}: exported`);
+            }
+
+      - name: "docker: start"
+        if: ${{ !cancelled() && steps.skip.outputs.docker != 'true' }}
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start docker <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}"
+          # Boat's Docker can answer a few seconds after the machine reports
+          # ready. The postgres service already needed it, so this normally
+          # returns at once; it is here, inside the task, so a rerun that
+          # runs `docker` also runs the wait.
+          if ! timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done'; then
+            echo "::error::Docker did not answer within 60 s"
+            exit 1
+          fi
+          cleanup() {
+            docker rm -fv klav klav-railway >/dev/null 2>&1 || true
+            docker volume rm klav-data klav-railway-data >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          # Elapsed seconds on every command: the build times are in the log.
+          PS4='+ [${SECONDS}s] '
+          set -x
+
+          # Root image (docker-compose.yml): starts as klav, healthy, answers.
+          # With the cache runtime from the step above, BuildKit reads and
+          # writes its layers in the Actions cache (scope klav-server).
+          # mode=max keeps the build stage's layers as well, so when what
+          # that stage copies did not change (Cargo.toml, Cargo.lock and
+          # crates/; nothing else, see the Dockerfile) the compiled layer
+          # comes from the cache and klav-server is not built again. A change
+          # there runs cargo again: the cache mounts (target/, the cargo
+          # registry) live in the builder and do not reach the cache, so the
+          # compiled crates come from sccache instead (below).
+          cache=()
+          # `:+set`, not the value: set -x prints the test.
+          if [ -n "${ACTIONS_RUNTIME_TOKEN:+set}" ] && [ -n "${ACTIONS_RESULTS_URL:-}${ACTIONS_CACHE_URL:-}" ]; then
+            cache=(--cache-from "type=gha,scope=klav-server"
+              --cache-to "type=gha,scope=klav-server,mode=max,ignore-error=true")
+          else
+            echo "No Actions cache runtime: the images build uncached"
+          fi
+          # cargo inside the build goes through sccache with the ci-cache
+          # session of "rust: ci-cache", on the host's tier (main/ on a push
+          # to main, the branch on a PR). The action exports the endpoint and
+          # token only when its own sccache reached the cache. They go in as
+          # BuildKit secrets, which never reach a layer, the image history or
+          # the cache key; KLAV_SCCACHE=on adds sccache to the build stage
+          # (see the Dockerfile). The build's objects are its own: sources at
+          # /src, the image's rustc, release profile. So they hit across
+          # Docker builds, never the host's debug builds.
+          sccache=()
+          if [ -n "${SCCACHE_WEBDAV_TOKEN:+set}" ] && [ -n "${SCCACHE_WEBDAV_ENDPOINT:-}" ]; then
+            sccache=(--build-arg KLAV_SCCACHE=on
+              --secret "id=sccache_webdav_endpoint,env=SCCACHE_WEBDAV_ENDPOINT"
+              --secret "id=sccache_webdav_token,env=SCCACHE_WEBDAV_TOKEN")
+          else
+            echo "No ci-cache session: klav-server compiles without sccache"
+          fi
+          # Writing the BuildKit cache never fails the build (ignore-error),
+          # but a cache that cannot be set up or read does, with messages
+          # that vary, and so could sccache's download. So any failed build
+          # with either runs again without both, as a plain `docker build`:
+          # a cache problem makes the task slower, never red. A real build
+          # error fails both times.
+          if ! docker build "${cache[@]}" "${sccache[@]}" -t klav-server:ci .; then
+            [ "${#cache[@]}" -gt 0 ] || [ "${#sccache[@]}" -gt 0 ] || exit 1
+            echo "::warning::docker build failed with the BuildKit cache or sccache: building without them"
+            docker build -t klav-server:ci .
+          fi
+          # Random loopback port on the VM: 8080 may already be in use there.
+          docker run -d --name klav -p 127.0.0.1::8080 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            -v klav-data:/data klav-server:ci
+          status=starting
+          for _ in $(seq 1 30); do
+            status=$(docker inspect klav --format '{{.State.Health.Status}}')
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          docker logs klav
+          test "$status" = healthy
+          port=$(docker port klav 8080/tcp | head -1 | sed 's/.*://')
+          curl -fsS "http://127.0.0.1:${port}/v1/health"
+          echo
+          test "$(docker exec klav id -u)" = 10001
+          docker exec klav test -s /etc/ssl/certs/ca-certificates.crt
+
+          # Railway image (deploy/railway/Dockerfile, docs/self-hosting.md §8).
+          # Its build stage is the root Dockerfile's without the mounts (cache,
+          # sccache's archive and secrets; the comment at its top says why),
+          # so while both stages still say the same it takes klav-server from
+          # the image built above instead of compiling it a second time:
+          # `build` becomes that image, which has the binary at the same path.
+          # If one of the two changes alone, the Railway image builds in full.
+          # The `build` stage with continuation lines joined, mounts, comments
+          # and blank lines dropped, and spaces squeezed.
+          build_stage() {
+            awk '
+              { line = line $0 }
+              /\\$/ { sub(/\\$/, "", line); next }
+              {
+                gsub(/--mount=[^ ]+/, "", line)
+                gsub(/[ \t]+/, " ", line); sub(/^ /, "", line); sub(/ $/, "", line)
+                if (line ~ /^FROM /) in_build = (line ~ / AS build$/)
+                if (in_build && line != "" && line !~ /^#/) print line
+                line = ""
+              }' "$1"
+          }
+          copies=$(grep '^COPY --from=build ' deploy/railway/Dockerfile || true)
+          if [ "$(build_stage Dockerfile)" = "$(build_stage deploy/railway/Dockerfile)" ] &&
+            [ "$copies" = "COPY --from=build /usr/local/bin/klav-server /usr/local/bin/klav-server" ]; then
+            docker build -f deploy/railway/Dockerfile \
+              --build-context build=docker-image://klav-server:ci -t klav-server-railway:ci .
+            # Same binary in both images.
+            binary() { docker run --rm --entrypoint sha256sum "$1" /usr/local/bin/klav-server; }
+            test "$(binary klav-server:ci)" = "$(binary klav-server-railway:ci)"
+          else
+            echo "The build stages of Dockerfile and deploy/railway/Dockerfile differ: building the Railway image in full"
+            docker build -f deploy/railway/Dockerfile -t klav-server-railway:ci .
+          fi
+          # A KLAV_DATA_DIR outside /data, or through `..`, must not start.
+          # `--version` makes a wrongly accepted run exit instead of serving.
+          for bad in / /etc /data/../usr; do
+            if docker run --rm -e KLAV_DATA_DIR="$bad" klav-server-railway:ci --version; then
+              echo "::error::the Railway entrypoint accepted KLAV_DATA_DIR=$bad"
+              exit 1
+            fi
+          done
+          # A volume as Railway mounts it: owned by root, with a root file and
+          # a symlink out of the volume that the entrypoint must not follow.
+          docker run --rm --entrypoint /bin/sh -v klav-railway-data:/data \
+            klav-server-railway:ci -c \
+            'chown 0:0 /data && chmod 755 /data && touch /data/from-root && ln -s /etc/passwd /data/escape'
+          docker run -d --name klav-railway -p 127.0.0.1::8080 -e PORT=8080 \
+            -v klav-railway-data:/data klav-server-railway:ci
+          port=$(docker port klav-railway 8080/tcp | head -1 | sed 's/.*://')
+          ok=false
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${port}/v1/health"; then ok=true; break; fi
+            sleep 2
+          done
+          echo
+          docker logs klav-railway
+          test "$ok" = true
+          # The server (PID 1 after exec) runs as 10001 with no capabilities
+          # and no_new_privs. `docker exec` runs as root here, so read it
+          # from /proc instead of `id -u`.
+          docker exec klav-railway cat /proc/1/status | tee /dev/stderr | awk '
+            $1 == "Uid:" || $1 == "Gid:" { for (i = 2; i <= 5; i++) if ($i != 10001) bad = 1; seen++ }
+            $1 == "CapEff:" || $1 == "CapPrm:" { if ($2 !~ /^0+$/) bad = 1; seen++ }
+            $1 == "NoNewPrivs:" { if ($2 != 1) bad = 1; seen++ }
+            END { exit (bad || seen != 5) }'
+          test "$(docker exec klav-railway stat -c '%u %a' /data)" = "10001 700"
+          test "$(docker exec klav-railway stat -c %u /data/from-root)" = 10001
+          test "$(docker exec klav-railway stat -c %u /data/escape)" = 10001
+          test "$(docker exec klav-railway stat -c %u /etc/passwd)" = 0
+          docker exec klav-railway test -s /etc/ssl/certs/ca-certificates.crt
+
+          # Credential proxy image (deploy/proxy/Dockerfile, ADR 0036 layer
+          # 3). Same build stage as the root image with `-p klav-proxy`, so
+          # the same BuildKit cache (its own scope) and sccache session. It
+          # cannot pair here (no person to approve it), so this checks what
+          # holds before pairing: it runs as 10001 with the CA bundle, and
+          # it refuses to start with its key in the environment, without
+          # ever echoing it.
+          pcache=()
+          if [ "${#cache[@]}" -gt 0 ]; then
+            pcache=(--cache-from "type=gha,scope=klav-proxy"
+              --cache-to "type=gha,scope=klav-proxy,mode=max,ignore-error=true")
+          fi
+          if ! docker build "${pcache[@]}" "${sccache[@]}" -f deploy/proxy/Dockerfile -t klav-proxy:ci .; then
+            [ "${#pcache[@]}" -gt 0 ] || [ "${#sccache[@]}" -gt 0 ] || exit 1
+            echo "::warning::docker build of klav-proxy failed with the BuildKit cache or sccache: building without them"
+            docker build -f deploy/proxy/Dockerfile -t klav-proxy:ci .
+          fi
+          docker run --rm klav-proxy:ci --version
+          test "$(docker run --rm --entrypoint id klav-proxy:ci -u)" = 10001
+          docker run --rm --entrypoint test klav-proxy:ci -s /etc/ssl/certs/ca-certificates.crt
+          set +e
+          out=$(docker run --rm -e KLAV_AGENT_KEY=kag1_ci-placeholder klav-proxy:ci serve 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          test "$code" -ne 0
+          echo "$out" | grep -q "KLAV_AGENT_KEY is set"
+          if echo "$out" | grep -q "ci-placeholder"; then
+            echo "::error::klav-proxy echoed the key it refused"
+            exit 1
+          fi
+          # Unpaired, `serve` stops with an error instead of serving.
+          if docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true klav-proxy:ci serve; then
+            echo "::error::klav-proxy served without a registration"
+            exit 1
+          fi
+          # Its memory on Linux (ADR 0044 §3, layer 1, and Omar's
+          # decisions of 2026-11-19), logged before the registration is
+          # read. Each case asserts its exit status and the error that
+          # follows the memory line: unpaired, `serve` stops at "not found:
+          # agent" once past the memory, and a proxy that dies right after
+          # the memory line fails here. What this task can't do: pair (no
+          # person approves it), so a locked proxy answering a request
+          # through its listener, and its resident memory after that, are
+          # checked in the `test` task, which runs klav-proxy's locked tests
+          # by name with a raised memlock limit.
+          echo "core_pattern on this runner: $(cat /proc/sys/kernel/core_pattern)"
+          echo "memlock limit of this shell: soft $(ulimit -l), hard $(ulimit -Hl)"
+          pcase() { # LABEL EXPECTED-EXIT docker-run-args…
+            label=$1; want_code=$2; shift 2
+            set +e
+            out=$(docker run --rm "$@" 2>&1)
+            code=$?
+            set -e
+            echo "--- klav-proxy memory: $label (exit $code)"
+            echo "$out"
+            if [ "$code" -ne "$want_code" ]; then
+              echo "::error::klav-proxy memory, $label: exit $code, expected $want_code"
+              exit 1
+            fi
+          }
+          want() { grep -qE -- "$1" <<<"$out" || { echo "::error::klav-proxy memory, $label: no line matches $1"; exit 1; }; }
+          wont() { if grep -qE -- "$1" <<<"$out"; then echo "::error::klav-proxy memory, $label: a line matches $1"; exit 1; fi; }
+          # The engine first: without an unlimited memlock limit or a memory
+          # cap, the cases below can't say anything about klav-proxy.
+          if [ "$(docker run --rm --ulimit memlock=-1:-1 --entrypoint sh klav-proxy:ci -c 'ulimit -l' 2>&1)" != unlimited ]; then
+            echo "::error::this Docker engine did not grant --ulimit memlock=-1:-1 (rootless or restricted?): the memory checks need it; this is the runner, not klav-proxy"
+            exit 1
+          fi
+          cap=$(docker run --rm --memory 64m --memory-swap 64m --entrypoint sh klav-proxy:ci \
+            -c 'cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes' 2>&1 || true)
+          if [ "$cap" != 67108864 ]; then
+            echo "::error::this Docker engine did not apply --memory 64m (read: $cap): the memory-cap check needs it; this is the runner, not klav-proxy"
+            exit 1
+          fi
+          # Locked on fault, read back: VmLck more than 0.
+          pcase "unlimited limit" 1 --cap-drop ALL --ulimit memlock=-1:-1 klav-proxy:ci serve
+          want '"core_dumps":"off","dumpable":"not dumpable","locked":true,"lock_turned_off":false,"vm_lck_kib":[1-9]'
+          want 'not found: agent'
+          wont 'memory unlocked'
+          # ADR 0044 decision 11, the case that killed a locked proxy: 64 runtime
+          # workers under a 64 MiB cgroup cap. Locking every page as it is
+          # mapped makes each worker's 2 MiB stack resident (128 MiB), and
+          # the kernel kills the process (exit 137) before it reads its
+          # registration; locked on fault, it reaches it.
+          pcase "64 workers under a 64 MiB cap" 1 --cap-drop ALL --ulimit memlock=-1:-1 \
+            --memory 64m --memory-swap 64m -e TOKIO_WORKER_THREADS=64 klav-proxy:ci serve
+          want '"locked":true'
+          want 'not found: agent'
+          # A finite limit it may not raise: unlocked, with the limit, how
+          # to raise it, and a warning; then it goes on.
+          pcase "finite limit" 1 --cap-drop ALL --ulimit memlock=65536:65536 klav-proxy:ci serve
+          want '"locked":false'
+          want 'the memlock limit is 64 KiB \(hard limit 64 KiB\)'
+          want 'LimitMEMLOCK=infinity'
+          want 'klav-proxy runs with its memory unlocked'
+          want 'not found: agent'
+          # Required and not locked: refused before the registration.
+          pcase "finite limit, lock required" 1 --cap-drop ALL --ulimit memlock=65536:65536 \
+            -e KLAV_PROXY_REQUIRE_MEMORY_LOCK=1 klav-proxy:ci serve
+          want 'the lock is required'
+          wont 'not found: agent'
+          # ADR 0044 decision 12: turned off, nothing locked even with an unlimited
+          # limit, no warning, core dumps still off; with the requirement,
+          # a start-up error before anything else.
+          pcase "lock turned off" 1 --cap-drop ALL --ulimit memlock=-1:-1 \
+            -e KLAV_PROXY_MEMORY_LOCK=off klav-proxy:ci serve
+          want '"core_dumps":"off","dumpable":"not dumpable","locked":false,"lock_turned_off":true'
+          want 'not found: agent'
+          wont 'memory unlocked'
+          pcase "lock turned off and required" 1 --cap-drop ALL --ulimit memlock=-1:-1 \
+            -e KLAV_PROXY_MEMORY_LOCK=off -e KLAV_PROXY_REQUIRE_MEMORY_LOCK=1 klav-proxy:ci serve
+          want 'turned off \(KLAV_PROXY_MEMORY_LOCK=off\) and required \(KLAV_PROXY_REQUIRE_MEMORY_LOCK=1\)'
+          wont 'klav-proxy memory|not found: agent'
+          pcase "a switch value it doesn't take" 1 -e KLAV_PROXY_MEMORY_LOCK=no klav-proxy:ci serve
+          want 'KLAV_PROXY_MEMORY_LOCK must be off'
+          wont 'klav-proxy memory|not found: agent'
+          # The raise of the limit (finding 5 of the re-review of #466): a
+          # finite limit the proxy may raise. With every capability dropped,
+          # the kernel refuses mlockall(MCL_CURRENT) for a process whose
+          # mappings exceed its memlock limit, so a lock that reads back
+          # more than the 64 KiB it started with means it raised the limit.
+          vm_lck_over_64k() {
+            kib=$(grep -oE '"vm_lck_kib":[0-9]+' <<<"$out" | head -1 | cut -d: -f2)
+            if [ -z "$kib" ] || [ "$kib" -le 64 ]; then
+              echo "::error::klav-proxy memory, $label: VmLck ${kib:-missing} kB is not over the 64 KiB it started with"
+              exit 1
+            fi
+          }
+          engine() { # WANT docker-run-args… : what the engine gives, first
+            got=$(docker run --rm "${@:2}" --entrypoint sh klav-proxy:ci -c 'echo "$(ulimit -l) $(ulimit -Hl) $(grep -c "^Seccomp:[[:space:]]*2" /proc/self/status) $(( 0x$(awk "/^CapEff/ {print \$2}" /proc/self/status) >> 24 & 1 ))"' 2>&1 || true)
+            if [ "$got" != "$1" ]; then
+              echo "::error::this Docker engine gave \"$got\" (memlock soft, hard, seccomp filter, CAP_SYS_RESOURCE), not \"$1\", for ${*:2}: this is the runner, not klav-proxy"
+              exit 1
+            fi
+          }
+          # A finite soft limit under an unlimited hard one: raised, locked
+          # and read back, and it goes on.
+          engine "64 unlimited 1 0" --cap-drop ALL --ulimit memlock=65536:-1
+          pcase "finite soft limit, unlimited hard" 1 --cap-drop ALL --ulimit memlock=65536:-1 klav-proxy:ci serve
+          want '"locked":true'
+          vm_lck_over_64k
+          want 'not found: agent'
+          wont 'memory unlocked'
+          # Root with CAP_SYS_RESOURCE and a finite hard limit: it raises
+          # even a limit set on purpose (§3.2), locks and reads it back.
+          # Without CAP_DAC_OVERRIDE, root can't read /data (klav's, 700),
+          # so it stops after the memory line on that instead.
+          engine "64 64 1 1" --user 0 --cap-drop ALL --cap-add SYS_RESOURCE --ulimit memlock=65536:65536
+          pcase "root with CAP_SYS_RESOURCE, finite limit" 1 --user 0 --cap-drop ALL --cap-add SYS_RESOURCE \
+            --ulimit memlock=65536:65536 klav-proxy:ci serve
+          want '"locked":true'
+          vm_lck_over_64k
+          wont 'memory unlocked'
+          # The reverse: raised, then mlockall fails (a seccomp profile
+          # answers it EPERM). Unlocked, with the reason and the limit read
+          # again after it went back: as the host set it.
+          seccomp=$(mktemp)
+          printf '%s' '{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["mlockall"],"action":"SCMP_ACT_ERRNO","errnoRet":1}]}' >"$seccomp"
+          engine "64 unlimited 1 0" --cap-drop ALL --security-opt "seccomp=$seccomp" --ulimit memlock=65536:-1
+          pcase "raised, then mlockall refused" 1 --cap-drop ALL --security-opt "seccomp=$seccomp" \
+            --ulimit memlock=65536:-1 klav-proxy:ci serve
+          rm -f "$seccomp"
+          want '"locked":false'
+          want 'mlockall\(MCL_CURRENT \| MCL_FUTURE \| MCL_ONFAULT\) failed \(EPERM'
+          want 'the memlock limit it had raised to unlimited is back to 64 KiB \(hard limit unlimited\)'
+          want 'klav-proxy runs with its memory unlocked'
+          want 'not found: agent'
+          EOF
+
+      # --- Shared setup (every `uses:` and PATH change goes before the tasks) ---
+
+      # On Boat this is the repository's own GitHub Actions cache (10 GB,
+      # entries evicted after 7 days unused). Only ~/.cargo (registry and git
+      # sources): compiled code comes from sccache. Restoring main's ~890 MB
+      # target/ took ~60 s before any task could start, more than sccache
+      # needs to serve the same dependencies to the tasks in parallel (a PR
+      # with a warm sccache and no target/ ran in ~8 min). Saved on main only
+      # (PRs restore main's), and also when a task failed.
+      # After ci-cache on purpose: rust-cache hashes every CARGO*/RUST* variable
+      # into its key, so RUSTC_WRAPPER=sccache and CARGO_INCREMENTAL=0 are in
+      # it, and a run where ci-cache failed lands under another key.
+      # prefix-key v2: the v1 entries hold a target/ as well.
+      - name: "rust: cache"
+        if: steps.skip.outputs.rust != 'true'
+        continue-on-error: true # a cache problem is a slow run, not a red one
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v2-rust
+          cache-targets: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "cargo-deny: install"
+        if: steps.skip.outputs.cargo-deny != 'true'
+        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-deny@0.20.2
+
+      # The test runner of `test` and `test (postgres)` (.config/nextest.toml).
+      # Without it both run cargo test instead, with a warning: slower, same
+      # verdict. fallback: none, so a failed download never turns into a
+      # cargo install that compiles nextest.
+      - name: "nextest: install"
+        if: steps.skip.outputs.nextest != 'true'
+        continue-on-error: true
+        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-nextest@0.9.150
+          fallback: none
+
+      - name: "extension: wasm-bindgen version from Cargo.lock"
+        id: versions
+        if: steps.skip.outputs.extension != 'true'
+        run: |
+          set -euo pipefail
+          version=$(awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)
+          test -n "$version"
+          echo "wasm_bindgen=$version" >>"$GITHUB_OUTPUT"
+          echo "wasm-bindgen $version"
+
+      - name: "extension: install wasm-bindgen"
+        if: steps.skip.outputs.extension != 'true'
+        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: wasm-bindgen@${{ steps.versions.outputs.wasm_bindgen }}
+
+      # One pnpm store for both node tasks, on the mount where they install.
+      # The tasks run in the ci-cache mount ($CI_WORKDIR), and pnpm cannot
+      # hard-link across mounts: by default each task fell back to a store of
+      # its own there (node_modules/.pnpm-store for the root, .pnpm-store for
+      # apps/docs), while setup-node cached pnpm's default store under
+      # PNPM_HOME, which nothing wrote. On a cache miss its post step then
+      # failed the job ("Path Validation Error"). Inside node_modules/, so git
+      # and the Docker context ignore it. Without the mount the tasks install
+      # in the workspace and pnpm's default store is the right one.
+      - name: "node: pnpm store on the tasks' mount"
+        if: steps.skip.outputs.node != 'true' && steps.cache.outputs.workdir != ''
+        env:
+          WORKDIR: ${{ steps.cache.outputs.workdir }}
+        run: echo "pnpm_config_store_dir=$WORKDIR/node_modules/.pnpm-store" >>"$GITHUB_ENV"
+
+      - name: "node: pnpm"
+        if: steps.skip.outputs.node != 'true'
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+
+      - name: "node: Node 22"
+        if: steps.skip.outputs.node != 'true'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          # Two pnpm projects: the root workspace and apps/docs (ADR 0039 §1).
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            apps/docs/pnpm-lock.yaml
+
+      # --- Background tasks: light ones first, then the longest ---------------
+      # Each task is a script with its own exit code; the start step returns at
+      # once. Debug-profile cargo commands wait for each other on target/'s
+      # lock, so their order matters more than their count.
+      # `!cancelled()`: a failed setup step above (it already makes the job
+      # red) does not stop the other tasks; a task that needed that setup
+      # fails in its own check with the real error.
+
+      - name: "fmt: start"
+        if: ${{ !cancelled() && steps.skip.outputs.fmt != 'true' }}
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start fmt <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}"
+          cargo fmt --all --check
+          EOF
+
+      - name: "cargo-deny: start"
+        if: ${{ !cancelled() && steps.skip.outputs.cargo-deny != 'true' }}
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start cargo-deny <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}"
+          # Same arguments as EmbarkStudios/cargo-deny-action@v2 (a container
+          # action); the binary is the same 0.20.2.
+          cargo deny --all-features --log-level warn check
+          EOF
+
+      - name: "extension: start"
+        if: ${{ !cancelled() && steps.skip.outputs.extension != 'true' }}
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start extension <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}"
+          # Chromium's system libraries come from apt: install-deps needs sudo.
+          if ! sudo -n true 2>/dev/null; then
+            echo "::error::playwright install-deps needs passwordless sudo on the runner"
+            exit 1
+          fi
+          # Elapsed seconds on every command: the step times are in the log.
+          PS4='+ [${SECONDS}s] '
+          set -x
+          # Inside the task: a lockfile mismatch turns only `extension` red.
+          pnpm install --frozen-lockfile
+
+          # Chromium for the e2e, in the background while the extension
+          # builds and its other checks run: its system libraries from apt
+          # and the browser download, each on its own. --no-shell: the e2e
+          # starts Chromium's own headless mode (channel "chromium",
+          # e2e/harness.ts), never the separate headless shell.
+          # Runs a command in the background with its output in a file.
+          background() {
+            local log=$1
+            shift
+            (
+              set +e
+              "$@"
+              status=$?
+              echo "+ [${SECONDS}s] exit $status"
+              exit "$status"
+            ) >"$log" 2>&1 &
+          }
+          # Waits for one of them and shows its output.
+          finish() {
+            local status=0
+            wait "$1" || status=$?
+            cat "$2"
+            return "$status"
+          }
+          # dpkg syncs every file it unpacks. On a throwaway runner that buys
+          # nothing, and with the other tasks' builds on the same disk
+          # install-deps took 53 to 232 s.
+          echo force-unsafe-io | sudo tee /etc/dpkg/dpkg.cfg.d/ci-unsafe-io >/dev/null
+          deps_log=$(mktemp)
+          browser_log=$(mktemp)
+          background "$deps_log" pnpm --filter @klav/extension exec playwright install-deps chromium
+          deps_pid=$!
+          background "$browser_log" pnpm --filter @klav/extension exec playwright install --no-shell chromium
+          browser_pid=$!
+
+          # klav-wasm, Chromium and Firefox zips.
+          pnpm build
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          # klav.dev and its waitlist (apps/web, no dependencies; Node 22 is set up above).
+          node --test apps/web/test/*.test.mjs
+          # The release kit (scripts/release, docs/releasing.md), with made-up files.
+          node --test scripts/release/test/*.test.mjs
+          # Firefox package, as addons.mozilla.org checks it.
+          pnpm --filter @klav/extension lint:firefox
+          # End to end: Chromium, klav-server, klavd and the native host.
+          # Four spec files at a time, each with its own stack, then the
+          # passkey specs on their own (playwright.config.ts).
+          cargo build --locked -p klav-server -p klav-cli -p klav-daemon
+          finish "$deps_pid" "$deps_log"
+          finish "$browser_pid" "$browser_log"
+          # The e2e's run directory (Chromium profiles, KLAV_HOMEs,
+          # klav-server's SQLite) in memory, like postgres' data above. With
+          # the other tasks' builds on the same disk, writes there waited
+          # seconds: the first fill of a fresh profile waits for Chromium to
+          # create the extension's storage, and klav-server listens only
+          # after creating its database. Its own tmpfs, not /dev/shm, which
+          # can be noexec: the harness runs klavd and the host from there.
+          e2e_tmp=$(mktemp -d)
+          sudo mount -t tmpfs -o size=4g,mode=1777 klav-e2e "$e2e_tmp"
+          TMPDIR=$e2e_tmp pnpm --filter @klav/extension e2e
+          EOF
+
+      # The public docs site (apps/docs, ADR 0039 §6): its own pnpm project,
+      # so its install runs at the same time as the extension's.
+      - name: "docs: start"
+        if: ${{ !cancelled() && steps.skip.outputs.docs != 'true' }}
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start docs <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}/apps/docs"
+          export ASTRO_TELEMETRY_DISABLED=1 WRANGLER_SEND_METRICS=false
+          # Elapsed seconds on every command: the step times are in the log.
+          PS4='+ [${SECONDS}s] '
+          set -x
+          # engines.node asks for 22.23.4 or later.
+          node --version
+          pnpm install --frozen-lockfile
+          # Asks the registry: a new advisory turns docs red on any PR, as a
+          # new RUSTSEC turns cargo-deny red. Ignore one only by its GHSA ID,
+          # with its reason (ADR 0039 §2).
+          pnpm audit --audit-level low
+          pnpm exec nimbus-docs check
+          pnpm exec astro check
+          # astro build, then Pagefind. The checkout is shallow, so pages
+          # carry no "Last updated" date; the deploy build runs on a full clone.
+          pnpm build
+          # Every inline script's hash is in public/_headers' CSP, and no
+          # listed hash is stale.
+          pnpm run check:csp
+          # nimbus/internal-link is an error: a dead internal link fails.
+          pnpm exec nimbus-docs lint
+          EOF
+
+      - name: "test: start"
+        if: ${{ !cancelled() && steps.skip.outputs.test != 'true' }}
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start test <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}"
+          # nextest runs every test in a process of its own, as many at once
+          # as there are CPUs, across all the test binaries; cargo test runs
+          # the binaries one after another. Doc tests only run under cargo test.
+          if command -v cargo-nextest >/dev/null 2>&1; then
+            cargo nextest run --workspace --locked --profile ci
+            cargo test --workspace --locked --doc
+          else
+            echo "::warning::cargo-nextest is not installed: running cargo test instead"
+            cargo test --workspace --locked
+          fi
+          # Swift bindings of klav-ffi (uniffi, library mode; ADR 0018).
+          cargo build -p klav-ffi --features bindgen --locked
+          target/debug/uniffi-bindgen generate --library target/debug/libklav_ffi.so \
+            --language swift --out-dir target/uniffi-swift
+          test -s target/uniffi-swift/klav_ffi.swift
+          # The Mac app's engine, DaemonEngine, against a real klavd (ADR 0027),
+          # and its bindings.
+          cargo test -p klav-ffi --features daemon --locked --test daemon
+          cargo build -p klav-ffi --features daemon --locked
+          target/debug/uniffi-bindgen generate --library target/debug/libklav_ffi.so \
+            --language swift --out-dir target/uniffi-swift-mac
+          grep -q DaemonEngine target/uniffi-swift-mac/klav_ffi.swift
+          # Node SDK.
+          node --test packages/sdk/test/*.test.js
+          # Shell scripts of the sandbox template and of new-sandbox (ADR
+          # 0042), against fakes only. They need jq, and the template's also
+          # python3 or node; shellcheck runs on the author's machine, not here.
+          command -v jq >/dev/null 2>&1 || {
+            echo "::error::jq is not installed: the shell tests of deploy/sandbox-template and deploy/sandbox need it"
+            exit 1
+          }
+          deploy/sandbox-template/test/run-tests
+          deploy/sandbox/test/run-tests
+          # klav-proxy's tests that need its memory locked (ADR 0044, layer
+          # 1). They are #[ignore]d: the runner's memlock limit is finite
+          # (8 MiB, hard 8 MiB), and run without an unlimited one they fail
+          # on their precondition. Each runs here alone, by its exact name,
+          # in one shell whose limit this script raises to unlimited (sudo,
+          # for that shell only: the tests themselves never escalate). A
+          # name that matches no test fails (--no-tests=fail), and its output
+          # is shown; two of them print a measurement (the burst's and the
+          # binary's VmRSS). The core-file, systemd-coredump and
+          # other-owner tests stay by hand (docs/roadmap.md).
+          locked_test() { # CARGO-TARGET-ARGS NAME
+            bash -c '
+              set -euo pipefail
+              sudo -n prlimit --pid $$ --memlock=unlimited:unlimited
+              if [ "$(ulimit -l)" != unlimited ] || [ "$(ulimit -Hl)" != unlimited ]; then
+                echo "::error::the memlock limit is still $(ulimit -l) (hard $(ulimit -Hl)) after prlimit: the locked klav-proxy tests can not run"
+                exit 1
+              fi
+              echo "--- klav-proxy locked test: $2 (memlock $(ulimit -l), hard $(ulimit -Hl))"
+              if command -v cargo-nextest >/dev/null 2>&1; then
+                cargo nextest run -p klav-proxy --locked --profile ci \
+                  --run-ignored all --no-tests=fail --success-output immediate \
+                  -E "test(=$2)"
+              else
+                out=$(cargo test -p klav-proxy --locked $1 -- --exact "$2" --include-ignored --nocapture 2>&1) || { echo "$out"; exit 1; }
+                echo "$out"
+                grep -q "test result: ok. 1 passed" <<<"$out" || { echo "::error::$2 did not run"; exit 1; }
+              fi
+            ' locked-test "$@"
+          }
+          locked_test --lib memory::tests::a_hardened_child_has_no_core_limit_and_is_not_dumpable
+          locked_test --lib memory::tests::a_locked_child_does_not_make_untouched_stacks_resident
+          locked_test --lib locked_e2e_tests::a_locked_proxy_serves_a_burst_through_a_profile_and_stays_small
+          locked_test "--test memory" a_required_lock_lets_a_locked_start_go_on
+          locked_test "--test memory" a_locked_proxy_serves_a_request_and_keeps_untouched_pages_out_of_memory
+          locked_test "--test memory" status_says_its_own_memory_is_locked_on_stderr_only
+          EOF
+
+      - name: "clippy: start"
+        if: ${{ !cancelled() && steps.skip.outputs.clippy != 'true' }}
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start clippy <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}"
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          # klav-ffi with the Mac app's DaemonEngine, and klav-daemon as only
+          # the socket's client (ADR 0027).
+          cargo clippy -p klav-ffi --features daemon --all-targets --locked -- -D warnings
+          cargo clippy -p klav-daemon --no-default-features --lib --locked -- -D warnings
+          EOF
+
+      - name: "test (postgres): start"
+        if: ${{ !cancelled() && steps.skip.outputs.test-postgres != 'true' }}
+        env:
+          # Admin URL: every integration test creates its own database on it.
+          # Only this task gets it; `test` stays on SQLite.
+          KLAV_TEST_DATABASE_URL: postgres://postgres:klav@127.0.0.1:5432/postgres
+        run: |
+          bun "$CI_SCRIPTS/ci-task.ts" start test-postgres <<'EOF'
+          set -euo pipefail
+          cd "${CI_WORKDIR:-$GITHUB_WORKSPACE}"
+          # Same runner as `test`, and the same fallback. No doc tests here:
+          # klav-server's run in `test` (--workspace --doc), and here they
+          # waited ~2 min on target/'s lock for nothing.
+          if command -v cargo-nextest >/dev/null 2>&1; then
+            cargo nextest run -p klav-server --locked --profile ci
+          else
+            echo "::warning::cargo-nextest is not installed: running cargo test instead"
+            cargo test -p klav-server --locked
+          fi
+          EOF
+
+      # --- Results -------------------------------------------------------------
+      # Seconds count from each task's start; the cargo tasks may queue behind
+      # each other on target/. A task whose start did not run gets a red
+      # check ("did not start") instead of a missing one.
+
+      - name: "fmt: result"
+        if: ${{ !cancelled() && steps.skip.outputs.fmt != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait fmt 4800
+
+      - name: "cargo-deny: result"
+        if: ${{ !cancelled() && steps.skip.outputs.cargo-deny != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait cargo-deny 4800
+
+      - name: "clippy: result"
+        if: ${{ !cancelled() && steps.skip.outputs.clippy != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait clippy 4800
+
+      - name: "test: result"
+        if: ${{ !cancelled() && steps.skip.outputs.test != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait test 4800
+
+      - name: "test (postgres): result"
+        if: ${{ !cancelled() && steps.skip.outputs.test-postgres != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait test-postgres 4800
+
+      - name: "docker: result"
+        if: ${{ !cancelled() && steps.skip.outputs.docker != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait docker 4800
+
+      - name: "extension: result"
+        if: ${{ !cancelled() && steps.skip.outputs.extension != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait extension 4800
+
+      - name: "docs: result"
+        if: ${{ !cancelled() && steps.skip.outputs.docs != 'true' }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" wait docs 4800
+
+      # --- Measure, upload, publish (never turn the job red) -------------------
+
+      - name: Per-task metrics
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: bun "$CI_SCRIPTS/task-metrics.ts"
+
+      - name: sccache stats
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          command -v sccache >/dev/null || { echo "no sccache on PATH"; exit 0; }
+          sccache --show-stats | tee "$RUNNER_TEMP/sccache-stats.txt"
+          # rust-cache saves $GITHUB_WORKSPACE/target; the tasks built in
+          # $CI_WORKDIR/target. Same device:inode = same directory.
+          if [ -n "${CI_WORKDIR:-}" ] && [ -d "$GITHUB_WORKSPACE/target" ]; then
+            saved=$(stat -c '%d:%i' "$GITHUB_WORKSPACE/target")
+            built=$(stat -c '%d:%i' "$CI_WORKDIR/target")
+            echo "target/: saved $saved, built $built" | tee -a "$RUNNER_TEMP/sccache-stats.txt"
+            [ "$saved" = "$built" ] || echo "::warning::rust-cache would save a target/ other than the one the tasks built"
+          fi
+          { echo '### sccache'; echo '```'; cat "$RUNNER_TEMP/sccache-stats.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload machine samples
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: machine-samples-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/machine-samples.txt
+            ${{ runner.temp }}/background-steps/*.start
+            ${{ runner.temp }}/background-steps/*.end
+            ${{ runner.temp }}/background-steps/*.waited
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Logs were masked before they reached disk (ci-task.ts mask).
+      - name: Upload task logs
+        id: task-logs
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-task-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/background-steps/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Playwright traces and error context of the extension e2e tests that
+      # failed (trace: retain-on-failure on CI). Not masked like the task
+      # logs: the e2e uses only synthetic data (a throwaway local server and
+      # account) and no CI secrets.
+      - name: Upload e2e traces
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-traces-${{ github.run_attempt }}
+          path: apps/extension/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # One check per waited task (fmt, clippy, test, ...) on the PR head
+      # commit, with the trimmed failure in its output. Skipped tasks keep the
+      # green check of the attempt where they passed.
+      - name: Publish one check per task
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ARTIFACT_NAME: ci-task-logs-${{ github.run_attempt }}
+          ARTIFACT_URL: ${{ steps.task-logs.outputs.artifact-url }}
+        run: bun "$CI_SCRIPTS/ci-task.ts" publish

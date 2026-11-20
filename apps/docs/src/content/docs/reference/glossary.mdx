@@ -1,0 +1,37 @@
+---
+title: "Glossary"
+description: "The terms Klav uses in its apps and docs, from agent to vault, with a link to where each is explained."
+sidebar:
+  order: 2
+---
+
+This page defines the terms Klav uses in its apps, its command line and these docs, in alphabetical order, with a link to where each one is explained.
+
+- **Activity log:** the audit log as the apps show it. See [The activity log](/agents/activity-log/).
+- **Agent:** a program that acts for you, such as Claude Code, Codex, Cursor, a script or a server. It has its own identity and uses only what its grant allows. See [How agents work](/agents/how-agents-work/).
+- **Approval:** your decision on an agent's request when its policy says `ask`: approve once, approve for a while (up to 24 hours), or deny. See [Approvals and tasks](/agents/approvals-and-tasks/).
+- **Assisted password change:** an agent changes a password in your browser without seeing it; the new password is kept as a pending change until the site accepts it.
+- **Audit log:** the record of what agents did and what you decided, with each agent's reason, kept as a chain that `klav log verify` checks. See [The activity log](/agents/activity-log/).
+- **AutoFill:** filling logins, codes and passkeys on the iPhone, in Safari and other apps. See [The iPhone app](/apps/iphone/).
+- **Emergency kit:** the page with your email, your server and your Secret Key. With your master password, it signs you in on a new device. See [Create an account](/get-started/create-an-account/#the-emergency-kit).
+- **Grant:** what an agent may use: the projects (or whole vaults) and a policy of `allow`, `ask` or `deny` for each permission, signed by your account. See [How agents work](/agents/how-agents-work/#the-grant-projects-and-permissions).
+- **Item:** one entry in a vault: a login, card, identity, SSH key, file, one-time code, secure note or API key.
+- **`klavd`:** the local daemon on a Mac or Linux computer. It keeps your vault unlocked in memory, asks for Touch ID on a Mac, and serves the browser extension and the Mac app. See [The command line](/apps/cli/#unlock-once-with-klavd).
+- **`klav.toml`:** a file in a repository that names, for each environment variable, the reference of its secret, so `klav run` can start a command with the values. See [Use secrets without seeing them](/agents/use-secrets-without-seeing-them/#references-and-klavtoml).
+- **Master password:** the password you choose for your account. Klav never sends it to the server, and nobody can reset it. See [How Klav protects your data](/security/how-klav-protects-your-data/#your-master-password-and-secret-key).
+- **Pairing words:** see six words.
+- **Pause:** stop every agent, or one, until you resume them. The server refuses what a paused agent asks. See [Pause, change or revoke an agent](/agents/pause-and-revoke/).
+- **Pending change:** a new password from an assisted password change that isn't confirmed yet. The "Pending change" card asks whether to use the new one or keep the current one.
+- **Permission:** what an agent may do with an item: `list`, `fill`, `inject`, `totp`, `reveal`, `create`, `update`, `delete`, `passkey` or `rotate`. See [How agents work](/agents/how-agents-work/#the-grant-projects-and-permissions).
+- **Project:** a group of items inside a vault. A grant gives an agent whole projects.
+- **Reference:** an item's address, such as `klav://Personal/General/github.com`. You can give it to an agent or commit it to a repository instead of the secret.
+- **`reveal`:** the permission to return a secret value to an agent. Denied by default.
+- **Revoke:** end an agent's access for good. It keeps what it already obtained. See [Pause, change or revoke an agent](/agents/pause-and-revoke/#revoke-an-agent).
+- **Secret Key:** 128 random bits Klav makes on your first device, kept in your emergency kit and in Klav's folder on each device you sign in on. Opening your account takes it and your master password. See [How Klav protects your data](/security/how-klav-protects-your-data/#your-master-password-and-secret-key).
+- **Self-hosting:** running Klav's server, `klav-server`, yourself instead of using `api.klav.dev`. See [Self-hosting](/self-hosting/).
+- **Sites an agent added:** sites an agent added to a login. They wait for you to confirm them, and only confirmed sites are filled.
+- **Six words:** the pairing words an agent prints when it registers. You compare them with the ones your device shows before you approve it. Your account has six words of its own too. See [How agents work](/agents/how-agents-work/#the-six-words).
+- **Skill:** the rules an agent follows to use Klav, installed in agent clients with `klav client connect` or `klav skill install`. See [Connect an agent](/agents/connect-an-agent/#klavs-skill).
+- **Task:** one request for several items and permissions for one job, approved with one card and limited in time. See [Approvals and tasks](/agents/approvals-and-tasks/#tasks).
+- **Vault:** the top level of your items. It holds projects, and its key is what opens them.
+- **Vault health:** the check for reused, weak and old passwords, and for breached ones if you turn that on.

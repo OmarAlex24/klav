@@ -1,0 +1,84 @@
+---
+title: "The activity log"
+description: "See what every agent did and why, check that nobody rewrote the log, and see what an agent saw: which secrets it obtained."
+sidebar:
+  order: 5
+---
+
+This page explains how to see what agents did with your vault: the activity log (the audit log, in the command line's words), with every request, its reason and its outcome; how to check that nobody rewrote it; and the report of what one agent saw. You read it on your devices; an agent has no command or tool for it.
+
+## `klav log`
+
+```sh
+klav log
+```
+
+```text
+WHEN                  WHO          WHAT                                        ITEM                            REASON                                              ALERTS
+2026-11-12 23:03:12Z  claude-code  agent.access totp → allow                   klav://Personal/General/GitHub  Finish signing in to GitHub to open the release PR  first_use
+2026-11-12 23:03:12Z  you          approval.decided totp → approve             klav://Personal/General/GitHub
+2026-11-12 23:03:00Z  claude-code  agent.access totp → ask                     klav://Personal/General/GitHub  Finish signing in to GitHub to open the release PR
+2026-11-12 23:02:57Z  claude-code  agent.access inject → allow                 klav://Personal/General/Stripe  Write the test config
+2026-11-12 23:02:57Z  claude-code  agent.access inject → allow                 klav://Personal/General/Stripe  Run the billing tests against Stripe's test mode    first_use
+2026-11-12 23:02:48Z  you          agent.granted for "claude-code" (5d1c0a7e)
+2026-11-12 23:02:37Z  claude-code  agent.registered
+This device has not verified the log yet: run `klav log verify`.
+```
+
+Newest first: when (UTC), who (`you` or the agent's name), what it did and with what outcome (`allow`, `ask` or `deny` from the policy, `approve` from you), on which item, and the agent's reason. A grant you signed says which agent it was for: its name and the start of its ID.
+
+**Alerts:**
+
+- `first_use`: the first time that agent used that item's secrets;
+- `burst`: an agent used a secret after 20 or more requests in the minute before;
+- `denied`: the policy denied it.
+
+**Filters:** `--item`, `--agent`, `--vault`, `--since` and `--until` (`24h`, `7d`, a date or a UTC time), `--alerts`, `--permission`, `--outcome` and `--text`. `--json` and `--csv` export every event that passes them. `klav log --task <id>` summarizes one [task](/agents/approvals-and-tasks/#tasks): who asked and approved it, every use, what was asked outside it, and how it ended.
+
+In the Mac app, the log is Development › Activity (⌘5), and each item has "Who used it". On the iPhone, it is "Activity" in the Agents sheet.
+
+## Check that nobody rewrote it
+
+Each event is chained to the one before by a hash, and agents and your devices sign what they do. `klav log verify` checks the whole chain:
+
+```sh
+klav log verify
+```
+
+```text
+The audit log is intact: 9 events, 4 agent signatures, 2 account signatures, 0 signed heads.
+This device's signed head is at event 9.
+```
+
+It checks every agent's signature against what the event says, and that the server didn't shorten the log or change an event this device already saw. Then it signs the new head, unless this device already signed it. If something was changed, removed or reordered, it exits with code 3 and says from where. The first time on a device it also warns that earlier events are trusted as the server sent them. If an agent's request was logged after you revoked that agent, it warns about each one ("acted after its revocation") but still exits with 0: an older server could log a request already on its way when you revoked the agent.
+
+## What an agent saw
+
+`klav agent show <name>` shows an agent, its grant and a report built from the log:
+
+```sh
+klav agent show claude-code
+```
+
+```text
+AGENT        STATUS  PAUSED  PROJECTS          WORDS                                             ID
+claude-code  active          Personal/General  ferocity mothproof bolt cassette gleeful seizing  …
+Grant v1 (0 rules).
+claude-code held the keys of: Personal/General. It could read the titles, usernames and URLs of their items.
+What claude-code used (from the audit log):
+ID        ITEM                            PERMISSIONS  SECRET  USES  LAST
+ba8fb3dd  klav://Personal/General/GitHub  totp         yes     1     2026-11-12 23:03:12Z
+d0598530  klav://Personal/General/Stripe  inject       yes     2     2026-11-12 23:02:57Z
+warning: It obtained the secrets marked `yes`: change them where they are used (the site, the API) if you no longer trust it.
+```
+
+- The projects whose keys it held: it could read their items' titles, usernames and addresses.
+- Each item it used, with which permissions, how many times and when.
+- `SECRET` is `yes` when the agent obtained a value: through a command it ran, a file it wrote, a page it filled, a code, a value it revealed or an attachment delivered to it. "Obtained" means the value reached the agent's runtime, even if it never reached the agent's model.
+- How many of its attempts were denied, if any.
+
+`klav agent revoke` prints the same report, and the Mac and iPhone show it when you revoke an agent.
+
+## Next
+
+[Pause, change or revoke an agent](/agents/pause-and-revoke/).

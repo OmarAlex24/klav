@@ -1,0 +1,47 @@
+{
+  "cases": [
+    {
+      "aad": "0102000000186b6c61762f76312f777261702f70726f6a6563742d6b657900000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010d2abd46d0943b279f5de4688a9006f64",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "attachment_id": "9370f2bac4cd8e254b2d79abca412916",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "key": "7399307a6bfa6b10a82be1fd65fadbd82b4ecc66f7e052c4625f56d77c738622",
+      "name": "project-key",
+      "nonce": "c4cb4dd20b0ee659003947967616d03fc8ff5f53661c4666",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "wrapped": "0102c4cb4dd20b0ee659003947967616d03fc8ff5f53661c4666bc2c121bcbeaf554318504d0b72e9c17f726094128020568c360a5c471acedda5bf75ef4fd23efe349bdeddd25788b61",
+      "wrapping_key": "0f6ae7fc1636c9bfb2a433aed344199294581474b9e5ae7b9f12a4172aeb9b95"
+    },
+    {
+      "aad": "0103000000156b6c61762f76312f777261702f6974656d2d6b657900000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010d2abd46d0943b279f5de4688a9006f6400000010c0ef1745472f70d1965d6c2983fb4c1b",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "attachment_id": "9370f2bac4cd8e254b2d79abca412916",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "key": "20c89ba40ee8b95c2bcc46d9a2ef135ef4e7f1177b7831ecc08301a29ef9911f",
+      "name": "item-key",
+      "nonce": "3f2731d644ded6abb8eb9d389ec20285a05e7cf85ee337c6",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "wrapped": "01033f2731d644ded6abb8eb9d389ec20285a05e7cf85ee337c653ba3ea4f46bdd65d019edb1060e120091c111eaec1b4da29268c809a082f4a82e30f01e2659271c8516dd656f16b5b3",
+      "wrapping_key": "0a47bcfff7019892288f2571866130ed58b1f27b9e85bbeefbc28ffe65a93e3c"
+    },
+    {
+      "aad": "01040000001b6b6c61762f76312f777261702f6174746163686d656e742d6b657900000010a7745fc9c1fb8daabf635acb32603f6c00000010be95de59b617035725a062fdf46a63f100000010d2abd46d0943b279f5de4688a9006f6400000010c0ef1745472f70d1965d6c2983fb4c1b000000109370f2bac4cd8e254b2d79abca412916",
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "attachment_id": "9370f2bac4cd8e254b2d79abca412916",
+      "item_id": "c0ef1745472f70d1965d6c2983fb4c1b",
+      "key": "5e0b973e5434999cb3743e1b67414977ce0555445c7d8d61e9f101c356a5ec0c",
+      "name": "attachment-key",
+      "nonce": "fa943ef178c37fdc4c4bf6a398a94456412dac97c073294f",
+      "project_id": "d2abd46d0943b279f5de4688a9006f64",
+      "vault_id": "be95de59b617035725a062fdf46a63f1",
+      "wrapped": "0104fa943ef178c37fdc4c4bf6a398a94456412dac97c073294f8423572673a82e3d55a0ae0441aa9d93cf12d8c2490558720ae9e7e09e27d0abfc726e1a03c4197f075d157491c30d5d",
+      "wrapping_key": "090bd4dddea2df0955beeea5f39f5e06ec70009b0e4d414eb5c854e5172a6f40"
+    }
+  ],
+  "description": "Envoltura simétrica de llaves de proyecto, elemento y adjunto",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §5.2"
+}

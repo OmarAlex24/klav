@@ -1,0 +1,42 @@
+---
+title: "Overview"
+description: "What Klav is, what you can use today and on which devices, and which page to read next."
+sidebar:
+  order: 1
+---
+
+Klav is an open-source password manager, encrypted end to end, for people who work with AI agents. This page says what Klav is, what you can use today and on which devices, and which page to read next.
+
+## What Klav is
+
+- **A password manager.** Klav keeps logins, cards, identities, SSH keys, files, one-time codes, secure notes and API keys. It fills them in your browser and on your iPhone, generates passwords, keeps passkeys, and imports from the password manager or browser you use now.
+- **Encrypted end to end.** Your devices encrypt and decrypt your items; the server keeps them encrypted, plus what it needs to sync, such as your email address and your devices' names. Opening your vault takes your master password and your Secret Key, a key Klav makes on your first device. Neither one leaves your devices, and nobody can reset either of them, not even whoever runs the server.
+- **Built for agents.** An AI agent gets its own identity and only the projects and permissions you grant it. By default it gets actions, not values: Klav types a login into the page, or runs a command with an API key in its environment, and doesn't return the password or the key to the agent. Showing a value to an agent is the `reveal` permission, denied by default. Every action an agent takes needs a reason and goes to an audit log.
+
+Items live in projects, and projects in vaults. Every item has a reference such as `klav://Personal/General/github.com`, which you can share with an agent or commit to a repository instead of the secret.
+
+## What works today
+
+| Part of Klav | What it does | Where it stands |
+|---|---|---|
+| Mac app | A menu bar app and a window: search, create and edit items, copy usernames, passwords and codes, unlock with Touch ID, approve agents' requests. "Set up this Mac" puts the rest of Klav in place | A download from klav.dev |
+| Browser extension | Fills logins, cards and addresses in Chrome, Brave, Edge, Arc, Dia and Firefox. Saves new logins, fills one-time codes, keeps passkeys and generates passwords | From klav.dev, installed by hand: a zip for Chromium browsers, a file Mozilla signed for Firefox; not in the browser stores yet |
+| iPhone app | AutoFill for passwords, codes and passkeys, Face ID, and approvals for agents' requests | A beta on TestFlight; not in the App Store yet |
+| CLI | `klav`, the terminal client on macOS and Linux: items, import, `klav run` and `klav inject` for API keys, and everything agents use | With the Mac app; a download for Linux |
+| `klavd` | The local daemon. It keeps the vault unlocked in memory and asks for Touch ID on a Mac. The extension and the Mac app go through it | Comes with the Mac app and the CLI |
+| Server | Stores your items encrypted, and what it needs to sync | You host your own. Klav's own, a paid plan, isn't open yet |
+
+[Install Klav](/get-started/install/) says how to get each one. The downloads open with Klav's first release; [klav.dev](https://klav.dev/#download) shows which ones are out.
+
+Some things are not there yet:
+
+- The Mac app doesn't import. Use the extension, the iPhone app or the CLI for that.
+- The extension can create items, but it has no form to edit the fields of an item that already exists.
+- No app lists or removes your devices yet.
+
+## Where to start
+
+- **Setting Klav up for yourself:** [Get started](/get-started/) takes you through installing, creating an account, importing your passwords and adding a device.
+- **Giving an agent access:** [Agents](/agents/) covers permissions, approvals and secrets an agent uses without seeing them.
+- **Running your own server:** [Self-hosting](/self-hosting/).
+- **How your data is protected:** [Security](/security/).

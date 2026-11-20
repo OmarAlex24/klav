@@ -1,0 +1,108 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
+# CI runs `cargo deny check` (advisories, bans, licenses, sources).
+
+[graph]
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+# Every RUSTSEC advisory fails the build unless explicitly ignored here with a reason.
+ignore = [
+  # crypto-bigint 0.5.5 (timing leaks, fixed only in 0.7.6) comes in through
+  # opaque-ke 4 -> elliptic-curve 0.13, which every opaque-ke release pins.
+  # Klav's OPAQUE suite is ristretto255 (curve25519-dalek); on that path
+  # elliptic-curve is only used for expand_message_xmd (hashing), so no
+  # crypto-bigint arithmetic runs on secrets. See ADR 0009. Revisit when
+  # opaque-ke moves to elliptic-curve 0.14.
+  # The ignore goes by ID, so it would also hide a vulnerable crypto-bigint
+  # 0.7 (the one p256 0.14 runs on secret scalars for passkeys): the ban in
+  # [bans] below rejects 0.7 releases before the fix (ADR 0020 §6).
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint not used by the ristretto255 OPAQUE suite (ADR 0009)" },
+  # basic-toml (unmaintained) comes in through askama in uniffi_bindgen, only
+  # with klav-ffi's `bindgen` feature: it runs when generating the Swift
+  # bindings on a developer machine or in CI and never ships in an app.
+  # ADR 0018. Revisit when uniffi moves askama off basic-toml.
+  { id = "RUSTSEC-2026-0374", reason = "build-time only (uniffi-bindgen templates), not in any shipped binary (ADR 0018)" },
+  # Bundled SQLite before 3.54 (libsqlite3-sys 0.37, via sqlx-sqlite 0.9.0)
+  # can return uninitialised memory when it opens a database together with a
+  # crafted `-wal` file. Of the shipped binaries only klav-server links it,
+  # and it opens only the database at KLAV_DATABASE_URL, in a directory its
+  # operator owns; klav-client and klav-sdk use sqlx only in tests. The fix is
+  # libsqlite3-sys 0.39, which no sqlx release allows yet. Remove with #245.
+  { id = "RUSTSEC-2026-0459", reason = "klav-server opens only its own SQLite file; no sqlx release takes the fix yet (#245)" },
+  # chrono (unmaintained, no vulnerability reported) comes in only through
+  # zxcvbn 3.1, behind klav-client's `health` feature (ADR 0022 §4). zxcvbn
+  # calls it in one place, to read the current year when it scores a date in
+  # a password; it parses nothing and handles no secret with it. No zxcvbn
+  # release drops chrono yet. The ignore goes by ID, so it would not hide a
+  # vulnerability advisory against chrono, which has its own ID. Revisit when
+  # zxcvbn moves off chrono, or replace zxcvbn (that needs an ADR).
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained notice; zxcvbn only reads the current year with it (ADR 0022 §4)" },
+]
+
+[licenses]
+# Permissive licenses compatible with distributing Klav under Apache-2.0
+# (and klav-server under AGPL-3.0-only).
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+# The allow-list is a policy, not an inventory: some entries may be unused for now.
+unused-allowed-license = "allow"
+exceptions = [
+  # ADR 0003: the server is AGPL-3.0-only; nothing else may depend on it.
+  { allow = ["AGPL-3.0-only"], crate = "klav-server" },
+  # Mozilla's CA root certificates as data (fallback trust store of
+  # rustls-platform-verifier for the clients' TLS). Permissive data licence;
+  # see ADR 0011.
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
+  # uniffi (Swift/Kotlin bindings of klav-ffi) is MPL-2.0: file-level
+  # copyleft, fine inside an Apache-2.0 app while its files are unmodified.
+  # ADR 0018.
+  { allow = ["MPL-2.0"], crate = "uniffi" },
+  { allow = ["MPL-2.0"], crate = "uniffi_bindgen" },
+  { allow = ["MPL-2.0"], crate = "uniffi_core" },
+  { allow = ["MPL-2.0"], crate = "uniffi_internal_macros" },
+  { allow = ["MPL-2.0"], crate = "uniffi_macros" },
+  { allow = ["MPL-2.0"], crate = "uniffi_meta" },
+  { allow = ["MPL-2.0"], crate = "uniffi_pipeline" },
+  { allow = ["MPL-2.0"], crate = "uniffi_udl" },
+]
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = [
+  # Cryptography must come from RustCrypto, `hpke` or `opaque-ke` (CLAUDE.md).
+  { crate = "openssl", reason = "use RustCrypto instead" },
+  { crate = "openssl-sys", reason = "use RustCrypto instead" },
+  { crate = "ring", reason = "use RustCrypto instead" },
+  # RUSTSEC-2026-0387 (timing leaks) is fixed in crypto-bigint 0.7.6; the
+  # advisory is ignored by ID for opaque-ke's 0.5.5 above, so this keeps a
+  # vulnerable 0.7 out of p256's path (ADR 0020 §6). The workspace pins
+  # elliptic-curve >= 0.14.3 (crypto-bigint ^0.7.8) in klav-core.
+  { crate = "crypto-bigint:>=0.7.0, <0.7.6", reason = "RUSTSEC-2026-0387: passkeys need crypto-bigint >= 0.7.6 (ADR 0020 §6)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,31 @@
+/* Klav's own rules over the Nimbus starter's components, kept out of the
+   starter files so an upgrade only has to keep the import in
+   src/layouts/BaseLayout.astro. Unlayered on purpose: Tailwind 4's utilities
+   sit in a cascade layer, so these win over them. */
+
+/* Previous/next links: corners from the site's radius tokens, not pills
+   (Pagination.astro and PaginationLink.astro hard-code rounded-full). The
+   highlight and the links sit 0.25rem (p-1) inside the bar, so they take the
+   small radius. */
+.nb-pagination-bar {
+  border-radius: var(--nb-radius);
+}
+.nb-pagination-highlight,
+.nb-pagination-link {
+  border-radius: var(--nb-radius-sm);
+}
+
+/* The [ and ] keycaps in the sans face, not the mono one. The element and the
+   attribute outrank the component's scoped .nb-pagination-key[data-astro-cid]. */
+kbd.nb-pagination-key[data-nb-pagination-cap] {
+  font-family: var(--nb-font-sans);
+}
+
+/* On a phone, table headers may wrap: prose.css keeps them on one line, which
+   made a three-column table a pixel wider than its scroll box and hid its
+   right border. Wider tables still scroll inside .nb-table-scroll. */
+@media (max-width: 40rem) {
+  .docs-content th {
+    white-space: normal;
+  }
+}

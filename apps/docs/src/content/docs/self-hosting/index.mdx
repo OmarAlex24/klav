@@ -1,0 +1,48 @@
+---
+title: "Self-hosting"
+description: "Run your own Klav server: what it stores, where to host it, its limits, and the pages for each step."
+sidebar:
+  label: "Self-hosting overview"
+  order: 5
+---
+
+This section explains how to run your own Klav server, `klav-server`, instead of using klav.dev: a quick start with Docker Compose, its configuration, TLS behind a reverse proxy, backups, Postgres and Railway. Then you point the apps and the CLI to it.
+
+1. [Quick start with Docker Compose](/self-hosting/quick-start/): the server on your machine in a few commands.
+2. [Configuration](/self-hosting/configuration/): every setting, as an environment variable or in a TOML file, the logs, and notifications to the iPhone.
+3. [TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/): Caddy or nginx in front, and the client's IP address.
+4. [Data and backups](/self-hosting/data-and-backups/): what the server keeps, how to back it up and restore it, and deleted accounts.
+5. [Postgres](/self-hosting/postgres/): instead of SQLite.
+6. [Railway](/self-hosting/railway/): one service with a volume, without running a machine yourself.
+
+## What the server stores
+
+The server stores and syncs vaults that are encrypted on your devices. It never sees your master password or your secrets: signing in uses OPAQUE, and items arrive already encrypted. Someone who steals the server or its database gets encrypted data, email addresses, device and agent names, agents' notes, permissions and reasons and the sites they name, the tags of the items agents use or write, the sites of the items in tasks and password changes, the audit log, the iPhone's push token, sizes and dates; not passwords, keys or item contents. See [what the server sees](/security/how-klav-protects-your-data/#what-the-server-sees).
+
+## Where to host it
+
+`klav-server` is one process with SQLite, and fits on the smallest machine of any provider.
+
+| Option | You maintain | When it goes down |
+|---|---|---|
+| A small VPS with Docker Compose (recommended) | The system, Docker, the reverse proxy with TLS and the backups | Rarely: as reliable as the provider |
+| Railway | Little: Railway provides TLS, restarts and volume backups | A short gap on each deploy |
+| A computer at home behind a tunnel (Cloudflare Tunnel, Tailscale Funnel) | Everything, plus the tunnel and your home connection | With your power, your internet connection and your updates |
+
+**If the server goes down, you don't lose access to your passwords:** every device keeps reading its own copy. While it is down, nothing syncs between devices, changes can't be saved, and agents get no service: their approval requests and tasks don't arrive. If agents work for you on their own, the server's uptime matters more than its price.
+
+## Use your server
+
+- **CLI:** `klav signup --server https://klav.example.com …` or `klav login --server …`, or set `KLAV_SERVER`. `klav account set-server <url>` moves an existing account to another address of the same server.
+- **Mac app and iPhone app:** "Use my own server" when you create the account or sign in. On the iPhone, Settings › Account › "Use another server" moves an existing account.
+- The server's address is in your emergency kit; `klav account kit` prints it again with today's address.
+
+See [Create an account](/get-started/create-an-account/).
+
+## Known limits
+
+- **One instance only.** Rate limits, half-finished sign-ins and live events live in memory: don't run several copies behind a load balancer.
+- **Attachments are on local disk only**, not S3.
+- **No quota for finished attachments:** any account can fill the disk up to the per-file limit. Keep registration closed on a personal server.
+- **Registration tells whether an email already has an account.** Signing in doesn't.
+- **No master password change and no account recovery yet.** If you forget your master password, or lose your emergency kit and every signed-in device, the account can't be recovered, by design.

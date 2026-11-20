@@ -1,0 +1,51 @@
+# klav-proxy, Klav's credential proxy (ADR 0036), with Docker Compose.
+# Guide: docs/self-hosting.md §9. From the repository root:
+#
+#   docker compose -f deploy/proxy/compose.yaml build
+#   docker compose -f deploy/proxy/compose.yaml run --rm klav-proxy \
+#       init --email you@example.com --server https://klav.example.com
+#   docker compose -f deploy/proxy/compose.yaml up -d
+#   docker compose -f deploy/proxy/compose.yaml run --rm klav-proxy status
+#
+# `run` takes the service's ulimits below, so `init` makes the key in
+# locked memory too. On a rootless engine, `memlock: -1` may not be granted
+# and the container does not start: see docs/self-hosting.md §9.2.
+#
+# The proxy's own listener is only 127.0.0.1 inside the container, so this
+# file publishes no port. For sandboxes, add `--channel 0.0.0.0:8791` to
+# the command and publish that port only as docs/self-hosting.md §9.2 says.
+services:
+  klav-proxy:
+    build:
+      context: ../..
+      dockerfile: deploy/proxy/Dockerfile
+    image: klav-proxy:local
+    restart: unless-stopped
+    command: ["serve"]
+    volumes:
+      - klav-proxy-data:/data
+    # ADR 0044 §3.2: an unlimited memlock limit lets the proxy lock its
+    # memory out of swap on fault, each page once it touches it (`status`
+    # then shows `locked: true`); without it, it starts unlocked and says
+    # why. `KLAV_PROXY_MEMORY_LOCK: "off"` under `environment:` starts it
+    # without locking. No core files either: the proxy turns them off
+    # itself, and this keeps the limit at 0 from the start. Locked, every
+    # page it touches stays resident, so a `mem_limit` is a hard wall (the
+    # kernel kills the proxy at it), and a seccomp profile whose action
+    # kills ends it before it logs: docs/self-hosting.md §9.2, "Antes de
+    # actualizar un proxy que ya corre".
+    # Rootless Docker or Podman: delete the `memlock: -1` line below, or the
+    # container does not start (docs/self-hosting.md §9.2).
+    ulimits:
+      memlock: -1
+      core: 0
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  klav-proxy-data:

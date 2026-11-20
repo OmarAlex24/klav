@@ -1,0 +1,141 @@
+---
+title: "CLI commands"
+description: "The klav commands, with one line on what each does, the global options, the environment variables and the exit codes."
+sidebar:
+  order: 1
+---
+
+This page lists the `klav` commands, with one line on what each does and where the docs explain it. For a command's options, run it with `--help`:
+
+```sh
+klav item add --help
+```
+
+Commands marked "agent side" run on the agent's machine with the agent's identity; the others run on your devices with your account.
+
+## Account and device
+
+Explained in [Create an account](/get-started/create-an-account/), [Add a device](/get-started/add-a-device/) and [The command line](/apps/cli/).
+
+| Command | What it does |
+|---|---|
+| `klav signup` | Create an account on a server and set up this device |
+| `klav login` | Set up this device for an existing account |
+| `klav unlock` | Unlock; `klavd` keeps it unlocked, with Touch ID when it is set up |
+| `klav lock` | Lock `klavd` now |
+| `klav logout` | Sign this device out and delete its copy of the account. The account stays on the server |
+| `klav status` | The account, this device and `klavd`, without asking for the password |
+| `klav sync` | Pull changes from the server |
+| `klav account set-server` | Move this device's account to another server address, if that server has the same account |
+| `klav account kit` | Show the emergency kit again (asks for the master password) |
+| `klav account delete` | Delete the account and everything it has on the server, 7 days after you ask |
+
+## Items
+
+Explained in [The command line](/apps/cli/).
+
+| Command | What it does |
+|---|---|
+| `klav vault ls`, `klav vault create` | List vaults, or create one with a "General" project |
+| `klav project ls`, `klav project create` | List projects, or create one |
+| `klav item add` | Add an item |
+| `klav item attach` | Store a file in an item, as an encrypted attachment |
+| `klav item get` | Show an item; secret values stay hidden without `--reveal` |
+| `klav item edit` | Edit an item |
+| `klav item sites` | An item's sites: confirmed ones, and those an agent added that wait for you |
+| `klav item rm` | Move an item to the trash |
+| `klav item ls` | List items (metadata only) |
+| `klav item search` | Search titles, usernames, addresses and tags |
+| `klav item history` | An item's previous passwords, newest first (values hidden) |
+| `klav totp` | An item's current one-time code |
+| `klav import` | Import from another password manager or a browser; see [Import](/get-started/import/) |
+
+## Passwords
+
+| Command | What it does |
+|---|---|
+| `klav generate` | Generate a password or a passphrase |
+| `klav generated ls`, `show`, `rm` | The passwords Klav generated: list them, print one, or delete entries |
+| `klav health` | Vault health: reused, weak and old passwords, and breached ones if the breach check is on. Values are never shown |
+| `klav health breach-check` | Show, turn on or turn off the breach check (off by default) |
+
+## Secrets in commands
+
+Explained in [Use secrets without seeing them](/agents/use-secrets-without-seeing-them/).
+
+| Command | What it does |
+|---|---|
+| `klav run` | Run a command with secrets in its environment, from `klav.toml` |
+| `klav inject` | Write secrets into a file or a named pipe |
+
+## Agents, on your devices
+
+Explained in [Agents](/agents/).
+
+| Command | What it does |
+|---|---|
+| `klav agent list` | Your account's agents |
+| `klav agent approve` | Approve an agent, or change its grant (Touch ID or the master password) |
+| `klav agent deny` | Deny a pending registration |
+| `klav agent show` | An agent, its grant and what it saw according to the audit log |
+| `klav agent pause`, `klav agent resume` | Pause every agent, or one, and resume them (resuming asks for Touch ID or the master password) |
+| `klav agent revoke` | Revoke an agent now and print what it saw |
+| `klav approval list`, `approve`, `deny` | Agents' requests waiting for your approval |
+| `klav task list`, `show`, `approve`, `deny`, `end` | Agents' task requests and running tasks |
+| `klav log` | The audit log: who used what, when and why |
+| `klav log verify` | Check the audit log and sign its head on this device |
+| `klav log reset` | Forget this device's copy of the log, after the server was restored from a backup you trust |
+| `klav client list`, `connect`, `disconnect`, `restore` | Connect Klav to Claude Code, Claude Desktop, Codex, Cursor or VS Code, or undo it |
+| `klav skill status`, `install`, `update`, `uninstall`, `show` | Klav's skill in the agent clients' folders |
+| `klav extension install-host`, `uninstall-host`, `host-status` | Let the browser extension talk to `klavd`; see [Install](/get-started/install/#browser-extension) |
+
+## Agents, agent side
+
+Explained in [Connect an agent](/agents/connect-an-agent/) and [Use secrets without seeing them](/agents/use-secrets-without-seeing-them/).
+
+| Command | What it does |
+|---|---|
+| `klav agent register` | Register this machine as an agent; prints the six pairing words |
+| `klav agent status` | This agent's state, and your account's words |
+| `klav agent run` | Run a command with secrets in its environment; the output comes back with the values hidden |
+| `klav agent inject` | Write secrets into a new file only the user can read, never to the terminal |
+| `klav agent fill` | Type a login or card into a browser page; the values never come back |
+| `klav agent totp` | An item's current one-time code (`ask` by default) |
+| `klav agent task` | Ask for a task: several items and permissions for one job, approved with one card |
+| `klav agent browser` | Name a browser so `klav mcp` can fill into it |
+| `klav approval wait` | Wait until you decide on the agent's request |
+| `klav mcp` | Klav's MCP server, over standard input and output, with the agent's identity |
+
+## Global options
+
+| Option | What it does |
+|---|---|
+| `--password-stdin` | Read the master password from the first line of standard input, for scripts. Values for `--secret-stdin` follow, one per line |
+| `--no-daemon` | Don't use `klavd`, even if it is running: unlock in this process. Also `KLAV_NO_DAEMON` |
+| `--version` | The version, the commit it was built from and that commit's date and time in UTC, for example `klav 0.9.0 (ce4fa5099092 2026-11-13T18:17:02Z)`. Built from source without Git history, it says `(commit unknown)`. `klavd --version` says the same for `klavd` |
+
+## Environment variables
+
+| Variable | What it does |
+|---|---|
+| `KLAV_HOME` | The folder where Klav keeps this device's state, instead of the default |
+| `KLAV_SERVER` | The server address for `klav signup`, `klav login` and `klav agent register` |
+| `KLAV_NO_DAEMON` | The same as `--no-daemon` |
+| `KLAV_AGENT` | The agent's name, for agent-side commands and `klav mcp` |
+| `KLAV_AGENT_KEY` | The agent's private key, instead of the stored one: for a container or a server |
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | An error |
+| `2` | A usage error, or a secret asked for without `--reveal` |
+| `3` | A security check failed: a rollback, different pairing words or a changed account identity, an altered grant or audit log |
+| `4` | The agent's action waits for your approval |
+| `5` | Denied by the policy or by you, or the agent's task was ended by you or by revoking the agent |
+| `6` | The request expired undecided (`klav approval wait`, `klav agent task wait`), or the task ran out of time or the agent ended it |
+| `7` | You paused the agent, or every agent |
+| `8` | You asked to delete the account: every agent stops |
+
+`klav run` and `klav agent run` exit with the code of the command they ran.

@@ -1,0 +1,549 @@
+#!/bin/bash
+# check-template: the "never in it" checks of the sandbox template
+# (ADR 0042 §7, layer 3). They run last in build-template, in the build
+# machine, before the person saves the snapshot; save it only when they
+# exit 0. Run it again after any change by hand.
+#
+# Shell: bash, 3.2 or later. It runs on Linux, as root, so that it can read
+# every file.
+#
+#   check-template [--manifest FILE] [--hashes] [--root DIR]
+#   check-template --manifest FILE --validate
+#
+#   --manifest FILE  The release's manifest: its ALLOW lines (the allow
+#                    list) and its AGENT_LOGIN_FILES, before a build. Once
+#                    the build record exists, the record's are always used,
+#                    and a --manifest whose lists are not the record's exits
+#                    2: a run by hand never checks less, or excuses more,
+#                    than the build recorded.
+#   --hashes         Also print, on standard output, an ALLOW line with the
+#                    SHA-256 of each finding the allow list could cover, to
+#                    look at each file and fill the manifest before a build.
+#   --validate       Only check the manifest's ALLOW and AGENT_LOGIN_FILES
+#                    lines, and exit (build-template runs this first).
+#   --root DIR       Check DIR as if it were / (build-template's tests). With /
+#                    it must run as root.
+#
+# The allow list: `ALLOW=<SHA-256>  <absolute path>` lines, two spaces
+# between, as sha256sum prints them. A file is excused only when it is a
+# regular file at that path with that SHA-256, and only from the string
+# scan and from Boat's folder ~/.config/ascii. It never excuses a login, an
+# SSH key, git credentials, forwarder or Tailscale state, or the two Klav
+# files. An entry whose file is missing, or holds other bytes, excuses
+# nothing: check-template prints a note, and the file, if it is there and
+# holds a string, is still a finding. A malformed entry, a relative path,
+# `.` or `..`, a path given twice, a hash that is not 64 lowercase hex, or a
+# path the allow list never covers (below) exits 2.
+#
+# A file or folder whose name holds a newline is a finding: the checks read
+# paths one line at a time, and such a name could pass for another path.
+#
+# Each finding is one line on standard error naming what was found and its
+# path, never the file's content. Exit 0 when nothing was found, 1 when
+# something was, 2 for a wrong argument or manifest.
+#
+# What it cannot see: variables given to the build machine with `-e` (a
+# saved snapshot replays them on every deploy), whether the machine was
+# made with `--no-env`, and Boat's own per-machine token (README).
+
+set -eu
+set +x
+set -o pipefail
+IFS=$' \t\n'
+LC_ALL=C
+export LC_ALL
+
+usage() {
+	printf 'usage: check-template [--manifest FILE] [--hashes] [--root DIR]\n' >&2
+	printf '       check-template --manifest FILE --validate\n' >&2
+	exit 2
+}
+refuse() {
+	printf 'check-template: %s\n' "$1" >&2
+	exit 2
+}
+
+# A login path: relative to a home, plain characters, never climbing out.
+login_ok() {
+	case $1 in
+	"" | /* | *..* | *[!A-Za-z0-9._/-]*) return 1 ;;
+	esac
+}
+
+root=/
+manifest=
+hashes=0
+validate=0
+logins=".claude/.credentials.json .codex/auth.json"
+while [ "$#" -gt 0 ]; do
+	case $1 in
+	--root)
+		[ "$#" -ge 2 ] || usage
+		root=$2
+		shift 2
+		;;
+	--manifest)
+		[ "$#" -ge 2 ] || usage
+		manifest=$2
+		shift 2
+		;;
+	--hashes)
+		hashes=1
+		shift
+		;;
+	--validate)
+		validate=1
+		shift
+		;;
+	*) usage ;;
+	esac
+done
+[ "$validate" = 0 ] || [ -n "$manifest" ] || usage
+
+sha256_re='^[0-9a-f]{64}$'
+
+# Why a machine path can never be an allow-list entry, or nothing when it
+# can be one.
+entry_problem() {
+	case $1 in
+	/*) ;;
+	*)
+		printf 'not an absolute path'
+		return
+		;;
+	esac
+	case $1 in
+	*[!A-Za-z0-9._+@~:,=/-]*)
+		printf 'a character other than letters, digits and ._+@~:,=/-'
+		return
+		;;
+	esac
+	case $1/ in
+	*//* | */./* | */../*)
+		printf 'an empty, . or .. part'
+		return
+		;;
+	esac
+	case $1 in
+	/proc/* | /sys/* | /dev/* | /run/*) printf 'not on the disk a snapshot saves, so never scanned' ;;
+	/var/log/* | /var/lib/apt/lists/*) printf 'in a folder build-template empties' ;;
+	/usr/local/bin/klav-forward | /usr/local/sbin/klav-tailnet-up | /etc/klav-sandbox-template/manifest)
+		printf 'checked against the build record, never allowed'
+		;;
+	esac
+}
+
+# A file's ALLOW and AGENT_LOGIN_FILES lines, read line by line, never
+# sourced, into lists_paths, lists_shas and lists_logins (space-separated).
+# A malformed line exits 2. build-template checks the manifest's other keys.
+read_lists() { # file, its name in messages
+	local line line_no=0 value sha path problem i p
+	lists_paths=()
+	lists_shas=()
+	lists_logins=
+	while IFS= read -r line || [ -n "$line" ]; do
+		line_no=$((line_no + 1))
+		case $line in
+		ALLOW=*)
+			value=${line#ALLOW=}
+			sha=${value%%  *}
+			path=${value#*  }
+			[ "$sha" != "$value" ] && [[ $sha =~ $sha256_re ]] ||
+				refuse "$2 line $line_no: ALLOW is not <SHA-256 in 64 lowercase hex>, two spaces, <absolute path>"
+			problem=$(entry_problem "$path")
+			[ -z "$problem" ] || refuse "$2 line $line_no: ALLOW names $path: $problem"
+			i=0
+			while [ "$i" -lt "${#lists_paths[@]}" ]; do
+				[ "${lists_paths[$i]}" != "$path" ] || refuse "$2 line $line_no: ALLOW names $path twice"
+				i=$((i + 1))
+			done
+			lists_paths+=("$path")
+			lists_shas+=("$sha")
+			;;
+		AGENT_LOGIN_FILES=*)
+			value=${line#*=}
+			[ "$value" != none ] || continue
+			set -f
+			for p in $value; do
+				login_ok "$p" && [ "$p" != none ] ||
+					refuse "$2 line $line_no: AGENT_LOGIN_FILES has $p: paths relative to a home, or only none"
+				lists_logins="$lists_logins $p"
+			done
+			set +f
+			;;
+		esac
+	done <"$1"
+}
+
+# The manifest's lists.
+m_paths=()
+m_shas=()
+m_logins=
+if [ -n "$manifest" ]; then
+	[ -f "$manifest" ] || refuse "no manifest at $manifest"
+	read_lists "$manifest" manifest
+	m_paths=(${lists_paths[@]+"${lists_paths[@]}"})
+	m_shas=(${lists_shas[@]+"${lists_shas[@]}"})
+	m_logins=$lists_logins
+fi
+if [ "$validate" = 1 ]; then
+	printf 'check-template: the allow list (%d entries) and the login files are well formed\n' "${#m_paths[@]}"
+	exit 0
+fi
+
+[ -d "$root" ] || usage
+root=${root%/}
+if [ -z "$root" ] && [ "$(id -u)" != 0 ]; then
+	printf 'check-template: run it as root: it must read every file\n' >&2
+	exit 2
+fi
+
+# Whether the manifest's lists are the ones read last (lists_*): the same
+# entries and the same login files, in any order. Paths are unique in each.
+same_lists() {
+	local i j hit p
+	[ "${#m_paths[@]}" = "${#lists_paths[@]}" ] || return 1
+	i=0
+	while [ "$i" -lt "${#m_paths[@]}" ]; do
+		hit=0
+		j=0
+		while [ "$j" -lt "${#lists_paths[@]}" ]; do
+			if [ "${m_paths[$i]}" = "${lists_paths[$j]}" ] && [ "${m_shas[$i]}" = "${lists_shas[$j]}" ]; then
+				hit=1
+			fi
+			j=$((j + 1))
+		done
+		[ "$hit" = 1 ] || return 1
+		i=$((i + 1))
+	done
+	for p in $m_logins; do
+		case " $lists_logins " in *" $p "*) ;; *) return 1 ;; esac
+	done
+	for p in $lists_logins; do
+		case " $m_logins " in *" $p "*) ;; *) return 1 ;; esac
+	done
+}
+
+# The lists in force: the build record's once it exists, so that a run by
+# hand checks every login the build recorded and excuses nothing more; the
+# manifest's before a build.
+record=$root/etc/klav-sandbox-template/manifest
+if [ -f "$record" ]; then
+	read_lists "$record" "the build record"
+	if [ -n "$manifest" ] && ! same_lists; then
+		refuse "the allow list or the login files of $manifest are not the build record's ($record): after a build, run it without --manifest, and it uses the record's"
+	fi
+	allow_paths=(${lists_paths[@]+"${lists_paths[@]}"})
+	allow_shas=(${lists_shas[@]+"${lists_shas[@]}"})
+	logins="$logins $lists_logins"
+else
+	allow_paths=(${m_paths[@]+"${m_paths[@]}"})
+	allow_shas=(${m_shas[@]+"${m_shas[@]}"})
+	logins="$logins $m_logins"
+fi
+
+found=0
+finding() {
+	printf 'check-template: %s: %s\n' "$1" "$2" >&2
+	found=1
+}
+# Paths a finding the allow list never excuses named (a login, a key,
+# state): --hashes prints no entry for them, or for anything under them.
+never=$'\n'
+# Paths --hashes already printed a line for: a file can be two findings.
+printed=$'\n'
+never_finding() { # finding, path
+	finding "$1" "$2"
+	never="$never$2"$'\n'
+}
+note() {
+	printf 'check-template: note: %s: %s\n' "$1" "$2" >&2
+}
+
+shopt -s nullglob dotglob
+
+# The SHA-256 of a file, or nothing when it cannot be read.
+sha256_of() {
+	local out
+	out=$(sha256sum <"$1" 2>/dev/null) || return 0
+	printf '%s' "${out%% *}"
+}
+# Whether a path is a regular file owned by root (uid 0) with mode 0755.
+root_owned_0755() {
+	local fields
+	[ -f "$1" ] && [ ! -L "$1" ] || return 1
+	set -f
+	# shellcheck disable=SC2207 # split on purpose, globbing off
+	fields=($(ls -lnd -- "$1" 2>/dev/null))
+	set +f
+	[ "${#fields[@]}" -ge 3 ] || return 1
+	case ${fields[0]} in -rwxr-xr-x | -rwxr-xr-x.) ;; *) return 1 ;; esac
+	[ "${fields[2]}" = 0 ]
+}
+
+# What the allow list says of a file, by its machine path (without the
+# root): `ok` (a regular file, not a link, with the entry's SHA-256),
+# `other` (an entry, but not those bytes), or `none` (no entry).
+allow_state() { # machine path, path on this disk
+	local i=0
+	while [ "$i" -lt "${#allow_paths[@]}" ]; do
+		if [ "${allow_paths[$i]}" = "$1" ]; then
+			if [ -f "$2" ] && [ ! -L "$2" ] && [ "$(sha256_of "$2")" = "${allow_shas[$i]}" ]; then
+				printf ok
+			else
+				printf other
+			fi
+			return
+		fi
+		i=$((i + 1))
+	done
+	printf none
+}
+# With --hashes: the ALLOW line for a finding, on standard output, or a
+# comment saying why the allow list cannot take it.
+hash_line() { # machine path, path on this disk
+	[ "$hashes" = 1 ] || return 0
+	case $printed in *$'\n'"$1"$'\n'*) return 0 ;; esac
+	printed="$printed$1"$'\n'
+	local problem sha
+	problem=$(entry_problem "$1")
+	local p
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		case $2 in "$p" | "$p"/*) problem="the allow list never excuses it" ;; esac
+	done <<<"$never"
+	if [ -z "$problem" ] && { [ ! -f "$2" ] || [ -L "$2" ]; }; then
+		problem="not a regular file"
+	fi
+	if [ -z "$problem" ]; then
+		sha=$(sha256_of "$2")
+		[ -n "$sha" ] || problem="it cannot be read"
+	fi
+	if [ -n "$problem" ]; then
+		printf '# no entry for %s: %s\n' "$1" "$problem"
+	else
+		printf 'ALLOW=%s  %s\n' "$sha" "$1"
+	fi
+}
+
+# What build-template installed, from the record it wrote in the template.
+r_forward=
+r_tailnet_up=
+if [ -f "$record" ]; then
+	while IFS= read -r line || [ -n "$line" ]; do
+		case $line in
+		KLAV_FORWARD_SHA256=*) r_forward=${line#*=} ;;
+		KLAV_TAILNET_UP_SHA256=*) r_tailnet_up=${line#*=} ;;
+		esac
+	done <"$record"
+	[[ $r_forward =~ $sha256_re ]] || {
+		finding "the build record has no KLAV_FORWARD_SHA256" "$record"
+		r_forward=
+	}
+	[[ $r_tailnet_up =~ $sha256_re ]] || {
+		finding "the build record has no KLAV_TAILNET_UP_SHA256" "$record"
+		r_tailnet_up=
+	}
+else
+	finding "no build record (build-template writes it)" "$record"
+fi
+
+# The two Klav files: what the record says, and klav-tailnet-up owned by
+# root with mode 0755 (sudo runs it as root).
+forward=$root/usr/local/bin/klav-forward
+tailnet_up=$root/usr/local/sbin/klav-tailnet-up
+forward_ok=0
+tailnet_up_ok=0
+if [ ! -f "$forward" ]; then
+	finding "no klav-forward" "$forward"
+elif [ -n "$r_forward" ]; then
+	if [ "$(sha256_of "$forward")" = "$r_forward" ]; then
+		forward_ok=1
+	else
+		finding "klav-forward's SHA-256 is not the build record's" "$forward"
+	fi
+fi
+if [ ! -f "$tailnet_up" ]; then
+	finding "no klav-tailnet-up" "$tailnet_up"
+else
+	if ! root_owned_0755 "$tailnet_up"; then
+		finding "klav-tailnet-up must be a file owned by root with mode 0755" "$tailnet_up"
+	elif [ -n "$r_tailnet_up" ]; then
+		if [ "$(sha256_of "$tailnet_up")" = "$r_tailnet_up" ]; then
+			tailnet_up_ok=1
+		else
+			finding "klav-tailnet-up's SHA-256 is not the build record's" "$tailnet_up"
+		fi
+	fi
+fi
+
+# Tailscale state, no tailscaled running, and its systemd unit masked: an
+# enabled unit starts again after a snapshot, with its state on disk and on
+# the socket klav-tailnet-up uses.
+entries=("$root"/var/lib/tailscale/*)
+if [ "${#entries[@]}" -gt 0 ]; then
+	never_finding "Tailscale state (it must be empty)" "$root/var/lib/tailscale"
+fi
+if pgrep -x tailscaled >/dev/null 2>&1; then
+	finding "tailscaled is running (stop it)" "tailscaled"
+fi
+if command -v systemctl >/dev/null 2>&1; then
+	# `is-enabled` exits non-zero for a masked unit: only its word counts.
+	# `masked-runtime` lives under /run and is gone after a snapshot.
+	unit=$(systemctl is-enabled tailscaled.service 2>/dev/null || true)
+	if [ "$unit" != masked ]; then
+		finding "the tailscaled unit must be masked, it is '${unit:-unknown}'" "tailscaled.service"
+	fi
+else
+	finding "no systemctl, so the tailscaled unit cannot be shown masked" "tailscaled.service"
+fi
+
+# The disk a snapshot saves: every file on the root's filesystem, and on
+# those of /home, /root, /etc and /var if they are their own; not /proc,
+# /sys, /dev or /run.
+top=${root:-/}
+starts=("$top")
+for d in home root etc var; do
+	[ -d "$root/$d" ] && starts+=("$root/$d")
+done
+
+# Names with a newline, first: every check below reads paths one line at a
+# time, and a folder named `<a path>`, a newline and `<another>` could make
+# a file inside it pass for an allowed one. Each is a finding, shown with
+# `\n` in place of the newline, and never takes an allow-list entry.
+newline=$'\n'
+shown_names=$'\n'
+while IFS= read -r -d '' path; do
+	shown=${path//$newline/\\n}
+	case $shown_names in *$'\n'"$shown"$'\n'*) continue ;; esac
+	shown_names="$shown_names$shown"$'\n'
+	finding "a file name with a newline (the checks read paths by line)" "$shown"
+	if [ "$hashes" = 1 ]; then
+		rel=${path#"$root"}
+		printf '# no entry for %s: a name with a newline\n' "${rel//$newline/\\n}"
+	fi
+done < <(
+	find "${starts[@]}" -xdev \
+		\( -path "$root/proc" -o -path "$root/sys" -o -path "$root/dev" -o -path "$root/run" \) -prune \
+		-o -name "*$newline*" -print0 2>/dev/null || true
+)
+
+# Each home: /root and every directory under /home.
+for home in "$root"/root "$root"/home/*; do
+	[ -d "$home" ] || continue
+	# Forwarder state: its directory (claim markers, env.sh), and the skill
+	# klav-forward installs.
+	for path in .klav-forward .claude/skills/klav .agents/skills/klav; do
+		if [ -e "$home/$path" ]; then
+			never_finding "forwarder state from a run" "$home/$path"
+		fi
+	done
+	# Agent logins.
+	for path in $logins; do
+		if [ -e "$home/$path" ]; then
+			never_finding "an agent login" "$home/$path"
+		fi
+	done
+	# git and GitHub credentials.
+	for path in .git-credentials .config/gh/hosts.yml; do
+		if [ -e "$home/$path" ]; then
+			never_finding "git or GitHub credentials" "$home/$path"
+		fi
+	done
+	# Boat's folder: the in-sandbox key and any other Boat login. Every
+	# entry but a folder is a finding, unless it is a regular file on the
+	# allow list (a normal Boat machine has two files there with no key).
+	# A link, even to an allowed file, is a finding.
+	ascii=$home/.config/ascii
+	if [ -e "$ascii" ] || [ -L "$ascii" ]; then
+		if listing=$(find "$ascii" ! -type d -print); then
+			while IFS= read -r path; do
+				[ -n "$path" ] || continue
+				rel=${path#"$root"}
+				[ "$(allow_state "$rel" "$path")" != ok ] || continue
+				finding "a file in Boat's folder that the allow list does not cover" "$path"
+				hash_line "$rel" "$path"
+			done <<<"$listing"
+		else
+			finding "Boat's folder could not be listed" "$ascii"
+		fi
+	fi
+	# SSH private keys: by name, and by content.
+	if [ -d "$home/.ssh" ]; then
+		for path in "$home"/.ssh/id_*; do
+			case $path in
+			*.pub) ;;
+			*) never_finding "an SSH private key" "$path" ;;
+			esac
+		done
+		while IFS= read -r path; do
+			case $path in
+			*/id_*) ;; # reported above
+			*) never_finding "an SSH private key" "$path" ;;
+			esac
+		done < <(grep -rlsa -e 'PRIVATE KEY-----' -- "$home/.ssh" || true)
+	fi
+done
+
+# A file a Debian package installed, unchanged: its MD5 is the one in that
+# package's list. Such a file is the package's, not a secret someone left.
+dpkg_unchanged() {
+	local rel=${1#"$root"/} list line sum
+	for list in "$root"/var/lib/dpkg/info/*.md5sums; do
+		while IFS= read -r line; do
+			[ "${line#*  }" = "$rel" ] || continue
+			sum=$(md5sum <"$1" 2>/dev/null) || return 1
+			[ "${sum%% *}" = "${line%%  *}" ]
+			return
+		done < <(grep -F -- "  $rel" "$list" || true)
+	done
+	return 1
+}
+
+# Secret strings, in text and binary files alike (paths only), in the whole
+# disk a snapshot saves: every file on the root's filesystem, and on those
+# of /home, /root, /etc and /var if they are their own. Not /proc, /sys,
+# /dev or /run (not on the disk, and /run holds this folder). Not reported:
+# klav-forward and klav-tailnet-up when they match the build record
+# (klav-forward parses packages and klav-tailnet-up refuses OAuth secrets,
+# so both name the strings), a Debian package's file that is unchanged
+# (Tailscale's own binaries name `tskey-`), and a file on the allow list
+# with its SHA-256 (files of Boat's base image name `boat_`).
+reported=$'\n'
+while IFS= read -r path; do
+	case $reported in *$'\n'"$path"$'\n'*) continue ;; esac
+	reported="$reported$path"$'\n'
+	if [ "$path" = "$forward" ] && [ "$forward_ok" = 1 ]; then continue; fi
+	if [ "$path" = "$tailnet_up" ] && [ "$tailnet_up_ok" = 1 ]; then continue; fi
+	if dpkg_unchanged "$path"; then continue; fi
+	rel=${path#"$root"}
+	case $(allow_state "$rel" "$path") in
+	ok) continue ;;
+	other) finding "a ksb1_, tskey- or boat_ string, and not the allow list's SHA-256" "$path" ;;
+	*) finding "a ksb1_, tskey- or boat_ string" "$path" ;;
+	esac
+	hash_line "$rel" "$path"
+done < <(
+	find "${starts[@]}" -xdev \
+		\( -path "$root/proc" -o -path "$root/sys" -o -path "$root/dev" -o -path "$root/run" \) -prune \
+		-o -type f -print0 2>/dev/null |
+		xargs -0 grep -lsa -e 'ksb1_' -e 'tskey-' -e 'boat_' -- 2>/dev/null || true
+)
+
+# Entries that excuse nothing here: said, never a finding by themselves.
+i=0
+while [ "$i" -lt "${#allow_paths[@]}" ]; do
+	path=$root${allow_paths[$i]}
+	if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+		note "the allow list names a file that is not there, so it excuses nothing" "$path"
+	elif [ "$(allow_state "${allow_paths[$i]}" "$path")" != ok ]; then
+		note "the allow list's entry is not this file's SHA-256, so it excuses nothing" "$path"
+	fi
+	i=$((i + 1))
+done
+
+if [ "$found" -ne 0 ]; then
+	printf 'check-template: the template is not clean: do not save it\n' >&2
+	exit 1
+fi
+printf 'check-template: nothing forbidden found\n'

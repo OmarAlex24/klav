@@ -1,0 +1,83 @@
+<!doctype html>
+<!-- Source of public/og.png (1200×630). Regenerate it with the command in
+     docs/sitio-web.md; same tokens and dither as public/index.html. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Klav OG image</title>
+<style>
+@font-face { font-family: "Geist"; src: url("../public/fonts/geist.woff2") format("woff2"); font-weight: 100 900; }
+:root { --tinta: #09090b; --papel: #ffffff; --linea: #e4e4e7; --cruz: #a1a1aa; --gris: #71717a; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: var(--papel); color: var(--tinta); -webkit-font-smoothing: antialiased; }
+.card { position: relative; width: 1200px; height: 630px; display: grid; grid-template-columns: 1fr 520px; }
+.copy { padding: 64px 0 60px 72px; display: flex; flex-direction: column; }
+.brand { display: flex; align-items: center; gap: 14px; font: 600 34px/1 "Geist", sans-serif; letter-spacing: -0.04em; }
+.brand svg { width: 40px; height: 25px; }
+h1 { margin: auto 0 0; font: 600 80px/0.96 "Geist", sans-serif; letter-spacing: -0.055em; max-width: 6.6em; }
+p { margin: 28px 0 0; font: 400 25px/1.35 "Geist", sans-serif; color: var(--gris); max-width: 23em; }
+.foot { margin-top: 30px; font: 500 21px/1 "Geist", sans-serif; letter-spacing: -0.01em; }
+.field { position: relative; margin: 40px 40px 40px 0; }
+.field canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+.field::before {
+  content: ""; position: absolute; inset: -5px; z-index: 2;
+  --c: linear-gradient(var(--cruz), var(--cruz));
+  background:
+    var(--c) left 0 top 4px / 9px 1px no-repeat, var(--c) left 4px top 0 / 1px 9px no-repeat,
+    var(--c) right 0 top 4px / 9px 1px no-repeat, var(--c) right 4px top 0 / 1px 9px no-repeat,
+    var(--c) left 0 bottom 4px / 9px 1px no-repeat, var(--c) left 4px bottom 0 / 1px 9px no-repeat,
+    var(--c) right 0 bottom 4px / 9px 1px no-repeat, var(--c) right 4px bottom 0 / 1px 9px no-repeat;
+}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="copy">
+    <div class="brand">
+      <svg viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg>
+      klav
+    </div>
+    <h1>The agent asks. You decide.</h1>
+    <p>The open-source secrets manager for the age of agents. Agents get actions, not values.</p>
+    <div class="foot">klav.dev</div>
+  </div>
+  <div class="field"><canvas id="c"></canvas></div>
+</div>
+<script>
+// The keyhole field from public/index.html (and apps/extension/src/shared/dither.ts).
+const BAYER = [[0,32,8,40,2,34,10,42],[48,16,56,24,50,18,58,26],[12,44,4,36,14,46,6,38],[60,28,52,20,62,30,54,22],
+               [3,35,11,43,1,33,9,41],[51,19,59,27,49,17,57,25],[15,47,7,39,13,45,5,37],[63,31,55,23,61,29,53,21]];
+const threshold = (x, y) => (BAYER[y & 7][x & 7] + 0.5) / 64;
+function pick(b, n, th) { const st = n - 1, s = Math.min(1, Math.max(0, b)) * st, i = Math.min(st - 1, Math.floor(s)); return s - i > th ? i + 1 : i; }
+function hash(x, y, seed) { let h = (x * 374761393 + y * 668265263 + seed * 2147483647) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; }
+function vn(x, y, seed = 7) {
+  const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = hash(xi, yi, seed), b = hash(xi + 1, yi, seed), c = hash(xi, yi + 1, seed), d = hash(xi + 1, yi + 1, seed);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+const clamp = (n) => Math.min(1, Math.max(0, n));
+const streaks = (u, v, a, rows) => vn(u * a * 2.2, v * rows) * 0.65 + vn(u * a * 9, v * rows * 2, 11) * 0.35;
+function dist(x, y, cx, cy, r) {
+  const circle = Math.hypot(x - cx, y - cy) - r, top = cy, bottom = cy + r * 2.6, t = clamp((y - top) / (bottom - top)), half = r * (0.42 + 0.36 * t);
+  return Math.min(circle, Math.max(Math.abs(x - cx) - half, Math.max(top - y, y - bottom)));
+}
+function field(u, v, a) {
+  const d = dist(u * a, v, a / 2, 0.3, 0.12);
+  if (d <= 0) return 1;
+  const glow = Math.exp(-d * 16) * 0.75, ground = 0.12 + v * 0.42 + (streaks(u, v, a, 34) - 0.5) * 0.5;
+  const sparks = v > 0.72 ? Math.max(0, vn(u * a * 5, v * 60, 3) - 0.78) * 2.4 : 0;
+  return clamp(Math.max(ground + sparks, glow + ground * 0.4));
+}
+const pal = [[13, 20, 102], [35, 55, 255], [255, 255, 255]];
+const canvas = document.getElementById("c"), r = canvas.getBoundingClientRect(), px = 6;
+const w = Math.round(r.width / px), h = Math.round(r.height / px);
+canvas.width = w; canvas.height = h;
+const ctx = canvas.getContext("2d"), img = ctx.createImageData(w, h);
+for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+  const c = pal[pick(field(x / (w - 1), y / (h - 1), w / h), 3, threshold(x, y))], o = (y * w + x) * 4;
+  img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
+}
+ctx.putImageData(img, 0, 0);
+</script>
+</body>
+</html>

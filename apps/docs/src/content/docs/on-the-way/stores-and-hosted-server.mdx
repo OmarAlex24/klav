@@ -1,0 +1,31 @@
+---
+title: "Stores and Klav's own server"
+description: "Decided and not out yet: the extension in the browser stores, the iPhone app in the App Store, and Klav's own server as a paid plan."
+sidebar:
+  order: 4
+---
+
+<Aside>Not available yet. This page lists what is decided and not out yet.</Aside>
+
+This page lists where Klav will be installed from, and the server Klav will run for you, once each one is out. Until then, [Install Klav](/get-started/install/) says what to do instead. No dates.
+
+## The browser extension in the stores
+
+The extension will be in the Chrome Web Store, for Chrome, Brave, Edge, Arc and Dia, and on addons.mozilla.org, for Firefox.
+
+Until then, you install it by hand, and both browsers have a cost:
+
+- **Chromium browsers** run the build with Klav's public development key. With it, any unpacked extension that carries that key can talk to `klavd`, not only Klav's.
+- **Firefox** gets an add-on file that Mozilla signs without listing it. It stays installed, but it doesn't update itself: you install each new version from klav.dev's downloads.
+
+From the stores, the extension installs and updates like any other, and `klav extension install-host` needs no `--dev`.
+
+## The iPhone app in the App Store
+
+The iPhone app comes out as a beta on TestFlight first, and in the App Store later.
+
+## Klav's own server
+
+Every Klav app signs in to a Klav server, which keeps only encrypted data. Klav will run one at `api.klav.dev` as a paid plan, 20 USD a year. It isn't open yet. To hear when it is, join the waitlist on [klav.dev](https://klav.dev/#waitlist).
+
+Until then, you [host your own](/self-hosting/). The apps don't change: "Use my own server", or `--server` in the CLI, points them at it.

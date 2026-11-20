@@ -1,0 +1,77 @@
+---
+title: "Add a device"
+description: "Use Klav on another Mac, computer or iPhone: sign in there with your email, master password and the Secret Key from your emergency kit."
+sidebar:
+  order: 4
+---
+
+This page explains how to start using Klav on another device: another Mac, a Linux computer or your iPhone. You sign in there with your email, your master password and the Secret Key from your [emergency kit](/get-started/create-an-account/#the-emergency-kit). The new device downloads your vaults and works like the first one.
+
+## What you need
+
+- **Your emergency kit.** It has your Secret Key, and the server your account lives on (its `Server:` line). If you can't find it, see it again on a device that is already signed in: `klav account kit` in the CLI, or Settings › Account › "Print the emergency kit" on the iPhone.
+- **Your master password.**
+- **Klav on the new device.** See [Install Klav](/get-started/install/).
+
+If your account lives on your own server, give its address on the new device too: "Use my own server" in the apps, `--server` in the CLI. The default is klav.dev.
+
+## On a Mac, with the Mac app
+
+<Steps>
+
+1. In "Set up this Mac", go to the Account step and choose "Sign in".
+2. "Sign in on this Mac" asks for your email, your master password, your Secret Key and a name for this Mac. For your own server, choose "Use my own server" and type its address.
+3. Choose "Sign in".
+
+</Steps>
+
+The master password and the Secret Key stay on this Mac. The extension and the CLI on this Mac use the same account.
+
+## On the iPhone
+
+<Steps>
+
+1. Open Klav. "Sign in on this iPhone" asks for your email, your master password, your Secret Key and a name for this iPhone.
+2. For your own server, choose "Use my own server" and type its address.
+3. Choose "Sign in".
+4. Turn on AutoFill when the app shows you how: in the iPhone's Settings, open General, then AutoFill & Passwords, and turn on Klav.
+
+</Steps>
+
+## With the CLI
+
+On macOS or Linux, give `klav login` your email and the kit file. It reads only the Secret Key from the file:
+
+```sh
+klav login --email you@example.com --emergency-kit klav-kit.txt
+```
+
+```text
+Server: https://api.klav.dev (klav.dev). Use --server URL for your own.
+Master password:
+Deriving keys (Argon2id, 256 MiB)…
+Logged in as you@example.com on device your-desktop (…). 1 vault(s) synced.
+```
+
+Without `--emergency-kit`, it asks for the Secret Key first, without showing what you type: `Secret Key (K1-…): `. For your own server, add `--server https://klav.example.com`. The device name is the computer's host name unless you pass `--device-name`.
+
+Check that the device is signed in. `klav status` needs no password:
+
+```sh
+klav status
+```
+
+```text
+home:      /Users/you/Library/Application Support/klav
+server:    https://api.klav.dev
+account:   you@example.com (…)
+device:    your-desktop (…)
+words:     …
+daemon:    not running
+```
+
+Then `klav unlock` starts `klavd`, so commands stop asking for the password. On a Mac, after the first unlock with your password, `klavd` asks for Touch ID instead.
+
+## Removing a device
+
+No app lists or removes your devices yet. To stop using Klav on a device, sign out on it: `klav logout` closes its session on the server and deletes its copy of the account. Your account stays on the server.

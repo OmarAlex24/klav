@@ -1,0 +1,59 @@
+---
+title: "TLS and a reverse proxy"
+description: "Put Caddy or nginx with TLS in front of klav-server, pass agents' signed requests unchanged, and tell the server where the client's IP address is."
+sidebar:
+  order: 3
+---
+
+This page explains how to put a reverse proxy with TLS in front of `klav-server`, which speaks plain HTTP and must never be exposed to the internet that way: session tokens travel in a header, and without TLS anyone on the network could copy them. It also covers what the proxy must leave alone, and how the server learns each client's IP address.
+
+## What the proxy must not change
+
+- **Paths and query strings.** Agents sign each request over its path and query string as they send it. A proxy that rewrites `/v1/agent/…` paths (prefixes, trailing slashes, encoding), or drops or reorders the query string, breaks the signature, and the agent gets `401`.
+- **Long requests.** An agent waiting for your approval keeps a request open for up to 30 seconds, so the proxy's read timeout must be longer.
+- **Live events.** `/v1/events` is a stream of server-sent events: the proxy must not buffer it.
+
+The server already sends `Strict-Transport-Security`.
+
+## Caddy
+
+Caddy gets and renews the certificate by itself, and passes the event stream without buffering:
+
+```text
+klav.example.com {
+	reverse_proxy 127.0.0.1:8080
+}
+```
+
+## nginx
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    client_max_body_size 9m;   # larger than max_attachment_chunk_bytes
+}
+location /v1/events {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_buffering off;       # server-sent events
+    proxy_read_timeout 1h;
+}
+```
+
+Add your `server` block, certificate and `listen 443 ssl` as usual.
+
+## The client's IP address
+
+Limits per IP address need each client's real address. Behind a proxy, the server sees only the proxy's, so by default all clients share one limit. The server trusts no header by default. Choose one of these, never both:
+
+- **`KLAV_TRUST_FORWARDED_FOR=true`** takes the **last** address in `X-Forwarded-For`, the one your proxy added. Use it with the nginx example above.
+- **`KLAV_TRUSTED_IP_HEADER=<header>`** takes that header's value, which your proxy must **replace** with the client's address, such as `x-real-ip`. If the header is missing or isn't one address, the server uses the connection's address.
+
+Turn either on **only** if a proxy in front always sets that header and never passes the client's own: otherwise a client could invent an address on every request and get around the limits.
+
+Without either, behind a proxy, all clients share the proxy's address: the limits per IP address become global, and the sign-in limit per email counts by email only, so someone who knows your email could use it up.
+
+## Next
+
+[Data and backups](/self-hosting/data-and-backups/).

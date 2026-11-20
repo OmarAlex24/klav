@@ -1,0 +1,28 @@
+---
+title: "Deployed services"
+description: "An accepted design: an app on a hosting platform keeps only a service ID and a low-value token, each instance proves where it runs, its key keeps changing and gives a copy away, and incident mode freezes everything."
+sidebar:
+  order: 3
+---
+
+<Aside>Not available yet. This page describes an accepted design.</Aside>
+
+This page explains a design for apps that run on a hosting platform, such as a web service with a public domain: what goes wrong when the platform's environment variables hold your API keys, and how Klav would keep them out.
+
+## The problem
+
+A deployed app usually gets its API keys from environment variables stored on the hosting platform. In October 2026, two hosting platforms told their customers that those variables might have been read, decrypted, and that every key in them had to be revoked. Then:
+
+- every key in every service had to be treated as leaked, all at once;
+- each team rotated them by hand, one at a time;
+- AI API keys were used by someone else before that was done.
+
+## The idea
+
+- **No keys in the variables.** The app's variables hold only a service ID and an enrollment token that is worth little on its own. The real keys stay in your vault and in your own proxy, which adds them to each request on its way out, as with [sandboxes](/on-the-way/sandboxes/). Changing a key in Klav reaches the proxy without redeploying the app.
+- **Each instance proves where it runs.** To join, an instance answers a challenge through the service's public domain, the way a certificate authority checks a domain, and the answer is tied to the instance's own key. A copied token alone isn't enough.
+- **Its key keeps changing.** Every few minutes, each new key signed by the one before. Two different successors of the same key mean the instance was copied: the proxy freezes it and tells you.
+- **Policies and a usage record per service:** which hosts and calls each service may use, and what it used.
+- **Incident mode,** from the Mac, the iPhone or the command line. No new instance joins without your approval, the ones running are frozen as they are, and another switch stops a service entirely.
+
+The first version is for services with a public domain that call AI APIs. Serverless functions, workers without a domain and databases come later. You run the proxy yourself; one run by Klav would come later, only inside an enclave you can verify.

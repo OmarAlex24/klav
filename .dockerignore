@@ -1,0 +1,15 @@
+# Build context for the klav-server image: sources and the lockfile only.
+target/
+.git/
+.github/
+node_modules/
+apps/
+docs/
+**/*.md
+!crates/**/*.md
+# The image uses the toolchain it ships with; the pinned file would pull
+# rustfmt and clippy for nothing.
+rust-toolchain.toml
+# Test runner settings (cargo-nextest): a change there must not rebuild the image.
+.config/
+.env*

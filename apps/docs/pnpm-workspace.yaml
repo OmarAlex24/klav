@@ -1,0 +1,38 @@
+# The docs site is its own pnpm project, outside the root workspace (the root
+# pnpm-workspace.yaml excludes apps/docs), with its own lockfile (ADR 0039 §1).
+packages: []
+supportedArchitectures:
+  cpu:
+    - current
+    - wasm32
+
+# Supply chain (ADR 0039 §2, https://pnpm.io/settings/dependency-resolution).
+# Refuse any version less than 7 days old. Never add minimumReleaseAgeExclude.
+minimumReleaseAge: 10080
+# Fail the install when a package's trust level drops from its earlier releases.
+trustPolicy: no-downgrade
+# No git or tarball URLs below the direct dependencies.
+blockExoticSubdeps: true
+
+# No install scripts. Each package here is declined (false), with its reason;
+# strictDepBuilds stays at its default (true), so a new package with a build
+# script fails the install until a PR lists it here.
+# esbuild, sharp and workerd ship their binaries as prebuilt optional packages.
+allowBuilds: # pnpm 11 and later
+  esbuild: false
+  sharp: false
+  workerd: false
+ignoredBuiltDependencies: # pnpm 10
+  - esbuild
+  - sharp
+  - workerd
+
+# Advisories the audit ignores (ADR 0039 §2): by GHSA ID only, each with its
+# reason. Check each again on every upgrade and delete it once a fix exists.
+auditConfig:
+  ignoreGhsas:
+    # picomatch <= 4.0.7, ReDoS through repeated extglobs; no patched version
+    # exists (2026-11-17). The build tools (Astro, Vite, Nimbus) use it, on
+    # this project's own globs; the deployed site is static files and runs none
+    # of it.
+    - GHSA-fc5q-39xc-vjpf

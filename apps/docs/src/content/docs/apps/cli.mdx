@@ -1,0 +1,237 @@
+---
+title: "The command line"
+description: "Use Klav from a terminal: unlock with klavd, find and read items, add and edit them, one-time codes, the password generator, vault health and the trash."
+sidebar:
+  order: 4
+---
+
+This page explains how you use `klav`, Klav's command line, day to day: unlock once with `klavd`, find and read items without printing secrets by accident, add and edit them, get one-time codes, generate passwords and check your vault's health. It runs on macOS and Linux. To install it and sign in, see [Install Klav](/get-started/install/#cli) and [Create an account](/get-started/create-an-account/). Commands for secrets in your own scripts and projects are in [Use secrets without seeing them](/agents/use-secrets-without-seeing-them/).
+
+## Unlock once with `klavd`
+
+Without `klavd`, every command asks for your master password. `klav unlock` starts `klavd`, Klav's background service, and keeps your vault unlocked in memory:
+
+```sh
+klav unlock
+```
+
+```text
+Unlocked with password (klavd, pid …); locks after 15m without use. `klav lock` locks now.
+```
+
+- On a Mac where Touch ID is enrolled, `klav unlock` uses it; `--password` uses the master password.
+- `klavd` locks after 15 minutes without use (`--idle-lock` changes it when it starts) and when the computer sleeps. Listing items, agents or requests and `klav status` aren't use; showing or copying a value, a one-time code or a change are. `klav lock` locks now; `klav lock --stop` also stops `klavd`.
+- The browser extension and the Mac app use the same `klavd`: unlocking or locking one unlocks or locks all of them.
+- In a script, `--password-stdin` reads the master password from the first line of standard input.
+
+`klav status` shows the account, this device and `klavd`, without a password:
+
+```sh
+klav status
+```
+
+```text
+home:      /Users/you/Library/Application Support/klav
+server:    https://klav.example.com
+account:   you@example.com (…)
+device:    my-mac (…)
+words:     cedar deafening creamed spindle expend humble
+daemon:    unlocked with password (pid …), locks in 899s
+```
+
+Klav keeps this device's state in `~/Library/Application Support/klav` on macOS and `~/.config/klav` on Linux. `KLAV_HOME` chooses another folder.
+
+## Find an item
+
+Every item has a reference, `klav://Vault/Project/Item`. Commands take a reference, the item's title or its ID.
+
+```sh
+klav item ls
+```
+
+```text
+ITEM                            TYPE     USERNAME
+klav://Personal/General/GitHub  login    you@example.com
+klav://Personal/General/Stripe  api-key
+```
+
+- `klav item ls` filters with `--vault`, `--project`, `--kind`, `--tag`, and `--codes` for items with a one-time code.
+- `klav item search git` looks in titles, usernames, sites and tags.
+
+## Read an item
+
+`klav item get` shows an item with its secret values hidden:
+
+```sh
+klav item get GitHub
+```
+
+```text
+GitHub  (login)
+klav://Personal/General/GitHub
+id:        …
+version:   2
+username:  you@example.com
+password:  •••••••• (hidden; use --reveal)
+totp:      •••••••• (hidden; use --reveal)
+urls:      https://github.com
+```
+
+`--field` prints one value. A secret value needs `--reveal`, so a script doesn't print one by accident:
+
+```sh
+klav item get GitHub --field password
+```
+
+```text
+klav: password is secret: add --reveal to print it
+```
+
+```sh
+klav item get GitHub --field password --reveal
+klav item get klav://Personal/General/GitHub/username
+```
+
+The CLI has no copy command: pipe the value where it goes, or use `klav run` to put it in a command's environment.
+
+## Add and edit
+
+```sh
+klav item add login --title GitHub --username you@example.com --url https://github.com -g password
+```
+
+```text
+Added klav://Personal/General/GitHub
+```
+
+- Kinds: `login`, `card`, `identity`, `ssh-key`, `totp`, `note` and `api-key`. Items go to Personal / General unless you pass `--vault` and `--project`.
+- `-g password` fills the field with a generated password. `-s <field>` asks for a secret on the terminal without showing it, and `--secret-stdin <field>` reads it from standard input. No option takes a secret value as an argument.
+- `-f name=value` sets a field that isn't secret, `--url` and `--tag` add a site or a tag, and `--notes-stdin` reads the notes.
+- Titles are unique in a project: `klav` refuses a repeated title unless you pass `--allow-duplicate`.
+
+`klav item edit` takes the same field options (`-g`, `-s`, `--secret-stdin`, `-f`, `--url`, `--tag`, `--notes-stdin`), plus `--title` to rename and `--rm-field` to remove a field. A one-time code is a secret field: paste the setup key or the `otpauth://` link the site gives you.
+
+```sh
+klav item edit GitHub --secret-stdin totp
+```
+
+`klav item attach` stores a file, such as a certificate or a key, as an encrypted attachment.
+
+### Previous passwords
+
+When a password changes, the old one is kept:
+
+```sh
+klav item history GitHub
+```
+
+```text
+N  FIELD     FROM  UNTIL                 VALUE
+0  Password        2026-11-12 23:47:08Z  ••••••••
+Use --reveal N to print one.
+```
+
+### Sites an agent added
+
+When an agent adds a website to a login, Klav doesn't fill that login there until you confirm it. `klav item sites <item>` lists them; `--confirm` confirms them all, and `--remove <url>` removes one.
+
+## One-time codes
+
+```sh
+klav totp GitHub
+```
+
+```text
+683163
+(valid for 3 s)
+```
+
+## Generate a password
+
+```sh
+klav generate
+```
+
+```text
+~EN*vl2^@?9oF$T~_^k;
+(~126 bits, very strong)
+```
+
+- `--site apple.com` follows that site's password rules, and `--rules` takes a field's `passwordrules` text.
+- `-t random`, `-t memorable` (or `-w 4` for four words) and `-t pin`. `-l` sets the length of a random password, and `--pin-length` the digits of a PIN.
+- `--separator` sets what goes between the words of a memorable passphrase (`-` by default): 1 to 8 bytes, with no ASCII letters or digits and no control or invisible characters, so that vault health can still read the words back and spot a weak passphrase. A space, `.`, `·` or `_` all work, and one that starts with a hyphen is written with `=`, as in `--separator=--`. An empty separator, `x` or `1` is a usage error (exit code 2) with any `--type`.
+
+With `klavd` running, every generated password goes to the generator history before you see it, so a failed sign-up doesn't lose it. `--no-history` skips it.
+
+```sh
+klav generated ls
+```
+
+```text
+N  GENERATED             SITE  PENDING  SAVED IN
+0  2026-11-12 23:47:40Z        yes
+```
+
+`klav generated show N` prints one, and `klav generated rm` deletes entries.
+
+## Vault health
+
+```sh
+klav health
+```
+
+```text
+Checked 3 passwords in 4 items.
+
+Reused: 1 group
+  1. same password in 2 items:
+     Forum  forum.example.com
+     Shop  shop.example.com
+
+Weak: 2
+ITEM   SITE               WHY
+Forum  forum.example.com  strength 0/4
+Shop   shop.example.com   strength 0/4
+
+Old (unchanged for over a year): 0
+
+Breached: not checked (the breach check is off)
+See `klav health breach-check` for what it sends before turning it on.
+```
+
+It never prints a password. The breach check is off by default and is a setting of this device:
+
+```sh
+klav health breach-check
+```
+
+```text
+Breach check: off
+The breach check asks Have I Been Pwned (api.pwnedpasswords.com) about each password. Only the first 5 characters of the password's SHA-1 hash are sent, never the password or the full hash, and the answer is padded so its size gives nothing away. Have I Been Pwned sees your IP address and the time of the check. The setting applies to this device only.
+Turn it on with `klav health breach-check on`.
+```
+
+`klav health --fix-with <agent>` offers an agent a task to change your reused passwords; see [Approvals and tasks](/agents/approvals-and-tasks/#tasks).
+
+## The trash
+
+```sh
+klav item rm Stripe-old
+```
+
+```text
+Moved klav://Personal/General/Stripe-old to the trash (kept 30 days).
+```
+
+`klav item ls --trash` lists the trash. No Klav app or command can restore an item from it yet.
+
+## Sync and offline
+
+Commands read this device's copy and sync in the background; `klav sync` pulls changes now. If the server sends older data than this device already saw, Klav refuses it as a rollback and exits with code 3.
+
+## More
+
+- Import from another password manager: [Import your passwords](/get-started/import/).
+- Your account, devices and emergency kit: [Create an account](/get-started/create-an-account/) and [Add a device](/get-started/add-a-device/).
+- Secrets in commands and files (`klav.toml`, `klav run`, `klav inject`): [Use secrets without seeing them](/agents/use-secrets-without-seeing-them/).
+- Agents: [How agents work](/agents/how-agents-work/).

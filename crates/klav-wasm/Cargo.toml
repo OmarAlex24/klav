@@ -1,0 +1,27 @@
+[package]
+name = "klav-wasm"
+description = "Klav core compiled to WebAssembly for the browser extension"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+klav-core.workspace = true
+secrecy = "0.10"
+serde_json = "1"
+wasm-bindgen = "0.2"
+
+# The generator draws from `crypto.getRandomValues` in the browser. This
+# crate always depends on wasm-bindgen, so enabling getrandom's `wasm_js`
+# backend here is the use getrandom documents (ADR 0017 §3).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+[lints]
+workspace = true
