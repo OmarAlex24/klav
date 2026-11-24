@@ -93,7 +93,10 @@ destination="export"
 sed "s/__DESTINATION__/$destination/" Config/ExportOptions.plist > "$options"
 
 rm -rf "$out/export"
-xcodebuild \
+# Keep /usr/bin ahead of Homebrew so /usr/bin/rsync (openrsync, which
+# xcodebuild invokes with --extended-attributes) doesn't spawn Homebrew rsync
+# as its local server.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" xcodebuild \
   -exportArchive \
   -archivePath "$archive" \
   -exportOptionsPlist "$options" \
