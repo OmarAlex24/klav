@@ -1174,6 +1174,23 @@ async fn fill(server: &TestServer, creds: &Credentials) -> (Session, TestVault) 
     .execute(&db)
     .await
     .expect("database");
+    // Secret request (ADR 0046, migration 0020).
+    let secret_request_id = klav_core::ids::SecretRequestId::generate().to_string();
+    sqlx::query(
+        "INSERT INTO secret_requests (id, account_id, agent_id, mode, reason, \
+         proposal_digest, proposal_blob, status, created_at, expires_at) \
+         VALUES ($1, $2, $3, 'create', 'purge test', $4, $5, 'pending', $6, $7)",
+    )
+    .bind(&secret_request_id)
+    .bind(creds.account_id.to_string())
+    .bind(agent.id.to_string())
+    .bind(vec![0_u8; 32])
+    .bind(vec![0_u8; 32])
+    .bind(now)
+    .bind(now + 60_000)
+    .execute(&db)
+    .await
+    .expect("database");
     for table in ["items", "item_versions"] {
         let column = if table == "items" { "id" } else { "item_id" };
         sqlx::query(sqlx::AssertSqlSafe(format!(

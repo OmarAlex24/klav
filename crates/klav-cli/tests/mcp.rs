@@ -120,15 +120,21 @@ fn the_mcp_server_hands_actions_not_values() {
         "rotate_confirm",
         "rotate_cancel",
         "passkey_sign_in",
+        "request_secret",
+        "get_secret_request",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing");
     }
     // Every tool takes a reason, except reading the agent's own tasks
-    // (ADR 0021 §7: `get_task(task_id)`, `list_tasks()`).
+    // (ADR 0021 §7: `get_task(task_id)`, `list_tasks()`) or its own secret
+    // request (ADR 0046: `get_secret_request(request_id)`).
     assert!(
         tools
             .iter()
-            .filter(|t| !matches!(t["name"].as_str(), Some("get_task" | "list_tasks")))
+            .filter(|t| !matches!(
+                t["name"].as_str(),
+                Some("get_task" | "list_tasks" | "get_secret_request")
+            ))
             .all(|t| {
                 t["inputSchema"]["required"]
                     .as_array()

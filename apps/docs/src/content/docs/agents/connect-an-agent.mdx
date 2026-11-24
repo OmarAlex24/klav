@@ -96,7 +96,7 @@ A registered agent works through `klav agent …` (see [Use secrets without seei
 
 ## `klav mcp`
 
-`klav mcp --agent <name>` is an MCP server over standard input and output, with that agent's identity. These are its tools. Every one takes a `reason`, except `get_task` and `list_tasks`:
+`klav mcp --agent <name>` is an MCP server over standard input and output, with that agent's identity. These are its tools. Every one takes a `reason`, except `get_task`, `list_tasks` and `get_secret_request`:
 
 | Tool | What it does | Permission |
 |---|---|---|
@@ -107,6 +107,7 @@ A registered agent works through `klav agent …` (see [Use secrets without seei
 | `get_totp` | A one-time code, typed into the page or returned | `totp` |
 | `reveal` | A value into the agent's context | `reveal` |
 | `create_item`, `update_item`, `delete_item` | Change items; `create_item` can generate a password the agent never sees | `create`, `update`, `delete` |
+| `request_secret`, `get_secret_request` | Ask you to save a missing secret or update a field in a hidden prompt on your device | — |
 | `request_access` | Ask you for a permission on an item instead of failing | — |
 | `request_task`, `get_task`, `list_tasks`, `end_task` | [Tasks](/agents/approvals-and-tasks/#tasks): one approval for a job | — |
 | `change_password_url`, `rotate_password`, `rotate_confirm`, `rotate_cancel` | Change a password in your browser without the agent seeing it | `list`; `rotate` inside a task |
