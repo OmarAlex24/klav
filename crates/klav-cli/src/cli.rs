@@ -1615,6 +1615,40 @@ pub(crate) enum ProjectCommand {
         /// Name.
         name: String,
     },
+    /// Link a Git repository to a project so Klav suggests its items in this
+    /// repo (ADR 0032 §2). Reads `git remote get-url origin` unless `--repo`
+    /// is given.
+    Link {
+        /// Project (`Project` or `Vault/Project`).
+        project: String,
+        /// Vault name or ID (overrides `Vault/` if omitted from `project`).
+        #[arg(long)]
+        vault: Option<String>,
+        /// Explicit repository URL or `host/owner/repo` instead of detecting from Git.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Git remote to read when `--repo` is omitted.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// Unlink a Git repository from a project (ADR 0032 §2).
+    Unlink {
+        /// Project (`Project` or `Vault/Project`).
+        project: String,
+        /// Vault name or ID (overrides `Vault/` if omitted from `project`).
+        #[arg(long)]
+        vault: Option<String>,
+        /// Explicit repository URL or `host/owner/repo` instead of detecting from Git.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Git remote to read when `--repo` is omitted.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
 }
 
 /// Item types accepted on the command line.

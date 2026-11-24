@@ -2276,6 +2276,8 @@ fn person_write(request: &Request) -> bool {
         request,
         Request::CreateVault { .. }
             | Request::CreateProject { .. }
+            | Request::SetProjectRepos { .. }
+            | Request::SetAgentLabel { .. }
             | Request::Create { .. }
             | Request::Edit { .. }
             | Request::Trash { .. }
@@ -2425,7 +2427,8 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ResolvePending { .. }
         | Request::ReusedOffer { .. }
         | Request::OfferTask { .. }
-        | Request::SetAgentLabel { .. } => true,
+        | Request::SetAgentLabel { .. }
+        | Request::SetProjectRepos { .. } => true,
     }
 }
 
@@ -4047,6 +4050,19 @@ async fn dispatch(
             let (vault, _) = u.destination(vault.as_deref(), None).map_err(e)?;
             u.create_project(vault, &name).await.map_err(e)?;
             ok(serde_json::json!({}), warnings)
+        }
+        Request::SetProjectRepos {
+            vault,
+            project,
+            repos,
+        } => {
+            let (vault, project) = u.destination(vault.as_deref(), Some(&project)).map_err(e)?;
+            ok(
+                u.set_project_repos(vault, project, repos)
+                    .await
+                    .map_err(e)?,
+                warnings,
+            )
         }
         Request::List { filter } => ok(u.list_items(&filter).map_err(e)?, warnings),
         Request::View { query, reveal, .. } => {

@@ -22,6 +22,25 @@ use crate::error::{CliResult, usage};
 /// File name looked up from the current directory upwards.
 pub(crate) const FILE_NAME: &str = "klav.toml";
 
+/// Reads `git remote get-url <remote>` inside `cwd` and normalizes it to
+/// `host/owner/repo` (ADR 0032 §2). Returns `None` if `cwd` is not a Git
+/// repository, `remote` does not exist, or the URL cannot be normalized.
+pub(crate) fn detect_git_repo(cwd: &Path, remote: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("remote")
+        .arg("get-url")
+        .arg(remote)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    klav_core::model::normalize_repo_url(raw.trim()).ok()
+}
+
 const SCHEME: &str = "klav://";
 
 #[derive(Debug, Default, Deserialize)]

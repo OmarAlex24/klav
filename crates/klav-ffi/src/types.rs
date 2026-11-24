@@ -202,6 +202,8 @@ pub struct ProjectInfo {
     pub vault: String,
     /// Name.
     pub name: String,
+    /// Linked Git repositories in normalized `host/owner/repo` form (ADR 0032).
+    pub repos: Vec<String>,
 }
 
 impl From<ProjectSummary> for ProjectInfo {
@@ -211,6 +213,7 @@ impl From<ProjectSummary> for ProjectInfo {
             vault_id: p.vault_id.to_string(),
             vault: p.vault,
             name: p.name,
+            repos: p.repos,
         }
     }
 }

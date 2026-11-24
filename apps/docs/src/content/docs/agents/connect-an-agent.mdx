@@ -122,7 +122,7 @@ A registered agent works through `klav agent …` (see [Use secrets without seei
 | `change_password_url`, `rotate_password`, `rotate_confirm`, `rotate_cancel` | Change a password in your browser without the agent seeing it | `list`; `rotate` inside a task |
 | `passkey_sign_in` | Sign in to a site with your passkey, in your browser | `passkey` inside a task |
 
-`klav mcp` uses the `klav.toml` of the folder it starts in: short references, and only that project.
+`klav mcp` uses the `klav.toml` of the folder it starts in: short references, and only that project. If the current folder is a Git repository linked to one or more projects already in the agent's grant (`klav project link <vault/project>`), `search_items` lists items from those projects first and includes `repo_context` naming the matched repository and project(s) — strictly within the agent's existing grant.
 
 ## Klav's skills
 

@@ -142,11 +142,17 @@ private struct Sidebar: View {
     @EnvironmentObject private var installer: Installer
     @Environment(\.openSettings) private var openSettings
     @State private var vaults: [VaultInfo] = []
+    @State private var projects: [ProjectInfo] = []
     /// How many items of each kind; nil until klavd answered, or if it
     /// could not (then every kind shows, without a count).
     @State private var counts: [Kind: Int]?
+    @State private var projectCounts: [String: Int] = [:]
     @State private var total = 0
     @State private var counted = false
+
+    private var repoProjects: [ProjectInfo] {
+        projects.filter { !$0.repos.isEmpty }
+    }
 
     private static let kinds: [Kind] = [.login, .totp, .card, .note, .apiKey, .sshKey, .identity, .file]
 
@@ -178,6 +184,15 @@ private struct Sidebar: View {
                         ForEach(vaults, id: \.id) { vault in
                             Row(icon: .safe, title: LocalizedStringKey(vault.name), count: Int(vault.items),
                                 section: .vault(.vault(vault.id)))
+                        }
+                    }
+                    if !repoProjects.isEmpty {
+                        Group(title: "Repositories")
+                        ForEach(repoProjects, id: \.id) { project in
+                            Row(icon: .cube,
+                                title: LocalizedStringKey(project.primaryRepoShort ?? project.name),
+                                count: projectCounts[project.id] ?? 0,
+                                section: .vault(.project(project.id)))
                         }
                     }
                     // After the deletion only the vault is left (D-C): the
@@ -215,8 +230,10 @@ private struct Sidebar: View {
         .background(Palette.papel)
         .task(id: model.generation) {
             vaults = (try? await model.run { try $0.vaults() }) ?? []
+            projects = (try? await model.run { try $0.projects(vaultId: nil) }) ?? []
             let items = try? await model.run { try $0.items(query: ItemQuery()) }
             counts = items.map { Dictionary(grouping: $0, by: \.kind).mapValues(\.count) }
+            projectCounts = items.map { Dictionary(grouping: $0, by: \.projectId).mapValues(\.count) } ?? [:]
             total = items?.count ?? 0
             counted = true
         }

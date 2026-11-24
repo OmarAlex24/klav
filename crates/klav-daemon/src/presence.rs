@@ -137,6 +137,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::Projects { .. }
         | Request::CreateVault { .. }
         | Request::CreateProject { .. }
+        | Request::SetProjectRepos { .. }
         | Request::List { .. }
         | Request::View { reveal: false, .. }
         | Request::Create { .. }

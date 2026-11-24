@@ -659,6 +659,21 @@ impl DaemonEngine {
         )?))
     }
 
+    /// Replaces the normalized Git repositories linked to a project (ADR 0032).
+    pub fn set_project_repos(
+        &self,
+        vault_id: String,
+        project_id: String,
+        repos: Vec<String>,
+    ) -> KlavResult<ProjectInfo> {
+        let updated: ProjectSummary = self.call(Request::SetProjectRepos {
+            vault: Some(vault_id),
+            project: project_id,
+            repos,
+        })?;
+        Ok(updated.into())
+    }
+
     /// Items matching `query`, by title.
     pub fn items(&self, query: ItemQuery) -> KlavResult<Vec<ItemInfo>> {
         Ok(item_infos(self.call::<Vec<ItemSummary>>(

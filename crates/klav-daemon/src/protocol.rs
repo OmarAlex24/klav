@@ -108,6 +108,16 @@ pub enum Request {
         /// Name.
         name: String,
     },
+    /// Replace the linked Git repositories of a project (ADR 0032 §2).
+    SetProjectRepos {
+        /// Vault name or ID (default vault when absent).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vault: Option<String>,
+        /// Project name or ID.
+        project: String,
+        /// Repository URLs or normalized `host/owner/repo` identifiers.
+        repos: Vec<String>,
+    },
     /// List items.
     List {
         /// Filter.

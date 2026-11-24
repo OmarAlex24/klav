@@ -577,8 +577,19 @@ impl Server {
                 let vault = arg(args, "vault").map(str::to_lowercase);
                 let project = arg(args, "project").map(str::to_lowercase);
                 let kind = arg(args, "type").map(kind).transpose()?;
+                let repo_only = args
+                    .get("repo_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let detected_repo = crate::project::detect_git_repo(&self.cwd, "origin");
                 let session = self.session().await?;
-                let items: Vec<_> = session
+                // ADR 0032 §2 + T125: only projects already in this agent's signed
+                // grant are matched against the local Git remote.
+                let matched_projects: Vec<(String, String)> = detected_repo
+                    .as_deref()
+                    .map(|r| session.projects_for_repo(r))
+                    .unwrap_or_default();
+                let mut items: Vec<_> = session
                     .items(scope, query.as_deref())
                     .into_iter()
                     .filter(|i| vault.as_deref().is_none_or(|v| i.vault.to_lowercase() == v))
@@ -588,7 +599,23 @@ impl Server {
                             .is_none_or(|p| i.project.to_lowercase() == p)
                     })
                     .filter(|i| kind.is_none_or(|k| i.kind == k))
+                    .filter(|i| {
+                        !repo_only
+                            || matched_projects.iter().any(|(v, p)| {
+                                i.vault.eq_ignore_ascii_case(v) && i.project.eq_ignore_ascii_case(p)
+                            })
+                    })
                     .collect();
+                // Prioritize items in projects linked to the current repo when the
+                // caller did not pin a specific project.
+                if project.is_none() && !matched_projects.is_empty() {
+                    items.sort_by_key(|i| {
+                        let in_repo = matched_projects.iter().any(|(v, p)| {
+                            i.vault.eq_ignore_ascii_case(v) && i.project.eq_ignore_ascii_case(p)
+                        });
+                        !in_repo
+                    });
+                }
                 let limit = args
                     .get("limit")
                     .and_then(Value::as_u64)
@@ -597,6 +624,18 @@ impl Server {
                 let truncated = items.len() > limit;
                 let items = &items[..items.len().min(limit)];
                 let mut out = json!({ "items": items });
+                if let Some(repo) = detected_repo
+                    && !matched_projects.is_empty()
+                {
+                    let project_names: Vec<String> = matched_projects
+                        .iter()
+                        .map(|(v, p)| format!("{v}/{p}"))
+                        .collect();
+                    out["repo_context"] = json!({
+                        "repo": repo,
+                        "projects": project_names,
+                    });
+                }
                 if truncated {
                     out["truncated"] = json!(true);
                     out["note"] = json!(format!(
@@ -1190,8 +1229,8 @@ pub(crate) fn tools() -> Value {
         }
     });
     let mut list = json!([
-        { "name": "search_items", "description": "Find items by title, user name, URL or tag. Metadata only, never values. Start here.",
-          "inputSchema": schema(json!({ "query": { "type": "string" }, "vault": { "type": "string" }, "project": { "type": "string" }, "type": { "type": "string" }, "limit": { "type": "integer", "description": "at most this many items (default 50, max 200)" } }), &[]) },
+        { "name": "search_items", "description": "Find items by title, user name, URL or tag. Metadata only, never values. Start here. When working in a Git repository linked to a granted project, items from that repo's project are listed first and `repo_context` names the matching project(s).",
+          "inputSchema": schema(json!({ "query": { "type": "string" }, "vault": { "type": "string" }, "project": { "type": "string" }, "type": { "type": "string" }, "repo_only": { "type": "boolean", "description": "only return items from granted projects linked to the current Git repository" }, "limit": { "type": "integer", "description": "at most this many items (default 50, max 200)" } }), &[]) },
         { "name": "get_item", "description": "Metadata and field names of an item. Never values.",
           "inputSchema": schema(json!({ "ref": reference }), &["ref"]) },
         { "name": "fill_login", "description": "Type a login's username and password into a browser page. Open the login page first; with target `extension`, if it says the tab is on another site, ask the person to open the right page. Klav checks the page's address against the item, types the password only into a password input that still has the focus, and submits only a form on the page's own origin: if it refuses, tell the person, and do not pick other selectors to get around it. Returns only the field names; with submit, also `navigated` and `url_after` (an origin only): check them, since a page that did not change may show an error or ask for a code.",

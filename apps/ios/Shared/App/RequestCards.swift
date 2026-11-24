@@ -462,7 +462,7 @@ struct AgentReviewView<Model: RequestsModel>: View {
         } else {
             Flow(spacing: 8) {
                 ForEach(projects, id: \.id) { project in
-                    Chip(text: project.vault + " / " + project.name, on: chosen.contains(project.id)) {
+                    Chip(text: project.displayWithRepo, on: chosen.contains(project.id)) {
                         if chosen.contains(project.id) { chosen.remove(project.id) } else { chosen.insert(project.id) }
                     }
                 }
@@ -1012,10 +1012,21 @@ struct SecretRequestCard<Model: RequestsModel>: View {
                 initialized = true
                 title = card.title ?? ""
                 if let list = try? await model.agentProjects() {
-                    projects = list
-                    if let wantedProject = card.projectId, list.contains(where: { $0.id == wantedProject }) {
+                    // Prefer projects shared with the agent and linked to a repository
+                    // so new API keys land in the repo's project instead of Personal / General.
+                    let sorted = list.sorted { a, b in
+                        let aShared = card.agentProjects.contains { $0.vaultId == a.vaultId && $0.projectId == a.id }
+                        let bShared = card.agentProjects.contains { $0.vaultId == b.vaultId && $0.projectId == b.id }
+                        if aShared != bShared { return aShared }
+                        let aRepo = !a.repos.isEmpty
+                        let bRepo = !b.repos.isEmpty
+                        if aRepo != bRepo { return aRepo }
+                        return (a.vault, a.name) < (b.vault, b.name)
+                    }
+                    projects = sorted
+                    if let wantedProject = card.projectId, sorted.contains(where: { $0.id == wantedProject }) {
                         selectedProjectId = wantedProject
-                    } else if let first = list.first {
+                    } else if let first = sorted.first {
                         selectedProjectId = first.id
                     }
                 }
@@ -1029,7 +1040,7 @@ struct SecretRequestCard<Model: RequestsModel>: View {
 
     private func projectLabel(_ project: ProjectInfo) -> String {
         let shared = card.agentProjects.contains { $0.vaultId == project.vaultId && $0.projectId == project.id }
-        let name = "\(project.vault) / \(project.name)"
+        let name = project.displayWithRepo
         return shared
             ? String(localized: "\(name) (shared with \(card.agent))")
             : String(localized: "\(name) (not shared with \(card.agent))")

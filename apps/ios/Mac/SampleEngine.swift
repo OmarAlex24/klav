@@ -330,12 +330,26 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
         }
     }
 
+    private var sampleProjects: [ProjectInfo] = [
+        ProjectInfo(id: "p1", vaultId: "v1", vault: "Personal", name: "General", repos: []),
+        ProjectInfo(id: "p2", vaultId: "v2", vault: "Trabajo", name: "Backend", repos: ["github.com/acme/backend"]),
+        ProjectInfo(id: "p3", vaultId: "v2", vault: "Trabajo", name: "Infra", repos: []),
+    ]
+
     func projects(vaultId: String?) throws -> [ProjectInfo] {
         try locked {
-            [ProjectInfo(id: "p1", vaultId: "v1", vault: "Personal", name: "General"),
-             ProjectInfo(id: "p2", vaultId: "v2", vault: "Trabajo", name: "Backend"),
-             ProjectInfo(id: "p3", vaultId: "v2", vault: "Trabajo", name: "Infra")]
-                .filter { vaultId == nil || $0.vaultId == vaultId }
+            sampleProjects.filter { vaultId == nil || $0.vaultId == vaultId }
+        }
+    }
+
+    func setProjectRepos(vaultId: String, projectId: String, repos: [String]) throws -> ProjectInfo {
+        try locked {
+            guard let idx = sampleProjects.firstIndex(where: { $0.vaultId == vaultId && $0.id == projectId }) else {
+                throw KlavError.NotFound(message: "project not found")
+            }
+            let normalized = repos.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
+            sampleProjects[idx].repos = Array(NSOrderedSet(array: normalized)) as? [String] ?? normalized
+            return sampleProjects[idx]
         }
     }
 

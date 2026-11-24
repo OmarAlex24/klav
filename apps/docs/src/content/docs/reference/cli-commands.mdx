@@ -38,6 +38,7 @@ Explained in [The command line](/apps/cli/).
 |---|---|
 | `klav vault ls`, `klav vault create` | List vaults, or create one with a "General" project |
 | `klav project ls`, `klav project create` | List projects, or create one |
+| `klav project link`, `klav project unlink` | Link or unlink a Git repository on a project (reads `origin` or `--repo`) |
 | `klav item add` | Add an item |
 | `klav item attach` | Store a file in an item, as an encrypted attachment |
 | `klav item get` | Show an item; secret values stay hidden without `--reveal` |
@@ -78,6 +79,7 @@ Explained in [Agents](/agents/).
 | `klav agent approve` | Approve an agent, or change its grant (Touch ID or the master password) |
 | `klav agent deny` | Deny a pending registration |
 | `klav agent show` | An agent, its grant and what it saw according to the audit log |
+| `klav agent label` | Set or clear your own encrypted label and machine/host note for an agent |
 | `klav agent pause`, `klav agent resume` | Pause every agent, or one, and resume them (resuming asks for Touch ID or the master password) |
 | `klav agent revoke` | Revoke an agent now and print what it saw |
 | `klav approval list`, `approve`, `deny` | Agents' requests waiting for your approval |

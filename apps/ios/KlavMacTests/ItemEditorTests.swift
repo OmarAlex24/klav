@@ -22,7 +22,10 @@ final class ItemEditorTests: XCTestCase {
         XCTAssertEqual(specs.map(\.name), ["username", "password", "totp"])
         XCTAssertEqual(specs.filter(\.secret).map(\.name), ["password", "totp"])
         XCTAssertEqual(specs.filter(\.generate).map(\.name), ["password"])
-        let project = ProjectInfo(id: "p2", vaultId: "v2", vault: "Trabajo", name: "Backend")
+        let project = ProjectInfo(id: "p2", vaultId: "v2", vault: "Trabajo", name: "Backend",
+                                  repos: ["github.com/acme/backend"])
+        XCTAssertEqual(project.primaryRepoShort, "acme/backend")
+        XCTAssertEqual(project.displayWithRepo, "Trabajo / Backend · acme/backend")
         let input = ItemDraft.newItem(kind: .login, title: "  Linear ", project: project, specs: specs,
                                       typed: ["username": "ana", "password": "pw", "totp": ""],
                                       site: "linear.app", notes: "")

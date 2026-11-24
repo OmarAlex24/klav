@@ -336,6 +336,31 @@ impl Backend {
         }
     }
 
+    pub(crate) async fn set_project_repos(
+        &mut self,
+        vault: Option<&str>,
+        project: &str,
+        repos: Vec<String>,
+    ) -> CliResult<ProjectSummary> {
+        match self {
+            Backend::Direct(u) => {
+                let (vault, project) = u.destination(vault, Some(project))?;
+                Ok(u.set_project_repos(vault, project, repos).await?)
+            }
+            Backend::Daemon(d) => {
+                call(
+                    d,
+                    Request::SetProjectRepos {
+                        vault: vault.map(str::to_owned),
+                        project: project.to_owned(),
+                        repos,
+                    },
+                )
+                .await
+            }
+        }
+    }
+
     pub(crate) async fn list(&mut self, filter: &ItemFilter) -> CliResult<Vec<ItemSummary>> {
         match self {
             Backend::Direct(u) => Ok(u.list_items(filter)?),

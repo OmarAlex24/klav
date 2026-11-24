@@ -32,6 +32,7 @@ enum VaultFilter: Hashable {
     case all
     case kind(Kind)
     case vault(String)
+    case project(String)
 
     /// Whether the list shows `item`.
     func includes(_ item: ItemInfo) -> Bool {
@@ -39,6 +40,7 @@ enum VaultFilter: Hashable {
         case .all: return true
         case .kind(let kind): return item.kind == kind
         case .vault(let id): return item.vaultId == id
+        case .project(let id): return item.projectId == id
         }
     }
 }
@@ -737,6 +739,14 @@ final class MacModel: ObservableObject, RequestsModel {
     func setAgentLabel(id: String, label: String?, host: String?) async throws {
         try await run { try $0.setAgentLabel(id: id, label: label, host: host) }
         changed()
+    }
+
+    /// Replaces the linked Git repositories of a project (ADR 0032 §2).
+    @discardableResult
+    func setProjectRepos(vaultId: String, projectId: String, repos: [String]) async throws -> ProjectInfo {
+        let updated = try await run { try $0.setProjectRepos(vaultId: vaultId, projectId: projectId, repos: repos) }
+        changed()
+        return updated
     }
 
     /// The pairing words of an agent this account approved: its signed

@@ -1264,6 +1264,25 @@ impl KlavCore {
         })
     }
 
+    /// Replaces the normalized Git repositories linked to a project (ADR 0032).
+    pub fn set_project_repos(
+        &self,
+        vault_id: String,
+        project_id: String,
+        repos: Vec<String>,
+    ) -> KlavResult<ProjectInfo> {
+        let vault =
+            VaultId::from_str(vault_id.trim()).map_err(|_| KlavError::invalid("not a vault ID"))?;
+        let project = ProjectId::from_str(project_id.trim())
+            .map_err(|_| KlavError::invalid("not a project ID"))?;
+        self.with(|u| {
+            let updated = self
+                .runtime
+                .block_on(u.set_project_repos(vault, project, repos))?;
+            Ok(updated.into())
+        })
+    }
+
     /// Items matching `query`, by title.
     pub fn items(&self, query: ItemQuery) -> KlavResult<Vec<ItemInfo>> {
         self.with(|u| Ok(item_infos(u.list_items(&item_filter(query))?)))

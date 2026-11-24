@@ -16919,6 +16919,96 @@
           }
         }
       }
+    },
+    "Repositories": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repositorios"
+          }
+        }
+      }
+    },
+    "Search this repository": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscar en este repositorio"
+          }
+        }
+      }
+    },
+    "Link repo…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enlazar repo…"
+          }
+        }
+      }
+    },
+    "Link a repository": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enlazar un repositorio"
+          }
+        }
+      }
+    },
+    "Link a Git repository to a project so Klav groups its API keys and helps agents find the right project automatically.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enlaza un repositorio de Git a un proyecto para que Klav agrupe sus API keys y ayude a los agentes a encontrar el proyecto correcto automáticamente."
+          }
+        }
+      }
+    },
+    "Repository URL": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "URL del repositorio"
+          }
+        }
+      }
+    },
+    "github.com/owner/repo or git@github.com:owner/repo.git": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "github.com/usuario/repo o git@github.com:usuario/repo.git"
+          }
+        }
+      }
+    },
+    "Link": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enlazar"
+          }
+        }
+      }
+    },
+    "Linked repositories": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repositorios enlazados"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
