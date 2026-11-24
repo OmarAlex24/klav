@@ -153,3 +153,64 @@ test("tasks: the spec goes on stdin, the JSON comes back even when pending", asy
   ]);
   await assert.rejects(endTask("T-1", {}), TypeError);
 });
+
+test("secret requests: metadata flags go to klav agent secret-request without any secret value", async () => {
+  const { requestSecret, waitSecretRequest, getSecretRequest } = await import("../index.js");
+  const out = await requestSecret(
+    {
+      reason: "Need Vercel AI Gateway key",
+      title: "Vercel AI Gateway",
+      type: "api-key",
+      field: "api_key",
+      project: "Personal/Dev",
+      setupUrl: "https://vercel.com/dashboard/ai-gateway",
+      proxyProposal: {
+        profile: "vercel-ai",
+        upstream: "https://ai-gateway.vercel.sh",
+        methods: ["POST"],
+        pathPrefixes: ["/v1"],
+        ratePerMinute: 60,
+      },
+    },
+    { wait: "2m", agent: "bot" },
+  );
+  assert.deepEqual(out, [
+    "agent",
+    "secret-request",
+    "create",
+    "--reason",
+    "Need Vercel AI Gateway key",
+    "--json",
+    "--agent",
+    "bot",
+    "--type",
+    "api-key",
+    "--title",
+    "Vercel AI Gateway",
+    "--field",
+    "api_key",
+    "--project",
+    "Personal/Dev",
+    "--setup-url",
+    "https://vercel.com/dashboard/ai-gateway",
+    "--proxy-profile",
+    "vercel-ai",
+    "--proxy-upstream",
+    "https://ai-gateway.vercel.sh",
+    "--proxy-method",
+    "POST",
+    "--proxy-path-prefix",
+    "/v1",
+    "--proxy-rate",
+    "60",
+    "--wait",
+    "2m",
+  ]);
+  await assert.rejects(requestSecret({ reason: "" }), TypeError);
+  assert.deepEqual(await waitSecretRequest("SR-1", { timeout: "5m" }), [
+    "agent", "secret-request", "wait", "SR-1", "--json", "--timeout", "5m",
+  ]);
+  assert.deepEqual(await getSecretRequest("SR-1"), [
+    "agent", "secret-request", "show", "SR-1", "--json",
+  ]);
+});

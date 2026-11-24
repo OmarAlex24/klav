@@ -274,3 +274,71 @@ export async function endTask(id, options) {
     options,
   );
 }
+
+// -------------------------------------------------------- secret requests
+
+/** A secret request's JSON on stdout (also exits 4, 5 or 6). */
+async function secretRequestJson(args, options) {
+  const { code, stdout, stderr } = await klav(["secret-request", ...args], {
+    cwd: options.cwd,
+    allowFailure: true,
+  });
+  const text = stdout.trim();
+  if (!text) {
+    const message = stderr.trim().split("\n").pop() || "klav agent secret-request failed";
+    throw new KlavError(message, code, stderr);
+  }
+  return JSON.parse(text);
+}
+
+/**
+ * Proposes a secret for the person to enter on their own device (ADR 0046).
+ * Sends metadata only (never a secret value); resolves the verified outcome
+ * `{ status, request_id, in_grant?, ref?, field?, proxy_profile?, expires_at? }`.
+ */
+export async function requestSecret(spec, options = {}) {
+  if (!spec || typeof spec.reason !== "string" || !spec.reason.trim()) {
+    throw new TypeError("spec.reason is mandatory: say why the agent needs this secret");
+  }
+  const args = ["create", "--reason", spec.reason, "--json", ...agentArgs(options)];
+  if (spec.mode) args.push("--mode", spec.mode);
+  if (spec.type) args.push("--type", spec.type);
+  if (spec.title) args.push("--title", spec.title);
+  if (spec.ref) args.push("--ref", spec.ref);
+  if (spec.field) args.push("--field", spec.field);
+  if (spec.project) args.push("--project", spec.project);
+  if (spec.placeholder) args.push("--placeholder", spec.placeholder);
+  if (spec.setupUrl) args.push("--setup-url", spec.setupUrl);
+  if (spec.baseUrl) args.push("--base-url", spec.baseUrl);
+  for (const url of spec.urls || []) {
+    args.push("--url", url);
+  }
+  if (spec.notes) args.push("--notes", spec.notes);
+  if (spec.proxyProposal) {
+    const pp = spec.proxyProposal;
+    if (pp.profile) args.push("--proxy-profile", pp.profile);
+    if (pp.upstream) args.push("--proxy-upstream", pp.upstream);
+    if (pp.header) args.push("--proxy-header", pp.header);
+    if (pp.prefix !== undefined) args.push("--proxy-prefix", pp.prefix);
+    if (pp.methods?.length) args.push("--proxy-method", pp.methods.join(","));
+    if (pp.askMethods?.length) args.push("--proxy-ask-method", pp.askMethods.join(","));
+    for (const prefix of pp.pathPrefixes || []) {
+      args.push("--proxy-path-prefix", prefix);
+    }
+    if (pp.ratePerMinute !== undefined) args.push("--proxy-rate", String(pp.ratePerMinute));
+  }
+  if (options.wait) args.push("--wait", String(options.wait));
+  return secretRequestJson(args, options);
+}
+
+/** Waits for the person to fulfill or deny a secret request (ADR 0046). */
+export async function waitSecretRequest(id, options = {}) {
+  const args = ["wait", String(id), "--json", ...agentArgs(options)];
+  if (options.timeout) args.push("--timeout", String(options.timeout));
+  return secretRequestJson(args, options);
+}
+
+/** Reads the verified state of one of this agent's secret requests. */
+export async function getSecretRequest(id, options = {}) {
+  return secretRequestJson(["show", String(id), "--json", ...agentArgs(options)], options);
+}

@@ -111,6 +111,7 @@ pub(crate) fn check(client: ClientId, env: &Env, entry: &Entry) -> Managed {
                 }
             }
         }
+        ClientId::Antigravity => {}
     }
     out
 }

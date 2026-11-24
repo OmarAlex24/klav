@@ -1,6 +1,7 @@
-//! The Klav skill (ADR 0033 §6, E3): `skill/SKILL.md` built into the
-//! binary, its version, and the copies Klav installs in the skill folders of
-//! agent clients.
+//! The Klav skills (ADR 0033 §6, E3): `skill/SKILL.md` and companion
+//! skills (`skill/klav-migrate/SKILL.md`) built into the binary, their
+//! versions, and the copies Klav installs in the skill folders of agent
+//! clients.
 //!
 //! Klav owns a copy only while it is exactly what Klav wrote (the SHA-256 in
 //! `clients.json`): an edited copy is never overwritten, a removed one is
@@ -15,17 +16,56 @@ use crate::clients::files::{self, Target};
 use crate::clients::registry::Registry;
 use crate::error::{CliError, CliResult};
 
-/// The skill this binary installs.
+/// The primary Klav skill this binary installs (`klav/SKILL.md`).
 pub(crate) const SKILL: &str = include_str!("../../../skill/SKILL.md");
 
-/// Name of the skill, and of its folder.
+/// The companion migration skill this binary installs (`klav-migrate/SKILL.md`).
+pub(crate) const MIGRATE_SKILL: &str = include_str!("../../../skill/klav-migrate/SKILL.md");
+
+/// Name of the primary skill, and of its folder.
 pub(crate) const NAME: &str = "klav";
-/// File name inside the skill folder.
+/// Name of the companion migration skill, and of its folder.
+pub(crate) const MIGRATE_NAME: &str = "klav-migrate";
+/// File name inside a skill folder.
 pub(crate) const FILE: &str = "SKILL.md";
 
 /// Version of the skills Klav published before `metadata.klav-skill-version`
 /// existed.
 const LEGACY_VERSION: &str = "0.1.0";
+
+/// One skill carried by this binary.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BundledSkill {
+    pub(crate) name: &'static str,
+    pub(crate) content: &'static str,
+    pub(crate) published: &'static [(&'static str, &'static str)],
+}
+
+impl BundledSkill {
+    /// The version of this built-in skill (`metadata.klav-skill-version`).
+    pub(crate) fn version(&self) -> &'static str {
+        frontmatter_version(self.content).unwrap_or(LEGACY_VERSION)
+    }
+
+    /// SHA-256 of this built-in skill.
+    pub(crate) fn sha256(&self) -> String {
+        sha256(self.content.as_bytes())
+    }
+
+    /// The published version a copy with this SHA-256 was, if any.
+    pub(crate) fn published_version(&self, sha: &str) -> Option<&'static str> {
+        self.published
+            .iter()
+            .rev()
+            .find(|(_, h)| *h == sha)
+            .map(|(v, _)| *v)
+    }
+
+    /// `<skills dir>/<name>/SKILL.md`.
+    pub(crate) fn file_in(&self, skills_dir: &Path) -> PathBuf {
+        skills_dir.join(self.name).join(FILE)
+    }
+}
 
 /// Every skill Klav published as `name: klav`, oldest first: its version and
 /// the SHA-256 of `SKILL.md`. A copy identical to one of these can be
@@ -73,30 +113,63 @@ const PUBLISHED: &[(&str, &str)] = &[
         "0.3.2",
         "2fb998af8add332548313ce904a33e00a9b49bf99dae8666f9db0c3b37ca0962",
     ),
+    (
+        "0.3.3",
+        "3c61c138f694ee4f8c0890a8d03543167764ec928751946b7a78debcf382bcac",
+    ),
+    (
+        "0.3.4",
+        "dbd927e1c787fec234e182957f71b11c01736e2883730dc6520a6013e136e3b0",
+    ),
 ];
+
+/// Every skill Klav published as `name: klav-migrate`, oldest first.
+const MIGRATE_PUBLISHED: &[(&str, &str)] = &[(
+    "0.2.0",
+    "7e2d2ef291e11d20ead2c85bf730009a0dff7497d13bc3ef14883de3dcce6509",
+)];
+
+/// All skills carried by this binary, primary first.
+pub(crate) const BUNDLED: &[BundledSkill] = &[
+    BundledSkill {
+        name: NAME,
+        content: SKILL,
+        published: PUBLISHED,
+    },
+    BundledSkill {
+        name: MIGRATE_NAME,
+        content: MIGRATE_SKILL,
+        published: MIGRATE_PUBLISHED,
+    },
+];
+
+/// Looks up a bundled skill by its folder/frontmatter name.
+pub(crate) fn by_name(name: &str) -> Option<&'static BundledSkill> {
+    BUNDLED.iter().find(|s| s.name == name)
+}
+
+/// The bundled skill matching `…/<name>/SKILL.md`, defaulting to `klav`.
+pub(crate) fn for_path(path: &Path) -> &'static BundledSkill {
+    path.parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .and_then(by_name)
+        .unwrap_or(&BUNDLED[0])
+}
 
 /// SHA-256 of `bytes`, lowercase hex.
 pub(crate) fn sha256(bytes: &[u8]) -> String {
     klav_core::crypto::agent::request_digest(bytes)
 }
 
-/// The version of the built-in skill (`metadata.klav-skill-version`).
+/// The version of the primary built-in skill (`metadata.klav-skill-version`).
 pub(crate) fn version() -> &'static str {
-    frontmatter_version(SKILL).unwrap_or(LEGACY_VERSION)
+    BUNDLED[0].version()
 }
 
-/// SHA-256 of the built-in skill.
+/// SHA-256 of the primary built-in skill.
 pub(crate) fn bundled_sha256() -> String {
-    sha256(SKILL.as_bytes())
-}
-
-/// The published version a skill with this SHA-256 was, if any.
-pub(crate) fn published_version(sha: &str) -> Option<&'static str> {
-    PUBLISHED
-        .iter()
-        .rev()
-        .find(|(_, h)| *h == sha)
-        .map(|(v, _)| *v)
+    BUNDLED[0].sha256()
 }
 
 /// `metadata.klav-skill-version` of a `SKILL.md`, read from its
@@ -158,11 +231,6 @@ pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
-/// `<skills dir>/klav/SKILL.md`.
-pub(crate) fn file_in(skills_dir: &Path) -> PathBuf {
-    skills_dir.join(NAME).join(FILE)
-}
-
 /// What a skill copy on disk is, compared with what Klav wrote there and
 /// with the skill in this binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -187,7 +255,9 @@ pub(crate) enum CopyState {
 /// A skill copy on disk, or one Klav wrote that is gone.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SkillCopy {
-    /// `…/klav/SKILL.md`.
+    /// `klav`, `klav-migrate`, …
+    pub(crate) name: String,
+    /// `…/<name>/SKILL.md`.
     pub(crate) path: PathBuf,
     pub(crate) state: CopyState,
     /// Its `metadata.klav-skill-version`, else the published skill its
@@ -206,10 +276,11 @@ pub(crate) struct SkillCopy {
     pub(crate) kept_mine: Option<String>,
 }
 
-/// What is at `path` (`<skills dir>/klav/SKILL.md`), compared with
-/// `clients.json` and this binary's skill; `None` if there is nothing and
-/// Klav never wrote one there.
+/// What is at `path` (`<skills dir>/<name>/SKILL.md`), compared with
+/// `clients.json` and this binary's matching bundled skill; `None` if there
+/// is nothing and Klav never wrote one there.
 pub(crate) fn inspect(path: &Path, registry: &Registry) -> Option<SkillCopy> {
+    let bundled = for_path(path);
     let record = registry.skill(path);
     let bytes = std::fs::read(path).ok();
     let sha = bytes.as_deref().map(sha256);
@@ -217,7 +288,7 @@ pub(crate) fn inspect(path: &Path, registry: &Registry) -> Option<SkillCopy> {
         let text = String::from_utf8_lossy(b);
         frontmatter_version(&text).map(str::to_owned).or_else(|| {
             sha.as_deref()
-                .and_then(published_version)
+                .and_then(|s| bundled.published_version(s))
                 .map(str::to_owned)
         })
     });
@@ -225,39 +296,47 @@ pub(crate) fn inspect(path: &Path, registry: &Registry) -> Option<SkillCopy> {
         (None, None) => return None,
         (None, Some(_)) => CopyState::Removed,
         (Some(_), None) => CopyState::Unmanaged,
-        (Some(sha), Some(_)) if *sha == bundled_sha256() => CopyState::Current,
-        (Some(sha), Some(r)) if *sha == r.sha256 => match compare_versions(&r.version, version()) {
-            std::cmp::Ordering::Less => CopyState::Older,
-            std::cmp::Ordering::Equal => CopyState::Current,
-            std::cmp::Ordering::Greater => CopyState::Newer,
-        },
+        (Some(sha), Some(_)) if *sha == bundled.sha256() => CopyState::Current,
+        (Some(sha), Some(r)) if *sha == r.sha256 => {
+            match compare_versions(&r.version, bundled.version()) {
+                std::cmp::Ordering::Less => CopyState::Older,
+                std::cmp::Ordering::Equal => CopyState::Current,
+                std::cmp::Ordering::Greater => CopyState::Newer,
+            }
+        }
         (Some(_), Some(_)) => CopyState::Edited,
     };
     Some(SkillCopy {
+        name: bundled.name.to_owned(),
         path: path.to_path_buf(),
         state,
         version: file_version.or_else(|| record.map(|r| r.version.clone())),
         adoptable: state == CopyState::Unmanaged
-            && sha.as_deref().and_then(published_version).is_some(),
+            && sha
+                .as_deref()
+                .and_then(|s| bundled.published_version(s))
+                .is_some(),
         sha256: sha,
         kept_mine: record.and_then(|r| r.kept_mine.clone()),
     })
 }
 
-/// Writes this binary's skill at `path` (following a link to the file it
-/// points at, never replacing the link) and records it as Klav's.
+/// Writes this binary's matching bundled skill at `path` (following a link
+/// to the file it points at, never replacing the link) and records it as
+/// Klav's.
 pub(crate) fn write(path: &Path, registry: &mut Registry) -> CliResult<()> {
+    let bundled = for_path(path);
     let target = Target::resolve(path)?;
     if let Some(dir) = target.real.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    files::write_atomic(&target.real, SKILL.as_bytes(), 0o644)?;
-    registry.wrote_skill(path, bundled_sha256(), version());
+    files::write_atomic(&target.real, bundled.content.as_bytes(), 0o644)?;
+    registry.wrote_skill(path, bundled.sha256(), bundled.version());
     Ok(())
 }
 
 /// Removes the copy at `path` (a link itself, not what it points at), its
-/// `klav` folder if that leaves it empty, and the record.
+/// skill folder if that leaves it empty, and the record.
 pub(crate) fn remove(path: &Path, registry: &mut Registry) -> CliResult<()> {
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -277,31 +356,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_built_in_skill_is_the_last_published_one() {
-        let (published, sha) = PUBLISHED.last().expect("published");
-        assert_eq!(
-            bundled_sha256(),
-            *sha,
-            "skill/SKILL.md changed: give it a new metadata.klav-skill-version and add its SHA-256 to PUBLISHED"
-        );
-        assert_eq!(version(), *published);
-        assert_eq!(frontmatter_name(SKILL), Some(NAME));
+    fn every_built_in_skill_is_its_last_published_one() {
+        for skill in BUNDLED {
+            let (published, sha) = skill.published.last().expect("published");
+            assert_eq!(
+                skill.sha256(),
+                *sha,
+                "skill `{}` changed: give it a new metadata.klav-skill-version and add its SHA-256 to its published list",
+                skill.name
+            );
+            assert_eq!(skill.version(), *published, "{}", skill.name);
+            assert_eq!(frontmatter_name(skill.content), Some(skill.name));
+        }
     }
 
     #[test]
     fn published_versions_only_grow() {
-        for pair in PUBLISHED.windows(2) {
-            assert_ne!(
-                compare_versions(pair[0].0, pair[1].0),
-                std::cmp::Ordering::Greater,
-                "{pair:?}"
-            );
+        for skill in BUNDLED {
+            for pair in skill.published.windows(2) {
+                assert_ne!(
+                    compare_versions(pair[0].0, pair[1].0),
+                    std::cmp::Ordering::Greater,
+                    "{}: {pair:?}",
+                    skill.name
+                );
+            }
+            // Each content is listed once.
+            let mut hashes: Vec<&str> = skill.published.iter().map(|(_, h)| *h).collect();
+            hashes.sort_unstable();
+            hashes.dedup();
+            assert_eq!(hashes.len(), skill.published.len(), "{}", skill.name);
         }
-        // Each content is listed once.
-        let mut hashes: Vec<&str> = PUBLISHED.iter().map(|(_, h)| *h).collect();
-        hashes.sort_unstable();
-        hashes.dedup();
-        assert_eq!(hashes.len(), PUBLISHED.len());
     }
 
     #[test]
@@ -344,10 +429,12 @@ mod tests {
             ("fill_login", "do not pick other selectors"),
             ("fill_login", "url_after"),
             ("run_with_secrets", "do not try to recover them"),
+            ("inject_file", "Prefer run_with_secrets"),
             ("inject_file", "ttl_seconds"),
             ("inject_file", "Never cat"),
             ("inject_file", ".gitignore"),
             ("get_totp", "seed is never injected"),
+            ("create_item", "Never ask the person to paste"),
             ("create_item", "Titles are unique"),
             ("update_item", "never create a copy"),
             ("rotate_password", "never leave a change open"),
@@ -375,6 +462,7 @@ mod tests {
             "codex",
             "cursor",
             "vscode",
+            "antigravity",
             // «Sandboxes» (ADR 0036 E1.2): permissions, and the fields of
             // a `klav-forward` error.
             "inject",
@@ -382,6 +470,9 @@ mod tests {
             "message",
             // An error code of `klav-forward up`.
             "klav_forward_already_claimed",
+            // Field names of `request_secret` and pending responses (ADR 0046).
+            "proxy_proposal",
+            "wait_command",
         ];
         let tools = crate::mcp::tools();
         let names: Vec<&str> = tools

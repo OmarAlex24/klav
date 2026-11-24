@@ -398,6 +398,77 @@ impl Server {
         )
     }
 
+    /// What `request_secret` and `get_secret_request` answer (ADR 0046 §4).
+    fn secret_request_payload(&self, outcome: &klav_sdk::SecretRequestOutcome) -> ToolResult {
+        use klav_sdk::SecretRequestOutcome;
+        match outcome {
+            SecretRequestOutcome::Pending {
+                request_id,
+                expires_at,
+            } => Ok(json!({
+                "status": "pending",
+                "request_id": request_id,
+                "expires_at": expires_at,
+                "fulfill_command": format!("klav secret-request fulfill {request_id}"),
+                "wait_command": self.wait_command(&format!("agent secret-request wait {request_id}")),
+                "next": format!(
+                    "The person must enter this secret in Klav (Mac, iPhone, extension, or `klav secret-request fulfill {request_id}`). 1) Tell them what secret you need and why (never ask them to paste it in chat). 2) Run wait_command now in the background so you are woken when they save or deny it. 3) When it exits 0, call get_secret_request with request_id \"{request_id}\" (or read wait_command's JSON output) and use the returned reference or proxy_profile. Exit 5 means denied and 6 expired: tell the person and do not try another way. Exit 4 means nobody decided in time: ask whether to wait longer."
+                ),
+            })),
+            SecretRequestOutcome::Fulfilled {
+                request_id,
+                in_grant,
+                reference,
+                vault_id,
+                project_id,
+                item_id,
+                field,
+                proxy_profile,
+            } => {
+                let mut out = json!({
+                    "status": "fulfilled",
+                    "request_id": request_id,
+                    "in_grant": in_grant,
+                    "field": field,
+                });
+                if let Some(reference) = reference {
+                    out["ref"] = json!(reference);
+                }
+                if let Some(v) = vault_id {
+                    out["vault_id"] = json!(v);
+                }
+                if let Some(p) = project_id {
+                    out["project_id"] = json!(p);
+                }
+                if let Some(i) = item_id {
+                    out["item_id"] = json!(i);
+                }
+                if let Some(profile) = proxy_profile {
+                    out["proxy_profile"] = json!(profile);
+                }
+                out["next"] = json!(if *in_grant {
+                    "The person saved the secret in Klav. Use `ref` with run_with_secrets, inject_file, or fill_login — never ask for or reveal the value."
+                } else if let Some(profile) = proxy_profile {
+                    return Ok({
+                        out["next"] = json!(format!(
+                            "The person saved the secret outside your local project grant and granted credential proxy profile `{profile}`. Use `--profile {profile}` in a sandbox (if your issuer already holds it), or ask the person to add `{profile}` to your issuer."
+                        ));
+                        out
+                    });
+                } else {
+                    "The person saved the secret outside your project grant. Tell them if you need local access to use it."
+                });
+                Ok(out)
+            }
+            SecretRequestOutcome::Denied { request_id } => Err(ToolError::Msg(format!(
+                "the person denied secret request {request_id}. Do not ask them to paste the secret or try another way."
+            ))),
+            SecretRequestOutcome::Expired { request_id } => Err(ToolError::Msg(format!(
+                "secret request {request_id} expired without a decision. Ask the person before requesting it again."
+            ))),
+        }
+    }
+
     /// What `request_task` and `get_task` answer (ADR 0021 §7).
     fn task_payload(&self, view: &klav_sdk::TaskView) -> ToolResult {
         use klav_proto::task::TaskStatus;
@@ -463,9 +534,11 @@ impl Server {
     }
 
     async fn call(&mut self, name: &str, args: &Value) -> ToolResult {
-        // Reading its own tasks needs no reason; everything else does.
+        // Reading its own tasks or secret requests needs no reason; everything else does.
         let reason = match name {
-            "get_task" | "list_tasks" => arg(args, "reason").unwrap_or_default().to_owned(),
+            "get_task" | "list_tasks" | "get_secret_request" => {
+                arg(args, "reason").unwrap_or_default().to_owned()
+            }
             _ => required(args, "reason")?.to_owned(),
         };
         // The person reads these on the card (layer 04): no bidi overrides,
@@ -478,7 +551,12 @@ impl Server {
             .filter(|_| {
                 !matches!(
                     name,
-                    "request_task" | "get_task" | "end_task" | "list_tasks"
+                    "request_task"
+                        | "get_task"
+                        | "end_task"
+                        | "list_tasks"
+                        | "request_secret"
+                        | "get_secret_request"
                 )
             })
             .map(task_id)
@@ -943,6 +1021,97 @@ impl Server {
                 let view = session.task_view(&info)?;
                 Ok(json!({ "ok": true, "task": view }))
             }
+            "request_secret" => {
+                let mode = match arg(args, "mode").unwrap_or("create") {
+                    "create" => klav_core::secret_request::SecretRequestMode::Create,
+                    "update" => klav_core::secret_request::SecretRequestMode::Update,
+                    other => {
+                        return Err(ToolError::Msg(format!(
+                            "mode must be \"create\" or \"update\", got {other:?}"
+                        )));
+                    }
+                };
+                let kind = match arg(args, "type") {
+                    None => None,
+                    Some("api_key" | "api-key") => Some(klav_core::model::item::ItemKind::ApiKey),
+                    Some("login") => Some(klav_core::model::item::ItemKind::Login),
+                    Some("note") => Some(klav_core::model::item::ItemKind::Note),
+                    Some("ssh_key" | "ssh-key") => Some(klav_core::model::item::ItemKind::SshKey),
+                    Some("totp") => Some(klav_core::model::item::ItemKind::Totp),
+                    Some(other) => {
+                        return Err(ToolError::Msg(format!(
+                            "unsupported item type {other:?} for request_secret (allowed: api_key, login, note, ssh_key, totp)"
+                        )));
+                    }
+                };
+                let urls = args
+                    .get("urls")
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let proxy_proposal: Option<klav_core::secret_request::ProxyProposal> = match args
+                    .get("proxy_proposal")
+                    .or_else(|| args.get("proxy_profile"))
+                {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        serde_json::from_value(v.clone())
+                            .map_err(|e| ToolError::Msg(format!("invalid proxy_proposal: {e}")))?,
+                    ),
+                };
+                let field = match arg(args, "field") {
+                    Some(f) => f.to_owned(),
+                    None if mode == klav_core::secret_request::SecretRequestMode::Create => {
+                        match kind.unwrap_or(klav_core::model::item::ItemKind::ApiKey) {
+                            klav_core::model::item::ItemKind::ApiKey => "api_key",
+                            klav_core::model::item::ItemKind::Login => "password",
+                            klav_core::model::item::ItemKind::SshKey => "private_key",
+                            klav_core::model::item::ItemKind::Totp => "totp",
+                            _ => "secret",
+                        }
+                        .to_owned()
+                    }
+                    None => {
+                        return Err(ToolError::Msg(
+                            "field is required when mode is \"update\"".into(),
+                        ));
+                    }
+                };
+                let spec = klav_sdk::SecretRequestSpec {
+                    mode,
+                    kind,
+                    title: arg(args, "title").map(str::to_owned),
+                    reference: arg(args, "ref").map(str::to_owned),
+                    project: arg(args, "project").map(str::to_owned),
+                    field,
+                    reason,
+                    placeholder: arg(args, "placeholder").map(str::to_owned),
+                    setup_url: arg(args, "setup_url").map(str::to_owned),
+                    base_url: arg(args, "base_url").map(str::to_owned),
+                    urls,
+                    notes: arg(args, "notes").map(str::to_owned),
+                    proxy_proposal,
+                    wait,
+                };
+                let session = self.session().await?;
+                let outcome = session.request_secret(&spec, scope).await?;
+                self.secret_request_payload(&outcome)
+            }
+            "get_secret_request" => {
+                let raw_id = required(args, "request_id")?;
+                let id: klav_core::ids::SecretRequestId = raw_id.trim().parse().map_err(|_| {
+                    ToolError::Msg(format!("request_id {raw_id:?} is not a secret request ID"))
+                })?;
+                let wait = seconds(args, "wait_seconds", Duration::ZERO, MAX_WAIT);
+                let session = self.session().await?;
+                let outcome = session.wait_secret_request(id, wait).await?;
+                self.secret_request_payload(&outcome)
+            }
             other => Err(ToolError::Msg(format!("unknown tool {other:?}"))),
         }
     }
@@ -969,7 +1138,58 @@ pub(crate) fn tools() -> Value {
     let reference = json!({ "type": "string", "description": "klav://Vault/Project/Item[/field], or Item[/field] inside klav.toml's project" });
     let target = json!({ "type": "string", "description": "`extension`: the active tab of the person's browser, through Klav's extension (they see a notice in the page); or sdk:<session>, a browser registered by your runtime" });
     let map = json!({ "type": "object", "additionalProperties": { "type": "string" } });
-    json!([
+    let request_secret_tool = json!({
+        "name": "request_secret",
+        "description": "Ask the person to save a missing secret (or update a secret field on an existing item) via a hidden input card on their Mac, iPhone, extension or terminal. You send only metadata (and an optional proxy_proposal for sandboxes); the value never touches the server or your context. Waits up to wait_seconds; while pending, follow `next`. When fulfilled, returns only the klav:// reference (if inside your grant) and/or granted proxy_profile.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reason": { "type": "string", "description": "why you need this secret (mandatory, max 500 chars; the person sees it and it is logged)" },
+                "mode": { "type": "string", "enum": ["create", "update"], "description": "create a new item (default) or update a secret field of an existing one" },
+                "type": { "type": "string", "enum": ["api_key", "login", "note", "ssh_key", "totp"], "description": "item kind in create mode (default: api_key)" },
+                "title": { "type": "string", "description": "suggested item title (create mode)" },
+                "ref": reference.clone(),
+                "field": { "type": "string", "description": "target secret field name (default depends on type, e.g. api_key)" },
+                "project": { "type": "string", "description": "suggested granted project as Vault/Project or project ID (create mode)" },
+                "placeholder": { "type": "string", "description": "short hint for the hidden input (e.g. sk_live_…)" },
+                "setup_url": { "type": "string", "description": "https:// URL where the person can create or copy the key (never auto-opened; full domain shown with warning)" },
+                "base_url": { "type": "string", "description": "non-secret API base URL (for api_key items)" },
+                "urls": { "type": "array", "items": { "type": "string" }, "description": "suggested login URLs (unchecked by default on the person's card)" },
+                "notes": { "type": "string", "description": "non-secret notes (create mode)" },
+                "proxy_proposal": {
+                    "type": "object",
+                    "description": "optional klav-proxy profile proposal (unchecked by default; requires separate presence)",
+                    "properties": {
+                        "preset": { "type": ["string", "null"] },
+                        "profile": { "type": "string" },
+                        "upstream": { "type": "string" },
+                        "header": { "type": "string" },
+                        "prefix": { "type": "string" },
+                        "methods": { "type": "array", "items": { "type": "string" } },
+                        "ask_methods": { "type": "array", "items": { "type": "string" } },
+                        "path_prefixes": { "type": "array", "items": { "type": "string" } },
+                        "rate_per_minute": { "type": "integer" }
+                    },
+                    "required": ["profile", "upstream", "header", "prefix", "path_prefixes"]
+                },
+                "wait_seconds": { "type": "integer", "description": "how long to wait for the person (default 60, max 600)" }
+            },
+            "required": ["reason"]
+        }
+    });
+    let get_secret_request_tool = json!({
+        "name": "get_secret_request",
+        "description": "Check the verified status and result of one of your secret requests (optional long-poll with wait_seconds). Never returns the secret value.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": { "type": "string" },
+                "wait_seconds": { "type": "integer", "description": "wait this long while pending (default 0, max 600)" }
+            },
+            "required": ["request_id"]
+        }
+    });
+    let mut list = json!([
         { "name": "search_items", "description": "Find items by title, user name, URL or tag. Metadata only, never values. Start here.",
           "inputSchema": schema(json!({ "query": { "type": "string" }, "vault": { "type": "string" }, "project": { "type": "string" }, "type": { "type": "string" }, "limit": { "type": "integer", "description": "at most this many items (default 50, max 200)" } }), &[]) },
         { "name": "get_item", "description": "Metadata and field names of an item. Never values.",
@@ -980,13 +1200,13 @@ pub(crate) fn tools() -> Value {
           "inputSchema": schema(json!({ "ref": reference, "target": target, "selectors": map }), &["ref", "target"]) },
         { "name": "run_with_secrets", "description": "Run a command with secrets in its environment: env: {\"API_KEY\": \"klav://…/api_key\"}, plus klav.toml's [env] and [files]. Never put a secret or a value in `command`. The output comes back with the values replaced by [redacted by klav] (also those inject_file wrote in this session): do not try to recover them (encoding, splitting, lengths or prefixes). The redaction is a courtesy, not a sealed channel: the command itself has the values.",
           "inputSchema": schema(json!({ "command": { "type": "array", "items": { "type": "string" }, "description": "[program, args…]; no secrets here" }, "env": map, "use_project": { "type": "boolean", "description": "also load klav.toml's [env] and [files] (default true)" }, "timeout_seconds": { "type": "integer" } }), &["command"]) },
-        { "name": "inject_file", "description": "Write secrets into a new 0600 file inside the working directory: one reference, or a template with at least one {{ klav://… }}. Returns the path, never the content. Pass ttl_seconds so it disappears, and tell the person the file exists. Attachments (a .p8, a certificate, a key file) go with ref (Item/<attachment name>, as get_item lists it), never in a template. Never cat the file into your context. A `warning` says git would commit the file (add it and *.klav-tmp to .gitignore, or remove the file before any commit), or names a temporary file of a write that was interrupted or is still in progress (tell the person; never delete it yourself).",
+        { "name": "inject_file", "description": "Prefer run_with_secrets (with env or klav.toml's [files], which Klav removes when the command ends) whenever possible; use inject_file only when a tool needs a file on disk beforehand. Write secrets into a new 0600 file inside the working directory: one reference, or a template with at least one {{ klav://… }}. Returns the path, never the content. Pass ttl_seconds so it disappears, and tell the person the file exists. Attachments (a .p8, a certificate, a key file) go with ref (Item/<attachment name>, as get_item lists it), never in a template. Never cat the file into your context. A `warning` says git would commit the file (add it and *.klav-tmp to .gitignore, or remove the file before any commit), or names a temporary file of a write that was interrupted or is still in progress (tell the person; never delete it yourself).",
           "inputSchema": schema(json!({ "path": { "type": "string" }, "ref": reference, "template": { "type": "string" }, "ttl_seconds": { "type": "integer", "description": "remove the file after this long" }, "overwrite": { "type": "boolean" } }), &["path"]) },
         { "name": "get_totp", "description": "Current one-time code of an item. Pass target so it is typed into the page instead of returned (preferred). Needs the person's approval by default. A TOTP seed is never injected: run_with_secrets, inject_file and templates refuse …/totp.",
           "inputSchema": schema(json!({ "ref": reference, "target": target }), &["ref"]) },
         { "name": "reveal", "description": "Return a secret value into your context. Denied by default: prefer fill_login, run_with_secrets or inject_file.",
           "inputSchema": schema(json!({ "ref": reference, "field": { "type": "string" } }), &["ref"]) },
-        { "name": "create_item", "description": "Create an item (login, api_key, note…) in a granted project. For a new account, pass generate: true (no password in fields): Klav generates a strong password with the site's rules and seals it in the item; you get only its metadata, never the value. Titles are unique in a project: if the title exists and you meant that item, use update_item; otherwise choose a more specific title. Never create a copy to get around an update that needs approval.",
+        { "name": "create_item", "description": "Create an item (login, api_key, note…) in a granted project. For a new account, pass generate: true (no password in fields): Klav generates a strong password with the site's rules and seals it in the item; you get only its metadata, never the value. Never ask the person to paste an existing API key or secret into the chat so you can store it here: use request_secret instead so they enter it in a hidden field on their device. Titles are unique in a project: if the title exists and you meant that item, use update_item; otherwise choose a more specific title. Never create a copy to get around an update that needs approval.",
           "inputSchema": schema(json!({ "type": { "type": "string", "description": "item type: login, api_key, note…" }, "title": { "type": "string" }, "vault": { "type": "string" }, "project": { "type": "string" }, "fields": map, "urls": { "type": "array", "items": { "type": "string" } }, "tags": { "type": "array", "items": { "type": "string" } }, "notes": { "type": "string" },
               "generate": { "description": "true, or { type?: smart|random|memorable|pin (default smart: the site's rules), site?: host whose rules apply (default: the first URL's), field?: which field (default password) }", "oneOf": [ { "type": "boolean" }, { "type": "object", "properties": { "type": { "type": "string", "enum": ["smart", "random", "memorable", "pin"] }, "site": { "type": "string" }, "field": { "type": "string" } } } ] } }), &["type", "title"]) },
         { "name": "update_item", "description": "Change an item: patch = { title?, set?: {field: value}, remove?: [field], add_urls?, add_tags?, notes? }. Needs the person's approval by default: wait for it, never create a copy of the item instead. A new title must not be another item's in the project.",
@@ -1011,7 +1231,7 @@ pub(crate) fn tools() -> Value {
               "reason": { "type": "string", "description": "why (max 500 characters; the person sees it and it is logged)" },
               "duration": { "type": "string", "description": "how long, from approval: 30m, 2h, 1h30m (5m to 24h); ask for what the job needs" },
               "access": { "type": "array", "description": "1 to 50 items, each once", "items": { "type": "object", "properties": {
-                  "ref": reference,
+                  "ref": reference.clone(),
                   "permissions": { "type": "array", "items": { "type": "string", "enum": ["fill", "totp", "inject", "update", "passkey", "rotate"] } },
                   "domain": { "type": "string", "description": "expected host (optional; by default the item's URLs)" } }, "required": ["ref", "permissions"] } },
               "wait_seconds": { "type": "integer", "description": "how long to wait for the person (default 60, max 600)" } },
@@ -1022,7 +1242,12 @@ pub(crate) fn tools() -> Value {
           "inputSchema": { "type": "object", "properties": {} } },
         { "name": "end_task", "description": "End one of your tasks when the job is done (or to withdraw a pending one).",
           "inputSchema": { "type": "object", "properties": { "task_id": { "type": "string" }, "reason": { "type": "string" } }, "required": ["task_id", "reason"] } },
-    ])
+    ]);
+    if let Some(arr) = list.as_array_mut() {
+        arr.push(request_secret_tool);
+        arr.push(get_secret_request_tool);
+    }
+    list
 }
 
 fn reply(id: &Value, result: Value) -> Value {
@@ -1058,7 +1283,7 @@ impl Server {
                         "protocolVersion": version,
                         "capabilities": { "tools": { "listChanged": false } },
                         "serverInfo": { "name": "klav", "version": env!("CARGO_PKG_VERSION") },
-                        "instructions": "Klav keeps the person's secrets. Search first (search_items), prefer fill_login, run_with_secrets and inject_file over reveal, always give a real reason, and ask (request_access) instead of working around a denial. When a tool answers status \"pending\", follow its `next`: tell the person, run its wait_command in the background, and retry with approval_id when it exits 0. Before a job that touches several items or sites, ask for one task with request_task, and call end_task when done. To change a password, work inside a task with rotate (list_tasks shows the ones the person offered you): change_password_url, open the page, rotate_password with target \"extension\", submit the form, then rotate_confirm or rotate_cancel; never try to see, copy or type the password yourself. For a new account, create_item with generate: true.",
+                        "instructions": "Klav keeps the person's secrets. Search first (search_items), prefer fill_login, run_with_secrets and inject_file over reveal, always give a real reason, and ask (request_access) instead of working around a denial. When an existing secret is missing (or needs updating), call request_secret (with proxy_proposal when a sandbox needs it) instead of asking the person to paste it in chat. When a tool answers status \"pending\", follow its `next`: tell the person, run its wait_command in the background, and continue when it exits 0. Before a job that touches several items or sites, ask for one task with request_task, and call end_task when done. To change a password, work inside a task with rotate (list_tasks shows the ones the person offered you): change_password_url, open the page, rotate_password with target \"extension\", submit the form, then rotate_confirm or rotate_cancel; never try to see, copy or type the password yourself. For a new account, create_item with generate: true.",
                     }),
                 )
             }
@@ -1265,5 +1490,26 @@ mod tests {
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
         assert_eq!(sh_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
         assert_eq!(sh_quote(""), "''");
+    }
+
+    #[test]
+    fn request_secret_tool_schema_carries_no_secret_value_field() {
+        let list = super::tools();
+        let arr = list.as_array().expect("tools array");
+        let tool = arr
+            .iter()
+            .find(|t| t["name"] == "request_secret")
+            .expect("request_secret tool");
+        let props = tool["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties");
+        assert!(props.contains_key("reason"));
+        assert!(props.contains_key("proxy_proposal"));
+        assert!(!props.contains_key("value"));
+        assert!(!props.contains_key("secret"));
+        assert!(
+            arr.iter().any(|t| t["name"] == "get_secret_request"),
+            "get_secret_request tool present"
+        );
     }
 }

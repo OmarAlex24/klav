@@ -56,6 +56,14 @@ pub(crate) const PUBLISHED: &[(&str, &str)] = &[
         "0.3.2",
         "2fb998af8add332548313ce904a33e00a9b49bf99dae8666f9db0c3b37ca0962",
     ),
+    (
+        "0.3.3",
+        "3c61c138f694ee4f8c0890a8d03543167764ec928751946b7a78debcf382bcac",
+    ),
+    (
+        "0.3.4",
+        "dbd927e1c787fec234e182957f71b11c01736e2883730dc6520a6013e136e3b0",
+    ),
 ];
 
 /// The skill folders of the sandbox's user, relative to its home.

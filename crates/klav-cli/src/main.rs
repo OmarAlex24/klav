@@ -32,8 +32,8 @@ use klav_client::Home;
 use crate::cli::{Cli, Command};
 use crate::commands::{
     account, agent, client, deletion, extension, generate, generated, health, import, inject, item,
-    log, presence as presence_command, proxy, run as run_command, sandbox, skill as skill_command,
-    task, vault,
+    log, presence as presence_command, proxy, run as run_command, sandbox, secret_request,
+    skill as skill_command, task, vault,
 };
 use crate::context::Ctx;
 use crate::error::CliResult;
@@ -67,6 +67,7 @@ async fn run(cli: Cli) -> CliResult<()> {
         Command::Sandbox(cmd) => sandbox::sandbox_cmd(&ctx, cmd).await,
         Command::Approval(cmd) => agent::approval_cmd(&mut ctx, cmd).await,
         Command::Task(cmd) => task::task_cmd(&mut ctx, cmd).await,
+        Command::SecretRequest(cmd) => secret_request::secret_request_cmd(&mut ctx, cmd).await,
         Command::Log(args) => log::log_cmd(&mut ctx, args).await,
         Command::Extension(cmd) => extension::extension_cmd(&mut ctx, cmd).await,
         Command::Mcp(args) => mcp::mcp_cmd(&ctx, args).await,

@@ -93,6 +93,11 @@ pub(crate) enum Command {
     /// approved with one card (person side, ADR 0021).
     #[command(subcommand)]
     Task(TaskCommand),
+    /// Secret requests from agents: fulfill a missing secret in a hidden prompt
+    /// or deny it without the value ever touching the agent (person side,
+    /// ADR 0046).
+    #[command(subcommand, name = "secret-request")]
+    SecretRequest(SecretRequestCommand),
     /// The audit log: who used what, when and why; `log verify` checks it.
     Log(LogArgs),
     /// Browser extension: native messaging host manifests.
@@ -207,19 +212,27 @@ pub(crate) struct ClientRestoreArgs {
 /// `klav skill …` (ADR 0033 §6).
 #[derive(Debug, Subcommand)]
 pub(crate) enum SkillCommand {
-    /// The skill this `klav` carries, and every copy found in the clients'
+    /// The skills this `klav` carries, and every copy found in the clients'
     /// folders: up to date, older, edited, removed or not Klav's.
     Status(JsonFlag),
-    /// Install the skill (default: in the folders of the clients installed
-    /// here).
+    /// Install the Klav skills (default: in the folders of the clients
+    /// installed here).
     Install(SkillInstallArgs),
     /// Replace Klav's unchanged copies that are older than this `klav`'s
-    /// skill. Edited copies are never overwritten.
+    /// skills, and install newly bundled companion skills into active Klav
+    /// skill folders. Edited and removed copies are never overwritten or
+    /// restored.
     Update(SkillUpdateArgs),
-    /// Remove Klav's copies of the skill.
+    /// Remove Klav's copies of its skills.
     Uninstall(SkillUninstallArgs),
-    /// Print the skill this `klav` carries.
-    Show,
+    /// Print a skill this `klav` carries (default: `klav`).
+    Show(SkillShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SkillShowArgs {
+    /// Skill name (`klav`, `klav-migrate`; default: `klav`).
+    pub(crate) name: Option<String>,
 }
 
 /// Where `klav skill install|uninstall` work.
@@ -228,7 +241,7 @@ pub(crate) struct SkillWhere {
     /// The folders of this client (repeatable).
     #[arg(long = "client", value_enum, conflicts_with = "dirs")]
     pub(crate) clients: Vec<ClientArg>,
-    /// A skills folder: the skill goes in `<DIR>/klav/SKILL.md`
+    /// A skills folder: skills go in `<DIR>/<name>/SKILL.md`
     /// (repeatable).
     #[arg(long = "dir", value_name = "DIR")]
     pub(crate) dirs: Vec<PathBuf>,
@@ -238,6 +251,9 @@ pub(crate) struct SkillWhere {
 pub(crate) struct SkillInstallArgs {
     #[command(flatten)]
     pub(crate) place: SkillWhere,
+    /// Only this bundled skill (repeatable; default: all bundled skills).
+    #[arg(long = "skill", value_name = "NAME")]
+    pub(crate) skills: Vec<String>,
     /// Show what would change and change nothing.
     #[arg(long)]
     pub(crate) dry_run: bool,
@@ -259,9 +275,12 @@ pub(crate) struct SkillUpdateArgs {
     /// until there is a newer skill.
     #[arg(long)]
     pub(crate) keep_mine: bool,
-    /// Only the copy in this skills folder (repeatable).
+    /// Only the copies in this skills folder (repeatable).
     #[arg(long = "dir", value_name = "DIR")]
     pub(crate) dirs: Vec<PathBuf>,
+    /// Only this bundled skill (repeatable; default: all bundled skills).
+    #[arg(long = "skill", value_name = "NAME")]
+    pub(crate) skills: Vec<String>,
     #[command(flatten)]
     pub(crate) json: JsonFlag,
 }
@@ -270,6 +289,9 @@ pub(crate) struct SkillUpdateArgs {
 pub(crate) struct SkillUninstallArgs {
     #[command(flatten)]
     pub(crate) place: SkillWhere,
+    /// Only this bundled skill (repeatable; default: all bundled skills).
+    #[arg(long = "skill", value_name = "NAME")]
+    pub(crate) skills: Vec<String>,
     /// Also remove a copy someone edited.
     #[arg(long)]
     pub(crate) force: bool,
@@ -539,6 +561,217 @@ pub(crate) enum AgentTaskCommand {
     },
 }
 
+/// `klav secret-request …` (person side, ADR 0046).
+#[derive(Debug, Subcommand)]
+pub(crate) enum SecretRequestCommand {
+    /// List pending secret requests (or `--all` for recent decided/expired).
+    #[command(alias = "ls")]
+    List {
+        /// Include fulfilled, denied and expired requests.
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// Show the decrypted proposal, setup link warnings and proxy preview of
+    /// one secret request.
+    Show {
+        /// Secret request ID (or unique prefix).
+        id: String,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// Save the requested secret into your vault (hidden prompt on TTY or
+    /// `--secret-stdin`) and sign the fulfillment decision.
+    Fulfill(Box<SecretRequestFulfillArgs>),
+    /// Deny a pending secret request with a signed decision.
+    Deny {
+        /// Secret request ID (or unique prefix).
+        id: String,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SecretRequestFulfillArgs {
+    /// Secret request ID (or unique prefix).
+    pub(crate) id: String,
+    /// Destination vault name or ID (create mode; overrides the proposal).
+    #[arg(long)]
+    pub(crate) vault: Option<String>,
+    /// Destination project name or ID (create mode; overrides the proposal).
+    #[arg(long)]
+    pub(crate) project: Option<String>,
+    /// Item title override (create mode).
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+    /// Secret field name override (defaults to the proposal's field).
+    #[arg(long)]
+    pub(crate) field: Option<String>,
+    /// Confirmed login URL to save (create mode; repeatable). Agent-suggested
+    /// login URLs are never saved unless confirmed explicitly (T234).
+    #[arg(long = "url", value_name = "URL")]
+    pub(crate) urls: Vec<String>,
+    /// Explicitly confirm and save all agent-suggested URLs on a `login` item
+    /// (T234).
+    #[arg(long)]
+    pub(crate) confirm_suggested_urls: bool,
+    /// Notes override (create mode).
+    #[arg(long)]
+    pub(crate) notes: Option<String>,
+    /// Allow creating an item whose title matches an existing live item in the
+    /// same project.
+    #[arg(long)]
+    pub(crate) allow_duplicate: bool,
+    /// Also grant the proposed `klav-proxy` profile (unchecked by default;
+    /// requires Touch ID or the master password, T239).
+    #[arg(long)]
+    pub(crate) grant_proxy: bool,
+    /// The proxy's 6 pairing words (only for the proxy's first credential).
+    #[arg(long, value_name = "WORDS")]
+    pub(crate) words: Option<String>,
+    /// Confirm every device runs a Klav with per-item grants (only for the
+    /// account's first per-item grant).
+    #[arg(long = "every-device-is-updated")]
+    pub(crate) every_device_updated: bool,
+    /// Read the secret value from stdin (after the master password line if
+    /// `--password-stdin` is set) instead of prompting on the TTY.
+    #[arg(long)]
+    pub(crate) secret_stdin: bool,
+    /// Do not ask for `[y/N]` confirmation before prompting for the value.
+    #[arg(long, short = 'y')]
+    pub(crate) yes: bool,
+    #[command(flatten)]
+    pub(crate) json: JsonFlag,
+}
+
+/// `klav agent secret-request …` (agent side, ADR 0046).
+#[derive(Debug, Subcommand)]
+pub(crate) enum AgentSecretRequestCommand {
+    /// Propose a secret for the person to enter on their device without the
+    /// value ever touching this agent.
+    Create(Box<AgentSecretRequestCreateArgs>),
+    /// Wait for the person to fulfill or deny a secret request. Exit codes:
+    /// 0 fulfilled, 4 pending, 5 denied, 6 expired, 7 paused, 8 account deleting.
+    Wait {
+        /// Secret request ID.
+        id: String,
+        /// How long to wait (`10m` default).
+        #[arg(long, value_name = "DURATION", default_value = "10m", value_parser = parse_duration)]
+        timeout: std::time::Duration,
+        /// Agent name (default: `$KLAV_AGENT` or the only one).
+        #[arg(long, env = "KLAV_AGENT")]
+        agent: Option<String>,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// Check the current state of one of this agent's secret requests.
+    Show {
+        /// Secret request ID.
+        id: String,
+        /// Agent name (default: `$KLAV_AGENT` or the only one).
+        #[arg(long, env = "KLAV_AGENT")]
+        agent: Option<String>,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum SecretRequestModeArg {
+    Create,
+    Update,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum SecretRequestKindArg {
+    #[value(name = "api-key", alias = "api_key")]
+    ApiKey,
+    Login,
+    Note,
+    #[value(name = "ssh-key", alias = "ssh_key")]
+    SshKey,
+    Totp,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AgentSecretRequestCreateArgs {
+    /// Why this secret is needed (mandatory; shown to the person and logged).
+    #[arg(long)]
+    pub(crate) reason: String,
+    /// `create` a new item (default) or `update` a secret field of an existing one.
+    #[arg(long, value_enum, default_value = "create")]
+    pub(crate) mode: SecretRequestModeArg,
+    /// Item kind in `create` mode (default: `api-key`).
+    #[arg(long = "type", value_enum)]
+    pub(crate) kind: Option<SecretRequestKindArg>,
+    /// Suggested item title (`create` mode).
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+    /// Target item reference or ID (`update` mode).
+    #[arg(long = "ref", value_name = "REF")]
+    pub(crate) reference: Option<String>,
+    /// Target secret field name (default depends on kind, e.g. `api_key`).
+    #[arg(long)]
+    pub(crate) field: Option<String>,
+    /// Suggested granted project (`Vault/Project` or project ID, `create` mode).
+    #[arg(long)]
+    pub(crate) project: Option<String>,
+    /// Short hint for the hidden input (e.g. `sk_live_…`).
+    #[arg(long)]
+    pub(crate) placeholder: Option<String>,
+    /// Provider dashboard URL (`https://…`) where the person can create or copy
+    /// the key (never auto-opened, T235).
+    #[arg(long)]
+    pub(crate) setup_url: Option<String>,
+    /// Non-secret API base URL for `api-key` items.
+    #[arg(long)]
+    pub(crate) base_url: Option<String>,
+    /// Suggested login URL (repeatable; unchecked by default on the card, T234).
+    #[arg(long = "url", value_name = "URL")]
+    pub(crate) urls: Vec<String>,
+    /// Suggested non-secret notes (`create` mode).
+    #[arg(long)]
+    pub(crate) notes: Option<String>,
+    /// Optional proposed `klav-proxy` profile name (unchecked by default, T239).
+    #[arg(long)]
+    pub(crate) proxy_profile: Option<String>,
+    /// Upstream `https://…` URL for the proposed proxy profile.
+    #[arg(long)]
+    pub(crate) proxy_upstream: Option<String>,
+    /// Header name for the proposed proxy profile (default: `authorization`).
+    #[arg(long)]
+    pub(crate) proxy_header: Option<String>,
+    /// Prefix before the secret in the proxy header (default: `Bearer `).
+    #[arg(long)]
+    pub(crate) proxy_prefix: Option<String>,
+    /// Allowed HTTP methods for the proposed proxy profile (comma-separated).
+    #[arg(long = "proxy-method", value_name = "METHOD", value_delimiter = ',')]
+    pub(crate) proxy_methods: Vec<String>,
+    /// Ask-per-call HTTP methods for the proposed proxy profile (comma-separated).
+    #[arg(
+        long = "proxy-ask-method",
+        value_name = "METHOD",
+        value_delimiter = ','
+    )]
+    pub(crate) proxy_ask_methods: Vec<String>,
+    /// Allowed path prefixes for the proposed proxy profile (repeatable, e.g. `/v1`).
+    #[arg(long = "proxy-path-prefix", value_name = "PATH")]
+    pub(crate) proxy_path_prefixes: Vec<String>,
+    /// Optional per-minute rate limit (`1..=600`) for the proposed proxy profile.
+    #[arg(long)]
+    pub(crate) proxy_rate: Option<u32>,
+    /// Wait this long for the person to decide (e.g. `2m`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub(crate) wait: Option<std::time::Duration>,
+    /// Agent name (default: `$KLAV_AGENT` or the only one).
+    #[arg(long, env = "KLAV_AGENT")]
+    pub(crate) agent: Option<String>,
+    #[command(flatten)]
+    pub(crate) json: JsonFlag,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum AgentCommand {
     /// Register this machine as an agent of an account (agent side). Prints
@@ -557,7 +790,8 @@ pub(crate) enum AgentCommand {
     /// redacted.
     Run(AgentRunArgs),
     /// Write secrets into a new 0600 file, as the agent (agent side; never
-    /// to stdout).
+    /// to stdout). Prefer `klav agent run` (env or `klav.toml`'s `[files]`)
+    /// when the command does not need a standalone file on disk.
     Inject(AgentInjectArgs),
     /// Type a login or card into a browser page, over CDP or through Klav's
     /// extension, as the agent (agent side): the values never come back.
@@ -569,6 +803,10 @@ pub(crate) enum AgentCommand {
     /// with one card (agent side, ADR 0021).
     #[command(subcommand)]
     Task(AgentTaskCommand),
+    /// Ask the person to save or update a secret in Klav without the value
+    /// ever reaching this agent (agent side, ADR 0046).
+    #[command(subcommand, name = "secret-request")]
+    SecretRequest(AgentSecretRequestCommand),
     /// Approve an agent, or change its grant (person side; Touch ID or the
     /// master password).
     Approve(AgentApproveArgs),

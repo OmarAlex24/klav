@@ -19,6 +19,7 @@ pub(crate) mod proxy_preset;
 pub(crate) mod proxy_sandboxes;
 pub(crate) mod run;
 pub(crate) mod sandbox;
+pub(crate) mod secret_request;
 pub(crate) mod skill;
 pub(crate) mod task;
 pub(crate) mod vault;

@@ -43,6 +43,9 @@ pub(crate) async fn agent_cmd(ctx: &mut Ctx, cmd: AgentCommand) -> CliResult<()>
         AgentCommand::Fill(args) => super::agent_actions::fill_cmd(ctx, args).await,
         AgentCommand::Browser(cmd) => super::agent_actions::browser_cmd(ctx, cmd),
         AgentCommand::Task(cmd) => super::task::agent_task_cmd(ctx, cmd).await,
+        AgentCommand::SecretRequest(cmd) => {
+            super::secret_request::agent_secret_request_cmd(ctx, cmd).await
+        }
         AgentCommand::Show { agent, json } => {
             let found = find(ctx, &agent).await?;
             let exposure: Exposure = match ctx.backend().await? {
