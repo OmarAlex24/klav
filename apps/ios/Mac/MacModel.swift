@@ -63,13 +63,59 @@ enum EditorRequest: Identifiable, Equatable {
 struct PasswordPrompt: Identifiable {
     let id: UUID
     /// What it is for ("Approve the request of deploy-bot").
-    let reason: String
+    private(set) var reason: String
+    /// For a value behind the presence gate (ADR 0041 §2.4): what `klavd`
+    /// said the password grants. The reason is worded from it.
+    private(set) var ask: PresenceAskInfo?
+    /// Where it shows; `nil`: over «Change permissions…» while it is open,
+    /// otherwise over the window.
+    let host: PromptHost?
     let retry: (String) async throws -> Void
+    /// Runs once when the prompt goes without an answer (closed, replaced,
+    /// Klav locked): the value's caller stops waiting.
+    let withdrawn: (@MainActor () -> Void)?
 
-    init(id: UUID = UUID(), reason: String, retry: @escaping (String) async throws -> Void) {
+    init(id: UUID = UUID(), reason: String, ask: PresenceAskInfo? = nil, host: PromptHost? = nil,
+         withdrawn: (@MainActor () -> Void)? = nil, retry: @escaping (String) async throws -> Void) {
         self.id = id
         self.reason = reason
+        self.ask = ask
+        self.host = host
+        self.withdrawn = withdrawn
         self.retry = retry
+    }
+
+    /// `klavd` asked again with other words (the setting changed meanwhile).
+    mutating func update(ask: PresenceAskInfo) {
+        self.ask = ask
+        reason = PresenceWords.reason(ask)
+    }
+}
+
+/// Where a master-password prompt shows. macOS shows no second sheet from
+/// a window under a sheet, so a prompt asked from a sheet shows over it.
+enum PromptHost: Equatable {
+    case window
+    case grantSheet
+    case editor
+    case settings
+    case deleteCopy
+}
+
+/// Resumes a value's caller once, whether the password window answers or
+/// goes away.
+@MainActor
+private final class Waiting<T: Sendable> {
+    private var continuation: CheckedContinuation<T, Error>?
+
+    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
+
+    @discardableResult
+    func resume(_ result: Result<T, Error>) -> Bool {
+        guard let continuation else { return false }
+        self.continuation = nil
+        continuation.resume(with: result)
+        return true
     }
 }
 
@@ -109,7 +155,16 @@ final class MacModel: ObservableObject, RequestsModel {
     @Published var editor: EditorRequest?
     /// The item waiting for «Move to the trash» to be confirmed.
     @Published var trashing: ItemInfo?
-    @Published var passwordPrompt: PasswordPrompt?
+    @Published var passwordPrompt: PasswordPrompt? {
+        didSet {
+            // Replaced or closed without an answer: its caller stops
+            // waiting (a value's prompt also frees the held connection).
+            if let old = oldValue, old.id != passwordPrompt?.id { old.withdrawn?() }
+        }
+    }
+    /// What the lock screen's master password opens (ADR 0041 §2.4), read
+    /// on the held connection the password goes to. `nil` with the gate off.
+    @Published private(set) var unlockQuestion: UnlockQuestionInfo?
     /// The app menu's «Uninstall Klav from this Mac…» opens its sheet.
     @Published var uninstalling = false
     /// What Activity shows when «Open in the log» opened it.
@@ -248,7 +303,8 @@ final class MacModel: ObservableObject, RequestsModel {
                                     deviceName: deviceName)
             }
             // klavd opens the vault (and offers Touch ID from now on).
-            try engine.unlock(password: password)
+            // The app asked no question about a window, so it opens none.
+            _ = try engine.unlock(password: password, shown: nil)
             return kit
         }.value
         if !stepDecided { agentsStepPending = true }
@@ -417,14 +473,45 @@ final class MacModel: ObservableObject, RequestsModel {
     func unlockWithTouchID() async throws {
         unlocking = true
         defer { unlocking = false }
-        try await run { try $0.unlock(password: nil) }
-        opened()
+        let outcome = try await run { try $0.unlock(password: nil, shown: nil) }
+        opened(outcome, typed: false)
     }
 
+    /// `shown`: what the lock screen said the password opens, from
+    /// `unlockQuestion` (own choice 34): `klavd` opens only that.
     func unlock(password: String) async throws {
         unlocking = true
         defer { unlocking = false }
-        try await run { try $0.unlock(password: password) }
+        let shown = unlockQuestion.flatMap { $0.gate ? $0.lasts?.window : nil }
+        let outcome = try await run { try $0.unlock(password: password, shown: shown) }
+        opened(outcome, typed: true)
+    }
+
+    /// Reads what the lock screen's password opens, with the gate on. It
+    /// opens the held connection the password then goes to.
+    func readUnlockQuestion() async {
+        guard info?.presenceGate == true else {
+            unlockQuestion = nil
+            return
+        }
+        unlockQuestion = try? await run { try $0.unlockQuestion() }
+    }
+
+    private func opened(_ outcome: UnlockOutcome, typed: Bool) {
+        unlockQuestion = nil
+        var said: [String] = []
+        if outcome.alreadyUnlocked {
+            // ADR 0041 Q-N1.
+            said.append(typed
+                ? String(localized: "Klav was already unlocked elsewhere. Your master password still counted as this app’s confirmation.")
+                : String(localized: "Klav was already unlocked elsewhere; this unlock gave this app nothing. If you didn’t unlock it, lock Klav."))
+        }
+        if outcome.passkeySettingReset {
+            // Q-N3: said once, by the unlock that found the old file.
+            said.append(String(localized: "Klav no longer reads your old passkey setting: passkeys now ask every time. Choose again in the extension’s settings."))
+        }
+        said += outcome.warnings
+        if !said.isEmpty { show(Toast(text: said.joined(separator: " "), seconds: 10)) }
         opened()
     }
 
@@ -548,6 +635,69 @@ final class MacModel: ObservableObject, RequestsModel {
 
     // MARK: Presence
 
+    /// A value the presence gate may ask for (ADR 0041 §2.4). With Touch ID,
+    /// `klavd` shows its own dialog. Without it, `klavd` answers
+    /// `PresenceRequired`: the app asks for the master password in its own
+    /// sheet, over `host`, and `withPassword` sends it on the connection
+    /// that got the ask. This waits for the sheet's answer, and throws
+    /// `CancellationError` when the sheet goes without one. `onAsk` runs as
+    /// the sheet is set up (the menu bar opens the window it shows in).
+    func value<T: Sendable>(host: PromptHost = .window, onAsk: (@MainActor () -> Void)? = nil,
+                            _ plain: @escaping @Sendable (MacEngine) throws -> T,
+                            withPassword: @escaping @Sendable (MacEngine, String) throws -> T) async throws -> T {
+        do {
+            return try await run(plain)
+        } catch KlavError.PresenceRequired(let ask) {
+            let engine = engine
+            return try await withCheckedThrowingContinuation { continuation in
+                let waiting = Waiting(continuation)
+                let id = UUID()
+                passwordPrompt = PasswordPrompt(
+                    id: id, reason: PresenceWords.reason(ask), ask: ask, host: host,
+                    withdrawn: {
+                        // Nothing answered: the held connection takes other
+                        // values again (off the main thread: it may wait).
+                        if waiting.resume(.failure(CancellationError())) {
+                            Task.detached { engine.presenceCancel() }
+                        }
+                    }
+                ) { [weak self] password in
+                    guard let self else { return }
+                    guard self.passwordPrompt?.id == id else { throw CancellationError() }
+                    do {
+                        let value = try await self.run { try withPassword($0, password) }
+                        waiting.resume(.success(value))
+                        if self.passwordPrompt?.id == id { self.passwordPrompt = nil }
+                    } catch KlavError.PresenceRequired(let next) {
+                        // Asked again with other words: the sheet shows them.
+                        if self.passwordPrompt?.id == id { self.passwordPrompt?.update(ask: next) }
+                        throw KlavError.PresenceRequired(ask: next)
+                    }
+                }
+                onAsk?()
+            }
+        }
+    }
+
+    /// The presence setting, read again whenever Settings shows it.
+    func presenceSetting() async throws -> PresenceSetting {
+        try await run { try $0.presenceWindow() }
+    }
+
+    /// Changes the presence setting: tightening asks nothing, loosening asks
+    /// for Touch ID in `klavd`, or the master password over Settings.
+    func setPresenceSetting(_ setting: PresenceSetting, done: @escaping @MainActor (PresenceSetting) -> Void) async throws {
+        try await withPresenceResult(PresenceWords.loosening(setting), host: .settings) { engine, password in
+            try engine.setPresenceWindow(window: setting, password: password)
+        } done: { done($0) }
+    }
+
+    /// Closes a master-password prompt shown over `host` (its window or
+    /// sheet went away).
+    func withdrawPrompt(over host: PromptHost) {
+        if passwordPrompt?.host == host { passwordPrompt = nil }
+    }
+
     /// Runs an action that klavd confirms with Touch ID; when Touch ID
     /// cannot (a Mac without it, or turned off), asks for the master
     /// password and runs it again with it. `done` runs after either.
@@ -580,7 +730,7 @@ final class MacModel: ObservableObject, RequestsModel {
 
     /// `withPresence` for an action whose answer the caller needs (the
     /// report of a signed grant change): `done` gets it.
-    func withPresenceResult<T: Sendable>(_ reason: String,
+    func withPresenceResult<T: Sendable>(_ reason: String, host: PromptHost? = nil,
                                          _ action: @escaping @Sendable (MacEngine, String?) throws -> T,
                                          done: @escaping @MainActor (T) -> Void) async throws {
         let value: T
@@ -588,7 +738,7 @@ final class MacModel: ObservableObject, RequestsModel {
             value = try await run { try action($0, nil) }
         } catch let error as KlavError where error.wantsPassword {
             let id = UUID()
-            passwordPrompt = PasswordPrompt(id: id, reason: reason) { [weak self] password in
+            passwordPrompt = PasswordPrompt(id: id, reason: reason, host: host) { [weak self] password in
                 guard let self else { return }
                 guard self.passwordPrompt?.id == id else { throw CancellationError() }
                 let value = try await self.run { try action($0, password) }
@@ -851,7 +1001,7 @@ final class MacModel: ObservableObject, RequestsModel {
         self.toast = toast
         let id = toast.id
         Task {
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(toast.seconds))
             if self.toast?.id == id { self.toast = nil }
         }
     }

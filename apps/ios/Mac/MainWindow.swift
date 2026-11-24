@@ -459,6 +459,13 @@ struct LockScreen: View {
                         .buttonStyle(PrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
                         .disabled(password.isEmpty || model.unlocking)
+                    // ADR 0041 §2.4: what the typed password opens, said
+                    // before it is typed; klavd opens only that.
+                    if let words = model.unlockQuestion?.words {
+                        Text(words)
+                            .font(.ui(12)).foregroundStyle(Palette.gris)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 if let problem { Notice(text: problem) }
                 Spacer()
@@ -471,6 +478,9 @@ struct LockScreen: View {
             .background(Palette.papel)
         }
         .onAppear { focused = !model.touchIDReady }
+        .task(id: model.info?.presenceGate == true && (showPassword || !model.touchIDReady)) {
+            await model.readUnlockQuestion()
+        }
     }
 
     private func touchID() async {

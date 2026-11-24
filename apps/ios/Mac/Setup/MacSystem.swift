@@ -31,7 +31,8 @@ struct InstallPaths {
         let env = ProcessInfo.processInfo.environment
         var helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
         var linkDirectory = URL(fileURLWithPath: "/usr/local/bin")
-        var userHome = FileManager.default.homeDirectoryForCurrentUser
+        // The account record's home, not `HOME` (ADR 0041 §1.2).
+        var userHome = (try? KlavHome.accountHome()) ?? FileManager.default.homeDirectoryForCurrentUser
         #if DEBUG
         if let dir = env["KLAV_HELPERS_DIR"], !dir.isEmpty { helpers = URL(fileURLWithPath: dir) }
         if let dir = env["KLAV_CLI_LINK_DIR"], !dir.isEmpty { linkDirectory = URL(fileURLWithPath: dir) }

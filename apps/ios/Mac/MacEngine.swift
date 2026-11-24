@@ -9,7 +9,11 @@ import Foundation
 /// gives the screenshots a vault without a `klavd`.
 protocol MacEngine: VaultEngine {
     func status() -> DaemonInfo
-    func unlock(password: String?) throws
+    /// What the unlock's question may say (ADR 0041 §2.4), read on the
+    /// held connection the password then goes to.
+    func unlockQuestion() throws -> UnlockQuestionInfo
+    /// `shown`: the window the question said a typed password opens.
+    func unlock(password: String?, shown: PresenceSetting?) throws -> UnlockOutcome
     func lock() throws
     func shutdown() throws
     func decideApprovalWithPassword(id: String, approve: Bool, leaseMinutes: UInt32, requestDigest: String,
@@ -68,6 +72,18 @@ protocol MacEngine: VaultEngine {
     // never went up wait, unless `discardUnsent` («Delete anyway», Q3).
     func deleteCopyCheck() throws -> SignOutCheck
     func deleteThisCopy(discardUnsent: Bool) throws
+
+    // The presence gate (ADR 0041, layer 5): the setting, only while
+    // unlocked (Q-N2); and each value again with the master password, as
+    // the answer to `PresenceRequired`, on the connection that got it.
+    func presenceWindow() throws -> PresenceSetting
+    func setPresenceWindow(window: PresenceSetting, password: String?) throws -> PresenceSetting
+    func presenceCancel()
+    func fieldValueWithPassword(id: String, field: String, password: String) throws -> String
+    func notesWithPassword(id: String, password: String) throws -> String?
+    func totpWithPassword(id: String, password: String) throws -> TotpInfo
+    func previousPasswordWithPassword(id: String, index: UInt32, password: String) throws -> String
+    func generatedValueWithPassword(createdAt: Int64, password: String) throws -> String
 }
 
 extension DaemonEngine: MacEngine {}
@@ -91,6 +107,20 @@ extension KlavError {
         case .PasswordRequired: return String(localized: "Enter the master password.")
         case .NotFound(let message): return String(localized: "Not found: \(message)")
         case .Conflict: return String(localized: "The item changed on another device. Sync and try again.")
+        // ADR 0041 §2.4. The password window handles `PresenceRequired`;
+        // this is what is left when it can't.
+        case .PresenceRequired: return String(localized: "Klav needs the master password to show this.")
+        case .PresenceBusy(let passwordCheck, let inThisApp, _):
+            if passwordCheck {
+                return String(localized: "Klav is checking another master password. Try again in a moment.")
+            }
+            if inThisApp {
+                return String(localized: "Klav is already confirming something else in this app. Finish that first.")
+            }
+            return String(localized: "Another program is asking for Touch ID in Klav. Try again once that prompt closes.")
+        case .NotSupported: return String(localized: "Klav’s background service doesn’t offer this. Update Klav.")
+        case .ChangedWhileConfirming:
+            return String(localized: "The item changed while you confirmed, so Klav didn’t hand anything out. Try again.")
         case .SiteMismatch: return String(localized: "This item isn’t saved for this site.")
         case .Denied(let message): return String(localized: "Not allowed: \(message)")
         case .DaemonUnavailable: return String(localized: "Klav’s background service isn’t running.")

@@ -570,6 +570,7 @@ struct SetupView: View {
 
 /// Settings › This Mac.
 struct MacSettingsView: View {
+    @EnvironmentObject private var model: MacModel
     #if DEBUG
     @State private var tab = Snapshot.settingsTab ?? "mac"
     #else
@@ -586,6 +587,12 @@ struct MacSettingsView: View {
             AccountSettingsView()
                 .tabItem { Label("Account", systemImage: "person.crop.circle") }
                 .tag("account")
+            // ADR 0041: only from a klavd with the presence gate on.
+            if model.info?.presenceGate == true {
+                PresenceSettingsView()
+                    .tabItem { Label("Presence", systemImage: "touchid") }
+                    .tag("presence")
+            }
         }
     }
 }

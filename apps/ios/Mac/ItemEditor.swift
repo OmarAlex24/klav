@@ -131,6 +131,12 @@ struct ItemEditorSheet: View {
         }
         .frame(width: 560, height: 640)
         .background(Palette.papel)
+        // The master password for the notes (ADR 0041): over the editor,
+        // which is itself a sheet of the window.
+        .sheet(item: model.passwordPromptHere(.editor)) { prompt in
+            PasswordSheet(prompt: prompt).environmentObject(model)
+        }
+        .onDisappear { model.withdrawPrompt(over: .editor) }
         .sheet(isPresented: Binding(get: { generatingFor != nil }, set: { if !$0 { generatingFor = nil } })) {
             GeneratorSheet(site: generatorSite) { password in
                 if let name = generatingFor {
@@ -308,9 +314,11 @@ struct ItemEditorSheet: View {
     private func loadNotes(_ id: String) {
         Task {
             do {
-                let current = try await model.run { try $0.notes(id: id) } ?? ""
+                let current = try await model.value(host: .editor, { try $0.notes(id: id) },
+                                                    withPassword: { try $0.notesWithPassword(id: id, password: $1) }) ?? ""
                 originalNotes = current
                 notes = current
+            } catch is CancellationError {
             } catch {
                 problem = describe(error)
             }

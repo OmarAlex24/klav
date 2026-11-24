@@ -12,7 +12,9 @@ import Foundation
 /// cannot; `deleted-unsent` is done with two generated passwords that never
 /// went up; `-KlavSampleFix YES` has «Fix my reused passwords» running;
 /// `-KlavSampleKeysLeft YES` has old-scraper revoked with keys left to
-/// change (ADR 0033, amendment of 2026-11-10).
+/// change (ADR 0033, amendment of 2026-11-10); `-KlavSamplePresence YES`
+/// has the presence gate on (ADR 0041): with `-KlavSampleNoTouchID YES`,
+/// values ask for the master password (`sample`) until its window opens.
 final class SampleEngine: MacEngine, @unchecked Sendable {
     private let mutex = NSLock()
     private var unlocked: Bool
@@ -23,6 +25,11 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     private var agentList: [AgentItem]
     private var breachCheck = false
     private let touchID: Bool
+    /// The presence gate (ADR 0041), its setting, and until when the app's
+    /// window is open (`.distantFuture`: until Klav locks).
+    var presenceGate: Bool
+    private var presenceSetting: PresenceSetting = .fiveMinutes
+    private var windowUntil: Date = .distantPast
     /// «Pause agents»: `-KlavSamplePaused YES` starts with every agent paused.
     private var pauses: [PauseInfo]
     /// The last event this Mac verified (`klav log verify`).
@@ -91,6 +98,7 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
         loggedIn = !(signedOut ?? defaults.bool(forKey: "KlavSampleSignedOut"))
         unlocked = loggedIn && !(locked ?? defaults.bool(forKey: "KlavSampleLocked"))
         self.touchID = touchID ?? !defaults.bool(forKey: "KlavSampleNoTouchID")
+        presenceGate = defaults.bool(forKey: "KlavSamplePresence")
         let now = Self.now
         let deletionState = deletion ?? defaults.string(forKey: "KlavSampleDeletion")
         deletionSupport = deletionState != "unsupported"
@@ -238,18 +246,88 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
                               return shown
                           },
                           revocationsUnreadable: unlocked && recordUnreadable,
-                          revocationsNewer: unlocked && recordUnreadable && recordNewer)
+                          revocationsNewer: unlocked && recordUnreadable && recordNewer,
+                          presenceGate: presenceGate)
     }
 
-    func unlock(password: String?) throws {
+    func unlockQuestion() throws -> UnlockQuestionInfo {
+        mutex.lock(); defer { mutex.unlock() }
+        guard presenceGate else {
+            return UnlockQuestionInfo(gate: false, elsewhere: false, key: .connection, declared: false, lasts: nil)
+        }
+        let lasts: PresenceLasts? = switch presenceSetting {
+        case .always: nil
+        case .fiveMinutes, .whileUnlocked: .untilLock
+        }
+        return UnlockQuestionInfo(gate: true, elsewhere: false, key: .connection, declared: true, lasts: lasts)
+    }
+
+    func unlock(password: String?, shown: PresenceSetting?) throws -> UnlockOutcome {
         Thread.sleep(forTimeInterval: 0.6)
         guard loggedIn else { throw KlavError.NotLoggedIn }
         if password == nil && !touchID { throw KlavError.BiometryUnavailable(message: "no Touch ID") }
         if let password, password != "sample" { throw KlavError.WrongCredentials }
-        mutex.lock(); unlocked = true; mutex.unlock()
+        mutex.lock(); defer { mutex.unlock() }
+        let already = unlocked
+        unlocked = true
+        // The held connection: an unlock of its own holds it until Klav
+        // locks, unless the setting is Always.
+        if presenceGate, presenceSetting != .always, !already, password == nil || shown == .whileUnlocked {
+            windowUntil = .distantFuture
+        }
+        return UnlockOutcome(alreadyUnlocked: already, passkeySettingReset: false, warnings: [])
     }
 
-    func lock() throws { mutex.lock(); unlocked = false; mutex.unlock() }
+    func lock() throws { mutex.lock(); unlocked = false; windowUntil = .distantPast; mutex.unlock() }
+
+    // MARK: Presence (ADR 0041)
+
+    func presenceWindow() throws -> PresenceSetting {
+        try locked {
+            guard presenceGate else { throw KlavError.NotSupported(message: "the presence gate is off") }
+            return presenceSetting
+        }
+    }
+
+    func setPresenceWindow(window: PresenceSetting, password: String?) throws -> PresenceSetting {
+        try locked {
+            guard presenceGate else { throw KlavError.NotSupported(message: "the presence gate is off") }
+            if Self.rank(window) > Self.rank(presenceSetting) {
+                if password == nil && !touchID { throw KlavError.BiometryUnavailable(message: "turned off") }
+                if let password, password != "sample" { throw KlavError.WrongCredentials }
+            }
+            presenceSetting = window
+            if window == .always { windowUntil = .distantPast }
+            return window
+        }
+    }
+
+    func presenceCancel() {}
+
+    private static func rank(_ setting: PresenceSetting) -> Int {
+        switch setting {
+        case .always: 0
+        case .fiveMinutes: 1
+        case .whileUnlocked: 2
+        }
+    }
+
+    /// A value through the gate: with it on and no Touch ID, the master
+    /// password until the window opens (inside `locked`).
+    private func present(_ kind: PresenceValueKind, _ title: String?, password: String?) throws {
+        guard presenceGate, !touchID, presenceSetting == .always || windowUntil < Date() else { return }
+        guard let password else {
+            let lasts: PresenceLasts? = switch presenceSetting {
+            case .always: nil
+            case .fiveMinutes, .whileUnlocked: .untilLock
+            }
+            throw KlavError.PresenceRequired(ask: PresenceAskInfo(
+                key: .connection, window: presenceSetting, terminal: nil, declared: true, lasts: lasts,
+                value: lasts == nil ? PresenceValueInfo(kind: kind, title: title, count: nil) : nil))
+        }
+        guard password == "sample" else { throw KlavError.WrongCredentials }
+        if presenceSetting != .always { windowUntil = .distantFuture }
+    }
     func shutdown() throws {}
 
     // MARK: Deleting the account (ADR 0037)
@@ -381,8 +459,17 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     }
 
     func fieldValue(id: String, field: String) throws -> String {
+        try fieldValue(id: id, field: field, password: nil)
+    }
+
+    func fieldValueWithPassword(id: String, field: String, password: String) throws -> String {
+        try fieldValue(id: id, field: field, password: password)
+    }
+
+    private func fieldValue(id: String, field: String, password: String?) throws -> String {
         try locked {
             let s = try sample(id)
+            try present(.show, s.info.title, password: password)
             if let plain = s.fields.first(where: { $0.name == field })?.value { return plain }
             switch field {
             case "password": return "sample-\(s.info.title.lowercased().filter(\.isLetter))-Vx7q-29Lm"
@@ -393,11 +480,25 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
         }
     }
 
-    func notes(id: String) throws -> String? { try locked { try sample(id).notes } }
+    func notes(id: String) throws -> String? { try notes(id: id, password: nil) }
+    func notesWithPassword(id: String, password: String) throws -> String? { try notes(id: id, password: password) }
 
-    func totp(id: String) throws -> TotpInfo {
+    private func notes(id: String, password: String?) throws -> String? {
         try locked {
-            guard try sample(id).totp else { throw KlavError.NotFound(message: "no code") }
+            let s = try sample(id)
+            try present(.show, s.info.title, password: password)
+            return s.notes
+        }
+    }
+
+    func totp(id: String) throws -> TotpInfo { try totp(id: id, password: nil) }
+    func totpWithPassword(id: String, password: String) throws -> TotpInfo { try totp(id: id, password: password) }
+
+    private func totp(id: String, password: String?) throws -> TotpInfo {
+        try locked {
+            let s = try sample(id)
+            guard s.totp else { throw KlavError.NotFound(message: "no code") }
+            try present(.code, s.info.title, password: password)
             let seconds = UInt64(Date().timeIntervalSince1970)
             let step = seconds / 30
             let code = String(format: "%06d", (step &* 7919 &+ UInt64(abs(id.hashValue % 1000))) % 1_000_000)
@@ -500,15 +601,34 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
         }
     }
 
-    func previousPassword(id: String, index: UInt32) throws -> String { try locked { "sample-old-Pq83-zz1" } }
+    func previousPassword(id: String, index: UInt32) throws -> String { try previous(id: id, password: nil) }
+
+    func previousPasswordWithPassword(id: String, index: UInt32, password: String) throws -> String {
+        try previous(id: id, password: password)
+    }
+
+    private func previous(id: String, password: String?) throws -> String {
+        try locked {
+            try present(.previous, try sample(id).info.title, password: password)
+            return "sample-old-Pq83-zz1"
+        }
+    }
+
     func resolvePending(id: String, accept: Bool) throws -> PasswordHistoryInfo { try passwordHistory(id: id) }
     func recordGenerated(value: String, host: String?) throws -> Int64 { Self.now }
     func generatorHistory() throws -> [GeneratedEntryInfo] { try locked { unsent } }
-    func generatedValue(createdAt: Int64) throws -> String {
+    func generatedValue(createdAt: Int64) throws -> String { try generatedValue(createdAt: createdAt, password: nil) }
+
+    func generatedValueWithPassword(createdAt: Int64, password: String) throws -> String {
+        try generatedValue(createdAt: createdAt, password: password)
+    }
+
+    private func generatedValue(createdAt: Int64, password: String?) throws -> String {
         try locked {
             guard unsent.contains(where: { $0.createdAt == createdAt }) else {
                 throw KlavError.NotFound(message: "none")
             }
+            try present(.generated, nil, password: password)
             return "sample-generated-Tq7v-82kd"
         }
     }

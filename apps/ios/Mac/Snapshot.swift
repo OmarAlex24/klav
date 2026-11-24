@@ -40,6 +40,11 @@ import AppKit
 ///                                 its security checks; unregistered: every
 ///                                 state and a revocation the log didn't show
 ///   -KlavSheet revokeAllSandboxes «Revoke all» in Development › Sandboxes
+///   -KlavSheet presenceValue      with `-KlavSamplePresence YES`
+///                                 `-KlavSampleNoTouchID YES`, the master
+///                                 password's sheet for `-KlavItem`'s password
+///                                 (ADR 0041); Settings › Presence is
+///                                 `-KlavSettingsTab presence`
 enum Snapshot {
     static func configure() {
         switch UserDefaults.standard.string(forKey: "KlavAppearance") {
@@ -92,6 +97,13 @@ enum Snapshot {
         case "revokeAllSandboxes": model.revokingAllSandboxes = true
         case "newItem": model.editor = .create(.login)
         case "editItem": if let item = defaults.string(forKey: "KlavItem") { model.editor = .edit(item) }
+        case "presenceValue":
+            if let item = defaults.string(forKey: "KlavItem") {
+                Task {
+                    _ = try? await model.value({ try $0.fieldValue(id: item, field: "password") },
+                                               withPassword: { try $0.fieldValueWithPassword(id: item, field: "password", password: $1) })
+                }
+            }
         default: break
         }
         if defaults.bool(forKey: "KlavSetupAgents") { model.agentsStepPending = true }
