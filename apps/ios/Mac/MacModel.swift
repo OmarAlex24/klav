@@ -96,6 +96,7 @@ final class MacModel: ObservableObject, RequestsModel {
     /// The account's agents by ID: the pairing words on the cards.
     @Published private(set) var knownAgents: [String: AgentItem] = [:]
     @Published private(set) var tasks: [TaskItem] = []
+    @Published private(set) var secretRequests: [SecretRequestItem] = []
     /// What the person changed on each pending task card, by task ID.
     @Published private(set) var taskEdits: [String: TaskEdits] = [:]
     @Published private(set) var toast: Toast?
@@ -258,9 +259,12 @@ final class MacModel: ObservableObject, RequestsModel {
         self.accounts = accounts
     }
 
-    /// Waiting for the person: registrations, tasks to decide, approvals.
+    /// Waiting for the person: registrations, secret requests, tasks to decide, approvals.
     var pendingCount: Int {
-        approvals.count + registrations.count + tasks.filter { $0.status == "pending" }.count
+        approvals.count
+            + registrations.count
+            + tasks.filter { $0.status == "pending" }.count
+            + secretRequests.filter { $0.status == "pending" }.count
     }
 
     // MARK: Engine calls
@@ -349,6 +353,7 @@ final class MacModel: ObservableObject, RequestsModel {
         registrations = []
         knownAgents = [:]
         tasks = []
+        secretRequests = []
         selectedItem = nil
         lastAgentUse = nil
         closeSheets()
@@ -385,13 +390,15 @@ final class MacModel: ObservableObject, RequestsModel {
         lastRequests = Date()
         Task {
             do {
-                let (approvals, agents, tasks) = try await run { engine in
-                    (try engine.approvals(), try engine.agents(), try engine.tasks())
+                let (approvals, agents, tasks, secretReqs) = try await run { engine in
+                    let sr = (try? engine.secretRequests()) ?? []
+                    return (try engine.approvals(), try engine.agents(), try engine.tasks(), sr)
                 }
                 self.approvals = approvals
                 registrations = agents.filter { $0.status == "pending" }
                 knownAgents = Dictionary(agents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 self.tasks = tasks
+                self.secretRequests = secretReqs.filter { $0.status == "pending" }
                 let live = Set(tasks.map(\.id))
                 taskEdits = taskEdits.filter { live.contains($0.key) }
                 notifyNew()
@@ -669,6 +676,38 @@ final class MacModel: ObservableObject, RequestsModel {
         taskEdits[card.id] = edits
     }
 
+    /// Fulfills a pending secret request (ADR 0046). Granting `klav-proxy`
+    /// access asks for Touch ID (or master password) through `klavd` (T239).
+    func fulfillSecretRequest(_ card: SecretRequestItem, input: SecretRequestFulfillInput) async throws -> SecretRequestFulfillOutput {
+        let id = card.id
+        let saved = Box<SecretRequestFulfillOutput?>(nil)
+        if input.grantProxy {
+            try await withPresence(String(localized: "Save and grant credential proxy for \(card.agent)")) { engine, password in
+                saved.value = try engine.fulfillSecretRequestWithPassword(id: id, input: input, password: password)
+            } done: { [weak self] in
+                self?.secretRequests.removeAll { $0.id == id }
+                self?.show(Toast(text: String(localized: "Saved to Klav.")))
+            }
+            guard let output = saved.value else { throw RequestError.notConfirmed }
+            return output
+        }
+        let output = try await run { try $0.fulfillSecretRequest(id: id, input: input) }
+        secretRequests.removeAll { $0.id == id }
+        show(Toast(text: String(localized: "Saved to Klav.")))
+        changed()
+        return output
+    }
+
+    /// Denies a pending secret request with a signed decision.
+    func denySecretRequest(_ card: SecretRequestItem) async throws {
+        let id = card.id
+        let digest = card.proposalDigest
+        _ = try await run { try $0.denySecretRequest(id: id, proposalDigest: digest) }
+        secretRequests.removeAll { $0.id == id }
+        show(Toast(text: String(localized: "Secret request denied.")))
+        changed()
+    }
+
     /// Signs the agent's grant for these projects (the CLI's default policy).
     func approve(_ agent: AgentItem, projects: [String], expiresInDays: UInt32?) async throws {
         let id = agent.id, words = agent.pairingWords, name = agent.name
@@ -827,6 +866,9 @@ final class MacModel: ObservableObject, RequestsModel {
         }
         for t in tasks where t.status == "pending" && !seenRequests.contains(t.id) {
             fresh.append((t.id, t.agent, String(localized: "Asks to start the task “\(t.task)”")))
+        }
+        for sr in secretRequests where sr.status == "pending" && !seenRequests.contains(sr.id) {
+            fresh.append((sr.id, sr.agent, String(localized: "Asks you to save a secret in Klav")))
         }
         for (id, _, _) in fresh { seenRequests.insert(id) }
         guard !first, !fresh.isEmpty, notificationsAsked else { return }

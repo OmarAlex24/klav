@@ -207,8 +207,9 @@ struct ClientWarning: Identifiable, Equatable {
                                          text: String(localized: "Klav’s entry in \(row.name) changed.")))
             }
         }
-        let bundled = skill?.bundled.version
-        for copy in skill?.copies ?? [] where copy.state == "edited" && !copy.kept(over: bundled) {
+        for copy in skill?.copies ?? [] {
+            let bundled = skill?.bundledVersion(for: copy)
+            guard copy.state == "edited" && !copy.kept(over: bundled) else { continue }
             let place = shortPath(copy.path)
             out.append(ClientWarning(kind: .skillEdited, target: copy.path,
                                      text: copy.version != bundled

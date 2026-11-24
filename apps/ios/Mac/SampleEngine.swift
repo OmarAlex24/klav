@@ -19,6 +19,7 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     private var loggedIn: Bool
     private var approvalList: [ApprovalItem]
     private var taskList: [TaskItem]
+    private var secretRequestList: [SecretRequestItem] = []
     private var agentList: [AgentItem]
     private var breachCheck = false
     private let touchID: Bool
@@ -554,6 +555,65 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
             var task = taskList.remove(at: index)
             task.status = "ended"
             return task
+        }
+    }
+
+    func secretRequests() throws -> [SecretRequestItem] { try locked { secretRequestList } }
+
+    func fulfillSecretRequest(id: String, input: SecretRequestFulfillInput) throws -> SecretRequestFulfillOutput {
+        try fulfillSecretRequestWithPassword(id: id, input: input, password: nil)
+    }
+
+    func fulfillSecretRequestWithPassword(id: String, input: SecretRequestFulfillInput,
+                                          password: String?) throws -> SecretRequestFulfillOutput {
+        try presence(input.grantProxy, password)
+        return try locked {
+            guard let index = secretRequestList.firstIndex(where: { $0.id == id }) else {
+                throw KlavError.NotFound(message: id)
+            }
+            var card = secretRequestList.remove(at: index)
+            card.status = "fulfilled"
+            card.decidedAt = Self.now
+            let title = input.title ?? card.title ?? card.targetTitle ?? "Secret"
+            let item = ItemInfo(
+                id: card.targetItemId ?? UUID().uuidString,
+                vaultId: input.vault ?? card.vaultId ?? "v-personal",
+                vault: "Personal",
+                projectId: input.project ?? card.projectId ?? "p-general",
+                project: "General",
+                kind: card.kind ?? card.targetKind ?? "api_key",
+                title: title,
+                username: nil,
+                urls: input.urls ?? [],
+                pendingUrls: [],
+                tags: [],
+                version: 1,
+                updatedAt: Self.now,
+                trashed: false,
+                reference: "klav://Personal/General/\(title)",
+                hasPasskey: false,
+                passkeyRpId: nil,
+                passkeyUser: nil
+            )
+            return SecretRequestFulfillOutput(
+                card: card,
+                item: item,
+                inGrant: true,
+                proxyProfile: input.grantProxy ? card.proxyProposal?.profile : nil,
+                proxyWarnings: []
+            )
+        }
+    }
+
+    func denySecretRequest(id: String, proposalDigest: String) throws -> SecretRequestItem {
+        try locked {
+            guard let index = secretRequestList.firstIndex(where: { $0.id == id }) else {
+                throw KlavError.NotFound(message: id)
+            }
+            var card = secretRequestList.remove(at: index)
+            card.status = "denied"
+            card.decidedAt = Self.now
+            return card
         }
     }
 

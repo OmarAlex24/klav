@@ -13,6 +13,8 @@ protocol RequestsModel: ObservableObject {
     func editTask(_ card: TaskItem, _ change: (inout TaskEdits) -> Void)
     func decideTask(_ card: TaskItem, approve: Bool) async throws
     func endTask(_ card: TaskItem) async throws
+    func fulfillSecretRequest(_ card: SecretRequestItem, input: SecretRequestFulfillInput) async throws -> SecretRequestFulfillOutput
+    func denySecretRequest(_ card: SecretRequestItem) async throws
     func approve(_ agent: AgentItem, projects: [String], expiresInDays: UInt32?) async throws
     func deny(_ agent: AgentItem) async throws
     /// The projects an agent can be given.
@@ -702,4 +704,273 @@ extension ApprovalItem {
 
 extension TaskItem {
     var decisionKey: String { "\(id):\(requestDigest)" }
+}
+
+extension SecretRequestItem {
+    var decisionKey: String { "\(id):\(proposalDigest)" }
+}
+
+/// An agent asks the person to save a missing secret (or update a secret field
+/// of an existing item) via a hidden input on their device (ADR 0046).
+///
+/// Security invariants enforced here:
+/// - The entered secret stays only in `@State` and is cleared on save, deny,
+///   or view disappear (never logged).
+/// - T234: agent-suggested `login` URLs stay unchecked by default.
+/// - T235: `setupUrl` is never auto-opened; displays full host + warning and
+///   a punycode/IDN alert when applicable.
+/// - T239: `proxyProposal` toggle is unchecked by default and requires
+///   presence (Touch ID / Face ID / master password) when enabled.
+struct SecretRequestCard<Model: RequestsModel>: View {
+    @EnvironmentObject private var model: Model
+    let card: SecretRequestItem
+    var highlighted = false
+
+    @State private var secret = ""
+    @State private var revealSecret = false
+    @State private var title = ""
+    @State private var selectedProjectId = ""
+    @State private var projects: [ProjectInfo] = []
+    @State private var confirmedUrls: Set<String> = []
+    @State private var grantProxy = false
+    @State private var busy = false
+    @State private var problem: String?
+    @State private var initialized = false
+
+    private var isUpdate: Bool { card.mode == "update" }
+    private var canSave: Bool {
+        card.proposalError == nil && (!isUpdate || card.targetReference != nil)
+    }
+    private var fieldName: String { card.field ?? "api_key" }
+    private var selectedProject: ProjectInfo? {
+        projects.first(where: { $0.id == selectedProjectId })
+    }
+
+    var body: some View {
+        AgentCard(highlighted: highlighted) {
+            AgentMark(text: String(localized: "\(card.agent) asks for a secret"))
+                .accessibilityAddTraits(.isHeader)
+            AgentKey<Model>(agentId: card.agentId)
+
+            if isUpdate {
+                let target = card.targetTitle ?? card.targetReference ?? "?"
+                Text(String(localized: "Replace \(fieldName) on \(target)"))
+                    .font(.ui(14, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.tinta)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let ref = card.targetReference {
+                    Text(ref)
+                        .font(.ui(12, relativeTo: .caption))
+                        .foregroundStyle(Palette.gris)
+                } else {
+                    Notice(text: String(localized: "This item is not in your vault or is in the trash."))
+                }
+                Text("The previous value stays in password history.")
+                    .font(.ui(12, relativeTo: .caption))
+                    .foregroundStyle(Palette.gris)
+            } else {
+                Text(String(localized: "Save a new item (\(card.kind ?? "api_key"))"))
+                    .font(.ui(14, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.tinta)
+            }
+
+            Text("“\(card.reason)”")
+                .font(.ui(13, relativeTo: .footnote))
+                .foregroundStyle(Palette.gris)
+                .fixedSize(horizontal: false, vertical: true)
+            Expires(at: card.expiresAt)
+
+            if let err = card.proposalError {
+                Notice(text: err)
+            }
+
+            if !isUpdate && card.proposalError == nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Title")
+                        .font(.ui(12, .medium, relativeTo: .caption))
+                        .foregroundStyle(Palette.gris)
+                    TextField(String(localized: "Title"), text: $title)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                if !projects.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Project")
+                            .font(.ui(12, .medium, relativeTo: .caption))
+                            .foregroundStyle(Palette.gris)
+                        Picker(String(localized: "Project"), selection: $selectedProjectId) {
+                            ForEach(projects, id: \.id) { project in
+                                Text(projectLabel(project)).tag(project.id)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                }
+
+                // T234: agent-suggested `login` URLs stay unchecked by default.
+                if card.kind == "login", !card.urls.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(String(localized: "Sites suggested by \(card.agent) (unchecked by default):"))
+                            .font(.ui(12, relativeTo: .caption))
+                            .foregroundStyle(Palette.gris)
+                        ForEach(card.urls, id: \.self) { url in
+                            Toggle(isOn: Binding(
+                                get: { confirmedUrls.contains(url) },
+                                set: { checked in
+                                    if checked { confirmedUrls.insert(url) } else { confirmedUrls.remove(url) }
+                                }
+                            )) {
+                                Text(url)
+                                    .font(.ui(12, relativeTo: .caption))
+                                    .foregroundStyle(Palette.tinta)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // T235: never auto-open setupUrl; show full domain + punycode warning.
+            if let setup = card.setupUrl, let url = URL(string: setup.url) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(String(localized: "Link suggested by \(card.agent) — check the domain before opening: \(setup.host)"))
+                        .font(.ui(12, relativeTo: .caption))
+                        .foregroundStyle(Palette.gris)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if setup.hasPunycode {
+                        Notice(text: String(localized: "This domain uses internationalized labels (punycode). Check every character carefully."))
+                    }
+                    Link(String(localized: "Open \(setup.host)"), destination: url)
+                        .font(.ui(13, .medium, relativeTo: .footnote))
+                }
+            }
+
+            if canSave {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(String(localized: "Secret (\(fieldName))"))
+                            .font(.ui(12, .medium, relativeTo: .caption))
+                            .foregroundStyle(Palette.gris)
+                        Spacer()
+                        Button(revealSecret ? String(localized: "Hide") : String(localized: "Show")) {
+                            revealSecret.toggle()
+                        }
+                        .font(.ui(12, relativeTo: .caption))
+                        .buttonStyle(.plain)
+                    }
+                    Group {
+                        if revealSecret {
+                            TextField(card.placeholder ?? "", text: $secret)
+                        } else {
+                            SecureField(card.placeholder ?? "", text: $secret)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            // T239: optional proxy grant, unchecked by default, requires presence.
+            if let proxy = card.proxyProposal, canSave {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(isOn: $grantProxy) {
+                        Text(String(localized: "Also grant to credential proxy (“\(proxy.profile)”)"))
+                            .font(.ui(13, .medium, relativeTo: .footnote))
+                            .foregroundStyle(Palette.tinta)
+                    }
+                    Text("\(proxy.upstream) · \(proxy.methods.joined(separator: ", ")) · \(proxy.pathPrefixes.joined(separator: ", "))")
+                        .font(.ui(12, relativeTo: .caption))
+                        .foregroundStyle(Palette.gris)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
+            }
+
+            if let problem { Notice(text: problem).padding(.top, 4) }
+
+            Flow(spacing: 8) {
+                Button(busy && grantProxy ? model.waitingForPresence : String(localized: "Save to Klav")) {
+                    save()
+                }
+                .buttonStyle(PrimaryButtonStyle(compact: true))
+                .disabled(!canSave || secret.isEmpty)
+
+                Button("Deny") { deny() }
+                    .buttonStyle(SecondaryButtonStyle(compact: true))
+            }
+            .padding(.top, 6)
+        }
+        .disabled(busy)
+        .task(id: card.decisionKey) {
+            if !initialized {
+                initialized = true
+                title = card.title ?? ""
+                if let list = try? await model.agentProjects() {
+                    projects = list
+                    if let wantedProject = card.projectId, list.contains(where: { $0.id == wantedProject }) {
+                        selectedProjectId = wantedProject
+                    } else if let first = list.first {
+                        selectedProjectId = first.id
+                    }
+                }
+            }
+        }
+        .onDisappear {
+            secret = ""
+            revealSecret = false
+        }
+    }
+
+    private func projectLabel(_ project: ProjectInfo) -> String {
+        let shared = card.agentProjects.contains { $0.vaultId == project.vaultId && $0.projectId == project.id }
+        let name = "\(project.vault) / \(project.name)"
+        return shared
+            ? String(localized: "\(name) (shared with \(card.agent))")
+            : String(localized: "\(name) (not shared with \(card.agent))")
+    }
+
+    private func save() {
+        guard !secret.isEmpty else { return }
+        let value = secret
+        let input = SecretRequestFulfillInput(
+            digest: card.proposalDigest,
+            secret: value,
+            vault: isUpdate ? nil : selectedProject?.vaultId,
+            project: isUpdate ? nil : selectedProject?.id,
+            title: isUpdate ? nil : (title.trimmingCharacters(in: .whitespaces).isEmpty ? nil : title.trimmingCharacters(in: .whitespaces)),
+            field: card.field,
+            urls: (!isUpdate && !confirmedUrls.isEmpty) ? Array(confirmedUrls).sorted() : nil,
+            notes: nil,
+            allowDuplicate: false,
+            grantProxy: grantProxy,
+            proxyBaseVersion: nil,
+            everyDeviceUpdated: false,
+            shownWords: nil
+        )
+        busy = true
+        problem = nil
+        Task {
+            do {
+                _ = try await model.fulfillSecretRequest(card, input: input)
+                secret = ""
+                revealSecret = false
+            } catch {
+                problem = describeRequest(error)
+            }
+            busy = false
+        }
+    }
+
+    private func deny() {
+        busy = true
+        problem = nil
+        Task {
+            do {
+                try await model.denySecretRequest(card)
+                secret = ""
+                revealSecret = false
+            } catch {
+                problem = describeRequest(error)
+            }
+            busy = false
+        }
+    }
 }

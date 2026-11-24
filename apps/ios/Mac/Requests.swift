@@ -13,11 +13,14 @@ struct RequestsPane: View {
                        detail: model.pendingCount == 0 ? nil : String(localized: "\(Int64(model.pendingCount)) waiting for you"))
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if model.registrations.isEmpty && model.tasks.isEmpty && model.approvals.isEmpty {
+                    if model.registrations.isEmpty && model.tasks.isEmpty && model.approvals.isEmpty && model.secretRequests.isEmpty {
                         empty
                     }
                     ForEach(model.registrations) { agent in
                         RegistrationCard<MacModel>(agent: agent, warning: model.sameName(as: agent)) { reviewing = agent }
+                    }
+                    ForEach(model.secretRequests, id: \.decisionKey) { sr in
+                        SecretRequestCard<MacModel>(card: sr)
                     }
                     ForEach(model.tasks.filter { $0.status == "pending" }, id: \.decisionKey) { task in
                         PendingTaskCard<MacModel>(card: task)

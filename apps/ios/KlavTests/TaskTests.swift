@@ -120,6 +120,10 @@ extension KlavTests {
 
     func testTaskNotificationsAndWordsInSpanish() {
         XCTAssertEqual(PushRoute(userInfo: ["klav": ["type": "task", "id": "t1"]]), .task("t1"))
+        XCTAssertEqual(PushRoute(userInfo: ["klav": ["type": "secret_request", "id": "sr1"]]), .secretRequest("sr1"))
+        XCTAssertEqual(String(localized: "PUSH_SECRET_REQUEST_TITLE"), "An agent is asking for a secret")
+        XCTAssertEqual(spanish("PUSH_SECRET_REQUEST_TITLE"), "Un agente pide un secreto")
+        XCTAssertFalse(spanish("PUSH_SECRET_REQUEST_BODY").contains("PUSH"))
         XCTAssertEqual(String(localized: "PUSH_TASK_TITLE"), "An agent is asking for a task")
         XCTAssertEqual(spanish("PUSH_TASK_TITLE"), "Un agente pide una tarea")
         XCTAssertFalse(spanish("PUSH_TASK_BODY").contains("PUSH"))

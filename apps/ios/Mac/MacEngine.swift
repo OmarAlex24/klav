@@ -17,6 +17,8 @@ protocol MacEngine: VaultEngine {
     func decideTaskWithPassword(id: String, approve: Bool, choice: TaskChoiceInput?, requestDigest: String,
                                 password: String?) throws -> TaskItem
     func addToTaskWithPassword(approvalId: String, requestDigest: String, password: String?) throws -> TaskItem
+    func fulfillSecretRequestWithPassword(id: String, input: SecretRequestFulfillInput,
+                                          password: String?) throws -> SecretRequestFulfillOutput
     func approveAgentWithPassword(id: String, pairingWords: String, projectIds: [String],
                                   expiresInDays: UInt32?, password: String?) throws -> AgentItem
 

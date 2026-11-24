@@ -1,23 +1,26 @@
 ---
 title: "Connect an agent"
-description: "Connect Claude Code, Claude Desktop, Codex, Cursor or VS Code to Klav with klav client connect, register any other runtime, and keep Klav's skill up to date."
+description: "Connect Claude Code, Claude Desktop, Codex, Cursor, VS Code or Antigravity to Klav with klav client connect, register any other runtime, and keep Klav's skills up to date."
 sidebar:
   order: 2
 ---
 
-This page explains how to give an AI agent access to Klav: connect an agent client with one command, register any other program as an agent, and approve it. It also covers `klav mcp`, the MCP server agents talk to, and Klav's skill, the rules an agent follows.
+This page explains how to give an AI agent access to Klav: connect an agent client with one command, register any other program as an agent, and approve it. It also covers `klav mcp`, the MCP server agents talk to, and Klav's skills, the rules an agent follows.
 
 ## Connect an agent client
 
 `klav client connect` sets up one of these clients on this computer:
 
-| Client | `klav client connect …` | Where Klav adds its MCP entry | Where the skill goes |
+| Client | `klav client connect …` | Where Klav adds its MCP entry | Where the skills go |
 |---|---|---|---|
-| Claude Code | `claude-code` | `~/.claude.json`, through `claude mcp add` | `~/.claude/skills/klav/` |
+| Claude Code | `claude-code` | `~/.claude.json`, through `claude mcp add` | `~/.claude/skills/{klav,klav-migrate}/` |
 | Claude Desktop (macOS) | `claude-desktop` | `~/Library/Application Support/Claude/claude_desktop_config.json` | No skills folder: the rules come with the tools |
-| Codex | `codex` | `~/.codex/config.toml`, through `codex mcp add` when `codex` is installed | `~/.agents/skills/klav/` |
-| Cursor | `cursor` | `~/.cursor/mcp.json` | `~/.agents/skills/klav/` |
-| VS Code | `vscode` | `~/.copilot/mcp-config.json` | `~/.agents/skills/klav/` |
+| Codex | `codex` | `~/.codex/config.toml`, through `codex mcp add` when `codex` is installed | `~/.agents/skills/{klav,klav-migrate}/` |
+| Cursor | `cursor` | `~/.cursor/mcp.json` | `~/.agents/skills/{klav,klav-migrate}/` |
+| VS Code | `vscode` | `~/.copilot/mcp-config.json` | `~/.agents/skills/{klav,klav-migrate}/` |
+| Antigravity | `antigravity` | `~/.gemini/config/mcp_config.json` | `~/.gemini/config/skills/{klav,klav-migrate}/` |
+
+Using **T3 Code**? T3 Code inherits MCP settings and skills from Claude Code, Codex and Cursor, and links Antigravity's skills folder (it isolates Antigravity's MCP config, so Antigravity threads in T3 Code use `klav agent …`).
 
 ```sh
 klav client connect claude-code
@@ -111,19 +114,19 @@ A registered agent works through `klav agent …` (see [Use secrets without seei
 
 `klav mcp` uses the `klav.toml` of the folder it starts in: short references, and only that project.
 
-## Klav's skill
+## Klav's skills
 
-The skill is a short set of rules an agent follows: search first, prefer actions to values, give a real reason, wait for your approval in the background instead of asking again, and never work around a denial. It is built into `klav`, so its version always matches. `klav client connect` installs it; these commands manage it:
+Klav bundles two skills inside the `klav` binary (`klav`, for day-to-day vault use, and `klav-migrate`, for moving a repository's `.env` and loose key files into Klav). Their versions always match your installed `klav`. `klav client connect` installs them; these commands manage them:
 
 ```sh
-klav skill status       # where it is installed, and whether each copy is up to date
+klav skill status       # where they are installed, and whether each copy is up to date
 klav skill install      # into the folders of the clients installed here
-klav skill update       # replace Klav's copies that are older
+klav skill update       # replace Klav's older copies and install newly bundled skills
 klav skill uninstall
-klav skill show         # print it
+klav skill show [name]  # print a bundled skill (`klav` or `klav-migrate`)
 ```
 
-Klav never overwrites a copy you edited. The Mac app offers the skill in the last step of "Set up this Mac", and keeps it up to date.
+Klav never overwrites a copy you edited, and never puts back a copy you removed. The Mac app offers the skills in the last step of "Set up this Mac", and keeps them up to date automatically when it starts.
 
 ## Next
 

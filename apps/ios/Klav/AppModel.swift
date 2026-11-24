@@ -149,6 +149,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var registrations: [AgentItem] = []
     /// Task requests to decide and running tasks (ADR 0021 §8).
     @Published private(set) var tasks: [TaskItem] = []
+    /// Secret requests from agents waiting for a value (ADR 0046).
+    @Published private(set) var secretRequests: [SecretRequestItem] = []
     /// What the person changed on each pending task card, by task ID.
     @Published private(set) var taskEdits: [String: TaskEdits] = [:]
     /// The account's agents by ID (names for the sites they added, pairing
@@ -527,6 +529,7 @@ final class AppModel: ObservableObject {
         approvals = []
         registrations = []
         tasks = []
+        secretRequests = []
         taskEdits = [:]
         knownAgents = [:]
         agentList = []
@@ -874,6 +877,19 @@ final class AppModel: ObservableObject {
             loaded = false
             appLog.error("tasks: \(describe(error), privacy: .private)")
         }
+        // Secret requests (ADR 0046): separate so older servers do not hide approvals/tasks.
+        do {
+            let list = try await service.run { core, _ in try core.secretRequests() }
+            guard phase == .unlocked else { return }
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            let pending = list.filter { $0.status == "pending" && $0.expiresAt > now }
+            if pending != secretRequests { secretRequests = pending }
+        } catch KlavError.Locked {
+            lock()
+            return
+        } catch {
+            appLog.error("secret requests: \(describe(error), privacy: .private)")
+        }
         if loaded { settleRoute() }
     }
 
@@ -957,6 +973,7 @@ final class AppModel: ObservableObject {
         case .approval(let id): found = approvals.contains { $0.id == id }
         case .agent(let id): found = registrations.contains { $0.id == id }
         case .task(let id): found = tasks.contains { $0.id == id }
+        case .secretRequest(let id): found = secretRequests.contains { $0.id == id }
         }
         if !found {
             self.route = nil
@@ -1033,6 +1050,39 @@ final class AppModel: ObservableObject {
         _ = try await service.run { core, _ in try core.addToTask(approvalId: id, requestDigest: digest) }
         approvals.removeAll { $0.id == id }
         show(Toast(text: String(localized: "Added to the task “\(task.task)”.")))
+        await loadRequests()
+    }
+
+    /// Fulfills a pending secret request (ADR 0046). Granting `klav-proxy`
+    /// access asks for Face ID first (T239).
+    func fulfillSecretRequest(_ card: SecretRequestItem, input: SecretRequestFulfillInput) async throws -> SecretRequestFulfillOutput {
+        guard let service else { throw KlavError.Locked }
+        if input.grantProxy {
+            guard await confirmPresence(String(localized: "Save and grant credential proxy for \(card.agent)")) else {
+                throw RequestError.notConfirmed
+            }
+        }
+        let id = card.id
+        let output = try await service.run { core, _ in
+            try core.fulfillSecretRequest(id: id, input: input)
+        }
+        secretRequests.removeAll { $0.id == id }
+        generation += 1
+        show(Toast(text: String(localized: "Saved to Klav.")))
+        await loadRequests()
+        return output
+    }
+
+    /// Denies a pending secret request with a signed decision.
+    func denySecretRequest(_ card: SecretRequestItem) async throws {
+        guard let service else { throw KlavError.Locked }
+        let id = card.id
+        let digest = card.proposalDigest
+        _ = try await service.run { core, _ in
+            try core.denySecretRequest(id: id, proposalDigest: digest)
+        }
+        secretRequests.removeAll { $0.id == id }
+        show(Toast(text: String(localized: "Secret request denied.")))
         await loadRequests()
     }
 

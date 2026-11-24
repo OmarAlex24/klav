@@ -557,6 +557,83 @@ export interface TaskProgress {
   sites: SiteProgress[];
 }
 
+export interface SecretRequestSetupUrl {
+  url: string;
+  host: string;
+  has_punycode: boolean;
+}
+
+export interface SecretRequestProxyProposal {
+  preset?: string | null;
+  profile: string;
+  upstream: string;
+  header: string;
+  prefix: string;
+  methods: string[];
+  ask_methods: string[];
+  path_prefixes: string[];
+  rate_per_minute?: number | null;
+}
+
+export interface SecretRequestProposal {
+  v: number;
+  mode: "create" | "update";
+  kind?: ItemKind | null;
+  title?: string | null;
+  vault_id?: string | null;
+  project_id?: string | null;
+  target_item_id?: string | null;
+  field: string;
+  placeholder?: string | null;
+  setup_url?: string | null;
+  base_url?: string | null;
+  urls?: string[];
+  notes?: string | null;
+  proxy_proposal?: SecretRequestProxyProposal | null;
+}
+
+export interface SecretRequestCard {
+  id: string;
+  status: "pending" | "fulfilled" | "denied" | "expired";
+  agent_id: string;
+  agent: string;
+  mode: "create" | "update";
+  target_item_id?: string | null;
+  target_reference?: string | null;
+  target_title?: string | null;
+  target_kind?: ItemKind | null;
+  reason: string;
+  created_at: number;
+  expires_at: number;
+  decided_at?: number | null;
+  proposal_digest: string;
+  proposal?: SecretRequestProposal | null;
+  proposal_error?: string | null;
+  setup_url?: SecretRequestSetupUrl | null;
+  agent_projects?: [string, string][];
+}
+
+export interface FulfillSecretRequestInput {
+  digest: string;
+  secret: string;
+  vault?: string;
+  project?: string;
+  title?: string;
+  field?: string;
+  urls?: string[];
+  notes?: string;
+  allow_duplicate?: boolean;
+  grant_proxy?: boolean;
+}
+
+export interface FulfillSecretResult {
+  card: SecretRequestCard;
+  item: ItemSummary;
+  in_grant: boolean;
+  proxy_profile?: string | null;
+  proxy_warnings?: string[];
+}
+
 /** Requests the extension may send (the host refuses the others). */
 export type Request =
   | { op: "status" }
@@ -592,6 +669,9 @@ export type Request =
   | { op: "decide_task"; task: string; approve: boolean; digest: string; choice?: TaskChoice; password?: string }
   | { op: "add_to_task"; approval: string; digest: string; password?: string }
   | { op: "end_task"; task: string }
+  | { op: "secret_requests"; all: boolean }
+  | { op: "fulfill_secret_request"; request: string; input: FulfillSecretRequestInput; password?: string }
+  | { op: "deny_secret_request"; request: string; digest: string }
   | { op: "extension_attach"; browser: string }
   | { op: "extension_reply"; event: number; ok?: unknown; error?: { code: string; message: string } }
   /** The vault health report and its breach check setting (ADR 0022 §4). */

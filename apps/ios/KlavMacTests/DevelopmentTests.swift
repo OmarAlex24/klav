@@ -366,4 +366,28 @@ final class DevelopmentTests: XCTestCase {
                                  attachments: 0, alerts: [], verified: true)
         XCTAssertEqual(ActivityWords.did(entry), "filled it in on “github.com” (according to the agent)")
     }
+
+    func testMultiSkillStatusAndOrchestratorsDecode() throws {
+        let skill = try JSONDecoder().decode(SkillStatus.self, from: Data("""
+        {"bundled":{"version":"0.3.4","sha256":"aa"},
+         "bundled_skills":[{"name":"klav","version":"0.3.4","sha256":"aa"},{"name":"klav-migrate","version":"0.2.0","sha256":"bb"}],
+         "copies":[
+           {"name":"klav","path":"/h/.gemini/config/skills/klav/SKILL.md","state":"current","version":"0.3.4","clients":["antigravity"]},
+           {"name":"klav-migrate","path":"/h/.gemini/config/skills/klav-migrate/SKILL.md","state":"edited","version":"0.1.0","kept_mine":"0.2.0","clients":["antigravity"]}
+         ],
+         "missing_bundled":["/h/.claude/skills/klav-migrate/SKILL.md"]}
+        """.utf8))
+        XCTAssertEqual(skill.carriedSummary, "klav 0.3.4, klav-migrate 0.2.0")
+        XCTAssertEqual(skill.bundledVersion(for: skill.copies[0]), "0.3.4")
+        XCTAssertEqual(skill.bundledVersion(for: skill.copies[1]), "0.2.0")
+        XCTAssertTrue(skill.copies[1].kept(over: skill.bundledVersion(for: skill.copies[1])))
+        XCTAssertEqual(skill.missingBundled, ["/h/.claude/skills/klav-migrate/SKILL.md"])
+        XCTAssertEqual(AgentClients.client(of: "antigravity"), "Antigravity")
+
+        let list = try JSONDecoder().decode(ClientList.self, from: Data("""
+        {"clients":[],
+         "orchestrators":[{"id":"t3-code","name":"T3 Code","installed":"/Applications/T3 Code.app","note":"Shares skills."}]}
+        """.utf8))
+        XCTAssertEqual(list.orchestrators?.first?.id, "t3-code")
+    }
 }

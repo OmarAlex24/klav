@@ -276,6 +276,11 @@ struct HomeView: View {
             model.route = nil
             highlighted = id
             withAnimation { scroller.scrollTo(id, anchor: .top) }
+        case .secretRequest(let id):
+            guard model.secretRequests.contains(where: { $0.id == id }) else { return }
+            model.route = nil
+            highlighted = id
+            withAnimation { scroller.scrollTo(id, anchor: .top) }
         }
     }
 
