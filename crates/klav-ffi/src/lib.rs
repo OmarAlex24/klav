@@ -50,6 +50,8 @@ mod grants;
 mod health;
 mod import;
 mod pause;
+#[cfg(feature = "daemon")]
+mod presence;
 mod sandboxes;
 mod types;
 
@@ -66,6 +68,11 @@ pub use grants::*;
 pub use health::*;
 pub use import::ImportSession;
 pub use pause::{AgentPauseInfo, AgentRole, DevAgentInfo, PauseInfo};
+#[cfg(feature = "daemon")]
+pub use presence::{
+    HeldInfo, HoldState, PresenceAskInfo, PresenceKeyKind, PresenceLasts, PresenceSetting,
+    PresenceValueInfo, PresenceValueKind, UnlockOutcome, UnlockQuestionInfo,
+};
 pub use sandboxes::{
     ProxyNoSigns, SandboxCheckInfo, SandboxEndInfo, SandboxInfo, SandboxListCheckedInfo,
     SandboxListInfo, SandboxProxyInfo, SandboxRevokeInfo, SandboxSecurityInfo, SandboxStatusInfo,

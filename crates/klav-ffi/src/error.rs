@@ -88,6 +88,49 @@ pub enum KlavError {
         /// What happened.
         message: String,
     },
+    /// The presence gate (ADR 0041 §2.4, layer 5): Touch ID can't confirm
+    /// this value, so the app asks for the master password in its own
+    /// window, worded from `ask`, and calls the same method's
+    /// `_with_password` form. `DaemonEngine` sends it on the connection that
+    /// got the ask (own choice 32).
+    #[cfg(feature = "daemon")]
+    #[error("Klav needs the master password")]
+    PresenceRequired {
+        /// What the password grants.
+        ask: crate::presence::PresenceAskInfo,
+    },
+    /// Another confirmation is running: try again once it is done (ADR 0041
+    /// §2.4, own choice 18). `password_check`: `klavd` is checking another
+    /// master password (with the gate off it says so with `conflict`).
+    /// `in_this_app`: this app is already confirming something (a Touch ID
+    /// dialog, or a password question for another value). Otherwise
+    /// another program's Touch ID dialog is open.
+    #[cfg(feature = "daemon")]
+    #[error("{message}")]
+    PresenceBusy {
+        /// Another master password is being checked.
+        password_check: bool,
+        /// The other confirmation is this app's own.
+        in_this_app: bool,
+        /// `klavd`'s words, or the engine's.
+        message: String,
+    },
+    /// This `klavd` doesn't offer it: the presence setting with the gate
+    /// off, or a `klavd` older than it.
+    #[cfg(feature = "daemon")]
+    #[error("{message}")]
+    NotSupported {
+        /// What happened.
+        message: String,
+    },
+    /// The item changed between the question and the hand-out: nothing was
+    /// handed out (Omar's decision F of 2026-11-19). Ask again.
+    #[cfg(feature = "daemon")]
+    #[error("{message}")]
+    ChangedWhileConfirming {
+        /// What happened.
+        message: String,
+    },
     /// Klav deleted the account on the server (ADR 0037 §3): this device
     /// knew the date and it passed. Its copy stays, read-only, until the
     /// person deletes it; nothing here deletes it.

@@ -176,14 +176,14 @@ fn the_mac_app_works_through_klavd() {
 
     // Touch ID is off in this klavd: the app falls back to the password.
     assert!(matches!(
-        engine.unlock(None),
+        engine.unlock(None, None),
         Err(KlavError::BiometryUnavailable { .. })
     ));
     assert!(matches!(
-        engine.unlock(Some("wrong password".into())),
+        engine.unlock(Some("wrong password".into()), None),
         Err(KlavError::WrongCredentials)
     ));
-    engine.unlock(Some(PASSWORD.into())).expect("unlock");
+    engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
     let status = engine.status();
     assert!(status.unlocked);
     assert_eq!(status.unlocked_with.as_deref(), Some("password"));
@@ -755,7 +755,7 @@ fn the_mac_app_asks_to_delete_the_account_and_klavd_learns_it() {
 
     // Unlocked, klavd learns the request at once: nothing was asked
     // before, then 7 days from this Mac.
-    engine.unlock(Some(PASSWORD.into())).expect("unlock");
+    engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
     engine.sync().expect("sync");
     assert_eq!(engine.status().account_deletion, None);
     let asked = engine
@@ -802,7 +802,7 @@ fn the_mac_app_asks_to_delete_the_account_and_klavd_learns_it() {
     let asked = engine
         .request_account_deletion(PASSWORD.into())
         .expect("ask locked");
-    engine.unlock(Some(PASSWORD.into())).expect("unlock");
+    engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
     engine.sync().expect("sync");
     assert_eq!(engine.status().account_deletion, Some(asked));
 
@@ -831,7 +831,7 @@ fn the_mac_app_asks_to_delete_the_account_and_klavd_learns_it() {
     }
     server.restart();
     wait_until_long("the purge", || account_count(&server) == 0);
-    engine.unlock(Some(PASSWORD.into())).expect("unlock");
+    engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
     wait_until_long("klavd learns it", || {
         let _ = engine.sync();
         engine.status().account_deleted
@@ -991,7 +991,7 @@ fn the_mac_app_lists_and_revokes_sandboxes_through_klavd() {
     wait_until("klavd", || engine.status().running);
     assert!(matches!(engine.sandbox_list(false), Err(KlavError::Locked)));
     engine
-        .unlock(Some(common::sandboxes::PASSWORD.into()))
+        .unlock(Some(common::sandboxes::PASSWORD.into()), None)
         .expect("unlock");
 
     let list = engine.sandbox_list(false).expect("list");
