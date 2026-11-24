@@ -9,16 +9,16 @@
 # No compile cache: a fat-LTO release build with one codegen unit gets
 # nothing from one, and the build sees no token (docs/releasing.md §6).
 # deploy/linux/Dockerfile.dockerignore replaces the root .dockerignore for
-# this build, because the root one leaves out skill/SKILL.md.
+# this build, because the root one leaves out skill/.
 
 # The root Dockerfile's image, digest included; raise them together.
 FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS build
 WORKDIR /src
-# What the build reads: the workspace manifests, crates/, and skill/SKILL.md,
+# What the build reads: the workspace manifests, crates/, and skill/,
 # which klav-cli and klav-forward embed with include_str!.
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
-COPY skill/SKILL.md skill/SKILL.md
+COPY skill skill
 # The Mac app's release settings for its helpers (scripts/macos/build-app.sh):
 # stripped, fat LTO, one codegen unit. /out gets two folders: the public
 # tarball's three binaries, and the sandbox binaries (not part of a release).
