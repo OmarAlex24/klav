@@ -113,6 +113,12 @@ order with the length, followed by UTF-8 JSON.
   same `id`.
 - Responses arrive in the order of the requests. An `id` is a number
   the extension picks (`0` only in errors for an unreadable line).
+- Of the envelope's extra fields ([`klavd.md`](klavd.md) §3), the *host*
+  passes `shown` (a password unlock's window, §8, "The presence gate") and
+  drops `notify`: a notice line has no `ok` or `error`, and the extension,
+  which has no terminal name to print, would take it for an answer. It
+  never adds `hold` (the *host* refuses it) or `untyped`: the person
+  types the password into Klav's own page.
 
 ### Who can call
 
@@ -152,7 +158,7 @@ The *host* only lets these `klavd` operations through; the others answer
 | `reused_offer`, `offer_task`, `task_progress` | "Fix my reused passwords" (ADR 0022 §6): the list for the person, the offered task (with presence) and the progress per site. `reused_offer` names the agents only with `{id, name}`; `agents` stays out |
 | `approvals`, `decide_approval` | Agent approvals from the *popup* |
 | `tasks`, `decide_task`, `add_to_task`, `end_task` | Task requests from the *popup* (ADR 0021); not `task_log`, which belongs to the audit log |
-| `extension_attach`, `extension_reply` | Receive and answer the agents' fills (§8) |
+| `extension_attach`, `extension_reply`, `extension_presence` | Receive and answer the agents' fills (§8), and the master password for the presence gate's question on this connection (§8, "The presence gate") |
 | `import_add`, `import_preview`, `import_apply`, `import_cancel` | The import wizard (§12, ADR 0024) |
 
 Never: `resolve`, `attach`, `create_vault`, `create_project`,
@@ -175,7 +181,7 @@ tried to.
 | Field menu (`menu.html`) | `unlock` and the generator (`generator_record`, `generator_history`, `generated_value`, `generator_delete`); the history's "Copy" and "Delete all", only with the menu in view (§5, "Against *clickjacking*") |
 | Search (`find.html`) | `unlock`, `list` |
 | Save bar (`save.html`) | `unlock` |
-| Passkey frame (`passkey.html`) | `unlock` (signing and saving go through `passkey_sign_in` and `passkey_save`, §13) |
+| Passkey frame (`passkey.html`) | `unlock` (signing and saving go through `passkey_sign_in` and `passkey_save`, §13; the presence gate's password through `presence_answer`, §8) |
 | Sign-in card and agent notice | None |
 
 `unlock` stays on the pages inside sites: it is how Klav is unlocked
@@ -900,7 +906,8 @@ the person has open, without seeing the values:
    extension answers with the active tab of the window with the focus and its
    address, which it gets from the browser (`sender.url` of a message from the
    top frame), not from the page. With several browsers attached,
-   the one with the focus wins.
+   the one with the focus wins (with the presence gate on, exactly one must
+   report it: below).
 3. The agent checks that the host is that of one of the item's URLs (the same
    rule as the SDK, T21) and asks the server for the values with the `fill`
    permission and that host as `domain`: the grant's policy, the `ask`
@@ -927,6 +934,54 @@ with `klav approval`.
 
 ![Notice on the page after filling for an agent](img/extension/aviso-agente.png)
 ![A pending approval in the popup](img/extension/popup-aprobacion.png)
+
+### The presence gate (ADR 0041, off by default)
+
+With `klavd --presence-gate` (off until layer 6), values need the
+person's presence ([`klavd.md`](klavd.md) §3, the gate). Without the gate
+`klavd` sends none of this and the extension behaves as above.
+
+- **Agents' values.** Before the first value an agent sends this browser
+  connection (a fill, the fill step of an assisted change, a passkey
+  sign-in), `klavd` asks: with Touch ID, in its own dialog; without it,
+  with a `presence` event. The *background* opens Klav's passkey frame
+  (`passkey.html`, top right, never a field of the page) in the event's
+  tab, with the words of `klavd`'s dialog in the browser's language:
+  "Klav wants to let agents fill through this browser connection until
+  Klav locks, starting with “claude-code”'s fill of “GitHub”." The event
+  names the cause (a fill, a password change, or a passkey sign-in with
+  the site from the vault), and adds how many browser connections are
+  attached when there is more than one. The password goes back with
+  `extension_presence` on the same connection; a wrong one asks again in
+  the same frame. Closing the frame, or 110 s without an answer, declines:
+  the *background* answers the event with an `error`, and the agent hears
+  that the person declined. Under `5m` or "While unlocked", one answer
+  covers this connection until Klav locks; under "Always", each value
+  asks: "Klav wants to let a browser connection receive “claude-code”'s
+  values for “GitHub”."
+- **The extension's own fills.** An `autofill` that gets
+  `presence_required` opens the same frame in the tab it fills, words the
+  question from `presence` ("Klav wants to fill “GitHub” in this
+  browser", or what the window would open), and sends the same request
+  again with `password`. `klavd` checks a password only against the last
+  question it sent on a connection (own choice 32), and the extension has
+  one, so the *background* asks one question at a time.
+- **In the *popup* and the field menu**, `view` with `reveal`, `totp`,
+  `previous_password` and `generated_value` ask over their own page, the
+  same way, and send the request again with `password`.
+- **Unlocking with the password.** With the gate on, `status` carries
+  `presence`. The unlock form then says what the password also opens
+  ("Unlocking also lets this browser use your vault for 5 minutes.") and
+  sends that as `shown` (own choice 34); without `lasts` it says nothing
+  more and sends `always`. Without `presence` (the gate off, or an older
+  `klavd`) it sends no `shown`, as before. An unlock that finds Klav
+  already unlocked by another key says so in the *popup*.
+- **One browser in front** (P25). With more than one browser attached,
+  exactly one must report focus when the agent asks for the tab, and again
+  right before each value; otherwise the agent gets `browser_ambiguous`
+  and nothing is filled. The *popup* says "More than one browser is
+  connected to Klav…" if it ever gets it, and "Klav is already asking you
+  to confirm something…" for `presence_busy`.
 
 ### Assisted password change
 
@@ -1152,7 +1207,11 @@ policy in [privacidad.md](privacidad.md).
   lets the click through or with the host moved (`tapado.spec.ts`), the
   languages and the site icons
   (that no site receives an icon request if the setting is
-  off) and passkeys against a test RP (§13). Each run uses its own temporary
+  off), passkeys against a test RP (§13) and the presence gate
+  (`presencia.spec.ts`: a `klavd` with `--presence-gate`, the master
+  password in Klav's frame, and a second browser connection where
+  neither, one or both report focus, also changing right before the
+  fill). Each run uses its own temporary
   directory, deleted when it ends, also if it fails. Each
   `*.spec.ts` file brings up its own stack (server on a free port, `KLAV_HOME`,
   Chromium profile and the *host*'s manifest), so in CI four

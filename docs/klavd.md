@@ -287,10 +287,11 @@ padding.
 | `password_history` | `query` | `PasswordHistoryView`: `entries` (`index`, `field`, `label`, `from_ms?`, `to_ms`, `unconfirmed`), newest to oldest, `pending` and `pending_since?`; no values. `unconfirmed` marks a password that an assisted change generated and nobody confirmed | no |
 | `previous_password` | `query`, `index`, `password?` | The value of that previous password. No presence | no |
 | `vault_health` | — | `VaultHealth` (ADR 0022 §4): `items`, `passwords`, `skipped?`, `reused` (groups of `items`), `weak` (`item`, `score`, `generated_bits?`), `old` (`item`, `since_ms`, `days`, `source`: `record` or `created`) and `breaches` (`status`: `off`, `checked` with `found` and `queries`, or `failed` with `message`). Each `item` carries ID, reference, title, username, `hosts` and field; never values. The Have I Been Pwned lookup runs only if `health.json` turns it on, and outside the session's lock | no |
-| `extension_attach` | `browser` | `{}`. The connection is now an extension's: it receives events (below). No presence: any process of the same user may attach | yes |
-| `extension_reply` | `event`, `ok?` or `error?` | `{}`. Answers an event of this connection | yes |
+| `extension_attach` | `browser` | `{}`. The connection is now an extension's: it receives events (below). No presence to attach: any process of the same user may. With the gate on, an agent's values ask for this connection's presence (below, the gate) | yes |
+| `extension_reply` | `event`, `ok?` or `error?` | `{}`. Answers an event of this connection. A `presence` event takes only an `error` (the person declined): its `ok` is `extension_presence`, and an `ok` here is `bad_request` | yes |
+| `extension_presence` | `event`, `password` | `{}`. The master password for this connection's `presence` event `event` (the gate, below), checked against the unlocked session. Wrong: `wrong_credentials`, and the event keeps waiting for another. Only on the connection the event went to; any other, or an event no longer waiting: `not_found` | yes |
 | `browser_tab` | — | `BrowserTab`: `{tab, url, browser}` of the active tab of the browser with the focus | yes |
-| `browser_fill` | `tab`, `host`, `agent`, `agent_id?`, `reason`, `kind`, `fields`, `selectors?`, `submit?` | The extension's report: `{url, filled, submitted?, navigated?, url_after?}`, never values (the SDK adds `warnings?` for the person: below, Compatibility). `agents_paused` if a pause stops the agent (below) | yes |
+| `browser_fill` | `tab`, `host`, `agent`, `agent_id?`, `item?`, `reason`, `kind`, `fields`, `selectors?`, `submit?` | The extension's report: `{url, filled, submitted?, navigated?, url_after?}`, never values (the SDK adds `warnings?` for the person: below, Compatibility). `agents_paused` if a pause stops the agent (below) | yes |
 | `resolve_pending` | `query`, `accept` | The item's `PasswordHistoryView`. The person decides on the pending password of an assisted change: `accept` makes it current ("Use the new one"); if not, it goes to the history as unconfirmed ("Keep the current one"). With nothing pending, `not_found` | no |
 | `agent_rotate_begin` | `tab`, `step` (`RotationStep`), `submit?` | `{filled, pending_id}` (plus `submitted?`, `navigated?`, `url_after?` with `submit`); never values. Assisted change, below | no |
 | `agent_rotate_confirm` | `step` | `{ok: true}`: the pending one becomes current and the previous one goes to the history | no |
@@ -343,6 +344,12 @@ its own grant (the daemon can be locked), and sends them with
 returns to the agent whatever the extension answers. If no browser is
 attached, it answers `not_found`; if the tab is already on another site, the
 extension answers `denied` and writes nothing.
+
+`item?` (from this version on) is the item the values came from, a hint
+for the presence prompt's title only (the gate, below): the agent doesn't
+sign it, and nothing is checked or handed out by it. The SDK sends it and,
+if `klavd` can't read the field (an older one), sends the fill again
+without it.
 
 **Pausing agents** ([ADR 0033](decisiones/0033-agentes-desde-la-app-de-mac.md) §7).
 The server enforces the pause on every signed request from an agent
@@ -938,13 +945,13 @@ catch-all: a new operation doesn't compile without its row.
 | Row | Operations | With the gate on |
 |---|---|---|
 | Window | `view` with `reveal`, `previous_password`, `totp`, `generated_value`, `resolve`, `autofill` | The caller's key needs an open window, or a verification now |
-| Extension's connection | `extension_attach` | Classified only: its presence comes with layer 4 |
+| Extension's connection | `extension_attach`, and the value events it then gets (`browser_fill`'s `fill`, the fill step of `agent_rotate_begin`, `passkey_arm`) | One presence for the connection, until Klav locks or the connection closes; under `always`, one per event. Below, «The extension's connection» |
 | Passkey window | `passkey_get`, `passkey_create` | The passkey window, now per key |
 | Already asks | `approve_agent`, `decide_approval` and `decide_task` with `approve`, `add_to_task`, `offer_task`, `fulfill_secret_request` with `grant_proxy`, `grant_change_apply`, `proxy_use`, `proxy_grant`, `proxy_revoke`, `proxy_issuer_add`, `proxy_issuer_remove`, `resume_agents`, `cancel_account_deletion`, `confirm_presence` | As today: they ask for presence themselves, and never open or use a window |
 | Setting | `presence_window` and `passkey_uv` with `window` | Loosening asks; tightening doesn't |
 | Declares | `hold` | Below |
 | Agent's proof | `agent_passkey_arm`, `agent_passkey_use`, `agent_rotate_*`, `browser_fill` | As today: the agent's own signed request or grant, no value of the person's |
-| Browser channel | `browser_tab`, `extension_reply` | As today |
+| Browser channel | `browser_tab`, `extension_reply`, `extension_presence` | As today; `browser_tab` follows P25 (below) |
 | No value | Everything else, also `view` without `reveal`, `sandbox_list_checked` and the settings without `window` | As today |
 
 **Windows.** A window belongs to one key: the peer's terminal session, its
@@ -1123,6 +1130,55 @@ another "already asks" operation. `always` drops every declaration and held
 connection, and a move back brings none. Not built yet: `hold` answers
 `not_supported` until layer 6, and always on Linux.
 
+**The extension's connection** (ADR 0041 §3.1, layer 4). Before an agent's
+values go to a browser connection (a `browser_fill`, the fill step of an
+`agent_rotate_begin`, an `agent_passkey_arm`), `klavd` asks the person,
+needing the session unlocked (`locked` otherwise, also for `browser_fill`,
+which works locked with the gate off). Under `5m` and `unlocked`, one
+answer covers that connection until Klav locks or it closes; under
+`always`, every event asks, and moving to `always` drops what was covered.
+
+- **With Touch ID**, `klavd` shows the dialog (§6.1). Canceled: `denied`.
+- **Without it** (Linux, Touch ID off, `biometry_unavailable`), `klavd`
+  sends the connection a `presence` event and waits up to 120 s:
+
+  ```text
+  ← {"v":1,"event":{"kind":"presence","id":6,"tab_id":12,"presence":{"key":"connection","window":"5m","lasts":"until_lock","browser":{"event":"fill","agent":"claude-code","title":"GitHub","attached":2,"connection":true}}}}
+  → {"v":1,"id":10,"request":{"op":"extension_presence","event":6,"password":"…"}}
+  ```
+
+  `presence` is `presence_required`'s object (§3, the gate) with `browser`:
+  `event` (`fill`, `password_change` or `passkey_sign_in`), `agent` (the
+  name the agent gave, cleaned), `title?` (the item's title from the vault,
+  cleaned: for a fill, from `browser_fill`'s `item?` hint; missing without
+  it), `site?` (for a passkey, the rpId of the login's passkey in the
+  vault, never the one the agent claims, T140), `attached?` (how many
+  extension connections are attached, when more than one) and
+  `connection` (`true` when the connection's key is the connection itself,
+  so the text says "this browser connection" and not "a browser"). The
+  extension shows it in Klav's own frame (§6.1's words) and sends the
+  password with `extension_presence` on the same connection (own choice
+  32). An `extension_reply` with an `error`, or no answer in time, is
+  declined.
+- **Declined** (Touch ID canceled, the frame closed, no answer): the agent
+  gets `denied` with "the person declined in the browser to let agents
+  fill there: nothing reached the page. Do not retry on your own; tell the
+  person, and try again only if they ask". Nothing was sent to the page,
+  and for a password change nothing was stored as pending: the question
+  comes after the probe and before the new password is saved.
+- **One at a time** per connection: a second event that needs a presence
+  while one is open gets `presence_busy`.
+
+**One browser in front** (P25, Omar's decision on Q-N5). With the gate on
+and more than one extension connection attached, `browser_tab` asks every
+connection and needs exactly one to report focus; otherwise
+`browser_ambiguous`. Right before each value event (`fill`, `rotate_fill`,
+`passkey_arm`) `klavd` asks again, and only the connection that gets the
+values may report focus. The check runs before the presence question too,
+so the person is never asked for a browser that then gets nothing. With
+one connection, or the gate off, nothing changes: the focused one, or the
+newest.
+
 ## 4. Errors
 
 | `code` | Meaning | `klav` exits with |
@@ -1142,7 +1198,8 @@ connection, and a move back brings none. Not built yet: `hold` answers
 | `account_deleting` | The person asked to delete the account (ADR 0037 §3): `klavd` mediates nothing for agents | 8 |
 | `account_deleted` | Klav has already deleted the account: it can neither write nor mediate for agents | 8 in agent commands; 1 in the others |
 | `presence_required` | With the gate on: no window for the caller's key and no Touch ID to ask. It carries `presence` (§3, the gate); the client asks for the master password and sends `password` | `klav` asks on its controlling terminal and sends it again; 9 with no terminal ([cli.md](cli.md) §8) |
-| `presence_busy` | With the gate on: another Touch ID dialog is open, another master password is being checked, or another setting change is running; try again after it | 1 (`klav` says which, from what it sent) |
+| `presence_busy` | With the gate on: another Touch ID dialog is open, another master password is being checked, or another setting change is running; try again after it. Also a second presence on one extension connection | 1 (`klav` says which, from what it sent) |
+| `browser_ambiguous` | With the gate on: more than one browser is attached and not exactly one reports focus, or the one that does isn't the one that would get the values (§3, the gate) | 1 |
 | `not_supported` | This `klavd` doesn't do it: `hold` (until layer 6, and on Linux), `presence_window` with the gate off | 1 |
 | `extension_not_allowed` | Only `klav-native-host` sends it, never `klavd`: the extension that started it isn't on its list. The message says which command adds it ([extension.md](extension.md) §3) | — |
 | `internal` | Any other error | 1 |
@@ -1295,6 +1352,8 @@ macOS writes the dialog as "`<process>` is trying to `<reason>`." (in Spanish, �
 | `view`, `totp`… (gate on, a window) | — | let the terminal ttys003 use your vault for 5 minutes · let this connection use your vault until Klav locks | dejar que la terminal ttys003 use tu bóveda durante 5 minutos · dejar que esta conexión use tu bóveda hasta que Klav se bloquee |
 | `totp`, `autofill`, `resolve`… (gate on, Always) | — | show the code of “GitHub” (for the terminal ttys003) · fill “GitHub” in a browser · use 3 values from your vault in a command (for a program with no terminal) | mostrar el código de «GitHub» (para la terminal ttys003) · rellenar «GitHub» en un navegador · usar 3 valores de tu bóveda en un comando (para un programa sin terminal) |
 | `unlock` (gate on) | — | unlock your vault for the terminal ttys003, and let it use the vault for 5 minutes (ana@example.com) | desbloquear tu bóveda para la terminal ttys003 y dejar que la use durante 5 minutos (ana@example.com) |
+| An extension's connection (gate on, `5m` or `unlocked`) | — | let agents fill in a browser until Klav locks, starting with “claude-code”'s fill of “GitHub” · … through this browser connection … (Linux) · starting with “claude-code”'s password change for “GitHub” · starting with “claude-code”'s passkey sign-in to “github.com”; and "; 2 browser connections are attached" when there are more | dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por el relleno de «GitHub» que pidió «claude-code» · … por esta conexión del navegador … · el cambio de contraseña de «GitHub» que pidió «claude-code» · el inicio de sesión con passkey en «github.com» que pidió «claude-code»; y «; hay 2 conexiones del navegador activas» |
+| An extension's connection (gate on, `always`) | — | let a browser connection receive “claude-code”'s values for “GitHub” | dejar que una conexión del navegador reciba los valores de «claude-code» para «GitHub» |
 | `presence_window` (loosens) | — | ask for your presence every 5 minutes instead of for every value | pedir tu presencia cada 5 minutos en vez de en cada valor |
 | `grant_change_apply` (widens) | — | let “claude-code” do more: Personal/Release, reveal (ask) | dejar que «claude-code» haga más: Personal/Release, revelar (preguntar) |
 
