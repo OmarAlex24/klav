@@ -1571,5 +1571,56 @@
   },
   "passkey_uv_cancel": {
     "message": "Cancelar"
+  },
+  "sr_agent_asks": {
+    "message": "$1 pide un secreto"
+  },
+  "sr_create_title": {
+    "message": "Guardar elemento nuevo ($1)"
+  },
+  "sr_update_title": {
+    "message": "Cambiar $1 en $2"
+  },
+  "sr_update_history": {
+    "message": "El valor anterior se guarda en el historial de contraseñas."
+  },
+  "sr_target_missing": {
+    "message": "Este elemento no está en tu bóveda o está en la papelera."
+  },
+  "sr_title_label": {
+    "message": "Título"
+  },
+  "sr_project_label": {
+    "message": "Proyecto"
+  },
+  "sr_project_shared": {
+    "message": "$1 (compartido con $2)"
+  },
+  "sr_project_not_shared": {
+    "message": "$1 (sin compartir con $2)"
+  },
+  "sr_secret_label": {
+    "message": "Secreto ($1)"
+  },
+  "sr_secret_empty": {
+    "message": "Escribe el valor del secreto primero."
+  },
+  "sr_setup_warning": {
+    "message": "Enlace sugerido por $1 — revisa el dominio antes de abrirlo: $2"
+  },
+  "sr_setup_punycode": {
+    "message": "Este dominio usa etiquetas internacionalizadas (punycode). Revísalo letra por letra."
+  },
+  "sr_setup_open": {
+    "message": "Abrir $1"
+  },
+  "sr_urls_heading": {
+    "message": "Sitios sugeridos por $1 (desmarcados por defecto):"
+  },
+  "sr_proxy_note": {
+    "message": "También propone el perfil de proxy «$1» ($2). Desde aquí solo se guarda el elemento; concede el proxy desde la app de Mac o la CLI."
+  },
+  "sr_save": {
+    "message": "Guardar en Klav"
   }
 }

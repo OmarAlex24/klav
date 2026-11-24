@@ -143,6 +143,11 @@ define_id!(
     /// or cancellation. It is the `pending_id` the agent gets back.
     RotationId
 );
+define_id!(
+    /// Identifies an agent secret request (ADR 0046): an agent proposes an
+    /// item or secret field update for the person to enter on their device.
+    SecretRequestId
+);
 
 #[cfg(test)]
 mod tests {

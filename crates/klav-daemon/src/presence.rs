@@ -97,6 +97,13 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::DecideTask { approve: true, .. }
         | Request::AddToTask { .. }
         | Request::OfferTask { .. }
+        | Request::FulfillSecretRequest {
+            input: klav_client::secret_requests::FulfillSecretRequest {
+                grant_proxy: true,
+                ..
+            },
+            ..
+        }
         | Request::GrantChangeApply { .. }
         | Request::ProxyUse { .. }
         | Request::ProxyGrant { .. }
@@ -146,6 +153,15 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::Tasks { .. }
         | Request::EndTask { .. }
         | Request::TaskLog { .. }
+        | Request::SecretRequests { .. }
+        | Request::FulfillSecretRequest {
+            input: klav_client::secret_requests::FulfillSecretRequest {
+                grant_proxy: false,
+                ..
+            },
+            ..
+        }
+        | Request::DenySecretRequest { .. }
         | Request::AgentExposure { .. }
         | Request::RevokeAgent { .. }
         | Request::AgentRevocations

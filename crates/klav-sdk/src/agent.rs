@@ -485,6 +485,13 @@ impl Agent {
         Ok(PublicIdentity::decode(blob.as_bytes())?)
     }
 
+    /// The pinned account ID.
+    pub(crate) fn account_id(&self) -> ClientResult<klav_core::ids::AccountId> {
+        self.config
+            .account_id
+            .ok_or_else(|| ClientError::Invalid("the account ID is not known yet".into()))
+    }
+
     /// The state, for `klav agent status`.
     pub async fn state(&mut self) -> ClientResult<AgentState> {
         let me = self.me().await?;

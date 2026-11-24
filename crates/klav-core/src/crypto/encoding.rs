@@ -56,6 +56,11 @@ pub enum Kind {
     /// Item key wrapped with HPKE for an agent: a per-item grant, such as
     /// the credential proxy's (spec §8.2, ADR 0036 §2 and E10).
     SharedItemKey = 0x23,
+    // `0x24` belongs to the inject command blob of ADR 0041 (not implemented yet).
+    /// Proposal body of an agent secret request, sealed with HPKE to the
+    /// account identity so the server never sees titles, fields, URLs or
+    /// proxy upstreams (spec §13.14, ADR 0046 §1).
+    SecretRequestProposal = 0x25,
     /// Attachment encrypted with STREAM.
     Attachment = 0x30,
     /// Device-local copy of the identity private keys, sealed with the

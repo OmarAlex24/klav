@@ -18,6 +18,7 @@ pub mod model;
 pub mod narrowing;
 pub mod passkey;
 pub mod policy;
+pub mod secret_request;
 pub mod site;
 pub mod task;
 pub mod text;

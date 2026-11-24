@@ -7,9 +7,10 @@
 import { band, ditherCanvas } from "../shared/dither";
 import { type MessageKey, t, tNodes } from "../shared/i18n";
 import { daemon } from "../shared/messages";
-import { type ApprovalView, DaemonError, type DaemonStatus, type Permission, type TaskCard } from "../shared/protocol";
+import { type ApprovalView, DaemonError, type DaemonStatus, type Permission, type SecretRequestCard, type TaskCard } from "../shared/protocol";
 import { h } from "./dom";
 import { presence } from "./presence";
+import { pendingSecretRequest } from "./secretRequests";
 import { describeTarget, errorText } from "./strings";
 import { liveTask, pendingTask } from "./tasks";
 
@@ -143,10 +144,12 @@ export function watchApprovals(section: HTMLElement, status: DaemonStatus, quiet
     }
     let pending: ApprovalView[];
     let tasks: TaskCard[];
+    let secretRequests: SecretRequestCard[];
     try {
-      [pending, tasks] = await Promise.all([
+      [pending, tasks, secretRequests] = await Promise.all([
         daemon<ApprovalView[]>({ op: "approvals", all: false }),
         daemon<TaskCard[]>({ op: "tasks", all: false }).catch((): TaskCard[] => []),
+        daemon<SecretRequestCard[]>({ op: "secret_requests", all: false }).catch((): SecretRequestCard[] => []),
       ]);
     } catch {
       return;
@@ -154,6 +157,9 @@ export function watchApprovals(section: HTMLElement, status: DaemonStatus, quiet
     const now = Date.now();
     const again = (): void => void refresh();
     const wanted: [string, () => Shown][] = [
+      ...secretRequests
+        .filter((c) => c.status === "pending")
+        .map((c): [string, () => Shown] => [`secret:${c.id}:${c.proposal_digest}`, () => pendingSecretRequest(c, again)]),
       ...tasks.filter((c) => c.status === "pending").map((c): [string, () => Shown] => [`ask:${c.id}:${c.request_digest}`, () => pendingTask(c, status, again)]),
       ...pending.map((a): [string, () => Shown] => [`approval:${a.id}:${a.request_digest}:${a.task?.id ?? ""}:${String(a.task?.can_add ?? false)}`, () => card(a, status, again)]),
       ...tasks

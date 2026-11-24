@@ -8,6 +8,8 @@ enum PushRoute: Equatable {
     case agent(String)
     /// A task request (ADR 0021 §8).
     case task(String)
+    /// A secret request from an agent (ADR 0046).
+    case secretRequest(String)
 
     init?(userInfo: [AnyHashable: Any]) {
         guard let klav = userInfo["klav"] as? [String: Any],
@@ -18,6 +20,7 @@ enum PushRoute: Equatable {
         case "approval": self = .approval(id)
         case "agent": self = .agent(id)
         case "task": self = .task(id)
+        case "secret_request": self = .secretRequest(id)
         default: return nil
         }
     }

@@ -2242,6 +2242,7 @@ fn reads_without_syncing(request: &Request) -> bool {
         request,
         Request::Approvals { .. }
             | Request::Tasks { .. }
+            | Request::SecretRequests { .. }
             | Request::Vaults
             | Request::Projects { .. }
             | Request::List { .. }
@@ -2291,6 +2292,8 @@ fn person_write(request: &Request) -> bool {
             | Request::DecideTask { .. }
             | Request::AddToTask { .. }
             | Request::EndTask { .. }
+            | Request::FulfillSecretRequest { .. }
+            | Request::DenySecretRequest { .. }
             | Request::RevokeAgent { .. }
             | Request::ProxyUse { .. }
             | Request::ProxyGrant { .. }
@@ -2331,6 +2334,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::Tasks { .. }
         | Request::TaskLog { .. }
         | Request::TaskProgress { .. }
+        | Request::SecretRequests { .. }
         | Request::AgentExposure { .. }
         | Request::AgentRevocations
         | Request::GrantEditor { .. }
@@ -2386,6 +2390,8 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::DecideTask { .. }
         | Request::AddToTask { .. }
         | Request::EndTask { .. }
+        | Request::FulfillSecretRequest { .. }
+        | Request::DenySecretRequest { .. }
         | Request::RevokeAgent { .. }
         | Request::GrantChangeApply { .. }
         | Request::ProxyUse { .. }
@@ -3500,6 +3506,14 @@ fn will_ask(state: &State, request: &Request, caller: Option<&Caller>) -> bool {
         }
         | Request::AddToTask { password, .. }
         | Request::OfferTask { password, .. }
+        | Request::FulfillSecretRequest {
+            input:
+                klav_client::secret_requests::FulfillSecretRequest {
+                    grant_proxy: true, ..
+                },
+            password,
+            ..
+        }
         | Request::ProxyUse { password, .. }
         | Request::ProxyGrant { password, .. }
         | Request::ProxyRevoke { password, .. }
@@ -4305,6 +4319,66 @@ async fn dispatch(
             ok(u.end_task(id).await.map_err(e)?, warnings)
         }
         Request::TaskLog { task } => ok(u.task_log(&task).await.map_err(e)?, warnings),
+        Request::SecretRequests { all } => ok(u.secret_requests(all).await.map_err(e)?, warnings),
+        Request::FulfillSecretRequest {
+            request,
+            input,
+            password,
+        } => {
+            let pending = u.secret_requests(false).await.map_err(e)?;
+            let card = klav_client::secret_requests::find_secret_request(&pending, &request)
+                .map_err(e)?
+                .clone();
+            if input.grant_proxy {
+                if card.proposal_digest != input.digest.trim().to_ascii_lowercase() {
+                    return Err(e(ClientError::Security(format!(
+                        "secret request {} changed since it was shown; reload and review it again",
+                        card.id
+                    ))));
+                }
+                let host = input
+                    .proxy_credential
+                    .as_ref()
+                    .map(|spec| spec.upstream.as_str())
+                    .or_else(|| {
+                        card.proposal
+                            .as_ref()
+                            .and_then(|p| p.proxy_proposal.as_ref())
+                            .map(|pp| pp.upstream.as_str())
+                    })
+                    .ok_or_else(|| {
+                        e(ClientError::Invalid(
+                            "grant_proxy requested, but neither the proposal nor the caller supplied a proxy profile".into(),
+                        ))
+                    })?;
+                let title = input
+                    .title
+                    .as_deref()
+                    .or_else(|| card.proposal.as_ref().and_then(|p| p.title.as_deref()))
+                    .or(card.target_title.as_deref());
+                confirm(
+                    Prompt::SecretRequestProxy {
+                        agent: &card.agent,
+                        title,
+                        host,
+                    },
+                    password,
+                )?;
+            }
+            let result = u.fulfill_secret_request(card.id, &input).await.map_err(e)?;
+            let mut warnings = warnings;
+            warnings.extend(result.proxy_warnings.iter().cloned());
+            ok(result, warnings)
+        }
+        Request::DenySecretRequest { request, digest } => {
+            let pending = u.secret_requests(false).await.map_err(e)?;
+            let card =
+                klav_client::secret_requests::find_secret_request(&pending, &request).map_err(e)?;
+            ok(
+                u.deny_secret_request(card.id, &digest).await.map_err(e)?,
+                warnings,
+            )
+        }
         Request::AgentExposure { agent } => ok(u.agent_exposure(agent).await.map_err(e)?, warnings),
         Request::AgentRevocations => {
             let pending = u.pending_revocations();

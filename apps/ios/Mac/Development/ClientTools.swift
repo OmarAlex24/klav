@@ -74,14 +74,18 @@ struct ClientTools: Sendable {
         return text.isEmpty ? String(localized: "klav ended with code \(status).") : text
     }
 
-    func clients() throws -> [ClientRow] { try run(["client", "list"], as: ClientList.self).clients }
+    func clientList() throws -> ClientList { try run(["client", "list"]) }
+
+    func clients() throws -> [ClientRow] { try clientList().clients }
 
     func skillStatus() throws -> SkillStatus { try run(["skill", "status"]) }
 
-    /// The skill this `klav` carries, as text (`klav skill show`), for
+    /// A skill this `klav` carries, as text (`klav skill show [name]`), for
     /// «See the changes» (§6).
-    func bundledSkill() throws -> String {
-        let result = try system.run(paths.cli, ["skill", "show"], environment: environment)
+    func bundledSkill(name: String? = nil) throws -> String {
+        var args = ["skill", "show"]
+        if let name, name != "klav" { args.append(name) }
+        let result = try system.run(paths.cli, args, environment: environment)
         guard result.status == 0 else { throw SetupError.failed(Self.message(result.errors, status: result.status)) }
         return String(decoding: result.output, as: UTF8.self)
     }
@@ -119,13 +123,14 @@ struct ClientTools: Sendable {
     /// What the person chose for one copy (§6): bring it up to date, keep
     /// their edits, put Klav's back (theirs is kept next to it), adopt an
     /// identical one, or install it again.
-    func skill(_ action: SkillAction, in folder: String) throws -> SkillReport {
+    func skill(_ action: SkillAction, in folder: String, name: String? = nil) throws -> SkillReport {
+        let extra = name.map { ["--skill", $0] } ?? []
         switch action {
-        case .update: return try run(["skill", "update", "--dir", folder])
-        case .keepMine: return try run(["skill", "update", "--keep-mine", "--dir", folder])
-        case .replace: return try run(["skill", "install", "--dir", folder, "--replace"])
-        case .adopt: return try run(["skill", "install", "--dir", folder, "--adopt"])
-        case .install: return try run(["skill", "install", "--dir", folder])
+        case .update: return try run(["skill", "update", "--dir", folder] + extra)
+        case .keepMine: return try run(["skill", "update", "--keep-mine", "--dir", folder] + extra)
+        case .replace: return try run(["skill", "install", "--dir", folder, "--replace"] + extra)
+        case .adopt: return try run(["skill", "install", "--dir", folder, "--adopt"] + extra)
+        case .install: return try run(["skill", "install", "--dir", folder] + extra)
         }
     }
 }
@@ -139,6 +144,15 @@ enum SkillAction {
 /// `klav client list --json`.
 struct ClientList: Decodable, Sendable {
     let clients: [ClientRow]
+    let orchestrators: [OrchestratorRow]?
+}
+
+/// An agent orchestrator detected on this Mac (read-only info).
+struct OrchestratorRow: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let installed: String
+    let note: String
 }
 
 /// A row of `klav client list --json`.
@@ -253,11 +267,35 @@ struct PlanSkill: Decodable, Sendable {
 /// `klav skill status --json`.
 struct SkillStatus: Decodable, Sendable {
     struct Bundled: Decodable, Sendable { let version: String }
+    struct BundledSkill: Decodable, Equatable, Sendable {
+        let name: String
+        let version: String
+    }
     let bundled: Bundled
+    let bundledSkills: [BundledSkill]?
     let copies: [SkillCopy]
+    let missingBundled: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case bundled, copies
+        case bundledSkills = "bundled_skills"
+        case missingBundled = "missing_bundled"
+    }
+
+    /// The version of the bundled skill matching `copy` (`klav`, `klav-migrate`, …).
+    func bundledVersion(for copy: SkillCopy) -> String {
+        bundledSkills?.first(where: { $0.name == copy.skillName })?.version ?? bundled.version
+    }
+
+    /// Summary of all carried skills (e.g. `klav 0.3.4, klav-migrate 0.2.0`).
+    var carriedSummary: String {
+        guard let list = bundledSkills, list.count > 1 else { return bundled.version }
+        return list.map { "\($0.name) \($0.version)" }.joined(separator: ", ")
+    }
 }
 
 struct SkillCopy: Decodable, Identifiable, Sendable {
+    let name: String?
     let path: String
     /// `current`, `older`, `newer`, `edited`, `removed` or `unmanaged`.
     let state: String
@@ -271,15 +309,20 @@ struct SkillCopy: Decodable, Identifiable, Sendable {
     var id: String { path }
 
     enum CodingKeys: String, CodingKey {
-        case path, state, version, adoptable, clients
+        case name, path, state, version, adoptable, clients
         case keptMine = "kept_mine"
+    }
+
+    /// The skill's name (`klav`, `klav-migrate`, …).
+    var skillName: String {
+        name ?? URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
     }
 
     /// Edited, and kept as it is over this `klav`'s skill: no warning and
     /// nothing to choose until the next version.
     func kept(over bundled: String?) -> Bool { state == "edited" && bundled != nil && keptMine == bundled }
 
-    /// The skills folder (`<folder>/klav/SKILL.md`), what `--dir` takes.
+    /// The skills folder (`<folder>/<name>/SKILL.md`), what `--dir` takes.
     var folder: String {
         URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent().path
     }
@@ -389,7 +432,7 @@ extension SkillCopy {
 /// The client an agent is for, when its name is a client's (§3.1).
 enum AgentClients {
     static let names = ["claude-code": "Claude Code", "claude-desktop": "Claude Desktop", "codex": "Codex",
-                        "cursor": "Cursor", "vscode": "VS Code"]
+                        "cursor": "Cursor", "vscode": "VS Code", "antigravity": "Antigravity"]
 
     static func client(of agentName: String) -> String? { names[agentName] }
 }

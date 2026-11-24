@@ -12,6 +12,7 @@
 //!   decisions of a person, revocations, and pauses and resumes of agents.
 
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
+use hpke::rand_core::CryptoRng;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -19,10 +20,11 @@ use super::context::ProjectContext;
 use super::encoding::{Kind, Tuple, strip_header};
 use super::identity::{IdentityKeyPair, PublicIdentity};
 use super::keys::{ProjectKey, sealed::Sealed};
+use super::share::{ENC_LEN, hpke_open, hpke_seal};
 use super::sign::{self, Signature};
 use super::{CryptoError, aead};
 use crate::generator::wordlist;
-use crate::ids::{AccountId, AgentId, ApprovalId, TaskId};
+use crate::ids::{AccountId, AgentId, ApprovalId, SecretRequestId, TaskId};
 
 /// Number of words in a pairing code.
 pub const PAIRING_WORDS: usize = 6;
@@ -54,6 +56,17 @@ pub const LABEL_GRANT_LABELS: &str = "klav/v1/agent/labels";
 /// person saw (ADR 0033, amendment of 2026-11-10, F3). Not a signature: it
 /// never leaves the device.
 pub const LABEL_GRANT_CHANGE: &str = "klav/v1/grant-change";
+/// HPKE `info` label of an agent secret-request proposal (kind `0x25`,
+/// spec §13.14, ADR 0046 §1).
+pub const LABEL_SECRET_REQUEST_PROPOSAL: &str = "klav/v1/agent/secret-request";
+/// Signature label of a person's decision on a secret request (spec §13.14,
+/// ADR 0046 §3).
+pub const LABEL_SECRET_REQUEST_DECISION: &str = "klav/v1/sig/secret-request-decision";
+/// Maximum length of a sealed secret-request proposal blob (kind `0x25`,
+/// 8 KiB, ADR 0046 §1).
+pub const MAX_SECRET_REQUEST_BLOB_LEN: usize = 8192;
+/// Fixed overhead of a kind `0x25` HPKE blob: `header(2) ‖ enc(32) ‖ tag(16)`.
+pub const SECRET_REQUEST_BLOB_OVERHEAD: usize = 2 + ENC_LEN + 16;
 
 /// The six pairing words of an identity (spec §13.1):
 /// `word_i = EFF[u32_be(fingerprint[4i..4i+4]) mod 7776]`. The modulus is
@@ -585,6 +598,162 @@ pub fn open_grant_labels(
         Kind::GrantLabels,
         &labels_tuple(ctx, agent),
         blob,
+    )
+}
+
+pub(crate) fn secret_request_info(
+    account_id: AccountId,
+    agent: AgentId,
+    request: SecretRequestId,
+    account: &PublicIdentity,
+) -> Tuple {
+    let mut t = Tuple::new(LABEL_SECRET_REQUEST_PROPOSAL);
+    t.push(account_id.as_bytes())
+        .push(agent.as_bytes())
+        .push(request.as_bytes())
+        .push(&account.fingerprint());
+    t
+}
+
+pub(crate) fn seal_secret_request_with_rng(
+    account: &PublicIdentity,
+    account_id: AccountId,
+    agent: AgentId,
+    request: SecretRequestId,
+    plaintext: &[u8],
+    rng: &mut impl CryptoRng,
+) -> Result<Vec<u8>, CryptoError> {
+    if plaintext.is_empty()
+        || plaintext.len() > MAX_SECRET_REQUEST_BLOB_LEN - SECRET_REQUEST_BLOB_OVERHEAD
+    {
+        return Err(CryptoError::Malformed("secret request proposal length"));
+    }
+    account.hpke_public_key()?;
+    let header = Kind::SecretRequestProposal.header();
+    let info = secret_request_info(account_id, agent, request, account);
+    let (enc, ciphertext) = hpke_seal(account.x25519(), info.as_bytes(), &header, plaintext, rng)?;
+    let mut out = Vec::with_capacity(2 + enc.len() + ciphertext.len());
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&enc);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Seals a secret-request proposal (kind `0x25`, spec §13.14, ADR 0046 §1)
+/// with HPKE to the account's public identity so the server never sees item
+/// titles, field names, URLs or proxy upstreams:
+/// `header(2) ‖ enc(32) ‖ ciphertext(n) ‖ tag(16)`, with
+/// `info = tuple("klav/v1/agent/secret-request", account_id, agent_id, request_id, account_fingerprint)`
+/// and `aad = header`.
+pub fn seal_secret_request(
+    account: &PublicIdentity,
+    account_id: AccountId,
+    agent: AgentId,
+    request: SecretRequestId,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    seal_secret_request_with_rng(
+        account,
+        account_id,
+        agent,
+        request,
+        plaintext,
+        &mut hpke::rand_core::UnwrapErr(getrandom::SysRng),
+    )
+}
+
+/// Opens a sealed secret-request proposal (kind `0x25`, spec §13.14).
+pub fn open_secret_request(
+    account: &IdentityKeyPair,
+    account_id: AccountId,
+    agent: AgentId,
+    request: SecretRequestId,
+    blob: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+    if blob.len() <= SECRET_REQUEST_BLOB_OVERHEAD || blob.len() > MAX_SECRET_REQUEST_BLOB_LEN {
+        return Err(CryptoError::Malformed("secret request proposal length"));
+    }
+    let body = strip_header(blob, Kind::SecretRequestProposal)?;
+    let (enc, ciphertext) = body.split_at(ENC_LEN);
+    let info = secret_request_info(account_id, agent, request, account.public());
+    let plaintext = hpke_open(
+        &account.hpke_private_key(),
+        enc,
+        info.as_bytes(),
+        &Kind::SecretRequestProposal.header(),
+        ciphertext,
+    )?;
+    if plaintext.is_empty() {
+        return Err(CryptoError::Malformed("empty secret request proposal"));
+    }
+    Ok(plaintext)
+}
+
+/// A person's decision on a secret request, as signed by the account
+/// (spec §13.14, ADR 0046 §3):
+/// `tuple("klav/v1/sig/secret-request-decision", request_id, agent_id,
+/// proposal_digest, decision_bytes, u64_be(decided_at_ms))`.
+#[derive(Debug, Clone, Copy)]
+pub struct SecretRequestDecisionToSign<'a> {
+    /// The secret request.
+    pub request: SecretRequestId,
+    /// The agent that asked.
+    pub agent: AgentId,
+    /// `SHA-256(proposal_bytes)` of the decrypted proposal.
+    pub proposal_digest: &'a [u8; 32],
+    /// Exact JSON bytes of [`crate::secret_request::SecretRequestDecision`],
+    /// stored and returned verbatim.
+    pub decision: &'a [u8],
+    /// When the person decided, Unix ms.
+    pub decided_at_ms: u64,
+}
+
+impl SecretRequestDecisionToSign<'_> {
+    pub(crate) fn fields(&self) -> [Vec<u8>; 5] {
+        [
+            self.request.as_bytes().to_vec(),
+            self.agent.as_bytes().to_vec(),
+            self.proposal_digest.to_vec(),
+            self.decision.to_vec(),
+            self.decided_at_ms.to_be_bytes().to_vec(),
+        ]
+    }
+
+    /// The exact encoded bytes signed by [`sign_secret_request_decision`].
+    #[cfg(test)]
+    pub(crate) fn message(&self) -> Vec<u8> {
+        let mut tuple = Tuple::new(LABEL_SECRET_REQUEST_DECISION);
+        for field in self.fields() {
+            tuple.push(&field);
+        }
+        tuple.into_bytes()
+    }
+}
+
+/// Signs a secret-request decision with the account identity.
+pub fn sign_secret_request_decision(
+    account: &IdentityKeyPair,
+    decision: &SecretRequestDecisionToSign<'_>,
+) -> Signature {
+    sign::sign(
+        account,
+        LABEL_SECRET_REQUEST_DECISION,
+        &refs(&decision.fields()),
+    )
+    .expect("valid label")
+}
+
+/// Verifies [`sign_secret_request_decision`].
+pub fn verify_secret_request_decision(
+    account: &PublicIdentity,
+    decision: &SecretRequestDecisionToSign<'_>,
+    signature: &Signature,
+) -> Result<(), CryptoError> {
+    sign::verify(
+        account,
+        LABEL_SECRET_REQUEST_DECISION,
+        &refs(&decision.fields()),
+        signature,
     )
 }
 

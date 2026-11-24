@@ -45,6 +45,9 @@ protocol VaultEngine: AnyObject, Sendable {
     func decideTask(id: String, approve: Bool, choice: TaskChoiceInput?, requestDigest: String) throws -> TaskItem
     func addToTask(approvalId: String, requestDigest: String) throws -> TaskItem
     func endTask(id: String) throws -> TaskItem
+    func secretRequests() throws -> [SecretRequestItem]
+    func fulfillSecretRequest(id: String, input: SecretRequestFulfillInput) throws -> SecretRequestFulfillOutput
+    func denySecretRequest(id: String, proposalDigest: String) throws -> SecretRequestItem
     func agents() throws -> [AgentItem]
     func approveAgent(id: String, pairingWords: String, projectIds: [String], expiresInDays: UInt32?) throws -> AgentItem
     func denyAgent(id: String) throws

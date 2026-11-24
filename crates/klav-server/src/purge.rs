@@ -174,6 +174,16 @@ pub(crate) async fn purge_expired(state: &AppState, now: i64) -> ApiResult<Purge
     if tasks > 0 {
         tracing::info!(tasks, "tasks ended by expiry");
     }
+    // Secret requests past their expiry lose their proposal blobs (ADR 0046 §1).
+    let secret_requests = crate::routes::secret_requests::sweep(
+        state,
+        crate::routes::secret_requests::Sweep::All,
+        now,
+    )
+    .await?;
+    if secret_requests > 0 {
+        tracing::info!(secret_requests, "secret requests expired and blobs swept");
+    }
 
     if let Err(e) = remove_orphan_files(state).await {
         tracing::warn!(error = ?e, "orphan attachment sweep failed");

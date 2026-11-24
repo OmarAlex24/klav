@@ -1098,6 +1098,156 @@ pub struct PasskeyFlushInfo {
     pub set_aside_ids: Vec<String>,
 }
 
+/// Validated `setup_url` on a [`SecretRequestItem`] (ADR 0046, T235).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SecretRequestSetupUrlItem {
+    /// Canonical `https://…` URL.
+    pub url: String,
+    /// Lowercase ASCII host displayed prominently in the warning banner.
+    pub host: String,
+    /// `true` when any label starts with `xn--` (IDN homograph cue).
+    pub has_punycode: bool,
+}
+
+/// Optional `klav-proxy` profile proposed inside a secret request (ADR 0046 Q3,
+/// T239). Always unchecked by default on the person's card.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SecretRequestProxyProposalItem {
+    /// Optional preset name.
+    pub preset: Option<String>,
+    /// Profile name (`vercel-ai`, `stripe`, …).
+    pub profile: String,
+    /// Upstream `https://…` URL.
+    pub upstream: String,
+    /// Header name (`authorization`, …).
+    pub header: String,
+    /// Prefix before the secret (`Bearer `, …).
+    pub prefix: String,
+    /// Allowed HTTP methods.
+    pub methods: Vec<String>,
+    /// HTTP methods that ask per call.
+    pub ask_methods: Vec<String>,
+    /// Allowed path prefixes.
+    pub path_prefixes: Vec<String>,
+    /// Optional per-minute rate limit (`1..=600`).
+    pub rate_per_minute: Option<u32>,
+}
+
+/// A `(vault_id, project_id)` pair inside the asking agent's grant.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SecretRequestProjectPair {
+    pub vault_id: String,
+    pub project_id: String,
+}
+
+/// A secret request from an agent as the person sees it (ADR 0046).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SecretRequestItem {
+    /// Secret request ID.
+    pub id: String,
+    /// `pending`, `fulfilled`, `denied`, `expired`.
+    pub status: String,
+    /// Asking agent ID.
+    pub agent_id: String,
+    /// Asking agent name (sanitized; "name set by the agent").
+    pub agent: String,
+    /// `create` or `update`.
+    pub mode: String,
+    /// Target item ID (`update` mode).
+    pub target_item_id: Option<String>,
+    /// Real `klav://Vault/Project/Title` from this device's vault (`update` mode).
+    pub target_reference: Option<String>,
+    /// Real item title from this device's vault (`update` mode).
+    pub target_title: Option<String>,
+    /// Real item kind from this device's vault (`update` mode).
+    pub target_kind: Option<String>,
+    /// Plaintext reason supplied by the agent.
+    pub reason: String,
+    /// Created at (Unix ms).
+    pub created_at: i64,
+    /// Expires at (Unix ms).
+    pub expires_at: i64,
+    /// Decided at (Unix ms), if decided.
+    pub decided_at: Option<i64>,
+    /// SHA-256 (hex) of the canonical proposal JSON reviewed by the person.
+    pub proposal_digest: String,
+    /// Non-empty when the proposal could not be opened or validated (refuses
+    /// fulfillment).
+    pub proposal_error: Option<String>,
+    /// Proposed item kind (`create` mode: `api_key`, `login`, `note`, `ssh_key`, `totp`).
+    pub kind: Option<String>,
+    /// Proposed item title (`create` mode).
+    pub title: Option<String>,
+    /// Proposed destination vault ID (`create` mode).
+    pub vault_id: Option<String>,
+    /// Proposed destination project ID (`create` mode).
+    pub project_id: Option<String>,
+    /// Proposed secret field name (`api_key`, `password`, …).
+    pub field: Option<String>,
+    /// Short placeholder hint for the hidden input.
+    pub placeholder: Option<String>,
+    /// Validated `setup_url` with full host and punycode cue (T235).
+    pub setup_url: Option<SecretRequestSetupUrlItem>,
+    /// Proposed non-secret `base_url` (`api_key` items).
+    pub base_url: Option<String>,
+    /// Agent-suggested `login` URLs (unchecked by default, T234).
+    pub urls: Vec<String>,
+    /// Proposed non-secret notes (`create` mode).
+    pub notes: Option<String>,
+    /// Optional proposed `klav-proxy` profile (unchecked by default, T239).
+    pub proxy_proposal: Option<SecretRequestProxyProposalItem>,
+    /// Projects in the asking agent's verified grant, so the card can badge
+    /// "Shared with `<agent>`" vs "Not shared with `<agent>`".
+    pub agent_projects: Vec<SecretRequestProjectPair>,
+}
+
+/// Values the person enters to fulfill a pending secret request (ADR 0046).
+/// Never implements `Debug` or `Display` (T34).
+#[derive(Clone, uniffi::Record)]
+pub struct SecretRequestFulfillInput {
+    /// `proposal_digest` (hex) of the card the person reviewed.
+    pub digest: String,
+    /// Secret value entered in the hidden input (never logged).
+    pub secret: String,
+    /// Destination vault name or ID (`create` mode).
+    pub vault: Option<String>,
+    /// Destination project name or ID (`create` mode).
+    pub project: Option<String>,
+    /// Title override (`create` mode).
+    pub title: Option<String>,
+    /// Secret field name override.
+    pub field: Option<String>,
+    /// Explicitly confirmed login URLs (`None` saves no agent-suggested URLs, T234).
+    pub urls: Option<Vec<String>>,
+    /// Notes override (`create` mode).
+    pub notes: Option<String>,
+    /// Allow duplicate title in the destination project.
+    pub allow_duplicate: bool,
+    /// Explicitly opted-in proxy grant (unchecked by default, requires presence, T239).
+    pub grant_proxy: bool,
+    /// Expected proxy grant base version (staleness check when `grant_proxy` is true).
+    pub proxy_base_version: Option<u64>,
+    /// Person confirmed every device is updated (first per-item grant on account).
+    pub every_device_updated: bool,
+    /// Proxy pairing words shown (first grant for a pending proxy).
+    pub shown_words: Option<String>,
+}
+
+/// Result of fulfilling a secret request (ADR 0046). Carries no secret values.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SecretRequestFulfillOutput {
+    /// Updated card with the signed decision.
+    pub card: SecretRequestItem,
+    /// Created or updated vault item summary.
+    pub item: ItemInfo,
+    /// Whether the saved item is inside the asking agent's grant (T236).
+    pub in_grant: bool,
+    /// Granted `klav-proxy` profile name, if `grant_proxy` succeeded.
+    pub proxy_profile: Option<String>,
+    /// Warnings returned by the proxy grant step, if any.
+    pub proxy_warnings: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1108,4 +1258,8 @@ mod tests {
     static_assertions::assert_not_impl_any!(ItemEdit: std::fmt::Debug, std::fmt::Display);
     static_assertions::assert_not_impl_any!(TotpInfo: std::fmt::Debug, std::fmt::Display);
     static_assertions::assert_not_impl_any!(GeneratedPassword: std::fmt::Debug, std::fmt::Display);
+    static_assertions::assert_not_impl_any!(
+        SecretRequestFulfillInput: std::fmt::Debug,
+        std::fmt::Display
+    );
 }

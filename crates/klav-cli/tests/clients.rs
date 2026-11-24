@@ -17,6 +17,7 @@ use common::{Device, PASSWORD, Run, ServerProcess};
 use serde_json::{Value, json};
 
 const SKILL: &str = include_str!("../../../skill/SKILL.md");
+const MIGRATE_SKILL: &str = include_str!("../../../skill/klav-migrate/SKILL.md");
 const LEGACY_SKILL: &str = include_str!("fixtures/skill-0.1.0.md");
 const SYSTEM_PATH: &str = "/usr/bin:/bin";
 
@@ -1565,7 +1566,12 @@ fn skill_copies_are_klavs_only_while_unchanged() {
     let dir = mac.root.join("skills");
     let dir_s = dir.to_str().expect("utf-8");
     let copy = dir.join("klav/SKILL.md");
+    let migrate_copy = dir.join("klav-migrate/SKILL.md");
     assert_eq!(mac.klav(&["skill", "show"]).ok().stdout, SKILL);
+    assert_eq!(
+        mac.klav(&["skill", "show", "klav-migrate"]).ok().stdout,
+        MIGRATE_SKILL
+    );
 
     // Nothing installed and no client: the folder must be named.
     let out = mac.klav(&["skill", "install"]);
@@ -1579,10 +1585,16 @@ fn skill_copies_are_klavs_only_while_unchanged() {
     let plan = mac.json(&["skill", "install", "--dry-run", "--json"]);
     assert_eq!(
         plan["copies"],
-        json!([{
-            "path": mac.skill_copy(".agents").display().to_string(),
-            "action": "install",
-        }]),
+        json!([
+            {
+                "path": mac.skill_copy(".agents").display().to_string(),
+                "action": "install",
+            },
+            {
+                "path": mac.home.join(".agents/skills/klav-migrate/SKILL.md").display().to_string(),
+                "action": "install",
+            }
+        ]),
         "{plan}"
     );
     std::fs::remove_file(&code).expect("rm code");
@@ -1592,26 +1604,34 @@ fn skill_copies_are_klavs_only_while_unchanged() {
 
     let plan = mac.json(&["skill", "install", "--dir", dir_s, "--dry-run", "--json"]);
     assert_eq!(plan["copies"][0]["action"], "install");
-    assert!(!copy.exists());
+    assert_eq!(plan["copies"][1]["action"], "install");
+    assert!(!copy.exists() && !migrate_copy.exists());
     mac.json(&["skill", "install", "--dir", dir_s, "--json"]);
     assert_eq!(read(&copy), SKILL);
+    assert_eq!(read(&migrate_copy), MIGRATE_SKILL);
     assert_eq!(common::mode(&copy), 0o644);
+    assert_eq!(common::mode(&migrate_copy), 0o644);
     let status = mac.json(&["skill", "status", "--json"]);
-    assert_eq!(status["bundled"]["version"], "0.3.2");
-    let state = |status: &Value| {
+    assert_eq!(status["bundled"]["version"], "0.3.4");
+    assert_eq!(
+        status["bundled_skills"].as_array().expect("skills").len(),
+        2
+    );
+    let state_of = |status: &Value, p: &Path| {
         status["copies"]
             .as_array()
             .expect("copies")
             .iter()
-            .find(|c| c["path"] == copy.display().to_string())
+            .find(|c| c["path"] == p.display().to_string())
             .map(|c| c["state"].clone())
     };
-    assert_eq!(state(&status), Some(json!("current")));
+    assert_eq!(state_of(&status, &copy), Some(json!("current")));
+    assert_eq!(state_of(&status, &migrate_copy), Some(json!("current")));
 
     // Edited: left alone, until the person says what to do.
     std::fs::write(&copy, format!("{SKILL}\nMy own rule.\n")).expect("edit");
     assert_eq!(
-        state(&mac.json(&["skill", "status", "--json"])),
+        state_of(&mac.json(&["skill", "status", "--json"]), &copy),
         Some(json!("edited"))
     );
     let update = mac.json(&["skill", "update", "--json"]);
@@ -1619,7 +1639,7 @@ fn skill_copies_are_klavs_only_while_unchanged() {
     assert!(read(&copy).contains("My own rule."));
     let kept = mac.json(&["skill", "update", "--keep-mine", "--json"]);
     assert_eq!(kept["copies"][0]["action"], "keep_mine");
-    assert!(mac.registry()["skills"][0]["kept_mine"] == "0.3.2");
+    assert!(mac.registry()["skills"][0]["kept_mine"] == "0.3.4");
     let install = mac.json(&["skill", "install", "--dir", dir_s, "--json"]);
     assert_eq!(install["copies"][0]["action"], "leave");
     let replaced = mac.json(&["skill", "install", "--dir", dir_s, "--replace", "--json"]);
@@ -1631,7 +1651,7 @@ fn skill_copies_are_klavs_only_while_unchanged() {
     // Removed: not put back by `update`, only by `install`.
     std::fs::remove_file(&copy).expect("rm");
     assert_eq!(
-        state(&mac.json(&["skill", "status", "--json"])),
+        state_of(&mac.json(&["skill", "status", "--json"]), &copy),
         Some(json!("removed"))
     );
     mac.json(&["skill", "update", "--json"]);
@@ -1639,18 +1659,142 @@ fn skill_copies_are_klavs_only_while_unchanged() {
     mac.json(&["skill", "install", "--dir", dir_s, "--json"]);
     assert_eq!(read(&copy), SKILL);
 
-    // Uninstall removes it and its folder.
+    // Uninstall removes both bundled skills and their folders.
     mac.json(&["skill", "uninstall", "--dir", dir_s, "--json"]);
     assert!(!copy.exists() && !copy.parent().expect("dir").exists());
+    assert!(!migrate_copy.exists() && !migrate_copy.parent().expect("dir").exists());
     assert_eq!(mac.registry()["skills"], json!([]));
 
     // A klav skill Klav never published: not adopted, not replaced unasked.
     std::fs::create_dir_all(copy.parent().expect("dir")).expect("dir");
     let mine = "---\nname: klav\ndescription: mine\n---\nmine\n";
     std::fs::write(&copy, mine).expect("mine");
-    let adopt = mac.json(&["skill", "install", "--dir", dir_s, "--adopt", "--json"]);
+    let adopt = mac.json(&[
+        "skill", "install", "--dir", dir_s, "--skill", "klav", "--adopt", "--json",
+    ]);
     assert_eq!(adopt["copies"][0]["action"], "leave", "{adopt}");
     let out = mac.json(&["skill", "uninstall", "--dir", dir_s, "--json"]);
     assert_eq!(out["copies"][0]["action"], "leave");
     assert_eq!(read(&copy), mine);
+}
+
+/// Upgrading from an older Klav that only installed `klav/SKILL.md`:
+/// `klav skill status` reports the missing bundled companion skill
+/// (`klav-migrate`) and `klav skill update` installs it automatically into
+/// active Klav skill folders — while still never reviving a copy the person
+/// removed.
+#[test]
+fn skill_update_installs_newly_bundled_companion_skill_once() {
+    let mac = Mac::new();
+    let dir = mac.root.join("skills");
+    let dir_s = dir.to_str().expect("utf-8");
+    let primary = dir.join("klav/SKILL.md");
+    let migrate = dir.join("klav-migrate/SKILL.md");
+
+    // Simulate an existing install that only has `klav/SKILL.md`.
+    mac.json(&[
+        "skill", "install", "--dir", dir_s, "--skill", "klav", "--json",
+    ]);
+    assert!(primary.exists() && !migrate.exists());
+
+    // `status` reports `klav-migrate` as a missing bundled skill.
+    let status = mac.json(&["skill", "status", "--json"]);
+    assert_eq!(
+        status["missing_bundled"],
+        json!([migrate.display().to_string()]),
+        "{status}"
+    );
+
+    // `update` installs `klav-migrate` automatically without touching `klav`.
+    let updated = mac.json(&["skill", "update", "--json"]);
+    assert!(migrate.exists(), "{updated}");
+    assert_eq!(read(&migrate), MIGRATE_SKILL);
+    let step = updated["copies"]
+        .as_array()
+        .expect("copies")
+        .iter()
+        .find(|c| c["path"] == migrate.display().to_string())
+        .expect("migrate step");
+    assert_eq!(step["action"], "install");
+
+    // Once the person removes `klav-migrate`, `update` must NEVER put it back.
+    std::fs::remove_file(&migrate).expect("rm migrate");
+    let updated2 = mac.json(&["skill", "update", "--json"]);
+    assert!(
+        !migrate.exists(),
+        "removed companion must stay removed: {updated2}"
+    );
+    let status2 = mac.json(&["skill", "status", "--json"]);
+    assert!(status2.get("missing_bundled").is_none(), "{status2}");
+}
+
+/// Antigravity detection, `~/.gemini/config/mcp_config.json` editing,
+/// `~/.gemini/config/skills/` installation, and read-only T3 Code detection.
+#[test]
+fn antigravity_client_and_t3_code_detection() {
+    let server = ServerProcess::start(900);
+    let mac = Mac::new();
+    mac.signup(&server);
+
+    // Prepare Antigravity's config dir and T3 Code's settings file.
+    let gemini_cfg = mac.home.join(".gemini/config");
+    std::fs::create_dir_all(&gemini_cfg).expect("gemini config");
+    let mcp_config = gemini_cfg.join("mcp_config.json");
+    std::fs::write(
+        &mcp_config,
+        "{\n  \"mcpServers\": {\n    \"Other\": {\"command\": \"/bin/true\", \"args\": [], \"env\": {\"API_KEY\": \"secret-other\"}}\n  }\n}\n",
+    )
+    .expect("mcp_config");
+    let t3_dir = mac.home.join(".t3/userdata");
+    std::fs::create_dir_all(&t3_dir).expect("t3 dir");
+    std::fs::write(t3_dir.join("settings.json"), "{}").expect("t3 settings");
+
+    let list = mac.json(&["client", "list", "--json"]);
+    let agy = row(&list, "antigravity");
+    assert_eq!(agy["state"], "not_connected", "{agy}");
+    assert_eq!(
+        agy["skills_dir"],
+        gemini_cfg.join("skills").display().to_string()
+    );
+    assert!(
+        agy["note"].as_str().is_some_and(|n| n.contains("T3 Code")),
+        "{agy}"
+    );
+    assert_eq!(list["orchestrators"][0]["id"], "t3-code", "{list}");
+
+    // Connect Antigravity: writes `mcpServers.klav` without `type`, keeps
+    // `Other` untouched, never prints `secret-other`, and installs both skills.
+    let done = mac.json(&[
+        "client",
+        "connect",
+        "antigravity",
+        "--yes",
+        "--json",
+        "--key-store",
+        "file",
+    ]);
+    assert!(!done.to_string().contains("secret-other"));
+    let parsed: Value = serde_json::from_str(&read(&mcp_config)).expect("json");
+    assert_eq!(
+        parsed["mcpServers"]["Other"]["env"]["API_KEY"],
+        "secret-other"
+    );
+    assert_eq!(parsed["mcpServers"]["klav"]["command"], klav_exe());
+    assert!(parsed["mcpServers"]["klav"].get("type").is_none());
+    assert_eq!(read(&gemini_cfg.join("skills/klav/SKILL.md")), SKILL);
+    assert_eq!(
+        read(&gemini_cfg.join("skills/klav-migrate/SKILL.md")),
+        MIGRATE_SKILL
+    );
+
+    // Disconnect removes Klav's entry and both skills, keeping `Other`.
+    mac.json(&["client", "disconnect", "antigravity", "--yes", "--json"]);
+    let after: Value = serde_json::from_str(&read(&mcp_config)).expect("json");
+    assert!(after["mcpServers"].get("klav").is_none());
+    assert_eq!(
+        after["mcpServers"]["Other"]["env"]["API_KEY"],
+        "secret-other"
+    );
+    assert!(!gemini_cfg.join("skills/klav/SKILL.md").exists());
+    assert!(!gemini_cfg.join("skills/klav-migrate/SKILL.md").exists());
 }

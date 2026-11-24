@@ -272,8 +272,13 @@ fn list(ctx: &Ctx, flag: &JsonFlag) -> CliResult<()> {
         .into_iter()
         .map(|c| row(c, &env, &ctx.home, &registry, &command.path))
         .collect();
+    let orchestrators = clients::orchestrators(&env);
     if flag.json {
-        return output::json(&json!({ "checked": clients::CHECKED, "clients": rows }));
+        let mut payload = json!({ "checked": clients::CHECKED, "clients": rows });
+        if !orchestrators.is_empty() {
+            payload["orchestrators"] = json!(orchestrators);
+        }
+        return output::json(&payload);
     }
     output::table(
         &["CLIENT", "STATE", "AGENT", "SETTINGS"],
@@ -308,6 +313,9 @@ fn list(ctx: &Ctx, flag: &JsonFlag) -> CliResult<()> {
         if let Some(note) = &r.note {
             output::info(&format!("{}: {note}", r.name));
         }
+    }
+    for o in &orchestrators {
+        output::info(&format!("{}: {}", o.name, o.note));
     }
     Ok(())
 }
@@ -402,6 +410,15 @@ fn row(client: ClientId, env: &Env, home: &Home, registry: &Registry, ours: &Pat
             "the klav entry was not written by Klav: `klav client connect` asks before replacing or adopting it".into(),
         );
     }
+    if client == ClientId::Antigravity
+        && out.note.is_none()
+        && out.installed.is_some()
+        && clients::t3_code_installed(env).is_some()
+    {
+        out.note = Some(
+            "T3 Code links this skills folder for its Antigravity threads (it isolates Antigravity's MCP config, so those threads use `klav agent …`)".into(),
+        );
+    }
     out
 }
 
@@ -426,6 +443,7 @@ enum Action {
 /// What happens to a skill copy.
 #[derive(Debug, Clone, Serialize)]
 struct SkillStep {
+    name: &'static str,
     path: PathBuf,
     /// `install`, `replace`, `remove`, `keep` or `leave` (not Klav's, or
     /// edited: untouched).
@@ -1114,16 +1132,22 @@ fn connect_skill_steps(
     if no_skill {
         return Vec::new();
     }
-    client
-        .skills_dir(env)
-        .map(|dir| skill_step_for_connect(&dir, registry))
-        .into_iter()
+    let Some(dir) = client.skills_dir(env) else {
+        return Vec::new();
+    };
+    skill::BUNDLED
+        .iter()
+        .map(|bundled| skill_step_for_connect(&dir, bundled, registry))
         .collect()
 }
 
-/// The skill copy `connect` installs in `skills_dir`.
-fn skill_step_for_connect(skills_dir: &Path, registry: &Registry) -> SkillStep {
-    let path = skill::file_in(skills_dir);
+/// One skill copy `connect` installs in `skills_dir`.
+fn skill_step_for_connect(
+    skills_dir: &Path,
+    bundled: &skill::BundledSkill,
+    registry: &Registry,
+) -> SkillStep {
+    let path = bundled.file_in(skills_dir);
     let copy = skill::inspect(&path, registry);
     let (action, note) = match copy.as_ref().map(|c| c.state) {
         None => ("install", None),
@@ -1141,16 +1165,17 @@ fn skill_step_for_connect(skills_dir: &Path, registry: &Registry) -> SkillStep {
         Some(CopyState::Unmanaged) => (
             "leave",
             Some(
-                "a klav skill Klav did not write is there: Klav leaves it (`klav skill install --adopt` or `--replace`)"
+                "a skill Klav did not write is there: Klav leaves it (`klav skill install --adopt` or `--replace`)"
                     .to_owned(),
             ),
         ),
     };
     SkillStep {
+        name: bundled.name,
         path,
         action,
         state: copy.map(|c| c.state),
-        version: skill::version(),
+        version: bundled.version(),
         note,
     }
 }
@@ -1795,31 +1820,36 @@ fn disconnect_skill_steps(
         })
         .map(String::as_str)
         .collect();
-    let path = skill::file_in(&dir);
-    let Some(copy) = skill::inspect(&path, registry) else {
-        return Vec::new();
-    };
-    let (action, note) = if !others.is_empty() {
-        ("keep", Some(format!("{} also reads it", others.join(", "))))
-    } else {
-        match copy.state {
-            CopyState::Current | CopyState::Older | CopyState::Newer => ("remove", None),
-            CopyState::Edited if args.force => ("remove", None),
-            CopyState::Edited => (
-                "leave",
-                Some("it has changes: Klav leaves it (`--force` removes it)".to_owned()),
-            ),
-            CopyState::Removed => ("remove", None),
-            CopyState::Unmanaged => ("leave", Some("not written by Klav".to_owned())),
-        }
-    };
-    vec![SkillStep {
-        path,
-        action,
-        state: Some(copy.state),
-        version: skill::version(),
-        note,
-    }]
+    let mut steps = Vec::new();
+    for bundled in skill::BUNDLED {
+        let path = bundled.file_in(&dir);
+        let Some(copy) = skill::inspect(&path, registry) else {
+            continue;
+        };
+        let (action, note) = if !others.is_empty() {
+            ("keep", Some(format!("{} also reads it", others.join(", "))))
+        } else {
+            match copy.state {
+                CopyState::Current | CopyState::Older | CopyState::Newer => ("remove", None),
+                CopyState::Edited if args.force => ("remove", None),
+                CopyState::Edited => (
+                    "leave",
+                    Some("it has changes: Klav leaves it (`--force` removes it)".to_owned()),
+                ),
+                CopyState::Removed => ("remove", None),
+                CopyState::Unmanaged => ("leave", Some("not written by Klav".to_owned())),
+            }
+        };
+        steps.push(SkillStep {
+            name: bundled.name,
+            path,
+            action,
+            state: Some(copy.state),
+            version: bundled.version(),
+            note,
+        });
+    }
+    steps
 }
 
 // -------------------------------------------------------------- restore

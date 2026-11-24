@@ -1,6 +1,6 @@
-//! Agent clients (Claude Code, Claude Desktop, Codex, Cursor, VS Code):
-//! where each keeps its MCP settings and skills, whether it is installed,
-//! and whether an organization manages it (ADR 0033 §2).
+//! Agent clients (Claude Code, Claude Desktop, Codex, Cursor, VS Code,
+//! Antigravity): where each keeps its MCP settings and skills, whether it is
+//! installed, and whether an organization manages it (ADR 0033 §2).
 //!
 //! Everything comes from each client's documentation, checked on
 //! [`CHECKED`]. When a client moves its files, this table changes; Klav
@@ -24,7 +24,7 @@ use serde::Serialize;
 use crate::error::{CliResult, usage};
 
 /// When the table below was last checked against each client's docs.
-pub(crate) const CHECKED: &str = "2026-11-05";
+pub(crate) const CHECKED: &str = "2026-11-23";
 
 /// Environment variable that moves every system path this module reads
 /// (`/Applications`, `/Library`, `/etc`, `/usr/local/bin`, and the system
@@ -154,14 +154,16 @@ pub(crate) enum ClientId {
     Codex,
     Cursor,
     Vscode,
+    Antigravity,
 }
 
-pub(crate) const ALL: [ClientId; 5] = [
+pub(crate) const ALL: [ClientId; 6] = [
     ClientId::ClaudeCode,
     ClientId::ClaudeDesktop,
     ClientId::Codex,
     ClientId::Cursor,
     ClientId::Vscode,
+    ClientId::Antigravity,
 ];
 
 /// How a client's MCP settings are written.
@@ -184,6 +186,10 @@ pub(crate) enum SkillHome {
     Claude,
     /// `~/.agents/skills`, shared by Codex, Cursor and VS Code.
     Agents,
+    /// `~/.gemini/config/skills` (or `~/.gemini/antigravity/skills` if only
+    /// that folder exists): read by Antigravity and linked into T3 Code's
+    /// Antigravity provider.
+    Gemini,
     /// No folder: the skills live in the account (Claude Desktop).
     None,
 }
@@ -196,6 +202,7 @@ impl ClientId {
             ClientId::Codex => "codex",
             ClientId::Cursor => "cursor",
             ClientId::Vscode => "vscode",
+            ClientId::Antigravity => "antigravity",
         }
     }
 
@@ -210,15 +217,18 @@ impl ClientId {
             ClientId::Codex => "Codex",
             ClientId::Cursor => "Cursor",
             ClientId::Vscode => "VS Code",
+            ClientId::Antigravity => "Antigravity",
         }
     }
 
     pub(crate) fn format(self) -> Format {
         match self {
-            ClientId::ClaudeCode | ClientId::ClaudeDesktop => Format::Json {
-                container: "mcpServers",
-                stdio_type: false,
-            },
+            ClientId::ClaudeCode | ClientId::ClaudeDesktop | ClientId::Antigravity => {
+                Format::Json {
+                    container: "mcpServers",
+                    stdio_type: false,
+                }
+            }
             ClientId::Cursor | ClientId::Vscode => Format::Json {
                 container: "mcpServers",
                 stdio_type: true,
@@ -262,6 +272,7 @@ impl ClientId {
             ClientId::ClaudeCode => SkillHome::Claude,
             ClientId::ClaudeDesktop => SkillHome::None,
             ClientId::Codex | ClientId::Cursor | ClientId::Vscode => SkillHome::Agents,
+            ClientId::Antigravity => SkillHome::Gemini,
         }
     }
 
@@ -284,10 +295,21 @@ impl ClientId {
             // The portable format, the one VS Code's guided flow writes. VS
             // Code's own `mcp.json` (now «deprecated») is not written.
             ClientId::Vscode => Some(env.home.join(".copilot/mcp-config.json")),
+            ClientId::Antigravity => {
+                let config = env.home.join(".gemini/config/mcp_config.json");
+                let legacy = env.home.join(".gemini/antigravity/mcp_config.json");
+                if config.exists() || config.parent().is_some_and(|p| p.is_dir()) {
+                    Some(config)
+                } else if legacy.exists() || legacy.parent().is_some_and(|p| p.is_dir()) {
+                    Some(legacy)
+                } else {
+                    Some(config)
+                }
+            }
         }
     }
 
-    /// The skills folder (`…/skills`, which holds `klav/SKILL.md`).
+    /// The skills folder (`…/skills`, which holds `<name>/SKILL.md`).
     pub(crate) fn skills_dir(self, env: &Env) -> Option<PathBuf> {
         skills_dir(self.skill_home(), env)
     }
@@ -319,8 +341,52 @@ impl ClientId {
                 .app("Visual Studio Code.app")
                 .map(|p| p.display().to_string())
                 .or_else(|| env.which("code").map(|p| p.display().to_string())),
+            ClientId::Antigravity => env
+                .app("Antigravity.app")
+                .map(|p| p.display().to_string())
+                .or_else(|| env.which("agy").map(|p| p.display().to_string()))
+                .or_else(|| found(env.home.join(".gemini/antigravity")))
+                .or_else(|| found(env.home.join(".gemini/config"))),
         }
     }
+}
+
+/// An agent orchestrator (like T3 Code) that delegates to the clients above
+/// instead of keeping its own MCP config: read-only information for the person.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OrchestratorInfo {
+    pub(crate) id: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) installed: String,
+    pub(crate) note: &'static str,
+}
+
+/// What says T3 Code is installed, if anything.
+pub(crate) fn t3_code_installed(env: &Env) -> Option<String> {
+    let found = |p: PathBuf| p.exists().then(|| p.display().to_string());
+    env.app("T3 Code.app")
+        .or_else(|| env.app("T3 Code (Nightly).app"))
+        .or_else(|| env.which("t3"))
+        .map(|p| p.display().to_string())
+        .or_else(|| {
+            let p = env.home.join(".t3/bin/t3");
+            is_executable(&p).then(|| p.display().to_string())
+        })
+        .or_else(|| found(env.home.join(".t3/userdata/settings.json")))
+}
+
+/// Detected orchestrators on this machine.
+pub(crate) fn orchestrators(env: &Env) -> Vec<OrchestratorInfo> {
+    let mut out = Vec::new();
+    if let Some(installed) = t3_code_installed(env) {
+        out.push(OrchestratorInfo {
+            id: "t3-code",
+            name: "T3 Code",
+            installed,
+            note: "T3 Code inherits MCP settings and skills from Claude Code, Codex and Cursor, and links Antigravity's skills folder (it isolates Antigravity's MCP config, so Antigravity threads in T3 Code use `klav agent …`).",
+        });
+    }
+    out
 }
 
 /// The skills folder of a [`SkillHome`].
@@ -328,15 +394,24 @@ pub(crate) fn skills_dir(home: SkillHome, env: &Env) -> Option<PathBuf> {
     match home {
         SkillHome::Claude => Some(env.claude_dir().join("skills")),
         SkillHome::Agents => Some(env.home.join(".agents/skills")),
+        SkillHome::Gemini => {
+            let config_root = env.home.join(".gemini/config");
+            let legacy_root = env.home.join(".gemini/antigravity");
+            if config_root.is_dir() || !legacy_root.is_dir() {
+                Some(config_root.join("skills"))
+            } else {
+                Some(legacy_root.join("skills"))
+            }
+        }
         SkillHome::None => None,
     }
 }
 
-/// Every folder where a `klav` skill may sit, Klav's or not: the two Klav
+/// Every folder where a Klav skill may sit, Klav's or not: the ones Klav
 /// writes, and those some clients also read (`~/.cursor/skills`,
 /// `~/.copilot/skills`) or used to (`~/.codex/skills`).
 pub(crate) fn known_skill_dirs(env: &Env) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = [SkillHome::Claude, SkillHome::Agents]
+    let mut dirs: Vec<PathBuf> = [SkillHome::Claude, SkillHome::Agents, SkillHome::Gemini]
         .into_iter()
         .filter_map(|h| skills_dir(h, env))
         .collect();

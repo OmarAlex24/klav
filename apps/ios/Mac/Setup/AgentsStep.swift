@@ -12,7 +12,7 @@ struct AgentsStep: View {
     var inSettings = false
 
     @State private var rows: [ClientRow] = []
-    @State private var copies: [SkillCopy] = []
+    @State private var skillStatus: SkillStatus?
     /// The chosen skills folders.
     @State private var chosen: Set<String> = []
     @State private var loaded = false
@@ -37,7 +37,7 @@ struct AgentsStep: View {
             } else if !loaded {
                 Status(text: String(localized: "Looking for agent clients…"), tone: .plain)
             } else if candidates.isEmpty {
-                Status(text: String(localized: "No agent client with a skills folder on this Mac: Claude Code, Codex or Cursor."), tone: .plain)
+                Status(text: String(localized: "No agent client with a skills folder on this Mac: Claude Code, Codex, Cursor or Antigravity."), tone: .plain)
                 notNow(String(localized: "Continue"))
             } else if let installed {
                 ForEach(installed.copies, id: \.path) { step in
@@ -62,7 +62,7 @@ struct AgentsStep: View {
     }
 
     private var done: Bool {
-        installed != nil || (!candidates.isEmpty && candidates.allSatisfy { copy(in: $0.folder)?.state == "current" })
+        installed != nil || (!candidates.isEmpty && candidates.allSatisfy { folderUpToDate($0.folder) })
     }
 
     /// One skills folder and the clients that read it: Codex, Cursor and
@@ -94,7 +94,19 @@ struct AgentsStep: View {
         return out
     }
 
-    private func copy(in folder: String) -> SkillCopy? { copies.first { $0.folder == folder } }
+    private func folderUpToDate(_ folder: String) -> Bool {
+        let wanted = URL(fileURLWithPath: folder).standardizedFileURL.path
+        let inFolder = (skillStatus?.copies ?? []).filter {
+            URL(fileURLWithPath: $0.folder).standardizedFileURL.path == wanted
+        }
+        guard !inFolder.isEmpty else { return false }
+        if let expected = skillStatus?.bundledSkills, !expected.isEmpty {
+            return expected.allSatisfy { b in
+                inFolder.contains { $0.skillName == b.name && $0.state == "current" }
+            }
+        }
+        return inFolder.allSatisfy { $0.state == "current" }
+    }
 
     /// The clients to pass to `klav skill install`: one installed client
     /// per chosen folder.
@@ -105,13 +117,13 @@ struct AgentsStep: View {
     private var choose: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(candidates) { group in
-                if copy(in: group.folder)?.state == "current" {
-                    Status(text: String(localized: "\(group.names): the skill is installed"), tone: .done)
+                if folderUpToDate(group.folder) {
+                    Status(text: String(localized: "\(group.names): the skills are installed"), tone: .done)
                 } else {
                     Toggle(isOn: Binding(get: { chosen.contains(group.folder) },
                                          set: { on in if on { chosen.insert(group.folder) } else { chosen.remove(group.folder) } })) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Install Klav’s skill in \(group.names)").font(.ui(13.5)).foregroundStyle(Palette.tinta)
+                            Text("Install Klav’s skills in \(group.names)").font(.ui(13.5)).foregroundStyle(Palette.tinta)
                                 .fixedSize(horizontal: false, vertical: true)
                             Text(verbatim: shortPath(group.folder) + "/klav/")
                                 .font(.mono(11.5)).foregroundStyle(Palette.gris)
@@ -204,9 +216,9 @@ struct AgentsStep: View {
                 (try tools.clients(), try? tools.skillStatus())
             }.value
             rows = found
-            copies = status?.copies ?? []
-            // Chosen unless the skill there is already up to date.
-            chosen = Set(candidates.filter { copy(in: $0.folder)?.state != "current" }.map(\.folder))
+            skillStatus = status
+            // Chosen unless all bundled skills there are already up to date.
+            chosen = Set(candidates.filter { !folderUpToDate($0.folder) }.map(\.folder))
             problem = nil
         } catch {
             problem = describe(error)

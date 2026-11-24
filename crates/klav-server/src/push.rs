@@ -26,6 +26,7 @@ use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use data_encoding::{BASE64, BASE64URL_NOPAD};
 use klav_core::ids::AccountId;
 use klav_proto::auth::PushEnvironment;
+use klav_proto::secret_request::SECRET_REQUEST_TTL_MS;
 use klav_proto::task::TASK_DECIDE_TTL_MS;
 use secrecy::ExposeSecret;
 use serde_json::json;
@@ -49,6 +50,8 @@ const REGISTRATION_PUSHES_PER_HOUR: usize = 5;
 const APPROVAL_PUSHES_PER_HOUR: usize = 60;
 /// At most this many task pushes per account and hour.
 const TASK_PUSHES_PER_HOUR: usize = 30;
+/// At most this many secret-request pushes per account and hour (ADR 0046).
+const SECRET_REQUEST_PUSHES_PER_HOUR: usize = 30;
 /// At most this many pushes of each account-deletion kind per account and
 /// hour (asking is already limited to 3 a week; canceling is not).
 const ACCOUNT_PUSHES_PER_HOUR: usize = 10;
@@ -65,6 +68,9 @@ pub(crate) enum PushKind {
     Agent,
     /// An agent asks for a task (ADR 0021 §8; the ID is the task's).
     Task,
+    /// An agent asks the person to add or update a secret (ADR 0046; the ID is
+    /// the request's).
+    SecretRequest,
     /// The person asked to delete the account (ADR 0037 §5.4; no ID).
     AccountDeletion,
     /// The deletion was canceled (no ID).
@@ -80,6 +86,7 @@ impl PushKind {
             Self::Approval => "approval",
             Self::Agent => "agent",
             Self::Task => "task",
+            Self::SecretRequest => "secret_request",
             Self::AccountDeletion | Self::AccountCanceled | Self::AccountDeleted => "account",
         }
     }
@@ -98,6 +105,7 @@ impl PushKind {
             Self::Approval => APPROVAL_PUSHES_PER_HOUR,
             Self::Agent => REGISTRATION_PUSHES_PER_HOUR,
             Self::Task => TASK_PUSHES_PER_HOUR,
+            Self::SecretRequest => SECRET_REQUEST_PUSHES_PER_HOUR,
             Self::AccountDeletion | Self::AccountCanceled | Self::AccountDeleted => {
                 ACCOUNT_PUSHES_PER_HOUR
             }
@@ -109,6 +117,7 @@ impl PushKind {
             Self::Approval => ("PUSH_APPROVAL_TITLE", "PUSH_APPROVAL_BODY"),
             Self::Agent => ("PUSH_AGENT_TITLE", "PUSH_AGENT_BODY"),
             Self::Task => ("PUSH_TASK_TITLE", "PUSH_TASK_BODY"),
+            Self::SecretRequest => ("PUSH_SECRET_REQUEST_TITLE", "PUSH_SECRET_REQUEST_BODY"),
             Self::AccountDeletion => ("PUSH_ACCOUNT_DELETION_TITLE", "PUSH_ACCOUNT_DELETION_BODY"),
             Self::AccountCanceled => ("PUSH_ACCOUNT_CANCELED_TITLE", "PUSH_ACCOUNT_CANCELED_BODY"),
             Self::AccountDeleted => ("PUSH_ACCOUNT_DELETED_TITLE", "PUSH_ACCOUNT_DELETED_BODY"),
@@ -454,6 +463,7 @@ async fn send_one(
                 + match kind {
                     PushKind::Approval => APPROVAL_TTL_MS / 1000,
                     PushKind::Task => TASK_DECIDE_TTL_MS / 1000,
+                    PushKind::SecretRequest => SECRET_REQUEST_TTL_MS / 1000,
                     PushKind::Agent => PENDING_TTL_MS / 1000,
                     PushKind::AccountDeletion
                     | PushKind::AccountCanceled
@@ -521,6 +531,19 @@ mod tests {
         assert_eq!(task["aps"]["alert"]["loc-key"], "PUSH_TASK_BODY");
         assert!(task["aps"]["alert"].get("body").is_none());
         assert!(task["aps"]["alert"].get("title").is_none());
+        let sr = payload(PushKind::SecretRequest, "0195-sr");
+        assert_eq!(
+            sr["klav"],
+            json!({ "type": "secret_request", "id": "0195-sr" })
+        );
+        assert_eq!(sr["aps"]["thread-id"], "secret_request");
+        assert_eq!(
+            sr["aps"]["alert"]["title-loc-key"],
+            "PUSH_SECRET_REQUEST_TITLE"
+        );
+        assert_eq!(sr["aps"]["alert"]["loc-key"], "PUSH_SECRET_REQUEST_BODY");
+        assert!(sr["aps"]["alert"].get("body").is_none());
+        assert!(sr["aps"]["alert"].get("title").is_none());
         for (kind, title, body) in [
             (
                 PushKind::AccountDeletion,
@@ -567,6 +590,7 @@ mod tests {
             PushKind::Agent,
             PushKind::Approval,
             PushKind::Task,
+            PushKind::SecretRequest,
             PushKind::AccountDeletion,
             PushKind::AccountCanceled,
             PushKind::AccountDeleted,

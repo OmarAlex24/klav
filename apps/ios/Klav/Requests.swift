@@ -9,7 +9,7 @@ struct RequestsSection: View {
     var review: (AgentItem) -> Void
 
     var body: some View {
-        if !model.approvals.isEmpty || !model.registrations.isEmpty || !model.tasks.isEmpty {
+        if !model.approvals.isEmpty || !model.registrations.isEmpty || !model.tasks.isEmpty || !model.secretRequests.isEmpty {
             // The space above each card goes inside its ID, so scrolling to
             // the one a notification opened leaves its cross corners in view.
             VStack(alignment: .leading, spacing: 0) {
@@ -17,6 +17,11 @@ struct RequestsSection: View {
                     RegistrationCard<AppModel>(agent: agent, highlighted: highlighted == agent.id) { review(agent) }
                         .padding(.top, 16)
                         .id(agent.id)
+                }
+                ForEach(model.secretRequests, id: \.decisionKey) { sr in
+                    SecretRequestCard<AppModel>(card: sr, highlighted: highlighted == sr.id)
+                        .padding(.top, 16)
+                        .id(sr.id)
                 }
                 ForEach(model.tasks.filter { $0.status == "pending" }, id: \.decisionKey) { task in
                     PendingTaskCard<AppModel>(card: task, highlighted: highlighted == task.id)

@@ -129,3 +129,61 @@ export declare function requestTask(spec: TaskSpec, options?: TaskOptions & { wa
 export declare function waitTask(id: string, options?: TaskOptions & { timeout?: string }): Promise<Task>;
 export declare function getTask(id: string, options?: TaskOptions): Promise<Task>;
 export declare function endTask(id: string, options: TaskOptions & { reason: string }): Promise<Task>;
+
+export interface ProxyProposalSpec {
+  profile: string;
+  upstream: string;
+  header?: string;
+  prefix?: string;
+  methods?: string[];
+  askMethods?: string[];
+  pathPrefixes?: string[];
+  ratePerMinute?: number;
+}
+
+/** A secret request proposal (ADR 0046): metadata only, never a secret value. */
+export interface SecretRequestSpec {
+  reason: string;
+  mode?: "create" | "update";
+  type?: "api-key" | "login" | "note" | "ssh-key" | "totp";
+  title?: string;
+  ref?: string;
+  field?: string;
+  project?: string;
+  placeholder?: string;
+  setupUrl?: string;
+  baseUrl?: string;
+  urls?: string[];
+  notes?: string;
+  proxyProposal?: ProxyProposalSpec;
+}
+
+/** Verified outcome of a secret request (never carries the secret value). */
+export type SecretRequestOutcome =
+  | { status: "pending"; request_id: string; expires_at: number }
+  | {
+      status: "fulfilled";
+      request_id: string;
+      in_grant: boolean;
+      reference?: string;
+      vault_id?: string;
+      project_id?: string;
+      item_id?: string;
+      field: string;
+      proxy_profile?: string;
+    }
+  | { status: "denied"; request_id: string }
+  | { status: "expired"; request_id: string };
+
+export declare function requestSecret(
+  spec: SecretRequestSpec,
+  options?: TaskOptions & { wait?: string },
+): Promise<SecretRequestOutcome>;
+export declare function waitSecretRequest(
+  id: string,
+  options?: TaskOptions & { timeout?: string },
+): Promise<SecretRequestOutcome>;
+export declare function getSecretRequest(
+  id: string,
+  options?: TaskOptions,
+): Promise<SecretRequestOutcome>;

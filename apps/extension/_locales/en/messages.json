@@ -1665,5 +1665,56 @@
   },
   "passkey_uv_cancel": {
     "message": "Cancel"
+  },
+  "sr_agent_asks": {
+    "message": "$1 asks for a secret"
+  },
+  "sr_create_title": {
+    "message": "Save a new item ($1)"
+  },
+  "sr_update_title": {
+    "message": "Replace $1 on $2"
+  },
+  "sr_update_history": {
+    "message": "The previous value stays in password history."
+  },
+  "sr_target_missing": {
+    "message": "This item is not in your vault or is in the trash."
+  },
+  "sr_title_label": {
+    "message": "Title"
+  },
+  "sr_project_label": {
+    "message": "Project"
+  },
+  "sr_project_shared": {
+    "message": "$1 (shared with $2)"
+  },
+  "sr_project_not_shared": {
+    "message": "$1 (not shared with $2)"
+  },
+  "sr_secret_label": {
+    "message": "Secret ($1)"
+  },
+  "sr_secret_empty": {
+    "message": "Enter a secret value first."
+  },
+  "sr_setup_warning": {
+    "message": "Link suggested by $1 — check the domain before opening: $2"
+  },
+  "sr_setup_punycode": {
+    "message": "This domain uses internationalized labels (punycode). Check every character carefully."
+  },
+  "sr_setup_open": {
+    "message": "Open $1"
+  },
+  "sr_urls_heading": {
+    "message": "Sites suggested by $1 (unchecked by default):"
+  },
+  "sr_proxy_note": {
+    "message": "Also proposes proxy profile “$1” ($2). Saving here stores the vault item only; grant the proxy in the Klav Mac app or CLI."
+  },
+  "sr_save": {
+    "message": "Save to Klav"
   }
 }

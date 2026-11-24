@@ -1383,6 +1383,37 @@ ADR [0036](decisiones/0036-sandboxes-de-agentes.md) §5, §7 modo (a) y §10. Co
     En el último caso termina pronto (10 s como mucho si el proxy no responde, 15 s si otro programa tiene el puerto de un `state.json` viejo y no contesta) y, salvo `klav_forward_cannot_stop`, con `0`. Ese `1` viene del reenviador de otro paquete, que tiene el puerto: con `set -e` para el *script* antes de `up`, que con el puerto ocupado tampoco arrancaría. Sin la opción, `down` no mira `KLAV_SANDBOX` y para el reenviador de este mismo paquete: en un *setup script* que se repite, el `up` siguiente se negaría con `klav_forward_already_claimed`. Un `klav-forward` anterior a esta opción sale con `2` (`unexpected argument '--if-other-package' found`, o `unrecognized subcommand 'down'` si es anterior a `down`), sin tocar nada.
 - **`up` sale** con `0` al reclamar o si su reenviador ya corre, `1` con `klav_forward_already_claimed`, `klav_forward_state_not_private` o `klav_forward_cannot_record`, `2` sin paquete o con uno que no es un paquete (sin repetirlo) o si no puede crear ni alcanzar su directorio de estado (el `next` no ofrece otro: puede ser donde otro usuario ya reclamó este paquete, y entonces hace falta `klav sandbox start`), y con los códigos de `status` si el proxy rechaza el reclamo.
 
+### 8.12 Solicitudes de secreto
+
+ADR [0046](decisiones/0046-agent-secret-requests.md). Un agente activo que no sea un proxy de credenciales pide a la persona que añada un elemento que falta (`mode: "create"`) o actualice un campo secreto de uno existente (`mode: "update"`). La propuesta viaja cifrada con HPKE a la identidad X25519 de la cuenta (`proposal_blob`, tipo `0x25`, especificación §13.14); por estas rutas nunca pasa un valor secreto.
+
+**El agente** (peticiones firmadas, §8.2):
+
+| Método y ruta | Cuerpo | Respuesta |
+|---|---|---|
+| `POST /v1/agent/secret-requests` | `{ id, mode, target_item_id?, reason, proposal_digest, proposal_blob }` | `202 { request_id, expires_at }` · `400` · `403` · `404` · `409` · `429` |
+| `GET /v1/agent/secret-requests/{id}?wait=N` | — | `SecretRequestInfo` (sin `proposal_blob`; con `wait`, *long-poll* de hasta 30 s, como §8.3) |
+
+- El agente elige `id` (`SecretRequestId`) antes de sellar `proposal_blob`, porque `id` va en el contexto HPKE (especificación §13.14). Un `id` ya usado responde `409`.
+- Un agente cuyo grant lo hace proxy de credenciales (perfiles, emisores o reglas `proxy`) recibe `403`. Cualquier otro agente activo puede pedir secretos aunque su grant no tenga `create` ni `update`.
+- `proposal_digest` mide 32 bytes; `proposal_blob` lleva la cabecera `0x01 0x25` y mide entre 51 bytes y 8 KiB (`400` si no). El cuerpo entero mide como mucho 16 KiB (`400`). `reason` es obligatorio (1–500 caracteres sin caracteres invisibles).
+- Con `mode: "create"`, `target_item_id` debe faltar (`400`). Con `mode: "update"`, `target_item_id` es obligatorio (`400`) y debe ser un elemento vivo (sin papelera, sin purgar, en bóveda activa) dentro de un proyecto del grant del agente; fuera del grant o inexistente responden ambos `404` (T236).
+- Como máximo 5 solicitudes pendientes por agente (`429`). Cada solicitud vence a la hora (`expires_at`).
+- Con APNs, cada solicitud nueva avisa a los teléfonos con `type: "secret_request"` y el ID (sin texto ni motivo, §3), y `GET /v1/events` emite el evento SSE `secret_request` (`{ request_id, status }`).
+
+**La persona:**
+
+| Método y ruta | Cuerpo | Respuesta |
+|---|---|---|
+| `GET /v1/secret-requests` | — | `{ secret_requests: [SecretRequestInfo] }` (las 100 más recientes) |
+| `GET /v1/secret-requests/{id}` | — | `SecretRequestInfo` |
+| `POST /v1/secret-requests/{id}/decide` | `{ decision, signature, decided_at }` | `SecretRequestInfo` |
+
+- **`SecretRequestInfo`:** `id`, `agent_id`, `agent_name`, `mode` (`create` · `update`), `target_item_id?`, `reason`, `proposal_digest`, `proposal_blob?` (presente solo mientras está `pending` para los dispositivos de la persona), `status` (`pending` · `fulfilled` · `denied` · `expired`), `created_at`, `expires_at`, `decided_at?`, `decision?` y `signature?`.
+- **`decide`:** comprueba que la solicitud siga `pending` y sin vencer (`409`), que el agente siga activo (`409`), que `decided_at` esté a ±5 min (`400`), que `decision` sea un `SecretRequestDecision` válido para esa solicitud y ese agente (`400`), y que `signature` verifique con la identidad de la cuenta (especificación §13.14, `400`). Al guardar la decisión borra `proposal_blob` (`NULL`) en la misma transacción.
+- **Limpieza y revocación:** al revocar el agente o al vencer el plazo de una hora (en consultas o en el barrido periódico), las solicitudes pendientes pasan a `expired` y pierden `proposal_blob`.
+- **En la bitácora (§9):** `secret_request.created` (actor `agent`, con `secret_request_id`, `proposal_digest`, `item_id?`, `reason` y la petición firmada **sin cuerpo**, para no conservar `proposal_blob`) y `secret_request.decided` (actor `person`, con `device_id`, `agent_id`, `secret_request_id`, `proposal_digest`, `vault_id?`, `project_id?`, `item_id?`, `outcome` = `fulfilled` o `denied`, `decided_at`, `signed` = `decision` y `account_signature`).
+
 ## 9. Bitácora
 
 Cada cuenta tiene una cadena de eventos con hash (especificación §13.7). El
@@ -1405,8 +1436,9 @@ registrado.
     `task.decided`, `task.ended`, `rotate.started`, `rotate.confirmed`,
     `rotate.cancelled`, `item.created`, `item.updated`, `item.trashed`,
     `item.restored`, `item.purged`, `project.rotated`, `passkey.used`,
-    `agents.paused`, `agents.resumed`, `sandbox.issued`, `sandbox.claimed`
-    o `sandbox.revoked`;
+    `agents.paused`, `agents.resumed`, `sandbox.issued`, `sandbox.claimed`,
+    `sandbox.revoked`, `sandbox.revoke_requested`, `sandbox.store_reset`,
+    `secret_request.created` o `secret_request.decided`;
   - `vault_id?`, `project_id?`, `item_id?`, `permission?`;
   - `outcome?`: `allow`, `ask` o `deny` (la política), o `approve`/`deny`
     (una decisión);

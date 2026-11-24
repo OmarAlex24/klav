@@ -1156,13 +1156,14 @@ de agentes, y registra su agente (ADR
 [0033](decisiones/0033-agentes-desde-la-app-de-mac.md) §1–§5). La app de Mac
 hace lo mismo llamando a estos comandos.
 
-| `<cliente>` | Configuración | Cómo la escribe Klav | Skill |
+| `<cliente>` | Configuración | Cómo la escribe Klav | Skills |
 |---|---|---|---|
-| `claude-code` | `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` si está definida), `mcpServers.klav` | solo con `claude mcp add\|remove --scope user`; sin `claude` no escribe y da el comando | `~/.claude/skills/klav/` |
+| `claude-code` | `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` si está definida), `mcpServers.klav` | solo con `claude mcp add\|remove --scope user`; sin `claude` no escribe y da el comando | `~/.claude/skills/{klav,klav-migrate}/` |
 | `claude-desktop` (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json`, `mcpServers.klav` | edición del archivo; hay que reiniciar la app | no tiene carpeta: le llega por las descripciones de las herramientas |
-| `codex` | `$CODEX_HOME/config.toml` (`~/.codex/`), `mcp_servers.klav` | `codex mcp add\|remove` si está `codex`; si no, edición del TOML | `~/.agents/skills/klav/` |
-| `cursor` | `~/.cursor/mcp.json`, `mcpServers.klav` con `type: stdio` | edición del archivo | `~/.agents/skills/klav/` |
-| `vscode` | `~/.copilot/mcp-config.json`, `mcpServers.klav` con `type: stdio` | edición del archivo | `~/.agents/skills/klav/` |
+| `codex` | `$CODEX_HOME/config.toml` (`~/.codex/`), `mcp_servers.klav` | `codex mcp add\|remove` si está `codex`; si no, edición del TOML | `~/.agents/skills/{klav,klav-migrate}/` |
+| `cursor` | `~/.cursor/mcp.json`, `mcpServers.klav` con `type: stdio` | edición del archivo | `~/.agents/skills/{klav,klav-migrate}/` |
+| `vscode` | `~/.copilot/mcp-config.json`, `mcpServers.klav` con `type: stdio` | edición del archivo | `~/.agents/skills/{klav,klav-migrate}/` |
+| `antigravity` | `~/.gemini/config/mcp_config.json` (o `~/.gemini/antigravity/mcp_config.json`), `mcpServers.klav` | edición del archivo | `~/.gemini/config/skills/{klav,klav-migrate}/` (también enlazada por T3 Code para sus hilos de Antigravity) |
 
 - **`list`** no cambia nada. Por cliente dice si está instalado, dónde está
   su configuración (y a dónde apunta si es un enlace), cómo se escribe, la
@@ -1326,39 +1327,43 @@ hace lo mismo llamando a estos comandos.
 
 ```sh
 klav skill status [--json]
-klav skill install [--client CLIENTE… | --dir DIR…] [--dry-run] [--replace | --adopt] [--json]
-klav skill update [--keep-mine] [--dir DIR…] [--json]
-klav skill uninstall [--client CLIENTE… | --dir DIR…] [--force] [--json]
-klav skill show
+klav skill install [--client CLIENTE… | --dir DIR…] [--skill NOMBRE…] [--dry-run] [--replace | --adopt] [--json]
+klav skill update [--keep-mine] [--dir DIR…] [--skill NOMBRE…] [--json]
+klav skill uninstall [--client CLIENTE… | --dir DIR…] [--skill NOMBRE…] [--force] [--json]
+klav skill show [NOMBRE]
 ```
 
-La skill [`skill/SKILL.md`](../skill/SKILL.md) va dentro del binario (ADR
-0033 §6 y E3). Tiene las reglas, no los detalles de cada herramienta: esos
+Las skills [`skill/SKILL.md`](../skill/SKILL.md) (`klav`) y [`skill/klav-migrate/SKILL.md`](../skill/klav-migrate/SKILL.md) (`klav-migrate`) van dentro del binario (ADR
+0033 §6 y E3). `klav` tiene las reglas, no los detalles de cada herramienta: esos
 vienen con `tools/list` y con el `warning` y el `next` de cada respuesta. Su
-versión es `metadata.klav-skill-version` en el *frontmatter*, propia de la
-skill. Va en `<carpeta>/klav/SKILL.md`, con modo 0644.
+versión es `metadata.klav-skill-version` en el *frontmatter*, propia de cada
+skill. Van en `<carpeta>/<nombre>/SKILL.md`, con modo 0644.
 
 - Una copia es de Klav **solo mientras es lo que Klav escribió** (el SHA-256
   en `clients.json`). `status` dice de cada copia que encuentra (en
-  `~/.claude/skills`, `~/.agents/skills`, `$CODEX_HOME/skills`,
+  `~/.claude/skills`, `~/.agents/skills`, `~/.gemini/config/skills`, `$CODEX_HOME/skills`,
   `~/.cursor/skills`, `~/.copilot/skills` y donde Klav escribió) si está al
   día (`current`), es más vieja (`older`) o más nueva (`newer`), la
   editaron (`edited`), la borraron (`removed`) o no es de Klav
   (`unmanaged`). Una ajena que es idéntica a una skill que Klav publicó sale
   como `adoptable`.
-- `install` va por defecto a las carpetas de los clientes instalados.
+- `install` va por defecto a las carpetas de los clientes instalados (todas las
+  skills del binario salvo que se pase `--skill`).
   - Nunca pisa una copia editada o ajena: `--replace` pone la de Klav y deja
     la otra al lado como `SKILL.md.mine-<fecha>`.
   - `--adopt` registra como de Klav una copia ajena idéntica a una publicada.
   - Claude Desktop no tiene carpeta de skills.
-- `update` reemplaza las copias de Klav sin cambios que son más viejas.
+- `update` reemplaza las copias de Klav sin cambios que son más viejas e
+  instala automáticamente las nuevas skills acompañantes (como `klav-migrate`)
+  en carpetas donde Klav ya administra una skill activa, siempre que no existan
+  ni hayan sido borradas antes.
   - Una editada no se toca. `--keep-mine` deja de señalarla hasta que haya
     una skill más nueva.
   - Una borrada no vuelve sola: solo con `install`.
 - `uninstall` quita las copias de Klav sin cambios (una editada, con
-  `--force`) y su carpeta `klav` si queda vacía.
+  `--force`) y su carpeta si queda vacía.
 - `klav agent status` avisa con una línea cuando una copia de Klav es más
-  vieja que la de este `klav`.
+  vieja que la de este `klav` o hay una nueva skill acompañante disponible.
 
 #### `klav mcp`
 

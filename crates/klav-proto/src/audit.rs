@@ -7,8 +7,8 @@
 //! item changes are attested by the server only (ADR 0014 §6).
 
 use klav_core::ids::{
-    AgentId, ApprovalId, AttachmentId, DeviceId, ItemId, ProjectId, RotationId, SandboxId, TaskId,
-    VaultId,
+    AgentId, ApprovalId, AttachmentId, DeviceId, ItemId, ProjectId, RotationId, SandboxId,
+    SecretRequestId, TaskId, VaultId,
 };
 use klav_core::policy::Permission;
 use serde::{Deserialize, Serialize};
@@ -161,6 +161,14 @@ pub struct AuditEvent {
     /// account's lock (not signed by the account).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sandbox_ids: Vec<SandboxId>,
+    /// Secret request involved (`secret_request.created`,
+    /// `secret_request.decided`; ADR 0046).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_request_id: Option<SecretRequestId>,
+    /// SHA-256 of the canonical proposal JSON of a secret request (32 bytes,
+    /// spec §13.14): kept in the audit log while `proposal_blob` is discarded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_digest: Option<Blob>,
 }
 
 impl AuditEvent {
@@ -196,6 +204,8 @@ impl AuditEvent {
             account_signature: None,
             sandbox_id: None,
             sandbox_ids: Vec::new(),
+            secret_request_id: None,
+            proposal_digest: None,
         }
     }
 }
@@ -332,6 +342,11 @@ pub enum AgentRoute {
     /// `POST /v1/agent/sandboxes/epochs`: the proxy starts a new store
     /// (ADR 0036 E3.3, spec §13.12).
     SandboxStoreReset,
+    /// `POST /v1/agent/secret-requests`: an agent asks the person to create or
+    /// update a secret item (ADR 0046). The request body holds `proposal_blob`
+    /// which is discarded after decision or expiry, so the audit event omits
+    /// `agent_proof.body` and retains `proposal_digest` and `reason`.
+    SecretRequestCreate,
 }
 
 impl AgentRoute {
@@ -350,6 +365,7 @@ impl AgentRoute {
             "sandbox.claimed" => Self::SandboxClaim,
             "sandbox.revoked" => Self::SandboxRevoke,
             "sandbox.store_reset" => Self::SandboxStoreReset,
+            "secret_request.created" => Self::SecretRequestCreate,
             "rotate.confirmed" | "rotate.cancelled" if e.actor == ActorKind::Agent => {
                 Self::RotateFinish
             }
@@ -422,6 +438,9 @@ impl AgentRoute {
             }
             Self::SandboxStoreReset => {
                 proof.method == "POST" && path == crate::sandbox::PATH_STORE_RESET
+            }
+            Self::SecretRequestCreate => {
+                proof.method == "POST" && path == "/v1/agent/secret-requests"
             }
             Self::RotateFinish => {
                 let step = if e.action == "rotate.confirmed" {
@@ -530,5 +549,15 @@ mod tests {
             &format!("/v1/agent/items/{item}?x=1"),
         );
         assert!(!AgentRoute::Update.matches(&e, &proof));
+
+        let (sr, sr_proof) = signed(
+            "secret_request.created",
+            "POST",
+            "/v1/agent/secret-requests",
+        );
+        let sr_route = AgentRoute::of(&sr).unwrap();
+        assert_eq!(sr_route, AgentRoute::SecretRequestCreate);
+        assert!(!sr_route.needs_body());
+        assert!(sr_route.matches(&sr, &sr_proof));
     }
 }

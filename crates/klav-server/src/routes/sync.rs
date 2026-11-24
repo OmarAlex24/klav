@@ -9,7 +9,9 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Json, Router};
 use klav_core::ids::VaultId;
-use klav_proto::sync::{ChangeEvent, Changes, ChangesQuery, SyncState, VaultRevision};
+use klav_proto::sync::{
+    ChangeEvent, Changes, ChangesQuery, SecretRequestEvent, SyncState, VaultRevision,
+};
 use sqlx::Row;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::Stream;
@@ -167,6 +169,8 @@ async fn changes(
 ///   committed in between is missed);
 /// * `change` with a [`ChangeEvent`] for every committed change in a vault
 ///   the caller belongs to;
+/// * `secret_request` with a [`SecretRequestEvent`] when an agent secret
+///   request for this account is created, decided or expired (ADR 0046);
 /// * `resync` if the stream fell behind and events were dropped.
 ///
 /// Events carry IDs and revisions only. The stream closes when the access
@@ -179,8 +183,9 @@ async fn events(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let (tx, rx) = mpsc::channel(64);
     let changes = state.subscribe();
+    let secret_requests = state.subscribe_secret_requests();
     let deleted = state.subscribe_deleted_accounts();
-    tokio::spawn(forward(state, auth, changes, deleted, tx));
+    tokio::spawn(forward(state, auth, changes, secret_requests, deleted, tx));
     Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
 }
 
@@ -188,6 +193,7 @@ async fn forward(
     state: AppState,
     auth: Auth,
     mut changes: broadcast::Receiver<crate::state::VaultChange>,
+    mut secret_requests: broadcast::Receiver<crate::state::SecretRequestChange>,
     mut deleted: broadcast::Receiver<klav_core::ids::AccountId>,
     tx: mpsc::Sender<Result<Event, Infallible>>,
 ) {
@@ -225,6 +231,21 @@ async fn forward(
                 member_of.clear();
                 continue;
             }
+            sr = secret_requests.recv() => match sr {
+                Ok(change) if change.account == auth.account_id => {
+                    let payload = SecretRequestEvent {
+                        request_id: change.request_id,
+                        status: change.status,
+                    };
+                    match Event::default().event("secret_request").json_data(payload) {
+                        Ok(event) => event,
+                        Err(_) => continue,
+                    }
+                }
+                Ok(_) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => Event::default().event("resync").data("{}"),
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
             received = changes.recv() => match received {
                 Ok(change) => {
                     if !member_of.contains(&change.vault) {

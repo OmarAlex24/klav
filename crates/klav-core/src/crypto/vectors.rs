@@ -1273,6 +1273,275 @@ fn sandbox_revoke_check(case: &Value) {
     assert!(sandbox::verify_revoke(account.public(), &later, &signature).is_err());
 }
 
+// --------------------------------------------------------- secret requests --
+
+fn secret_request_inputs() -> Vec<Value> {
+    let vault_id = VaultId::from_bytes(det("vault"));
+    let project_id = ProjectId::from_bytes(det("project"));
+    let item_id = ItemId::from_bytes(det("item"));
+    let request_create = crate::ids::SecretRequestId::from_bytes(det("secret request create"));
+    let request_outside = crate::ids::SecretRequestId::from_bytes(det("secret request outside"));
+    let request_update = crate::ids::SecretRequestId::from_bytes(det("secret request update"));
+    let agent_id = AgentId::from_bytes(det("agent id"));
+
+    let create_proposal = serde_json::to_string(&crate::secret_request::SecretRequestProposal {
+        v: 1,
+        mode: crate::secret_request::SecretRequestMode::Create,
+        kind: Some(crate::model::item::ItemKind::ApiKey),
+        title: Some("Vercel AI Gateway".into()),
+        vault_id: Some(vault_id),
+        project_id: Some(project_id),
+        target_item_id: None,
+        field: "api_key".into(),
+        placeholder: Some("vck_…".into()),
+        setup_url: Some("https://vercel.com/dashboard/ai-gateway".into()),
+        base_url: Some("https://ai-gateway.vercel.sh".into()),
+        urls: Vec::new(),
+        notes: Some("Used to generate narration".into()),
+        proxy_proposal: Some(crate::secret_request::ProxyProposal {
+            preset: None,
+            profile: "vercel-ai".into(),
+            upstream: "https://ai-gateway.vercel.sh".into(),
+            header: "authorization".into(),
+            prefix: "Bearer ".into(),
+            methods: vec!["POST".into()],
+            ask_methods: Vec::new(),
+            path_prefixes: vec!["/v1".into()],
+            rate_per_minute: Some(60),
+        }),
+    })
+    .expect("proposal json");
+
+    let create_decision_in_grant =
+        serde_json::to_string(&crate::secret_request::SecretRequestDecision {
+            v: 1,
+            request_id: request_create,
+            agent_id,
+            status: crate::secret_request::SecretRequestStatus::Fulfilled,
+            in_grant: true,
+            vault_id: Some(vault_id),
+            project_id: Some(project_id),
+            item_id: Some(item_id),
+            field: Some("api_key".into()),
+            proxy_profile: Some("vercel-ai".into()),
+        })
+        .expect("decision json");
+
+    let create_decision_outside_grant =
+        serde_json::to_string(&crate::secret_request::SecretRequestDecision {
+            v: 1,
+            request_id: request_outside,
+            agent_id,
+            status: crate::secret_request::SecretRequestStatus::Fulfilled,
+            in_grant: false,
+            vault_id: None,
+            project_id: None,
+            item_id: None,
+            field: Some("api_key".into()),
+            proxy_profile: Some("vercel-ai".into()),
+        })
+        .expect("decision json");
+
+    let update_proposal = serde_json::to_string(&crate::secret_request::SecretRequestProposal {
+        v: 1,
+        mode: crate::secret_request::SecretRequestMode::Update,
+        kind: None,
+        title: None,
+        vault_id: None,
+        project_id: None,
+        target_item_id: Some(item_id),
+        field: "api_key".into(),
+        placeholder: None,
+        setup_url: None,
+        base_url: None,
+        urls: Vec::new(),
+        notes: None,
+        proxy_proposal: None,
+    })
+    .expect("proposal json");
+
+    let update_decision_denied =
+        serde_json::to_string(&crate::secret_request::SecretRequestDecision {
+            v: 1,
+            request_id: request_update,
+            agent_id,
+            status: crate::secret_request::SecretRequestStatus::Denied,
+            in_grant: false,
+            vault_id: None,
+            project_id: None,
+            item_id: None,
+            field: None,
+            proxy_profile: None,
+        })
+        .expect("decision json");
+
+    let base = json!({
+        "account_x25519_seed": hx(&det::<32>("identity x25519")),
+        "account_ed25519_seed": hx(&det::<32>("identity ed25519")),
+        "account_id": hx(&det::<16>("account")),
+        "agent_id": hx(agent_id.as_bytes()),
+        "decided_at_ms": 1_800_000_000_500u64,
+    });
+    let make = |name: &str,
+                req: crate::ids::SecretRequestId,
+                ikm_label: &str,
+                proposal: &str,
+                decision: &str| {
+        let mut c = base.clone();
+        c["name"] = json!(name);
+        c["request_id"] = json!(hx(req.as_bytes()));
+        c["ikm_e"] = json!(hx(&det::<32>(ikm_label)));
+        c["proposal"] = json!(proposal);
+        c["decision"] = json!(decision);
+        c
+    };
+    vec![
+        make(
+            "create-api-key-fulfilled-in-grant",
+            request_create,
+            "secret request ikm_e create",
+            &create_proposal,
+            &create_decision_in_grant,
+        ),
+        make(
+            "create-api-key-fulfilled-outside-grant",
+            request_outside,
+            "secret request ikm_e outside",
+            &create_proposal,
+            &create_decision_outside_grant,
+        ),
+        make(
+            "update-field-denied",
+            request_update,
+            "secret request ikm_e update",
+            &update_proposal,
+            &update_decision_denied,
+        ),
+    ]
+}
+
+fn secret_request_parts(
+    case: &Value,
+) -> (
+    IdentityKeyPair,
+    AccountId,
+    AgentId,
+    crate::ids::SecretRequestId,
+) {
+    let account = IdentityKeyPair::from_secret_bytes(
+        &array(case, "account_x25519_seed"),
+        &array(case, "account_ed25519_seed"),
+    );
+    let account_id = AccountId::from_bytes(array(case, "account_id"));
+    let agent_id = AgentId::from_bytes(array(case, "agent_id"));
+    let request_id = crate::ids::SecretRequestId::from_bytes(array(case, "request_id"));
+    (account, account_id, agent_id, request_id)
+}
+
+fn secret_request_compute(case: &Value) -> Value {
+    let (account, account_id, agent_id, request_id) = secret_request_parts(case);
+    let proposal_bytes = text(case, "proposal").as_bytes();
+    let decision_bytes = text(case, "decision").as_bytes();
+    let digest = agent::body_digest(proposal_bytes);
+    let blob = agent::seal_secret_request_with_rng(
+        account.public(),
+        account_id,
+        agent_id,
+        request_id,
+        proposal_bytes,
+        &mut FixedRng(bytes(case, "ikm_e")),
+    )
+    .expect("seal");
+    let to_sign = agent::SecretRequestDecisionToSign {
+        request: request_id,
+        agent: agent_id,
+        proposal_digest: &digest,
+        decision: decision_bytes,
+        decided_at_ms: number(case, "decided_at_ms"),
+    };
+    let sig = agent::sign_secret_request_decision(&account, &to_sign);
+    json!({
+        "account_public_identity": hx(&account.public().encode()),
+        "proposal_digest": hx(&digest),
+        "proposal_blob": hx(&blob),
+        "decision_message": hx(&to_sign.message()),
+        "decision_signature": hx(&sig.to_bytes()),
+    })
+}
+
+fn secret_request_check(case: &Value) {
+    let (account, account_id, agent_id, request_id) = secret_request_parts(case);
+    let proposal_str = text(case, "proposal");
+    let decision_str = text(case, "decision");
+    let parsed_proposal: crate::secret_request::SecretRequestProposal =
+        serde_json::from_str(proposal_str).expect("valid proposal json");
+    parsed_proposal.validate().expect("valid proposal");
+    let parsed_decision: crate::secret_request::SecretRequestDecision =
+        serde_json::from_str(decision_str).expect("valid decision json");
+    parsed_decision.validate().expect("valid decision");
+
+    let blob = bytes(case, "proposal_blob");
+    let opened = agent::open_secret_request(&account, account_id, agent_id, request_id, &blob)
+        .expect("opens");
+    assert_eq!(opened.as_slice(), proposal_str.as_bytes());
+    let digest = array::<32>(case, "proposal_digest");
+    assert_eq!(agent::body_digest(&opened), digest);
+
+    // Tampering with the blob or context fails to open.
+    let mut flipped = blob.clone();
+    let last = flipped.len() - 1;
+    flipped[last] ^= 0x01;
+    assert!(
+        agent::open_secret_request(&account, account_id, agent_id, request_id, &flipped).is_err()
+    );
+    assert!(
+        agent::open_secret_request(
+            &account,
+            account_id,
+            agent_id,
+            crate::ids::SecretRequestId::from_bytes(det("other request")),
+            &blob
+        )
+        .is_err()
+    );
+
+    let to_sign = agent::SecretRequestDecisionToSign {
+        request: request_id,
+        agent: agent_id,
+        proposal_digest: &digest,
+        decision: decision_str.as_bytes(),
+        decided_at_ms: number(case, "decided_at_ms"),
+    };
+    let sig = sign::Signature::from_bytes(array(case, "decision_signature"));
+    agent::verify_secret_request_decision(account.public(), &to_sign, &sig).expect("verifies");
+
+    // Tampering with digest or timestamp fails verification.
+    let mut bad_digest = digest;
+    bad_digest[0] ^= 0x80;
+    assert!(
+        agent::verify_secret_request_decision(
+            account.public(),
+            &agent::SecretRequestDecisionToSign {
+                proposal_digest: &bad_digest,
+                ..to_sign
+            },
+            &sig,
+        )
+        .is_err()
+    );
+    assert!(
+        agent::verify_secret_request_decision(
+            account.public(),
+            &agent::SecretRequestDecisionToSign {
+                decided_at_ms: to_sign.decided_at_ms + 1,
+                ..to_sign
+            },
+            &sig,
+        )
+        .is_err()
+    );
+}
+
 // --------------------------------------------------------- vault-key sig --
 
 fn vault_key_signature_inputs() -> Vec<Value> {
@@ -2171,6 +2440,14 @@ fn files() -> Vec<VectorFile> {
             inputs: sandbox_revoke_inputs,
             compute: sandbox_revoke_compute,
             check: sandbox_revoke_check,
+        },
+        VectorFile {
+            name: "secret-request",
+            description: "Agent secret requests (ADR 0046): HPKE-sealed proposal blob (kind 0x25) and account-signed decisions (fulfilled in grant, fulfilled outside grant, denied)",
+            spec: "§13.14",
+            inputs: secret_request_inputs,
+            compute: secret_request_compute,
+            check: secret_request_check,
         },
         VectorFile {
             name: "agentes",

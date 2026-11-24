@@ -8,11 +8,13 @@ struct ClientsPane: View {
     @EnvironmentObject private var model: MacModel
     @EnvironmentObject private var installer: Installer
     @State private var rows: [ClientRow] = []
+    @State private var orchestrators: [OrchestratorRow] = []
     @State private var skill: SkillStatus?
     @State private var loaded = false
     @State private var problem: String?
     @State private var sheet: ClientSheet?
     @State private var skillBusy: String?
+    @State private var updatingAllSkills = false
     /// The copy of the skill whose changes are shown (§6).
     @State private var diffing: SkillCopy?
     #if DEBUG
@@ -37,10 +39,14 @@ struct ClientsPane: View {
                         FieldBlock {
                             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                                 if index > 0 { Rule() }
-                                ClientRowView(row: row, copy: copy(for: row), bundled: skill?.bundled.version) { connecting in
+                                ClientRowView(row: row, copies: copies(for: row), skillStatus: skill) { connecting in
                                     sheet = ClientSheet(row: row, connecting: connecting)
                                 }
                             }
+                        }
+                        ForEach(orchestrators) { orchestrator in
+                            Notice(text: "\(orchestrator.name): \(orchestrator.note)", tone: .info)
+                                .padding(.top, 12)
                         }
                     }
                     if let skill { skillBlock(skill) }
@@ -91,30 +97,43 @@ struct ClientsPane: View {
         }
     }
 
-    /// The copy of the skill in a client's folder.
-    private func copy(for row: ClientRow) -> SkillCopy? {
-        guard let dir = row.skillsDir else { return nil }
+    /// The skill copies in a client's folder.
+    private func copies(for row: ClientRow) -> [SkillCopy] {
+        guard let dir = row.skillsDir else { return [] }
         let wanted = URL(fileURLWithPath: dir).standardizedFileURL.path
-        return skill?.copies.first { URL(fileURLWithPath: $0.folder).standardizedFileURL.path == wanted }
+        return (skill?.copies ?? []).filter { URL(fileURLWithPath: $0.folder).standardizedFileURL.path == wanted }
     }
 
-    // MARK: The skill (§6)
+    // MARK: The skills (§6)
 
     private func skillBlock(_ status: SkillStatus) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SectionLabel("Klav skill").padding(.top, 30).padding(.bottom, 10)
-            Text("This Klav carries version \(status.bundled.version). Klav keeps its own copies up to date when the app starts; a copy you edited is left as it is until you choose.")
+        let needsUpdate = status.copies.contains(where: { $0.state == "older" })
+            || !(status.missingBundled ?? []).isEmpty
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel("Klav skills")
+                Spacer()
+                if needsUpdate {
+                    if updatingAllSkills {
+                        Text("Updating…").font(.ui(11.5)).foregroundStyle(Palette.gris)
+                    } else {
+                        SmallAction(title: "Update skills") { Task { await updateAllSkills() } }
+                    }
+                }
+            }
+            .padding(.top, 30).padding(.bottom, 10)
+            Text("This Klav carries \(status.carriedSummary). Klav keeps its own copies up to date when the app starts; a copy you edited is left as it is until you choose.")
                 .font(.ui(13)).foregroundStyle(Palette.gris)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 12)
             if status.copies.isEmpty {
-                Text("No copy yet: connecting a client installs it in its folder.")
+                Text("No copy yet: connecting a client installs them in its folder.")
                     .font(.ui(13)).foregroundStyle(Palette.gris)
             } else {
                 FieldBlock {
                     ForEach(Array(status.copies.enumerated()), id: \.element.id) { index, copy in
                         if index > 0 { Rule() }
-                        skillRow(copy, bundled: status.bundled.version)
+                        skillRow(copy, bundled: status.bundledVersion(for: copy))
                     }
                 }
             }
@@ -157,7 +176,7 @@ struct ClientsPane: View {
     private func copyDetail(_ copy: SkillCopy) -> String {
         let names = (copy.clients ?? []).compactMap { id in rows.first { $0.id == id }?.name }
         let version = copy.version.map { String(localized: "Version \($0)") }
-        return ([version] + [names.isEmpty ? nil : names.joined(separator: ", ")]).compactMap { $0 }.joined(separator: " · ")
+        return ([copy.skillName, version] + [names.isEmpty ? nil : names.joined(separator: ", ")]).compactMap { $0 }.joined(separator: " · ")
     }
 
     private func actions(for copy: SkillCopy, bundled: String) -> [(SkillAction, LocalizedStringKey)] {
@@ -179,16 +198,32 @@ struct ClientsPane: View {
         skillBusy = copy.path
         let tools = ClientTools(installer)
         let folder = copy.folder
+        let name = copy.skillName
         do {
             _ = try await Task.detached(priority: .userInitiated) {
                 _ = try tools.checkSignature()
-                return try tools.skill(action, in: folder)
+                return try tools.skill(action, in: folder, name: name)
             }.value
             await load()
         } catch {
             problem = describe(error)
         }
         skillBusy = nil
+    }
+
+    private func updateAllSkills() async {
+        updatingAllSkills = true
+        let tools = ClientTools(installer)
+        do {
+            _ = try await Task.detached(priority: .userInitiated) {
+                _ = try tools.checkSignature()
+                return try tools.updateSkill()
+            }.value
+            await load()
+        } catch {
+            problem = describe(error)
+        }
+        updatingAllSkills = false
     }
 
     private func load() async {
@@ -199,24 +234,25 @@ struct ClientsPane: View {
             return
         }
         do {
-            let (clients, status) = try await Task.detached(priority: .userInitiated) {
-                (try tools.clients(), try? tools.skillStatus())
+            let (list, status) = try await Task.detached(priority: .userInitiated) {
+                (try tools.clientList(), try? tools.skillStatus())
             }.value
-            rows = clients
+            rows = list.clients
+            orchestrators = list.orchestrators ?? []
             skill = status
             problem = nil
-            model.setClientWarnings(clients: clients, skill: status)
+            model.setClientWarnings(clients: list.clients, skill: status)
             // «See» from a warning: the client's summary, or the changes.
             if let id = model.clientToShow {
                 model.clientToShow = nil
-                if let row = clients.first(where: { $0.id == id }) { sheet = ClientSheet(row: row, connecting: true) }
+                if let row = list.clients.first(where: { $0.id == id }) { sheet = ClientSheet(row: row, connecting: true) }
             }
             if let path = model.skillToShow {
                 model.skillToShow = nil
                 diffing = status?.copies.first { $0.path == path }
             }
             #if DEBUG
-            if !snapped, let id = Snapshot.connectSheet, let row = clients.first(where: { $0.id == id }) {
+            if !snapped, let id = Snapshot.connectSheet, let row = list.clients.first(where: { $0.id == id }) {
                 snapped = true
                 sheet = ClientSheet(row: row, connecting: true)
             }
@@ -246,9 +282,8 @@ private struct ClientSheet: Identifiable {
 private struct ClientRowView: View {
     @EnvironmentObject private var model: MacModel
     let row: ClientRow
-    let copy: SkillCopy?
-    /// The version of the skill this `klav` carries.
-    let bundled: String?
+    let copies: [SkillCopy]
+    let skillStatus: SkillStatus?
     let open: (_ connecting: Bool) -> Void
 
     var body: some View {
@@ -274,8 +309,9 @@ private struct ClientRowView: View {
                     }
                 }
                 if let dir = row.skillsDir {
-                    Text(verbatim: skillLine(dir))
-                        .font(.ui(12)).foregroundStyle(copy?.stateText(bundled: bundled).1 == true ? Palette.rojo : Palette.gris)
+                    let (line, skillWarning) = skillSummary(dir)
+                    Text(verbatim: line)
+                        .font(.ui(12)).foregroundStyle(skillWarning ? Palette.rojo : Palette.gris)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if row.restartRequired && row.state == "connected" {
@@ -302,10 +338,26 @@ private struct ClientRowView: View {
         .opacity(row.state == "unavailable" || row.state == "not_installed" ? 0.6 : 1)
     }
 
-    private func skillLine(_ dir: String) -> String {
-        let place = shortPath(dir) + "/klav"
-        guard let copy else { return String(localized: "Skill: not in \(place)") }
-        return String(localized: "Skill in \(place): \(copy.stateText(bundled: bundled).0)")
+    private func skillSummary(_ dir: String) -> (String, Bool) {
+        let place = shortPath(dir)
+        guard !copies.isEmpty else { return (String(localized: "Skills: not in \(place)"), false) }
+        if let warnCopy = copies.first(where: { $0.stateText(bundled: skillStatus?.bundledVersion(for: $0)).1 }) {
+            let text = warnCopy.stateText(bundled: skillStatus?.bundledVersion(for: warnCopy)).0
+            return (String(localized: "Skills in \(place): \(text)"), true)
+        }
+        let wanted = URL(fileURLWithPath: dir).standardizedFileURL.path
+        let hasMissing = (skillStatus?.missingBundled ?? []).contains {
+            URL(fileURLWithPath: $0).deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL.path == wanted
+        }
+        if copies.contains(where: { $0.state == "older" }) || hasMissing {
+            return (String(localized: "Skills in \(place): Update available"), false)
+        }
+        if copies.allSatisfy({ $0.state == "current" }) {
+            return (String(localized: "Skills in \(place): Up to date"), false)
+        }
+        let first = copies[0]
+        let text = first.stateText(bundled: skillStatus?.bundledVersion(for: first)).0
+        return (String(localized: "Skills in \(place): \(text)"), false)
     }
 }
 
@@ -666,10 +718,10 @@ private struct SkillDiffSheet: View {
     }
 
     private func load() async {
-        let tools = tools, path = copy.path
+        let tools = tools, path = copy.path, name = copy.skillName
         do {
             let (mine, klavs) = try await Task.detached(priority: .userInitiated) {
-                (try String(contentsOfFile: path, encoding: .utf8), try tools.bundledSkill())
+                (try String(contentsOfFile: path, encoding: .utf8), try tools.bundledSkill(name: name))
             }.value
             lines = LineDiff.lines(from: mine, to: klavs)
         } catch {

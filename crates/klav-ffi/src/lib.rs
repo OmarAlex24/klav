@@ -26,11 +26,12 @@ use klav_client::agents::{AgentView, GrantRequest};
 use klav_client::ops::{FieldInput, ItemPatch, NewItem, SecretText};
 use klav_client::passkey_outbox::PasskeyQueuedOutcome;
 use klav_client::passkeys::PasskeyCreateRequest;
+use klav_client::secret_requests::{FulfillSecretRequest, FulfillSecretResult, SecretRequestCard};
 use klav_client::tasks::{TaskCard, TaskChoice};
 use klav_client::{Home, ItemFilter, ItemLocation, LoginRequest, Unlocked};
 use klav_core::crypto::kdf::MasterPassword;
 use klav_core::crypto::secret_key::SecretKey;
-use klav_core::ids::{AgentId, ApprovalId, ItemId, ProjectId, TaskId, VaultId};
+use klav_core::ids::{AgentId, ApprovalId, ItemId, ProjectId, SecretRequestId, TaskId, VaultId};
 use klav_core::model::item::{FieldKind, FieldValue, ItemKind};
 use klav_core::policy::{Permission, Policy};
 use klav_core::site;
@@ -477,6 +478,124 @@ fn totp_of(u: &Unlocked, loc: ItemLocation) -> KlavResult<TotpInfo> {
 
 fn task_id(id: &str) -> KlavResult<TaskId> {
     TaskId::from_str(id.trim()).map_err(|_| KlavError::invalid(format!("not a task ID: {id}")))
+}
+
+fn secret_request_id(id: &str) -> KlavResult<SecretRequestId> {
+    SecretRequestId::from_str(id.trim())
+        .map_err(|_| KlavError::invalid(format!("not a secret request ID: {id}")))
+}
+
+pub(crate) fn secret_request_item(card: SecretRequestCard) -> SecretRequestItem {
+    let (kind, title, vault_id, project_id, field, placeholder, base_url, urls, notes, proxy) =
+        match card.proposal {
+            Some(p) => (
+                p.kind.map(|k| wire_name(&k)),
+                p.title,
+                p.vault_id.map(|v| v.to_string()),
+                p.project_id.map(|id| id.to_string()),
+                Some(p.field),
+                p.placeholder,
+                p.base_url,
+                p.urls,
+                p.notes,
+                p.proxy_proposal.map(|pp| SecretRequestProxyProposalItem {
+                    preset: pp.preset,
+                    profile: pp.profile,
+                    upstream: pp.upstream,
+                    header: pp.header,
+                    prefix: pp.prefix,
+                    methods: pp.methods,
+                    ask_methods: pp.ask_methods,
+                    path_prefixes: pp.path_prefixes,
+                    rate_per_minute: pp.rate_per_minute,
+                }),
+            ),
+            None => (
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                None,
+            ),
+        };
+    SecretRequestItem {
+        id: card.id.to_string(),
+        status: card.status.as_str().to_owned(),
+        agent_id: card.agent_id.to_string(),
+        agent: klav_core::text::shown(&card.agent, MAX_AGENT_TEXT),
+        mode: card.mode.as_str().to_owned(),
+        target_item_id: card.target_item_id.map(|i| i.to_string()),
+        target_reference: card.target_reference,
+        target_title: card.target_title,
+        target_kind: card.target_kind.map(|k| wire_name(&k)),
+        reason: card.reason,
+        created_at: card.created_at,
+        expires_at: card.expires_at,
+        decided_at: card.decided_at,
+        proposal_digest: card.proposal_digest,
+        proposal_error: card.proposal_error,
+        kind,
+        title,
+        vault_id,
+        project_id,
+        field,
+        placeholder,
+        setup_url: card.setup_url.map(|s| SecretRequestSetupUrlItem {
+            url: s.url,
+            host: s.host,
+            has_punycode: s.has_punycode,
+        }),
+        base_url,
+        urls,
+        notes,
+        proxy_proposal: proxy,
+        agent_projects: card
+            .agent_projects
+            .into_iter()
+            .map(|(v, p)| SecretRequestProjectPair {
+                vault_id: v.to_string(),
+                project_id: p.to_string(),
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn fulfill_secret_request_input(
+    input: SecretRequestFulfillInput,
+) -> FulfillSecretRequest {
+    FulfillSecretRequest {
+        digest: input.digest,
+        secret: SecretText::new(input.secret),
+        vault: input.vault,
+        project: input.project,
+        title: input.title,
+        field: input.field,
+        urls: input.urls,
+        notes: input.notes.map(SecretText::new),
+        allow_duplicate: input.allow_duplicate,
+        grant_proxy: input.grant_proxy,
+        proxy_base_version: input.proxy_base_version,
+        every_device_updated: input.every_device_updated,
+        shown_words: input.shown_words,
+        proxy_credential: None,
+    }
+}
+
+pub(crate) fn fulfill_secret_request_output(
+    res: FulfillSecretResult,
+) -> SecretRequestFulfillOutput {
+    SecretRequestFulfillOutput {
+        card: secret_request_item(res.card),
+        item: ItemInfo::from(res.item),
+        in_grant: res.in_grant,
+        proxy_profile: res.proxy_profile,
+        proxy_warnings: res.proxy_warnings,
+    }
 }
 
 fn task_item(card: TaskCard) -> TaskItem {
@@ -1343,6 +1462,48 @@ impl KlavCore {
             let id = task_id(&id)?;
             let card = self.runtime.block_on(u.end_task(id))?;
             Ok(task_item(card))
+        })
+    }
+
+    /// Pending secret requests from agents, newest first (ADR 0046). Each
+    /// proposal is opened locally with the account's X25519 key and verified
+    /// against `proposal_digest`.
+    pub fn secret_requests(&self) -> KlavResult<Vec<SecretRequestItem>> {
+        self.with(|u| {
+            let cards = self.runtime.block_on(u.secret_requests(false))?;
+            Ok(cards.into_iter().map(secret_request_item).collect())
+        })
+    }
+
+    /// Fulfills pending secret request `id`: saves the secret entered in the
+    /// hidden input into the person's vault, optionally grants `klav-proxy`
+    /// access if `input.grant_proxy` is true (the app checks Face ID first),
+    /// and posts the account-signed decision.
+    pub fn fulfill_secret_request(
+        &self,
+        id: String,
+        input: SecretRequestFulfillInput,
+    ) -> KlavResult<SecretRequestFulfillOutput> {
+        self.with(|u| {
+            let id = secret_request_id(&id)?;
+            let req = fulfill_secret_request_input(input);
+            let res = self.runtime.block_on(u.fulfill_secret_request(id, &req))?;
+            Ok(fulfill_secret_request_output(res))
+        })
+    }
+
+    /// Denies pending secret request `id` with an account-signed decision.
+    pub fn deny_secret_request(
+        &self,
+        id: String,
+        proposal_digest: String,
+    ) -> KlavResult<SecretRequestItem> {
+        self.with(|u| {
+            let id = secret_request_id(&id)?;
+            let card = self
+                .runtime
+                .block_on(u.deny_secret_request(id, &proposal_digest))?;
+            Ok(secret_request_item(card))
         })
     }
 

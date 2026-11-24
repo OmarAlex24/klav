@@ -15,7 +15,8 @@
 use std::collections::{HashMap, HashSet};
 
 use klav_core::crypto::agent::{
-    self, ApprovalToSign, GrantToSign, PauseScope, PauseToSign, SignedRequest, TaskDecisionToSign,
+    self, ApprovalToSign, GrantToSign, PauseScope, PauseToSign, SecretRequestDecisionToSign,
+    SignedRequest, TaskDecisionToSign,
 };
 use klav_core::crypto::audit::{GENESIS, chain_hash, sign_head, verify_head};
 use klav_core::crypto::identity::PublicIdentity;
@@ -24,6 +25,7 @@ use klav_core::crypto::sandbox::{RevokeScope, RevokeToSign, verify_revoke};
 use klav_core::crypto::sign::{SIGNATURE_LEN, Signature};
 use klav_core::ids::{AccountId, AgentId, ItemId, SandboxId, TaskId};
 use klav_core::policy::{Permission, normalize_host};
+use klav_core::secret_request::SecretRequestDecision;
 use klav_core::task::TaskRequest;
 use klav_proto::Blob;
 use klav_proto::agent::{
@@ -43,6 +45,7 @@ use klav_proto::sandbox::{
     CHANNEL_KEY_DIGEST_LEN, SandboxClaimed, SandboxEnd, SandboxIssue, SandboxRevoked,
     SandboxStoreReset, all_covers, is_json_object,
 };
+use klav_proto::secret_request::CreateSecretRequest;
 use klav_proto::task::AgentEndTask;
 use reqwest::Method;
 use serde::de::DeserializeOwned;
@@ -313,9 +316,11 @@ fn rule(e: &AuditEvent) -> Option<(ActorKind, Backing)> {
     }
     Some(match e.action.as_str() {
         "agent.registered" => (Agent, Backing::Server),
-        "agent.granted" | "agent.revoked" | "approval.decided" | "task.decided" => {
-            (Person, Backing::Account)
-        }
+        "agent.granted"
+        | "agent.revoked"
+        | "approval.decided"
+        | "task.decided"
+        | "secret_request.decided" => (Person, Backing::Account),
         // Pauses of agents (ADR 0033 §7, spec §13.9).
         "agents.paused" | "agents.resumed" => (Person, Backing::Account),
         "agent.denied" | "item.created" | "item.updated" | "item.trashed" | "item.restored"
@@ -449,6 +454,17 @@ impl Verifier<'_> {
         {
             return Err(tampered(format!(
                 "event {seq} ({}) names a sandbox nobody signed",
+                e.action
+            )));
+        }
+        // Only secret request events carry a secret request ID or proposal digest.
+        if !matches!(
+            e.action.as_str(),
+            "secret_request.created" | "secret_request.decided"
+        ) && (e.secret_request_id.is_some() || e.proposal_digest.is_some())
+        {
+            return Err(tampered(format!(
+                "event {seq} ({}) names a secret request nobody signed",
                 e.action
             )));
         }
@@ -1110,6 +1126,9 @@ impl Verifier<'_> {
         if e.action == "sandbox.revoke_requested" {
             return self.revoke_signature(entry, &signature);
         }
+        if e.action == "secret_request.decided" {
+            return self.secret_request_decision_signature(entry, &signature);
+        }
         let agent_id = e
             .agent_id
             .ok_or_else(|| tampered(format!("event {seq}: no agent")))?;
@@ -1282,6 +1301,96 @@ impl Verifier<'_> {
         self.report.account_signatures += 1;
         Ok(())
     }
+
+    /// A person's decision on a secret request (ADR 0046, spec §13.14): the
+    /// account's signature over `(account_id, request_id, agent_id,
+    /// proposal_digest, decision, decided_at_ms)` and event fields matching the
+    /// signed [`SecretRequestDecision`].
+    fn secret_request_decision_signature(
+        &mut self,
+        entry: &Entry,
+        signature: &Signature,
+    ) -> AuditResult<()> {
+        let e = &entry.event;
+        let seq = entry.seq;
+        let differs = |what: &str| {
+            tampered(format!(
+                "event {seq} ({}): the {what} differs from what the account signed",
+                e.action
+            ))
+        };
+        if e.permission.is_some()
+            || e.domain.is_some()
+            || e.method.is_some()
+            || e.path.is_some()
+            || e.reason.is_some()
+            || e.task_id.is_some()
+            || e.approval_id.is_some()
+            || e.lease_until.is_some()
+            || e.task_request.is_some()
+            || !e.attachments.is_empty()
+        {
+            return Err(differs("data"));
+        }
+        let request = e
+            .secret_request_id
+            .ok_or_else(|| tampered(format!("event {seq}: no secret request")))?;
+        let agent = e
+            .agent_id
+            .ok_or_else(|| tampered(format!("event {seq}: no agent")))?;
+        let digest: [u8; 32] = e
+            .proposal_digest
+            .as_ref()
+            .and_then(|d| d.as_bytes().try_into().ok())
+            .ok_or_else(|| tampered(format!("event {seq}: bad proposal digest")))?;
+        let signed = e
+            .signed
+            .as_ref()
+            .ok_or_else(|| tampered(format!("event {seq}: signature without data")))?;
+        let decided_at = e
+            .decided_at
+            .and_then(|t| u64::try_from(t).ok())
+            .ok_or_else(|| tampered(format!("event {seq}: no decided_at")))?;
+        let decision: SecretRequestDecision =
+            serde_json::from_slice(signed.as_bytes()).map_err(|_| {
+                tampered(format!(
+                    "event {seq}: the secret request decision is not readable"
+                ))
+            })?;
+        decision.validate().map_err(|_| differs("decision"))?;
+        if decision.request_id != request || decision.agent_id != agent {
+            return Err(differs("secret request"));
+        }
+        if e.outcome.as_deref() != Some(decision.status.as_str()) {
+            return Err(differs("outcome"));
+        }
+        if e.vault_id != decision.vault_id
+            || e.project_id != decision.project_id
+            || e.item_id != decision.item_id
+        {
+            return Err(differs("target"));
+        }
+        let ok = agent::verify_secret_request_decision(
+            self.account,
+            &SecretRequestDecisionToSign {
+                request,
+                agent,
+                proposal_digest: &digest,
+                decision: signed.as_bytes(),
+                decided_at_ms: decided_at,
+            },
+            signature,
+        )
+        .is_ok();
+        if !ok {
+            return Err(tampered(format!(
+                "event {seq} ({}): the account's signature does not verify",
+                e.action
+            )));
+        }
+        self.report.account_signatures += 1;
+        Ok(())
+    }
 }
 
 /// The signed method and route must be the action's (ADR 0030 §4.3); the
@@ -1335,7 +1444,8 @@ fn route_permission(route: AgentRoute) -> Option<Permission> {
         | AgentRoute::SandboxIssue
         | AgentRoute::SandboxClaim
         | AgentRoute::SandboxRevoke
-        | AgentRoute::SandboxStoreReset => None,
+        | AgentRoute::SandboxStoreReset
+        | AgentRoute::SecretRequestCreate => None,
     }
 }
 
@@ -1516,6 +1626,15 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
             | AgentRoute::SandboxStoreReset => {
                 return check_sandbox_body(entry, route, body);
             }
+            AgentRoute::SecretRequestCreate => {
+                let req: CreateSecretRequest = parse_body(entry, body)?;
+                if e.secret_request_id != Some(req.id)
+                    || e.proposal_digest.as_ref() != Some(&req.proposal_digest)
+                {
+                    return Err(differs("secret request"));
+                }
+                (req.target_item_id, None, req.reason, None)
+            }
         };
     if e.item_id != item {
         return Err(differs("item"));
@@ -1542,6 +1661,24 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
 /// the item and the permission; the reason and host stay unchecked.
 fn check_fields_without_body(entry: &Entry, route: AgentRoute) -> AuditResult<()> {
     let e = &entry.event;
+    if route == AgentRoute::SecretRequestCreate {
+        let digest_ok = e
+            .proposal_digest
+            .as_ref()
+            .is_some_and(|d| d.as_bytes().len() == 32);
+        if e.secret_request_id.is_none()
+            || !digest_ok
+            || e.permission.is_some()
+            || e.method.is_some()
+            || e.path.is_some()
+        {
+            return Err(tampered(format!(
+                "event {} ({}): invalid secret request metadata",
+                entry.seq, e.action
+            )));
+        }
+        return Ok(());
+    }
     let item_ok = match route {
         AgentRoute::Create => true,
         // `check_route` tied the item to the signed route.
@@ -4787,5 +4924,100 @@ mod tests {
         let mut events = rotation_events(&w, task);
         events[3].agent_proof.as_mut().unwrap().body = None;
         assert_rejected(w.check(events, &w.listed()), "lacks the body");
+    }
+
+    #[test]
+    fn secret_request_events_verify_and_reject_tampering() {
+        use klav_core::crypto::agent::sign_secret_request_decision;
+        use klav_core::ids::SecretRequestId;
+        use klav_core::secret_request::{SECRET_REQUEST_FORMAT_VERSION, SecretRequestStatus};
+
+        let w = World::new();
+        let req_id = SecretRequestId::generate();
+        let digest = [0xab_u8; 32];
+        let created_body = b"{\"opaque\":true}";
+
+        let mut created = w.signed(
+            "secret_request.created",
+            "POST",
+            "/v1/agent/secret-requests",
+            Some(created_body),
+            AT,
+        );
+        // Server omits proof body so proposal_blob is never retained in audit_events.
+        created.agent_proof.as_mut().unwrap().body = None;
+        created.secret_request_id = Some(req_id);
+        created.proposal_digest = Some(Blob::new(digest.to_vec()));
+        created.reason = Some("Need Stripe API key".into());
+
+        let vault = VaultId::generate();
+        let project = ProjectId::generate();
+        let decision = SecretRequestDecision {
+            v: SECRET_REQUEST_FORMAT_VERSION,
+            request_id: req_id,
+            agent_id: w.agent,
+            status: SecretRequestStatus::Fulfilled,
+            in_grant: true,
+            vault_id: Some(vault),
+            project_id: Some(project),
+            item_id: Some(w.item),
+            field: Some("api_key".into()),
+            proxy_profile: Some("stripe".into()),
+        };
+        let decision_bytes = serde_json::to_vec(&decision).unwrap();
+        let sig = sign_secret_request_decision(
+            &w.keys,
+            &SecretRequestDecisionToSign {
+                request: req_id,
+                agent: w.agent,
+                proposal_digest: &digest,
+                decision: &decision_bytes,
+                decided_at_ms: u64::try_from(AT).unwrap(),
+            },
+        );
+        let mut decided = AuditEvent::new(ActorKind::Person, "secret_request.decided");
+        decided.agent_id = Some(w.agent);
+        decided.secret_request_id = Some(req_id);
+        decided.proposal_digest = Some(Blob::new(digest.to_vec()));
+        decided.vault_id = Some(vault);
+        decided.project_id = Some(project);
+        decided.item_id = Some(w.item);
+        decided.outcome = Some("fulfilled".into());
+        decided.decided_at = Some(AT);
+        decided.signed = Some(Blob::new(decision_bytes));
+        decided.account_signature = Some(Blob::new(sig.to_bytes().to_vec()));
+
+        let report = w
+            .check(
+                vec![w.granted(), created.clone(), decided.clone()],
+                &w.listed(),
+            )
+            .unwrap();
+        assert_eq!(report.agent_signatures, 1);
+        assert_eq!(report.account_signatures, 2);
+
+        // Tampered item_id on secret_request.decided is rejected.
+        let mut bad_item = decided.clone();
+        bad_item.item_id = Some(ItemId::generate());
+        assert_rejected(
+            w.check(vec![w.granted(), created.clone(), bad_item], &w.listed()),
+            "target differs",
+        );
+
+        // Tampered proposal_digest breaks the account signature.
+        let mut bad_digest = decided.clone();
+        bad_digest.proposal_digest = Some(Blob::new(vec![0xcd; 32]));
+        assert_rejected(
+            w.check(vec![w.granted(), created.clone(), bad_digest], &w.listed()),
+            "signature does not verify",
+        );
+
+        // Tampered outcome is rejected.
+        let mut bad_outcome = decided;
+        bad_outcome.outcome = Some("denied".into());
+        assert_rejected(
+            w.check(vec![w.granted(), created, bad_outcome], &w.listed()),
+            "outcome differs",
+        );
     }
 }
