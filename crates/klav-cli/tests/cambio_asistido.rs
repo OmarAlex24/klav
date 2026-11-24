@@ -580,6 +580,95 @@ async fn an_agent_changes_a_password_without_seeing_it() {
     person.run(&["log", "verify"], "").ok();
 }
 
+/// Starts the person's `klavd` again with the presence gate on (ADR 0041,
+/// layer 4) and Touch ID off, and unlocks it with the master password.
+async fn gated_klavd(w: &World) -> common::Klavd {
+    w.person.run(&["lock", "--stop"], "").ok();
+    let socket = w.person.home.join("klavd.sock");
+    assert!(common::wait_until(30, || !socket.exists()), "klavd stopped");
+    let klavd = common::Klavd::start(&w.person, w.root.path(), true);
+    unlock(&Home::at(&w.person.home)).await;
+    klavd
+}
+
+async fn unlock(home: &Home) {
+    let mut client = DaemonClient::connect(home).await.expect("klavd");
+    let unlock: Request =
+        serde_json::from_value(json!({ "op": "unlock", "password": common::PASSWORD }))
+            .expect("unlock");
+    client.call::<Value>(unlock).await.expect("unlocked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_the_gate_the_browser_asks_before_a_password_change_fills() {
+    let w = world();
+    let person = &w.person;
+    let _stop = StopDaemon(person);
+    let (task, item) = w.rotate_task();
+    let _klavd = gated_klavd(&w).await;
+    let home = Home::at(&person.home);
+    let rig = Rig {
+        agent: Agent::load(&Home::at(&w.agent_device.home), "bot").expect("agent"),
+        item,
+        task: task.parse().expect("task id"),
+        home: home.clone(),
+    };
+    let mut ext = FakeExtension::attach(&home).await;
+
+    // The probe finds the form; before the fill, the connection asks,
+    // naming the agent and the title from the vault.
+    let (started, proof) = rig.start("rotate the reused password").await;
+    let tab = rig.tab(&mut ext, SITE).await;
+    let begin = rig.begin(tab, rig.step(&started.rotation, proof));
+    ext.answer("rotate_probe", |_| target(SITE, true, json!({})))
+        .await;
+    let line = ext.line().await;
+    let presence = line["event"].clone();
+    assert_eq!(presence["kind"], "presence", "{line}");
+    let ask = &presence["presence"];
+    assert_eq!(ask["lasts"], "until_lock", "{presence}");
+    assert_eq!(ask["browser"]["event"], "password_change", "{presence}");
+    assert_eq!(ask["browser"]["agent"], "bot", "{presence}");
+    assert_eq!(ask["browser"]["title"], "Bank", "{presence}");
+    assert_eq!(ask["browser"].get("site"), None, "{presence}");
+    ext.send(json!({
+        "op": "extension_presence",
+        "event": presence["id"],
+        "password": common::PASSWORD,
+    }))
+    .await;
+    let ack = ext.line().await;
+    assert!(ack.get("ok").is_some(), "{ack}");
+    let fill = ext.answer("rotate_fill", |_| filled()).await;
+    assert_eq!(fill["current"], OLD);
+    let (answer, _) = begin.await.expect("join").expect("begin");
+    assert_eq!(answer["pending_id"], json!(started.rotation.id));
+
+    // Locked and unlocked again: the next fill asks again, and a cancel
+    // fills nothing.
+    rig.call(Request::Lock).await.expect("lock");
+    unlock(&home).await;
+    let cancel = rig.finish(&started.rotation, "cancel").await;
+    rig.call(Request::AgentRotateCancel {
+        step: rig.step(&started.rotation, cancel),
+    })
+    .await
+    .expect("cancel");
+    let (started, proof) = rig.start("rotate again").await;
+    let tab = rig.tab(&mut ext, SITE).await;
+    let begin = rig.begin(tab, rig.step(&started.rotation, proof));
+    ext.answer("rotate_probe", |_| target(SITE, true, json!({})))
+        .await;
+    ext.answer(
+        "presence",
+        |_| json!({ "error": { "code": "denied", "message": "canceled" } }),
+    )
+    .await;
+    let err = begin.await.expect("join").expect_err("declined");
+    assert_eq!(err.code, ErrorCode::Denied, "{err:?}");
+    assert!(err.message.contains("declined in the browser"), "{err:?}");
+}
+
 /// `klav mcp` driven from a blocking thread while the test answers the fake
 /// extension.
 struct Tools(Option<Mcp>);

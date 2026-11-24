@@ -14,55 +14,14 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{Device, PASSWORD, Run, ServerProcess, path_without_installed_klav, wait_until};
+use common::{
+    Device, Klavd, PASSWORD, Run, ServerProcess, path_without_installed_klav, wait_until,
+};
 use serde_json::{Value, json};
 
 const VALUE: &str = "MARKER-presence-value";
 const REFERENCE: &str = "klav://Personal/General/Deploy/api_key";
 const EMAIL: &str = "presence@example.com";
-
-/// A test `klavd` for one home, stopped by its pid when the test ends,
-/// also when it fails.
-struct Klavd(Child);
-
-impl Klavd {
-    fn start(device: &Device, root: &Path, gate: bool) -> Self {
-        let mut cmd = Command::new(common::built_binary("klavd"));
-        cmd.current_dir(root)
-            .env("KLAV_HOME", &device.home)
-            .env("PATH", path_without_installed_klav())
-            .env("KLAV_NO_DEFAULT_SERVER", "1")
-            .args(["--no-touch-id", "--idle-lock", "10m"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(
-                std::fs::File::create(root.join("klavd-test.log"))
-                    .map_or(Stdio::null(), Stdio::from),
-            );
-        if gate {
-            cmd.arg("--presence-gate");
-        }
-        let klavd = Klavd(cmd.spawn().expect("start klavd"));
-        let socket = device.home.join("klavd.sock");
-        assert!(
-            wait_until(30, || socket.exists()),
-            "klavd did not start: {}",
-            std::fs::read_to_string(root.join("klavd-test.log")).unwrap_or_default()
-        );
-        klavd
-    }
-
-    fn pid(&self) -> u32 {
-        self.0.id()
-    }
-}
-
-impl Drop for Klavd {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 /// Whether this test process has a controlling terminal (a developer's
 /// terminal; never CI).

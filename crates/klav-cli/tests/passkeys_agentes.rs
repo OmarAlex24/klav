@@ -704,6 +704,102 @@ async fn klavd_signs_for_an_agent_only_inside_its_task() {
     assert_eq!(passkey_uses(&home).await.len(), 2);
 }
 
+/// Starts the person's `klavd` again with the presence gate on (ADR 0041,
+/// layer 4) and Touch ID off, and unlocks it with the master password.
+async fn gated_klavd(w: &World) -> common::Klavd {
+    w.person.run(&["lock", "--stop"], "").ok();
+    let socket = w.person.home.join("klavd.sock");
+    assert!(common::wait_until(30, || !socket.exists()), "klavd stopped");
+    let klavd = common::Klavd::start(&w.person, w.root.path(), true);
+    let mut client = DaemonClient::connect(&Home::at(&w.person.home))
+        .await
+        .expect("klavd");
+    let unlock: Request =
+        serde_json::from_value(json!({ "op": "unlock", "password": PASSWORD })).expect("unlock");
+    client.call::<Value>(unlock).await.expect("unlocked");
+    klavd
+}
+
+/// The `presence` event on the extension's connection, answered with the
+/// master password on that same connection; returns the event and the
+/// next event of `kind`, which may come before or after the answer's ack.
+async fn presence_then(ext: &mut FakeExtension, kind: &str) -> (Value, Value) {
+    let presence = ext.event("presence").await;
+    ext.send(json!({
+        "op": "extension_presence",
+        "event": presence["id"],
+        "password": PASSWORD,
+    }))
+    .await;
+    let (first, second) = (ext.line().await, ext.line().await);
+    let (ack, next) = if first.get("event").is_some() {
+        (second, first)
+    } else {
+        (first, second)
+    };
+    assert!(ack.get("ok").is_some(), "{ack}");
+    assert_eq!(next["event"]["kind"], kind, "{next}");
+    (presence, next["event"].clone())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_the_gate_the_browser_asks_before_a_passkey_sign_in() {
+    let w = world();
+    let person = &w.person;
+    let _stop = StopDaemon(person);
+    let (task, shop, _) = w.setup().await;
+    let _klavd = gated_klavd(&w).await;
+    let home = Home::at(&person.home);
+    let rig = Rig {
+        agent: Agent::load(&Home::at(&w.agent_device.home), "bot").expect("agent"),
+        home: home.clone(),
+        task,
+    };
+    let mut ext = FakeExtension::attach(&home).await;
+    let tab = rig.tab(&mut ext, SHOP_PAGE).await;
+
+    // The first arm asks on the connection, naming the agent, the title
+    // and the rpId from the vault; then it arms.
+    let (_, proof) = rig.access(shop, SHOP_HOST).await.expect("access");
+    let arm = rig.arm(tab.clone(), rig.step(&rig.agent, shop, proof));
+    let (presence, event) = presence_then(&mut ext, "passkey_arm").await;
+    let ask = &presence["presence"];
+    assert_eq!(ask["window"], "5m", "{presence}");
+    assert_eq!(ask["lasts"], "until_lock", "{presence}");
+    assert_eq!(ask["browser"]["event"], "passkey_sign_in", "{presence}");
+    assert_eq!(ask["browser"]["agent"], "bot", "{presence}");
+    assert_eq!(ask["browser"]["title"], "Shop", "{presence}");
+    assert_eq!(ask["browser"]["site"], "shop.example", "{presence}");
+    assert_eq!(presence["tab_id"], 4, "{presence}");
+    ext.reply(&event, json!({ "ok": { "used": false } })).await;
+    arm.await.expect("join").expect("armed");
+
+    // The connection stays verified until Klav locks: no second question.
+    let (_, proof) = rig.access(shop, SHOP_HOST).await.expect("access");
+    let arm = rig.arm(tab.clone(), rig.step(&rig.agent, shop, proof));
+    ext.answer("passkey_arm", json!({ "ok": { "used": false } }))
+        .await;
+    arm.await.expect("join").expect("armed");
+
+    // A cancel in the frame arms nothing and tells the agent why.
+    let mut client = DaemonClient::connect(&home).await.expect("klavd");
+    client.call::<Value>(Request::Lock).await.expect("lock");
+    let unlock: Request =
+        serde_json::from_value(json!({ "op": "unlock", "password": PASSWORD })).expect("unlock");
+    client.call::<Value>(unlock).await.expect("unlocked");
+    let (_, proof) = rig.access(shop, SHOP_HOST).await.expect("access");
+    let arm = rig.arm(tab.clone(), rig.step(&rig.agent, shop, proof));
+    let presence = ext.event("presence").await;
+    ext.reply(
+        &presence,
+        json!({ "error": { "code": "denied", "message": "canceled" } }),
+    )
+    .await;
+    let err = arm.await.expect("join").expect_err("declined");
+    assert_eq!(err.code, ErrorCode::Denied, "{err:?}");
+    assert!(err.message.contains("declined in the browser"), "{err:?}");
+}
+
 /// `klav mcp` driven from a blocking thread while the test answers the fake
 /// extension.
 struct Tools(Option<Mcp>);
