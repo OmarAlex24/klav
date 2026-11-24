@@ -781,6 +781,41 @@ async fn with_the_gate_the_browser_asks_before_a_passkey_sign_in() {
         .await;
     arm.await.expect("join").expect("armed");
 
+    // A second browser attaches: right before the arm, exactly one of the
+    // two must be in front, and it must be the tab's (P25).
+    let mut other = FakeExtension::attach(&home).await;
+    for (mine, theirs) in [(false, true), (true, true), (false, false)] {
+        let (_, proof) = rig.access(shop, SHOP_HOST).await.expect("access");
+        let arm = rig.arm(tab.clone(), rig.step(&rig.agent, shop, proof));
+        // klavd asks the newest connection first.
+        for (ext, focused) in [(&mut other, theirs), (&mut ext, mine)] {
+            ext.answer(
+                "tab",
+                json!({ "ok": { "tab_id": 4, "url": SHOP_PAGE, "focused": focused } }),
+            )
+            .await;
+        }
+        let err = arm.await.expect("join").expect_err("ambiguous");
+        assert_eq!(
+            err.code,
+            ErrorCode::BrowserAmbiguous,
+            "{mine} {theirs}: {err:?}"
+        );
+    }
+    let (_, proof) = rig.access(shop, SHOP_HOST).await.expect("access");
+    let arm = rig.arm(tab.clone(), rig.step(&rig.agent, shop, proof));
+    for (ext, focused) in [(&mut other, false), (&mut ext, true)] {
+        ext.answer(
+            "tab",
+            json!({ "ok": { "tab_id": 4, "url": SHOP_PAGE, "focused": focused } }),
+        )
+        .await;
+    }
+    ext.answer("passkey_arm", json!({ "ok": { "used": false } }))
+        .await;
+    arm.await.expect("join").expect("armed");
+    drop(other);
+
     // A cancel in the frame arms nothing and tells the agent why.
     let mut client = DaemonClient::connect(&home).await.expect("klavd");
     client.call::<Value>(Request::Lock).await.expect("lock");

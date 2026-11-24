@@ -656,6 +656,36 @@ async fn with_the_gate_the_browser_asks_before_a_password_change_fills() {
     .expect("cancel");
     let (started, proof) = rig.start("rotate again").await;
     let tab = rig.tab(&mut ext, SITE).await;
+
+    // A second browser, and both in front: the probe found the form, but
+    // nothing is asked or filled while it isn't clear which browser the
+    // person is looking at (P25).
+    let mut other = FakeExtension::attach(&home).await;
+    let begin = rig.begin(tab.clone(), rig.step(&started.rotation, proof));
+    ext.answer("rotate_probe", |_| target(SITE, true, json!({})))
+        .await;
+    // klavd asks the newest connection first.
+    for ext in [&mut other, &mut ext] {
+        ext.answer(
+            "tab",
+            |_| json!({ "ok": { "tab_id": 4, "url": SITE, "focused": true } }),
+        )
+        .await;
+    }
+    let err = begin.await.expect("join").expect_err("ambiguous");
+    assert_eq!(err.code, ErrorCode::BrowserAmbiguous, "{err:?}");
+    drop(other);
+    // Refused before the new password was stored: nothing is pending.
+    let cancel = rig.finish(&started.rotation, "cancel").await;
+    let nothing = rig
+        .call(Request::AgentRotateCancel {
+            step: rig.step(&started.rotation, cancel),
+        })
+        .await
+        .expect_err("nothing pending");
+    assert_eq!(nothing.code, ErrorCode::NotFound, "{nothing:?}");
+    // The other browser is gone: one connection, no focus rule.
+    let (started, proof) = rig.start("rotate once more").await;
     let begin = rig.begin(tab, rig.step(&started.rotation, proof));
     ext.answer("rotate_probe", |_| target(SITE, true, json!({})))
         .await;
