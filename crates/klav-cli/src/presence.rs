@@ -793,6 +793,7 @@ mod tests {
                 title: Some("GitHub".into()),
                 count: None,
             }),
+            browser: None,
         }
     }
 

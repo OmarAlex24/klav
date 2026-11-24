@@ -244,7 +244,10 @@ pub fn check_request(request: &Request) -> Result<(), String> {
         | Request::ImportApply { .. }
         | Request::ImportCancel { .. }
         | Request::ExtensionAttach { .. }
-        | Request::ExtensionReply { .. } => Ok(()),
+        | Request::ExtensionReply { .. }
+        // The master password the person typed in Klav's frame for an
+        // agent's event (ADR 0041 §3.1): `klavd` checks it.
+        | Request::ExtensionPresence { .. } => Ok(()),
         Request::Create { item } if !item.allow_duplicate => Ok(()),
         Request::Edit { patch, .. } if !patch.allow_duplicate => Ok(()),
         Request::FulfillSecretRequest { input, .. }
@@ -350,7 +353,7 @@ where
 /// Turns a message from the extension into a `klavd` line, or the error
 /// message to answer with.
 pub fn to_daemon_line(message: &[u8]) -> Result<Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>> {
-    let envelope: RequestEnvelope = match serde_json::from_slice(message) {
+    let mut envelope: RequestEnvelope = match serde_json::from_slice(message) {
         Ok(e) => e,
         Err(_) => {
             // serde's message may quote the input: keep it out.
@@ -364,6 +367,12 @@ pub fn to_daemon_line(message: &[u8]) -> Result<Zeroizing<Vec<u8>>, Zeroizing<Ve
     if let Err(why) = check_request(&envelope.request) {
         return Err(error_message(envelope.id, ErrorCode::Denied, &why));
     }
+    // The envelope's presence fields (ADR 0041, `docs/klavd.md` §3): the
+    // extension's `shown` goes through, for its password unlock. A notice
+    // line (`notify`) is for a terminal to print its name: the extension
+    // has none to print, and a line with no `ok` or `error` would settle
+    // its pending request, so it never asks for one.
+    envelope.notify = false;
     let mut line = Zeroizing::new(serde_json::to_vec(&envelope).map_err(|_| {
         error_message(
             envelope.id,
@@ -606,6 +615,10 @@ mod tests {
         assert!(ok(
             r#"{"v":1,"id":6,"request":{"op":"extension_reply","event":3,"ok":{"tab_id":1,"url":"https://a.example/"}}}"#
         ));
+        // The master password for an agent's event (ADR 0041 §3.1).
+        assert!(ok(
+            r#"{"v":1,"id":6,"request":{"op":"extension_presence","event":3,"password":"pw"}}"#
+        ));
         // The generator and the password histories (ADR 0022).
         for op in [
             r#"{"op":"generator_record","value":"x","host":"a.example"}"#,
@@ -638,6 +651,11 @@ mod tests {
             r#"{"op":"resolve","references":["klav://a/b/c/d"]}"#,
             r#"{"op":"shutdown"}"#,
             r#"{"op":"agents"}"#,
+            // The presence gate (ADR 0041): never `hold` (decision on Q3),
+            // nor the presence setting, which is the CLI's and the app's.
+            r#"{"op":"hold"}"#,
+            r#"{"op":"presence_window"}"#,
+            r#"{"op":"presence_window","window":"unlocked"}"#,
             // Only agents ask for tabs and fills, never the extension.
             r#"{"op":"browser_tab"}"#,
             r#"{"op":"browser_fill","tab":"1.2","host":"a.example","agent":"x","reason":"y","kind":"login","fields":[]}"#,
@@ -696,6 +714,21 @@ mod tests {
             ErrorCode::BadRequest
         );
         assert_eq!(denied("not json").0, 0);
+    }
+
+    /// The extension's password unlock says what its question said
+    /// (`shown`, ADR 0041 own choice 34) through the host; a notice it
+    /// can't read is never asked for, whatever the extension sends.
+    #[test]
+    fn the_host_passes_shown_and_drops_notify() {
+        let line = to_daemon_line(
+            br#"{"v":1,"id":4,"request":{"op":"unlock","password":"pw"},"shown":"unlocked","notify":true}"#,
+        )
+        .expect("allowed");
+        let envelope: RequestEnvelope = serde_json::from_slice(&line).expect("envelope");
+        assert_eq!(envelope.shown, Some(crate::uv::Window::Unlocked));
+        assert!(!envelope.notify);
+        assert!(!envelope.untyped);
     }
 
     #[test]

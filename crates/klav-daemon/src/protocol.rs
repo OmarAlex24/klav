@@ -722,6 +722,19 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
+    /// The extension's answer to [`Event::Presence`]: the master password
+    /// the person typed in Klav's own frame (ADR 0041 §3.1, §3.2). Only on
+    /// the connection the event was sent to. `klavd` checks it against the
+    /// unlocked session: right, the connection is verified and `{}` comes
+    /// back; wrong, `wrong_credentials`, and the event keeps waiting for
+    /// another try. Canceling is an `extension_reply` with an `error`; an
+    /// `extension_reply` with `ok` never verifies anything.
+    ExtensionPresence {
+        /// The event's `id`.
+        event: u64,
+        /// The master password.
+        password: klav_client::ops::SecretText,
+    },
     /// The tab an agent would fill: the active tab of the focused browser
     /// with the extension attached ([`BrowserTab`]). Works locked.
     BrowserTab,
@@ -742,6 +755,12 @@ pub enum Request {
         agent_id: Option<klav_core::ids::AgentId>,
         /// The agent's reason, shown too.
         reason: String,
+        /// The item the values come from: with the presence gate on, the
+        /// prompt names its title as the vault has it, never as the agent
+        /// says (ADR 0041 §3.1, T140). A hint: the agent sends it unsigned.
+        /// Missing from older SDKs, and then the prompt names no item.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item: Option<klav_core::ids::ItemId>,
         /// Item type.
         kind: klav_core::model::item::ItemKind,
         /// Values to type.
@@ -954,6 +973,20 @@ pub enum Event {
         /// Event ID.
         id: u64,
     },
+    /// With the presence gate on, where `klavd` can't show Touch ID: an
+    /// agent's event for tab `tab_id` waits for the person's presence on
+    /// this connection (ADR 0041 §3.1, §3.2). The extension opens Klav's
+    /// own frame in that tab, says what `presence` grants, and answers
+    /// with [`Request::ExtensionPresence`] (the master password), or with
+    /// an `extension_reply` `error` when the person cancels.
+    Presence {
+        /// Event ID.
+        id: u64,
+        /// Browser tab ID.
+        tab_id: u64,
+        /// What the frame says it grants; `browser` is always set.
+        presence: PresenceAsk,
+    },
     /// Fill tab `tab_id` (if its page is on `host`) and tell the person.
     /// Answer: the fill report (field names, addresses; never values).
     Fill {
@@ -1158,6 +1191,56 @@ pub struct PresenceAsk {
     /// in its own language.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<AskValue>,
+    /// Only in [`Event::Presence`]: the presence of an extension's
+    /// connection, and the agent's event that caused it (ADR 0041 §3.1),
+    /// for the extension's frame to word as `klavd`'s Touch ID dialog does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserAsk>,
+}
+
+/// [`PresenceAsk::browser`]: what an extension connection's presence
+/// grants, and what caused it (ADR 0041 §3.1). With `lasts`, agents may
+/// fill through the connection until Klav locks; without it, only this
+/// event (the setting on Always).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserAsk {
+    /// The agent's event.
+    pub event: BrowserCause,
+    /// The agent's name, cleaned as `klavd`'s prompts clean it.
+    pub agent: String,
+    /// The item's title from the vault, cleaned: for a fill (missing when
+    /// the agent didn't say which item, or the vault has no such item), a
+    /// password change and a passkey sign-in (the passkey's login).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// For a passkey sign-in: the rpId of the passkey `klavd` armed, from
+    /// the vault and checked against the tab's host; never the site the
+    /// agent claims (T140).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    /// How many extension connections are attached, when more than one: a
+    /// hint (N11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached: Option<u32>,
+    /// Word it as "this browser connection" (the connection's peer is
+    /// keyed by its connection, as on Linux), not "a browser" (macOS: the
+    /// browser's hosts share the browser's parent key). Own choice 3.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub connection: bool,
+}
+
+/// [`BrowserAsk::event`]: the value-carrying event that caused the
+/// presence (Omar's decision of 2026-11-19: a text per event).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserCause {
+    /// `browser_fill`.
+    Fill,
+    /// The fill step of `agent_rotate_begin`.
+    PasswordChange,
+    /// `agent_passkey_arm`.
+    PasskeySignIn,
 }
 
 /// [`PresenceAsk::lasts`].
@@ -1285,6 +1368,10 @@ pub enum ErrorCode {
     /// This `klavd` does not offer the operation (`hold`, ADR 0041 §1.2;
     /// `presence_window` while the gate is off).
     NotSupported,
+    /// With the presence gate on and more than one browser connection
+    /// attached, none or several report focus (ADR 0041 §3.1, P25): the
+    /// person brings the browser to the front, or closes the others.
+    BrowserAmbiguous,
     /// Anything else.
     Internal,
 }
@@ -1749,6 +1836,7 @@ mod tests {
                 title: Some("GitHub".into()),
                 count: None,
             }),
+            browser: None,
         };
         assert_eq!(
             serde_json::to_value(&ask).unwrap(),

@@ -731,6 +731,10 @@ pub(crate) fn daemon_error(e: klav_daemon::protocol::ErrorBody) -> ClientError {
             "klavd is locked: the person must unlock Klav on this computer ({})",
             e.message
         )),
+        // With the presence gate on (ADR 0041 §3.1): klavd's message says
+        // what to tell the person (bring the browser to the front, or wait
+        // for the other prompt), so it reaches the agent as it is.
+        ErrorCode::BrowserAmbiguous | ErrorCode::PresenceBusy => ClientError::Ambiguous(e.message),
         _ => ClientError::Network(format!("klavd: {}", e.message)),
     }
 }
@@ -802,32 +806,43 @@ async fn fill_extension(
             selector: s.selector.clone(),
         })
         .collect();
-    let request = |agent_id| Request::BrowserFill {
+    // `item` lets klavd's presence prompt name the item's title from the
+    // vault (ADR 0041 §3.1); `agent_id` lets it refuse a paused agent.
+    let request = |agent_id, item| Request::BrowserFill {
         tab: tab.tab.clone(),
         host: host.clone(),
         agent: session.agent().name().to_owned(),
         agent_id,
         reason: reason.to_owned(),
+        item,
         kind: info.kind,
         fields: fields.clone(),
         selectors: selectors.clone(),
         submit: options.submit,
     };
+    let agent_id = Some(session.agent().id());
     let first = daemon
-        .call::<FillReport>(request(Some(session.agent().id())))
+        .call::<FillReport>(request(agent_id, Some(item_id)))
         .await;
     let report = match first {
-        // A `klavd` older than the pause does not know `agent_id` and
-        // cannot read the request. It does not know pauses either, so
-        // without it nothing is lost: once more without, and the person
-        // hears that it needs a restart.
+        // A `klavd` older than the presence gate does not know `item` and
+        // cannot read the request; it has no presence prompt to name the
+        // item in, so without it nothing is lost.
         Err(e) if is_unreadable(&e) => {
-            let (mut report, _) = daemon
-                .call::<FillReport>(request(None))
-                .await
-                .map_err(daemon_error)?;
-            report.warnings.push(OLD_KLAVD.to_owned());
-            report
+            match daemon.call::<FillReport>(request(agent_id, None)).await {
+                // Older than the pause too: it does not know `agent_id`
+                // either, nor pauses. Once more without, and the person
+                // hears that it needs a restart.
+                Err(e) if is_unreadable(&e) => {
+                    let (mut report, _) = daemon
+                        .call::<FillReport>(request(None, None))
+                        .await
+                        .map_err(daemon_error)?;
+                    report.warnings.push(OLD_KLAVD.to_owned());
+                    report
+                }
+                other => other.map_err(daemon_error)?.0,
+            }
         }
         other => other.map_err(daemon_error)?.0,
     };

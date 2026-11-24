@@ -7,8 +7,8 @@
 //! extension types them only if the tab is still on that host, tells the
 //! person, and answers with field names and addresses, never values.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use klav_client::ops::SecretText;
 
 use crate::protocol::{
     BrowserSeen, BrowserTab, ErrorBody, ErrorCode, Event, EventEnvelope, ExtensionTab,
-    FieldSelector, PROTOCOL_VERSION, RotateTarget,
+    FieldSelector, PROTOCOL_VERSION, PresenceAsk, RotateTarget,
 };
 
 /// A line to write on a connection.
@@ -36,6 +36,9 @@ const PROBE_WAIT: Duration = Duration::from_secs(5);
 /// How long an event may wait to be queued for an extension. One that
 /// stops reading is detached, instead of holding the agent's request.
 const SEND_WAIT: Duration = Duration::from_secs(5);
+/// How long the person has to answer Klav's frame for an extension
+/// connection's presence (ADR 0041 §3.1): then it counts as declined.
+const PRESENCE_WAIT: Duration = Duration::from_secs(120);
 /// Longest agent name shown in the page's notice.
 const MAX_AGENT_SHOWN: usize = 64;
 /// Longest host accepted (DNS: 253).
@@ -45,10 +48,27 @@ struct Extension {
     conn: u64,
     browser: String,
     events: mpsc::Sender<Line>,
+    /// Its peer is keyed by its connection (Linux, or a peer `klavd` can't
+    /// place): a presence prompt says "this browser connection", not "a
+    /// browser" (ADR 0041 §3.1, own choice 3).
+    connection_keyed: bool,
+}
+
+/// What an event waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Awaits {
+    /// The extension's report, in `extension_reply`.
+    Report,
+    /// The person's presence in Klav's frame ([`Event::Presence`]): only
+    /// `klavd` resolves it with a success, once it checked the master
+    /// password `extension_presence` brought. An `extension_reply` may
+    /// only decline it.
+    Presence,
 }
 
 struct Waiting {
     conn: u64,
+    awaits: Awaits,
     reply: oneshot::Sender<Result<serde_json::Value, ErrorBody>>,
 }
 
@@ -57,6 +77,8 @@ struct Inner {
     /// Newest last.
     extensions: Vec<Extension>,
     waiting: HashMap<u64, Waiting>,
+    /// Connections with a presence event open: one at a time each.
+    asking: HashSet<u64>,
     /// Every browser that attached since `klavd` started, by name: when it
     /// last attached or left. At most [`MAX_SEEN`].
     seen: Vec<(String, u64)>,
@@ -93,6 +115,11 @@ pub(crate) struct Hub {
     next_conn: AtomicU64,
     next_event: AtomicU64,
     inner: Mutex<Inner>,
+    /// ADR 0041 §3.1, P25 (Omar's decisions on N5 and Q-N5): with more than
+    /// one connection attached, an agent's tab and each value-carrying
+    /// event go only to the one connection that reports focus. On with the
+    /// presence gate: an older SDK can't read `browser_ambiguous`.
+    focus_rule: AtomicBool,
 }
 
 fn error(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
@@ -102,6 +129,23 @@ fn error(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
         paused: None,
         presence: None,
     }
+}
+
+/// P25: no connection is clearly the one the person uses.
+fn ambiguous() -> ErrorBody {
+    error(
+        ErrorCode::BrowserAmbiguous,
+        "more than one browser is connected to Klav, and not exactly one of them is in front: ask the person to bring the browser to fill to the front, or to close the other browsers (or profiles) with Klav's extension, then try again",
+    )
+}
+
+/// The person declined, or didn't answer, the presence an agent's event
+/// waited for (ADR 0041 §3.1).
+pub(crate) fn declined() -> ErrorBody {
+    error(
+        ErrorCode::Denied,
+        "the person declined in the browser to let agents fill there: nothing reached the page. Do not retry on your own; tell the person, and try again only if they ask",
+    )
 }
 
 fn no_browser() -> ErrorBody {
@@ -121,8 +165,23 @@ impl Hub {
         self.next_conn.fetch_add(1, Ordering::Relaxed) + 1
     }
 
+    /// Turns P25's rule on (ADR 0041 §3.1): with the presence gate.
+    pub(crate) fn set_focus_rule(&self, on: bool) {
+        self.focus_rule.store(on, Ordering::Relaxed);
+    }
+
+    fn focus_rule(&self) -> bool {
+        self.focus_rule.load(Ordering::Relaxed)
+    }
+
     /// Registers connection `conn` as an extension (again: replaces).
-    pub(crate) fn attach(&self, conn: u64, browser: String, events: mpsc::Sender<Line>) {
+    pub(crate) fn attach(
+        &self,
+        conn: u64,
+        browser: String,
+        events: mpsc::Sender<Line>,
+        connection_keyed: bool,
+    ) {
         let mut inner = self.inner();
         inner.extensions.retain(|e| e.conn != conn);
         inner.mark(&browser);
@@ -130,7 +189,22 @@ impl Hub {
             conn,
             browser,
             events,
+            connection_keyed,
         });
+    }
+
+    /// How many extension connections are attached.
+    pub(crate) fn attached(&self) -> usize {
+        self.inner().extensions.len()
+    }
+
+    /// Whether `conn`'s peer is keyed by its connection ([`Extension`]).
+    pub(crate) fn connection_keyed(&self, conn: u64) -> bool {
+        self.inner()
+            .extensions
+            .iter()
+            .find(|e| e.conn == conn)
+            .is_none_or(|e| e.connection_keyed)
     }
 
     /// The browsers that attached since `klavd` started, newest first.
@@ -187,11 +261,42 @@ impl Hub {
     ) -> Result<(), ErrorBody> {
         let mut inner = self.inner();
         match inner.waiting.get(&event) {
-            Some(w) if w.conn == conn => {}
+            Some(w) if w.conn == conn => {
+                // A presence is the person's, never the extension's word.
+                if w.awaits == Awaits::Presence && result.is_ok() {
+                    return Err(error(
+                        ErrorCode::BadRequest,
+                        "a presence is answered with extension_presence and the master password",
+                    ));
+                }
+            }
             _ => return Err(error(ErrorCode::NotFound, "no such event")),
         }
         if let Some(w) = inner.waiting.remove(&event) {
             let _ = w.reply.send(result);
+        }
+        Ok(())
+    }
+
+    /// Whether `event` is a presence event sent to `conn` that still waits:
+    /// a password is checked only as the answer to one (own choice 32).
+    pub(crate) fn presence_waits(&self, conn: u64, event: u64) -> bool {
+        self.inner()
+            .waiting
+            .get(&event)
+            .is_some_and(|w| w.conn == conn && w.awaits == Awaits::Presence)
+    }
+
+    /// The master password for presence event `event` checked out: the
+    /// agent's event may go on.
+    pub(crate) fn presence_verified(&self, conn: u64, event: u64) -> Result<(), ErrorBody> {
+        let mut inner = self.inner();
+        if !matches!(inner.waiting.get(&event), Some(w) if w.conn == conn && w.awaits == Awaits::Presence)
+        {
+            return Err(error(ErrorCode::NotFound, "no such event"));
+        }
+        if let Some(w) = inner.waiting.remove(&event) {
+            let _ = w.reply.send(Ok(serde_json::json!({})));
         }
         Ok(())
     }
@@ -203,9 +308,38 @@ impl Hub {
         event: impl FnOnce(u64) -> Event,
         wait: Duration,
     ) -> Result<serde_json::Value, ErrorBody> {
+        let (id, rx) = self.send(conn, events, event, Awaits::Report).await?;
+        match tokio::time::timeout(wait, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(error(ErrorCode::Internal, "the browser closed")),
+            Err(_) => {
+                self.inner().waiting.remove(&id);
+                Err(error(
+                    ErrorCode::Internal,
+                    "the browser did not answer in time",
+                ))
+            }
+        }
+    }
+
+    /// Queues `event` for `conn`, waiting for what `awaits` says.
+    async fn send(
+        &self,
+        conn: u64,
+        events: &mpsc::Sender<Line>,
+        event: impl FnOnce(u64) -> Event,
+        awaits: Awaits,
+    ) -> Result<(u64, oneshot::Receiver<Result<serde_json::Value, ErrorBody>>), ErrorBody> {
         let id = self.next_event.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
-        self.inner().waiting.insert(id, Waiting { conn, reply: tx });
+        self.inner().waiting.insert(
+            id,
+            Waiting {
+                conn,
+                awaits,
+                reply: tx,
+            },
+        );
         let envelope = EventEnvelope {
             v: PROTOCOL_VERSION,
             event: event(id),
@@ -230,21 +364,12 @@ impl Hub {
                 ));
             }
         }
-        match tokio::time::timeout(wait, rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(error(ErrorCode::Internal, "the browser closed")),
-            Err(_) => {
-                self.inner().waiting.remove(&id);
-                Err(error(
-                    ErrorCode::Internal,
-                    "the browser did not answer in time",
-                ))
-            }
-        }
+        Ok((id, rx))
     }
 
-    /// The active tab of the focused browser (else of the newest one).
-    pub(crate) async fn tab(&self) -> Result<BrowserTab, ErrorBody> {
+    /// Asks every attached connection for its active tab, newest first.
+    /// Returns what each that answered said, and the last error.
+    async fn tabs(&self) -> (Vec<(u64, String, ExtensionTab)>, Option<ErrorBody>, usize) {
         let extensions: Vec<(u64, String, mpsc::Sender<Line>)> = self
             .inner()
             .extensions
@@ -252,9 +377,7 @@ impl Hub {
             .rev()
             .map(|e| (e.conn, e.browser.clone(), e.events.clone()))
             .collect();
-        if extensions.is_empty() {
-            return Err(no_browser());
-        }
+        let attached = extensions.len();
         let mut found: Vec<(u64, String, ExtensionTab)> = Vec::new();
         let mut last_error = None;
         for (conn, browser, events) in extensions {
@@ -269,10 +392,30 @@ impl Hub {
                 Err(e) => last_error = Some(e),
             }
         }
-        let pick = found.iter().position(|(_, _, t)| t.focused).unwrap_or(0);
+        (found, last_error, attached)
+    }
+
+    /// The active tab of the focused browser. Without the focus rule, the
+    /// newest one when none reports focus. With it (ADR 0041 §3.1, P25),
+    /// with more than one connection attached, exactly one must report
+    /// focus, or `browser_ambiguous`; with one attached, that one.
+    pub(crate) async fn tab(&self) -> Result<BrowserTab, ErrorBody> {
+        let (mut found, last_error, attached) = self.tabs().await;
+        if attached == 0 {
+            return Err(no_browser());
+        }
         if found.is_empty() {
             return Err(last_error.unwrap_or_else(no_browser));
         }
+        let pick = if self.focus_rule() && attached > 1 {
+            let mut focused = found.iter().enumerate().filter(|(_, (_, _, t))| t.focused);
+            match (focused.next(), focused.next()) {
+                (Some((i, _)), None) => i,
+                _ => return Err(ambiguous()),
+            }
+        } else {
+            found.iter().position(|(_, _, t)| t.focused).unwrap_or(0)
+        };
         let (conn, browser, tab) = found.swap_remove(pick);
         // Only the origin goes to the agent: a page's path, query and
         // fragment may carry tokens (the agent only needs the host).
@@ -281,6 +424,74 @@ impl Hub {
             url: klav_core::site::origin(&tab.url),
             browser,
         })
+    }
+
+    /// P25 again, just before a value-carrying event goes to `conn` (Omar's
+    /// decision on Q-N5): with more than one connection attached, each is
+    /// asked for focus once more, and only `conn` may report it. With one
+    /// attached, or without the focus rule, nothing is asked.
+    pub(crate) async fn focus(&self, conn: u64) -> Result<(), ErrorBody> {
+        if !self.focus_rule() || self.attached() <= 1 {
+            return Ok(());
+        }
+        let (found, _, attached) = self.tabs().await;
+        if attached <= 1 {
+            // The others left meanwhile: as with one (if `conn` left too,
+            // sending to it fails).
+            return Ok(());
+        }
+        let mut focused = found.iter().filter(|(_, _, t)| t.focused);
+        match (focused.next(), focused.next()) {
+            (Some((c, _, _)), None) if *c == conn => Ok(()),
+            _ => Err(ambiguous()),
+        }
+    }
+
+    /// Asks the extension behind `tab` for the person's presence
+    /// ([`Event::Presence`]): Klav's frame in that tab, answered with the
+    /// master password `klavd` checks (`extension_presence`). `Ok` once it
+    /// checked out; [`declined`] when the person canceled or didn't answer
+    /// in time; `presence_busy` while another one is open on that
+    /// connection.
+    pub(crate) async fn ask_presence(
+        &self,
+        tab: &str,
+        presence: PresenceAsk,
+    ) -> Result<(), ErrorBody> {
+        let (conn, tab_id, events) = self.route(tab)?;
+        /// Lets the connection ask again, also on an early return.
+        struct Asking<'a>(&'a Hub, u64);
+        impl Drop for Asking<'_> {
+            fn drop(&mut self) {
+                self.0.inner().asking.remove(&self.1);
+            }
+        }
+        if !self.inner().asking.insert(conn) {
+            return Err(crate::presence::busy());
+        }
+        let _asking = Asking(self, conn);
+        let (id, rx) = self
+            .send(
+                conn,
+                &events,
+                move |id| Event::Presence {
+                    id,
+                    tab_id,
+                    presence,
+                },
+                Awaits::Presence,
+            )
+            .await?;
+        match tokio::time::timeout(PRESENCE_WAIT, rx).await {
+            Ok(Ok(Ok(_))) => Ok(()),
+            // Canceled in the frame (an `extension_reply` with an error).
+            Ok(Ok(Err(_))) => Err(declined()),
+            Ok(Err(_)) => Err(error(ErrorCode::Internal, "the browser closed")),
+            Err(_) => {
+                self.inner().waiting.remove(&id);
+                Err(declined())
+            }
+        }
     }
 
     /// The browser connection and tab ID behind `tab`, for state bound to
@@ -309,6 +520,7 @@ impl Hub {
         let title = klav_core::text::shown(&title, MAX_AGENT_SHOWN);
         let host = checked_host(&host)?;
         let (conn, tab_id, events) = self.route(tab)?;
+        self.focus(conn).await?;
         self.ask(
             conn,
             &events,
@@ -392,6 +604,7 @@ impl Hub {
         let (agent, reason) = shown_notice(&agent, &reason);
         let host = checked_host(&host)?;
         let (conn, tab_id, events) = self.route(tab)?;
+        self.focus(conn).await?;
         let (frame_id, document_id, token) = (
             target.frame_id,
             target.document_id.clone(),
@@ -436,6 +649,7 @@ impl Hub {
         let (agent, reason) = shown_notice(&agent, &reason);
         let host = checked_host(&host)?;
         let (conn, tab_id, events) = self.route(tab)?;
+        self.focus(conn).await?;
         let report = self
             .ask(
                 conn,
@@ -503,9 +717,9 @@ mod tests {
         let hub = Hub::default();
         let (tx, _rx) = mpsc::channel(1);
         assert!(hub.seen().is_empty());
-        hub.attach(1, "Dia".into(), tx.clone());
-        hub.attach(2, "Google Chrome".into(), tx.clone());
-        hub.attach(3, "Dia".into(), tx.clone());
+        hub.attach(1, "Dia".into(), tx.clone(), false);
+        hub.attach(2, "Google Chrome".into(), tx.clone(), false);
+        hub.attach(3, "Dia".into(), tx.clone(), false);
         let seen = hub.seen();
         assert_eq!(seen.len(), 2, "one entry per browser");
         assert!(seen.iter().all(|b| b.connected));
@@ -519,7 +733,7 @@ mod tests {
         assert!(dia.at_ms > 0);
 
         for n in 0..40 {
-            hub.attach(100 + n, format!("browser {n}"), tx.clone());
+            hub.attach(100 + n, format!("browser {n}"), tx.clone(), false);
         }
         assert_eq!(hub.seen().len(), MAX_SEEN);
     }

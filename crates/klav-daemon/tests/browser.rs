@@ -132,6 +132,7 @@ async fn agents_fill_the_active_tab_through_the_extension() {
         host: "github.com".into(),
         agent: "claude-code".into(),
         agent_id: None,
+        item: None,
         reason: "log in to check CI".into(),
         kind: klav_core::model::item::ItemKind::Login,
         fields: serde_json::from_value(json!([
@@ -172,6 +173,7 @@ async fn agents_fill_the_active_tab_through_the_extension() {
         host: "github.com".into(),
         agent: "claude-code".into(),
         agent_id: None,
+        item: None,
         reason: "again".into(),
         kind: klav_core::model::item::ItemKind::Login,
         fields: Vec::new(),
@@ -197,6 +199,7 @@ async fn agents_fill_the_active_tab_through_the_extension() {
             host: "github.com".into(),
             agent: "a".into(),
             agent_id: None,
+            item: None,
             reason: "r".into(),
             kind: klav_core::model::item::ItemKind::Login,
             fields: Vec::new(),
@@ -262,6 +265,7 @@ fn fill(tab: &str, agent: &str, reason: &str, value: &str) -> Request {
         host: "github.com".into(),
         agent: agent.to_owned(),
         agent_id: None,
+        item: None,
         reason: reason.to_owned(),
         kind: klav_core::model::item::ItemKind::Login,
         fields: serde_json::from_value(json!([

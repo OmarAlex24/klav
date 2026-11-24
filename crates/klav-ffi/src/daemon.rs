@@ -305,6 +305,9 @@ fn daemon_error(e: ErrorBody) -> KlavError {
         // 5. Until then a refusal, without changing the Swift bindings.
         ErrorCode::PresenceRequired | ErrorCode::PresenceBusy => KlavError::Denied { message },
         ErrorCode::NotSupported => KlavError::Invalid { message },
+        // Only an agent's browser request gets it (ADR 0041 §3.1), never
+        // the app's.
+        ErrorCode::BrowserAmbiguous => KlavError::Denied { message },
         // The client's own errors: the socket closed or never answered.
         ErrorCode::Internal if message.starts_with("klavd c") => {
             KlavError::DaemonUnavailable { message }

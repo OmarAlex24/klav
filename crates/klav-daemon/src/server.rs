@@ -23,9 +23,9 @@ use crate::imports::Imports;
 use crate::presence::{self, Caller, Gate, OnePassword, Presence, PromptKind, Purpose, Untitled};
 use crate::prompt::{ItemShown, Lang, Prompt, Source, Widening};
 use crate::protocol::{
-    AskValue, AskValueKind, DaemonStatus, ErrorBody, ErrorCode, MAX_LINE, PROTOCOL_VERSION,
-    PasskeyArmed, PauseInEffect, PresencePurpose, Request, RequestEnvelope, ResponseEnvelope,
-    RevocationProgress,
+    AskLasts, AskValue, AskValueKind, BrowserAsk, BrowserCause, DaemonStatus, ErrorBody, ErrorCode,
+    MAX_LINE, PROTOCOL_VERSION, PasskeyArmed, PauseInEffect, PresenceAsk, PresenceKey,
+    PresencePurpose, Request, RequestEnvelope, ResponseEnvelope, RevocationProgress,
 };
 use crate::touchid::{self, Biometric};
 use crate::uv;
@@ -1268,13 +1268,19 @@ pub(crate) async fn serve_with(
     klav_client::home::set_mode(&staging, 0o600).map_err(|e| e.to_string())?;
     let socket_id = bound_socket(&listener, &staging, &socket).await?;
 
+    // P25's rule comes with the gate (ADR 0041 §3.1).
+    let focus_rule = config.presence_gate;
     let state = Arc::new(State {
         config,
         slot: std::sync::Mutex::new(None),
         generation: watch::Sender::new(0),
         unlocking: Mutex::new(()),
         shutdown: Notify::new(),
-        browsers: Hub::default(),
+        browsers: {
+            let hub = Hub::default();
+            hub.set_focus_rule(focus_rule);
+            hub
+        },
         revision: AtomicU64::new(0),
         spent_proofs: std::sync::Mutex::default(),
         // A restart does not lift what the person paused here, nor forget
@@ -2038,6 +2044,7 @@ async fn handle_browser(
     state: &State,
     conn: u64,
     lines: &mpsc::Sender<Line>,
+    caller: Option<&Caller>,
     request: Request,
 ) -> Reply {
     let hub = &state.browsers;
@@ -2048,7 +2055,38 @@ async fn handle_browser(
                 .filter(|c| !c.is_control())
                 .take(40)
                 .collect();
-            hub.attach(conn, browser, lines.clone());
+            // How its presence prompt names it (ADR 0041 §3.1, own choice
+            // 3): "a browser" when its peer shares the browser's key
+            // (macOS), "this browser connection" otherwise.
+            let connection_keyed = caller.is_none_or(|c| {
+                matches!(
+                    c.key,
+                    presence::Key::Connection(_) | presence::Key::NoWindow(_)
+                )
+            });
+            hub.attach(conn, browser, lines.clone(), connection_keyed);
+            ok(serde_json::json!({}), Vec::new())
+        }
+        Request::ExtensionPresence { event, password } => {
+            // Checked only as the answer to a presence event this
+            // connection got and still waits on (own choice 32).
+            if !hub.presence_waits(conn, event) {
+                return Err(ErrorBody {
+                    code: ErrorCode::NotFound,
+                    message: "no such event".into(),
+                    paused: None,
+                    presence: None,
+                });
+            }
+            let Some(slot) = state.current() else {
+                return Err(locked());
+            };
+            // The session's own password (§2.3), one check at a time. A
+            // wrong one leaves the event waiting: the frame asks again.
+            state
+                .passwords
+                .check(true, slot.password.as_ref(), password)?;
+            hub.presence_verified(conn, event)?;
             ok(serde_json::json!({}), Vec::new())
         }
         Request::ExtensionReply {
@@ -2070,6 +2108,7 @@ async fn handle_browser(
             agent,
             agent_id,
             reason,
+            item,
             kind,
             fields,
             selectors,
@@ -2079,6 +2118,24 @@ async fn handle_browser(
             // agent's access (ADR 0033 §7.2).
             state.refuse_deleting()?;
             state.refuse_paused(agent_id)?;
+            // With the gate on, the connection's presence first (ADR 0041
+            // §3.1). It needs the unlocked session (the setting, the
+            // password's check), so a locked `klavd` says `locked`.
+            if state.config.presence_gate {
+                let Some(slot) = state.current() else {
+                    return Err(locked());
+                };
+                browser_presence(
+                    state,
+                    &slot,
+                    &tab,
+                    BrowserCause::Fill,
+                    &agent,
+                    Title::Item(item),
+                    None,
+                )
+                .await?;
+            }
             let report = hub
                 .fill(&tab, host, agent, reason, kind, fields, selectors, submit)
                 .await?;
@@ -2086,6 +2143,115 @@ async fn handle_browser(
         }
         _ => Err(bad_request("not a browser request")),
     }
+}
+
+/// Where an extension connection's presence prompt takes the item's title
+/// from.
+enum Title {
+    /// Already read from the vault (an assisted change, a passkey's login).
+    Known(String),
+    /// The item a fill names, looked up in the vault only if a prompt
+    /// shows: `None` from an older SDK, and a missing item, name none.
+    Item(Option<ItemId>),
+}
+
+/// ADR 0041 §3.1: before an agent's event carries values to the extension
+/// connection behind `tab`, that connection's presence. Under 5 minutes or
+/// While unlocked, one verification lets agents fill through it until
+/// Klav locks or it closes; under Always, every event asks. Touch ID where
+/// `klavd` can show it, else the master password in Klav's own frame of
+/// that browser ([`Event::Presence`]). Canceled, failed or unanswered:
+/// `denied`, with what the agent tells the person. With more than one
+/// connection attached, P25's rule first, so nobody is asked for a target
+/// that would be refused. Only with the gate on.
+///
+/// [`Event::Presence`]: crate::protocol::Event::Presence
+async fn browser_presence(
+    state: &State,
+    slot: &Slot,
+    tab: &str,
+    event: BrowserCause,
+    agent: &str,
+    title: Title,
+    site: Option<&str>,
+) -> Result<(), ErrorBody> {
+    let hub = &state.browsers;
+    let (conn, _) = hub.tab_ids(tab)?;
+    let Some(setting) = state.presence.extension_needs(slot.generation, conn)? else {
+        return Ok(());
+    };
+    hub.focus(conn).await?;
+    let device = presence::Device {
+        touch: state.touch.as_ref(),
+        touch_id: state.config.touch_id,
+        check: slot.password.as_ref(),
+        passwords: &state.passwords,
+        gate: true,
+    };
+    let touch = presence::Verify::touch_id_available(&device);
+    let clean = |text: &str| crate::prompt::clean(text, crate::prompt::MAX_NAME);
+    let title = match title {
+        Title::Known(title) => Some(clean(&title)),
+        Title::Item(None) => None,
+        Title::Item(Some(item)) => {
+            // Never behind an open dialog when Touch ID follows (the third
+            // layer-2 review, finding A).
+            let session = if touch {
+                state.presence.lock(&slot.session, true, None).await?.0
+            } else {
+                slot.session.lock().await
+            };
+            let u = &session.unlocked;
+            u.find_item(&item.to_string())
+                .and_then(|loc| u.item_summary(loc))
+                .ok()
+                .map(|summary| clean(&summary.title))
+        }
+    };
+    let attached = u32::try_from(hub.attached()).unwrap_or(u32::MAX);
+    let until_lock = setting != uv::Window::Always;
+    let ask = BrowserAsk {
+        event,
+        agent: clean(agent),
+        title,
+        site: site.map(clean),
+        attached: (attached > 1).then_some(attached),
+        connection: hub.connection_keyed(conn),
+    };
+    if touch {
+        let reason = Prompt::Browser {
+            ask: &ask,
+            until_lock,
+        }
+        .reason(Lang::current(), None);
+        let verified = {
+            let _open = state.presence.open_prompt(PromptKind::Presence)?;
+            tokio::task::block_in_place(|| presence::Verify::touch_id(&device, &reason))
+        };
+        match verified {
+            Ok(()) => {
+                return state
+                    .presence
+                    .extension_verified(slot.generation, conn, setting);
+            }
+            Err(presence::Refused::Failed(_)) => return Err(crate::browser::declined()),
+            // Locked out meanwhile: the master password, as without it.
+            Err(presence::Refused::Unavailable) => {}
+        }
+    }
+    let ask = PresenceAsk {
+        key: PresenceKey::Connection,
+        window: setting,
+        terminal: None,
+        declared: false,
+        lasts: until_lock.then_some(AskLasts::UntilLock),
+        value: None,
+        browser: Some(ask),
+    };
+    hub.ask_presence(tab, ask).await?;
+    state
+        .presence
+        .extension_verified(slot.generation, conn, setting)
 }
 
 fn bad_request(message: &str) -> ErrorBody {
@@ -2356,6 +2522,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ImportPreview { .. }
         | Request::ExtensionAttach { .. }
         | Request::ExtensionReply { .. }
+        | Request::ExtensionPresence { .. }
         | Request::BrowserTab
         | Request::Hold => false,
         // Use only when it changes the setting; reading it is not.
@@ -2697,6 +2864,20 @@ async fn rotate_steps(
         .rotate_probe(&tab, plan.host.clone(), plan.urls.clone())
         .await?;
     plan.check_page(&target.url).map_err(e)?;
+    // The extension connection's presence before the fill step carries
+    // values to it, and before anything is stored (ADR 0041 §3.1).
+    if state.config.presence_gate {
+        browser_presence(
+            state,
+            slot,
+            &tab,
+            BrowserCause::PasswordChange,
+            &plan.agent_name,
+            Title::Known(plan.title.clone()),
+            None,
+        )
+        .await?;
+    }
     // 3. The new password, stored as pending in a new version of the item
     //    before anything touches the page. If this fails, nothing is filled.
     let new = {
@@ -2794,6 +2975,21 @@ async fn arm_steps(
         state.spend_proof(step.agent_id, &step.request)?;
         (plan, warnings)
     };
+    // The extension connection's presence before the use is armed there,
+    // naming the rpId `klavd` armed from the vault, never the site the
+    // agent claims (ADR 0041 §3.1, T140).
+    if state.config.presence_gate {
+        browser_presence(
+            state,
+            slot,
+            &tab,
+            BrowserCause::PasskeySignIn,
+            &plan.agent_name,
+            Title::Known(plan.title.clone()),
+            Some(&plan.rp_id),
+        )
+        .await?;
+    }
     let secret = token::generate_token("kpa_");
     let digest = token::token_digest(&secret);
     slot.arm(Arm {
@@ -3203,8 +3399,9 @@ async fn route(
     match request {
         request @ (Request::ExtensionAttach { .. }
         | Request::ExtensionReply { .. }
+        | Request::ExtensionPresence { .. }
         | Request::BrowserTab
-        | Request::BrowserFill { .. }) => handle_browser(state, conn, lines, request).await,
+        | Request::BrowserFill { .. }) => handle_browser(state, conn, lines, caller, request).await,
         Request::AgentPasskeyUse {
             tab_id,
             origin,
@@ -4766,6 +4963,7 @@ async fn dispatch(
         Request::TaskProgress { task } => ok(u.task_progress(&task).await.map_err(e)?, warnings),
         Request::ExtensionAttach { .. }
         | Request::ExtensionReply { .. }
+        | Request::ExtensionPresence { .. }
         | Request::BrowserTab
         | Request::BrowserFill { .. } => Err(bad_request("not handled here")),
         Request::Status

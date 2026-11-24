@@ -127,7 +127,12 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::AgentRotateCancel { .. }
         | Request::AgentRotatePending { .. }
         | Request::BrowserFill { .. } => Gate::AgentProof,
-        Request::BrowserTab | Request::ExtensionReply { .. } => Gate::BrowserChannel,
+        // `extension_presence` carries the person's master password for
+        // an extension connection's presence (§3.1), checked where it is
+        // handled; it hands out nothing.
+        Request::BrowserTab | Request::ExtensionReply { .. } | Request::ExtensionPresence { .. } => {
+            Gate::BrowserChannel
+        }
         Request::Status
         | Request::Unlock { .. }
         | Request::Lock
@@ -639,6 +644,9 @@ struct Inner {
     held: HashSet<u64>,
     /// Connections that declared `hold`; kept across locks.
     declared: HashSet<u64>,
+    /// Extension connections whose presence was verified (§3.1): agents
+    /// fill through them until Klav locks or they close. Not under Always.
+    extensions: HashSet<u64>,
     /// The prompt `klavd` shows now, if any: one at a time (§2.4).
     prompt: Option<PromptKind>,
     /// The key that unlocked `klavd`, until it locks.
@@ -764,6 +772,7 @@ impl Presence {
         inner.passkeys.clear();
         inner.asks.clear();
         inner.held.clear();
+        inner.extensions.clear();
         inner.unlocked_by = Some(caller.key);
         if settings.presence == Window::Always {
             inner.declared.clear();
@@ -792,6 +801,7 @@ impl Presence {
         inner.passkeys.clear();
         inner.asks.clear();
         inner.held.clear();
+        inner.extensions.clear();
         inner.unlocked_by = None;
     }
 
@@ -800,6 +810,7 @@ impl Presence {
         let mut inner = self.inner();
         inner.declared.remove(&conn);
         inner.held.remove(&conn);
+        inner.extensions.remove(&conn);
         inner.windows.remove(&Key::Connection(conn));
         inner.asks.remove(&conn);
         inner.passkeys.remove(&Key::Connection(conn));
@@ -957,6 +968,49 @@ impl Presence {
         if window == Window::Always {
             inner.held.clear();
             inner.declared.clear();
+            inner.extensions.clear();
+        }
+        Ok(())
+    }
+
+    /// What extension connection `conn` needs before an agent's event
+    /// carries values to it (§3.1), in the session of `generation`:
+    /// `None` when its presence was verified and still holds; else the
+    /// setting a verification is made under now (Always: this event only).
+    /// A held connection (§1.2) or a key's window doesn't count here.
+    pub(crate) fn extension_needs(
+        &self,
+        generation: u64,
+        conn: u64,
+    ) -> Result<Option<Window>, ErrorBody> {
+        let inner = self.inner();
+        let settings = inner
+            .settings
+            .filter(|_| inner.generation == generation)
+            .ok_or_else(locked)?;
+        let covered = settings.presence != Window::Always && inner.extensions.contains(&conn);
+        Ok((!covered).then_some(settings.presence))
+    }
+
+    /// Extension connection `conn`'s presence was verified, by a prompt
+    /// that stated `stated` (§3.1). Under 5 minutes or While unlocked it
+    /// lasts until Klav locks or the connection closes; a prompt stated
+    /// under Always covers its one event, and so does any while the
+    /// setting is Always now (loosening is not retroactive). `locked` when
+    /// Klav locked since: the verification grants nothing then.
+    pub(crate) fn extension_verified(
+        &self,
+        generation: u64,
+        conn: u64,
+        stated: Window,
+    ) -> Result<(), ErrorBody> {
+        let mut inner = self.inner();
+        let settings = inner
+            .settings
+            .filter(|_| inner.generation == generation)
+            .ok_or_else(locked)?;
+        if stated != Window::Always && settings.presence != Window::Always {
+            inner.extensions.insert(conn);
         }
         Ok(())
     }
@@ -1089,6 +1143,7 @@ impl Presence {
                     declared,
                     lasts: lasts.map(wire_lasts),
                     value,
+                    browser: None,
                 },
                 bound: bound.clone(),
                 version,

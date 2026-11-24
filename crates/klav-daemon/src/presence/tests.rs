@@ -490,6 +490,7 @@ fn without_touch_id_the_client_is_told_what_to_ask() {
             declared: false,
             lasts: Some(AskLasts::FiveMinutes),
             value: None,
+            browser: None,
         }))
     );
     // A wrong password grants nothing; the right one opens the window.
