@@ -17,6 +17,7 @@ mod blob;
 mod common;
 pub mod rotate;
 pub mod sandbox;
+pub mod secret_request;
 pub mod sync;
 pub mod task;
 pub mod vault;

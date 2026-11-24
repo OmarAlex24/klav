@@ -17,6 +17,7 @@ mod items;
 mod rotate;
 mod rotation;
 mod sandboxes;
+pub(crate) mod secret_requests;
 mod sync;
 pub(crate) mod tasks;
 mod vaults;
@@ -36,6 +37,7 @@ pub(crate) fn router(max_attachment_chunk: usize) -> Router<AppState> {
         .merge(rotation::router())
         .merge(rotate::router())
         .merge(sandboxes::router())
+        .merge(secret_requests::router())
         .merge(attachments::router(max_attachment_chunk))
         .merge(sync::router())
         .merge(tasks::router())

@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use klav_core::ids::{AccountId, ApprovalId, TaskId, VaultId};
+use klav_core::ids::{AccountId, ApprovalId, SecretRequestId, TaskId, VaultId};
+use klav_proto::secret_request::SecretRequestState;
 use tokio::sync::broadcast;
 
 use crate::config::Config;
@@ -29,6 +30,8 @@ struct Inner {
     approvals: broadcast::Sender<ApprovalId>,
     /// Tasks the person just decided or someone ended (wakes long-polls).
     tasks: broadcast::Sender<TaskId>,
+    /// Secret requests created, decided or expired (wakes long-polls and SSE).
+    secret_requests: broadcast::Sender<SecretRequestChange>,
     /// Accounts just deleted (closes their event streams, ADR 0037 §5.2).
     deleted_accounts: broadcast::Sender<AccountId>,
     deletion_limits: DeletionLimits,
@@ -41,6 +44,14 @@ struct Inner {
 pub(crate) struct VaultChange {
     pub(crate) vault: VaultId,
     pub(crate) revision: u64,
+}
+
+/// A secret request created, decided or expired (ADR 0046).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SecretRequestChange {
+    pub(crate) account: AccountId,
+    pub(crate) request_id: SecretRequestId,
+    pub(crate) status: SecretRequestState,
 }
 
 impl AppState {
@@ -56,6 +67,7 @@ impl AppState {
             changes: broadcast::channel(1024).0,
             approvals: broadcast::channel(256).0,
             tasks: broadcast::channel(256).0,
+            secret_requests: broadcast::channel(256).0,
             deleted_accounts: broadcast::channel(64).0,
             deletion_limits: DeletionLimits::default(),
             pusher,
@@ -96,6 +108,26 @@ impl AppState {
     /// the database).
     pub(crate) fn subscribe_tasks(&self) -> broadcast::Receiver<TaskId> {
         self.0.tasks.subscribe()
+    }
+
+    /// Announces that a secret request was created, decided or expired.
+    pub(crate) fn secret_request_changed(
+        &self,
+        account: AccountId,
+        request_id: SecretRequestId,
+        status: SecretRequestState,
+    ) {
+        let _ = self.0.secret_requests.send(SecretRequestChange {
+            account,
+            request_id,
+            status,
+        });
+    }
+
+    /// Subscribes to secret request changes (this instance only: waiters also
+    /// re-read the database).
+    pub(crate) fn subscribe_secret_requests(&self) -> broadcast::Receiver<SecretRequestChange> {
+        self.0.secret_requests.subscribe()
     }
 
     /// Tells the account's phones (APNs), in the background. No-op when

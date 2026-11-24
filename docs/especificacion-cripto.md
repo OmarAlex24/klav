@@ -85,6 +85,8 @@ Etiquetas usadas en v1 (todas empiezan con `klav/v1/`):
 | `klav/v1/item/password-record` | AAD del registro de contraseñas de un elemento, sellado con la llave de bóveda (§7.3) |
 | `klav/v1/sig/agent-pause` | pausa o reanudación de los agentes, ADR [0033](decisiones/0033-agentes-desde-la-app-de-mac.md) (§13.9) |
 | `klav/v1/sig/sandbox-revoke` | la persona revoca un sandbox de un proxy o todos, ADR [0036](decisiones/0036-sandboxes-de-agentes.md) E3.3 (§13.11) |
+| `klav/v1/agent/secret-request` | `info` de HPKE de la propuesta cifrada de una solicitud de secreto (tipo `0x25`), ADR [0046](decisiones/0046-agent-secret-requests.md) (§13.14) |
+| `klav/v1/sig/secret-request-decision` | decisión de la persona sobre una solicitud de secreto de un agente, ADR [0046](decisiones/0046-agent-secret-requests.md) (§13.14) |
 
 Las etiquetas de HKDF (`kdf/…`) y el contexto de OPAQUE se usan como bytes ASCII tal cual, sin `lp`, salvo `kdf/local-key` y `kdf/keystore-wrap`, que llevan contexto y van dentro de `tuple` como `server/decoy-kdf-salt`. El resto siempre va dentro de `tuple`.
 
@@ -127,13 +129,14 @@ Cuentas, bóvedas, proyectos, elementos, adjuntos y campos se identifican con **
 | `0x20` | shared-vault-key | 82 | llave de bóveda cifrada con HPKE para un miembro | §8 |
 | `0x21` | shared-project-key | 82 | llave de proyecto cifrada con HPKE para un miembro | §8 |
 | `0x23` | shared-item-key | 82 | llave de un elemento cifrada con HPKE para un agente con un grant por elemento (ADR 0036 §2 y E10) | §8, §13.4 |
+| `0x25` | secret-request-proposal | 50 + n | propuesta JSON de una solicitud de secreto cifrada con HPKE para la cuenta (ADR 0046 §1) | §13.14 |
 | `0x30` | attachment | 25 + n + 16·k | adjunto cifrado con STREAM | §10 |
 | `0x40` | local-identity | 106 | llaves privadas de identidad selladas con la llave local (nunca salen del dispositivo) | §12.2 |
 | `0x41` | local-data | 42 + n | datos locales sellados con la llave local (caché, tokens) | §12.2 |
 | `0x42` | keystore-wrap | 74 | llave local envuelta con un secreto del almacén de la plataforma (Secure Enclave) | §12.3 |
 | `0x43` | local-outbox | 42 + n | cola de salida local, sellada con la llave local (nunca sale del dispositivo): la del historial del generador en `klavd` (ADR 0022) y la de la extensión de iOS (ADR 0020) | §14.7 |
 
-Los valores `0x08–0x0F`, `0x17–0x1F`, `0x22`, `0x24–0x2F`, `0x31–0x3F` y `0x44–0xFF` están reservados. El `0x22` es del paquete del enlace del ADR 0029, todavía sin implementar. El rango `0x40–0x4F` es para blobs que solo existen en el dispositivo: un servidor nunca debe recibirlos.
+Los valores `0x08–0x0F`, `0x17–0x1F`, `0x22`, `0x24`, `0x26–0x2F`, `0x31–0x3F` y `0x44–0xFF` están reservados. El `0x22` es del paquete del enlace del ADR 0029 y el `0x24` del comando de `inject` del ADR 0041, todavía sin implementar. El rango `0x40–0x4F` es para blobs que solo existen en el dispositivo: un servidor nunca debe recibirlos.
 
 ### 3.1 Sobre XChaCha20-Poly1305
 Los tipos `0x01–0x04`, `0x10–0x14` y `0x40–0x42` usan el mismo sobre (y también `0x15`, `0x16` y `0x43`):
@@ -925,6 +928,38 @@ ADR [0036](decisiones/0036-sandboxes-de-agentes.md) E3.3 (capa 5a, latido). Tipo
 - **Preferencias que no se leen.** Si el dispositivo no puede leer las preferencias, o dos elementos no coinciden en el proxy, la lista no falla: muestra las filas de la cadena de todos los proxies, sin proxy ni latido y con un aviso (decidido por Omar el 2026-11-15, ADR 0036). Un error de seguridad sigue haciéndola fallar, como antes: una cadena alterada y también unas preferencias que escribió un agente.
 - **Una versión que el dispositivo no conoce.** Antes de leer el cuerpo entero, el dispositivo lee su `v`. Un latido firmado con otro `v` (de un proxy más nuevo) no cuenta, como si no diera señales, y nunca es un error de seguridad.
 
+### 13.14 Solicitudes de secreto por un agente (`kind = 0x25`, ADR 0046)
+
+*(§13.13 queda reservada para `klav/v1/sig/agent-egress` del ADR 0044.)*
+
+Un agente propone crear un elemento o actualizar un campo secreto enviando solo metadatos cifrados con HPKE para la identidad pública de la cuenta, con la misma suite de §8 (`DHKEM(X25519, HKDF-SHA256)`, `HKDF-SHA256`, `ChaCha20-Poly1305`, modo `base`):
+
+```
+blob = header(2) ‖ enc(32) ‖ ciphertext(n) ‖ tag(16)
+header = 0x01 ‖ 0x25
+info = tuple("klav/v1/agent/secret-request", account_id, agent_id, request_id, fingerprint(cuenta))
+AAD  = header
+```
+
+- `plaintext` es el JSON UTF-8 de `SecretRequestProposal` (`v = 1`, `deny_unknown_fields`: no existe campo de valor). No puede estar vacío y el `blob` total mide como mucho 8 192 bytes (sobrecarga fija de 50 bytes).
+- El servidor guarda `proposal_digest = SHA-256(plaintext)` en claro junto con `reason` y el `blob` hasta que se decida o venza; nunca lee el contenido de la propuesta.
+- La persona completa la solicitud en su dispositivo (cifrando el elemento con el flujo normal de §7) y firma su decisión con la identidad Ed25519 de la cuenta:
+
+```
+firma = Ed25519(cuenta, tuple(
+  "klav/v1/sig/secret-request-decision",
+  request_id(16),
+  agent_id(16),
+  proposal_digest(32),
+  decision_bytes,
+  u64_be(decided_at_ms)
+))
+```
+
+- `decision_bytes` son los bytes JSON exactos de `SecretRequestDecision` (`v = 1`, `status: "fulfilled" | "denied"`, `in_grant`). Si `status = "fulfilled"` y `in_grant = false` (guardado fuera del grant del agente), `vault_id`, `project_id` e `item_id` se omiten (T236). Si `status = "denied"`, todos los campos de elemento y proxy se omiten.
+- El agente verifica la firma con la identidad fijada de la cuenta (TOFU) y comprueba que `request_id`, `agent_id` y `proposal_digest` coinciden con su propuesta (T237).
+- Vectores en [`docs/vectores/secret-request.json`](vectores/secret-request.json).
+
 Todas las firmas de esta sección son Ed25519 según §9: las del agente con su identidad, y las de la persona con la identidad de la cuenta.
 
 ## 14. Passkeys
@@ -1123,3 +1158,4 @@ Un UUID v4 fijo de Klav, constante en `klav-core` (`crypto::passkey::AAGUID`) y 
 | 2026-11-16 | **ADR 0036 en código, capa 5a** (preferencias que escribió un agente): §7.3: de un elemento `preferences` cuya versión actual es de un agente no se usa nada; la lista de sandboxes lo marca en vez de fallar, y `klav proxy use`, tras la presencia, lo reescribe con un cuerpo nuevo que lleva solo `proxy`. Ningún formato binario ni vector cambia: el cuerpo es el JSON de *details* de siempre. |
 | 2026-11-16 | **ADR 0036 en código, capa 5a** (la marca del latido, empates): §13.12 ya lo decía y esta tabla no lo recogía. Para el mismo proxy y la misma época se guarda el `seq` mayor; un latido con el mismo `seq` que la marca cuenta y no la mueve, y solo uno menor es un *rollback*. Entre épocas, en un empate de `epoch_seq` se queda la marca guardada. Un latido que retrocede es un aviso, no un fallo: la lista no sale con 3 por él (decidido por Omar el 2026-11-16, ADR 0036). Ningún formato ni vector cambia. |
 | 2026-11-19 | **ADR 0041 en código, capa 2** (la puerta de presencia, apagada): §12.2: los propósitos `presence` y `passkey-window` de los datos locales (`0x41`). El sobre y la AAD no cambian; ningún vector cambia. |
+| 2026-11-23 | **ADR 0046 en código, capa 1** (solicitudes de secreto por un agente): §2.3, §3 y §13.14 nueva: tipo `0x25` (`secret-request-proposal`, HPKE con `klav/v1/agent/secret-request`), firma `klav/v1/sig/secret-request-decision`, tipos `SecretRequestProposal`/`SecretRequestDecision` y validador de `setup_url` en `klav-core`. Vector nuevo `secret-request.json`; los demás no cambian. |

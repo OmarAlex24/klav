@@ -617,6 +617,9 @@ async fn revoke(
     .await?;
     // The agent's running tasks end with it (ADR 0021 §5).
     let ended = crate::routes::tasks::end_on_revocation(&mut tx, agent_id, now).await?;
+    // Pending secret requests expire and lose their proposal blobs (ADR 0046).
+    let expired_requests =
+        crate::routes::secret_requests::expire_on_revocation(&mut tx, agent_id).await?;
     // Logged in the revocation's own transaction, `agent.revoked` and then
     // each `task.ended` it caused: none of them is lost if the handler is
     // dropped (its client went away), and none is logged for a revocation
@@ -631,6 +634,13 @@ async fn revoke(
     tx.commit().await?;
     for task in &ended {
         state.task_changed(*task);
+    }
+    for req_id in expired_requests {
+        state.secret_request_changed(
+            auth.account_id,
+            req_id,
+            klav_proto::secret_request::SecretRequestState::Expired,
+        );
     }
     fetch_agent(&state, auth.account_id, agent_id)
         .await

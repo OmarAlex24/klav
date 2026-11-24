@@ -7,10 +7,11 @@
 //! an item version lower than a known one, the client must treat it as a
 //! rollback (threat T7) and refuse it.
 
-use klav_core::ids::{AttachmentId, ItemId, VaultId};
+use klav_core::ids::{AttachmentId, ItemId, SecretRequestId, VaultId};
 use serde::{Deserialize, Serialize};
 
 use crate::Blob;
+use crate::secret_request::SecretRequestState;
 use crate::vault::{Item, Member, Project, Vault};
 
 /// Revision of one vault (`GET /v1/sync`).
@@ -90,6 +91,16 @@ pub struct ChangeEvent {
     pub vault_id: VaultId,
     /// Revision it reached.
     pub revision: u64,
+}
+
+/// Payload of a `secret_request` server-sent event on `GET /v1/events`
+/// (ADR 0046 §1). Carries only the request ID and its current state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretRequestEvent {
+    /// Secret request that was created, decided or expired.
+    pub request_id: SecretRequestId,
+    /// Current state.
+    pub status: SecretRequestState,
 }
 
 /// `POST /v1/vaults/{vault_id}/items/{item_id}/attachments`.
