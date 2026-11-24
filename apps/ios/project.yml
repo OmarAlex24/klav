@@ -143,8 +143,8 @@ targets:
         ARCHS: arm64
         ONLY_ACTIVE_ARCH: YES
         ENABLE_HARDENED_RUNTIME: YES
-        MARKETING_VERSION: "0.9.1"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.9.2"
+        CURRENT_PROJECT_VERSION: "4"
         OTHER_LDFLAGS: $(inherited) -framework Security -framework SystemConfiguration
         # Signed to run here; scripts/macos/build-app.sh signs the release
         # with the Developer ID.

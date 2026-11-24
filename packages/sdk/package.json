@@ -1,6 +1,6 @@
 {
   "name": "@klav/sdk",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Klav for agent runtimes in Node: fill, run, inject and totp without handing secrets to the LLM",
   "license": "Apache-2.0",
   "private": true,
