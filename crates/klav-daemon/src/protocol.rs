@@ -314,6 +314,32 @@ pub enum Request {
     TaskLog {
         task: String,
     },
+    /// Pending (or all recent) agent secret requests (ADR 0046).
+    SecretRequests {
+        #[serde(default)]
+        all: bool,
+    },
+    /// Fulfills a pending agent secret request: saves the secret into the
+    /// vault, optionally grants `klav-proxy` access (requiring presence when
+    /// `input.grant_proxy` is true), and posts the account-signed decision.
+    FulfillSecretRequest {
+        /// Request ID or unique prefix.
+        request: String,
+        /// Person's fulfillment inputs (secret, destination, optional proxy
+        /// toggle, and the card's `proposal_digest`).
+        input: klav_client::secret_requests::FulfillSecretRequest,
+        /// Master password for presence when `input.grant_proxy` is true and
+        /// Touch ID is unavailable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<SecretText>,
+    },
+    /// Denies a pending agent secret request with an account-signed decision.
+    DenySecretRequest {
+        /// Request ID or unique prefix.
+        request: String,
+        /// Card's `proposal_digest` (hex): refuses if the request changed.
+        digest: String,
+    },
     /// What an agent saw, from its grant and the audit log.
     AgentExposure {
         agent: klav_core::ids::AgentId,

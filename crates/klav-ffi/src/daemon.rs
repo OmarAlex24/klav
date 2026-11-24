@@ -19,6 +19,7 @@ use klav_client::agents::{AgentView, ApprovalView};
 use klav_client::audit::{ChainStatus, LogLine, VerifyReport};
 use klav_client::history::{GeneratedSelection, GeneratedView, PasswordHistoryView};
 use klav_client::ops::{ItemView, SecretText, TotpCode};
+use klav_client::secret_requests::{FulfillSecretResult, SecretRequestCard};
 use klav_client::tasks::TaskCard;
 use klav_client::{ItemSummary, ProjectSummary, SyncReport, VaultSummary};
 use klav_daemon::client::DaemonClient;
@@ -49,12 +50,14 @@ use crate::sandboxes::{
 };
 use crate::types::{
     AccountDeletionInfo, AgentItem, ApprovalItem, GeneratedEntryInfo, ItemDetail, ItemEdit,
-    ItemInfo, ItemQuery, NewItemInput, ProjectInfo, SignOutCheck, SyncInfo, TaskChoiceInput,
+    ItemInfo, ItemQuery, NewItemInput, ProjectInfo, SecretRequestFulfillInput,
+    SecretRequestFulfillOutput, SecretRequestItem, SignOutCheck, SyncInfo, TaskChoiceInput,
     TaskItem, TotpInfo, VaultInfo,
 };
 use crate::{
-    KlavError, KlavResult, agent_item, agent_items, approval_item, default_grant, generated_entry,
-    item_filter, item_infos, item_patch, new_item, project_infos, task_choice, task_item,
+    KlavError, KlavResult, agent_item, agent_items, approval_item, default_grant,
+    fulfill_secret_request_input, fulfill_secret_request_output, generated_entry, item_filter,
+    item_infos, item_patch, new_item, project_infos, secret_request_item, task_choice, task_item,
     vault_infos,
 };
 
@@ -897,6 +900,52 @@ impl DaemonEngine {
             password: password.map(SecretText::new),
         })?;
         Ok(task_item(card))
+    }
+
+    /// Pending secret requests from agents, opened and verified by `klavd`
+    /// (ADR 0046).
+    pub fn secret_requests(&self) -> KlavResult<Vec<SecretRequestItem>> {
+        let cards: Vec<SecretRequestCard> = self.call(Request::SecretRequests { all: false })?;
+        Ok(cards.into_iter().map(secret_request_item).collect())
+    }
+
+    /// Fulfills a pending secret request through `klavd`. When
+    /// `input.grant_proxy` is true, `klavd` asks for Touch ID.
+    pub fn fulfill_secret_request(
+        &self,
+        id: String,
+        input: SecretRequestFulfillInput,
+    ) -> KlavResult<SecretRequestFulfillOutput> {
+        self.fulfill_secret_request_with_password(id, input, None)
+    }
+
+    /// `fulfill_secret_request` with the master password instead of Touch ID
+    /// when `input.grant_proxy` is true.
+    pub fn fulfill_secret_request_with_password(
+        &self,
+        id: String,
+        input: SecretRequestFulfillInput,
+        password: Option<String>,
+    ) -> KlavResult<SecretRequestFulfillOutput> {
+        let res: FulfillSecretResult = self.call(Request::FulfillSecretRequest {
+            request: id,
+            input: fulfill_secret_request_input(input),
+            password: password.map(SecretText::new),
+        })?;
+        Ok(fulfill_secret_request_output(res))
+    }
+
+    /// Denies a pending secret request through `klavd` (signed by the account).
+    pub fn deny_secret_request(
+        &self,
+        id: String,
+        proposal_digest: String,
+    ) -> KlavResult<SecretRequestItem> {
+        let card: SecretRequestCard = self.call(Request::DenySecretRequest {
+            request: id,
+            digest: proposal_digest,
+        })?;
+        Ok(secret_request_item(card))
     }
 
     /// «End task».

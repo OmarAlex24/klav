@@ -57,6 +57,7 @@ pub mod rotate;
 pub mod sandbox_revoke;
 pub mod sandbox_state;
 pub mod sandboxes;
+pub mod secret_requests;
 pub mod server;
 mod session;
 mod state;

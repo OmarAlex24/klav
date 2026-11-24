@@ -211,6 +211,10 @@ pub fn check_request(request: &Request) -> Result<(), String> {
         | Request::DecideTask { .. }
         | Request::AddToTask { .. }
         | Request::EndTask { .. }
+        // Agent secret requests (ADR 0046): extension may list, deny, or
+        // fulfill without proxy grants (`proxy_grant` stays off the extension).
+        | Request::SecretRequests { .. }
+        | Request::DenySecretRequest { .. }
         | Request::GeneratorRecord { .. }
         | Request::GeneratorHistory
         | Request::GeneratedValue { .. }
@@ -243,7 +247,15 @@ pub fn check_request(request: &Request) -> Result<(), String> {
         | Request::ExtensionReply { .. } => Ok(()),
         Request::Create { item } if !item.allow_duplicate => Ok(()),
         Request::Edit { patch, .. } if !patch.allow_duplicate => Ok(()),
-        Request::Create { .. } | Request::Edit { .. } => {
+        Request::FulfillSecretRequest { input, .. }
+            if !input.grant_proxy && !input.allow_duplicate =>
+        {
+            Ok(())
+        }
+        Request::FulfillSecretRequest { input, .. } if input.grant_proxy => {
+            Err("the extension cannot grant credential proxy access".into())
+        }
+        Request::Create { .. } | Request::Edit { .. } | Request::FulfillSecretRequest { .. } => {
             Err("the extension cannot create duplicate titles".into())
         }
         _ => Err("this operation is not available to the browser extension".into()),

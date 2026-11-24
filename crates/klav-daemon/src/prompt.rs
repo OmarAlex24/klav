@@ -351,6 +351,14 @@ pub(crate) enum Prompt<'a> {
         agent: &'a str,
         more: &'a [Widening<'a>],
     },
+    /// Fulfill an agent's secret request while also granting the account's
+    /// credential proxy access to the saved item for `host` (ADR 0046 Q3,
+    /// T239).
+    SecretRequestProxy {
+        agent: &'a str,
+        title: Option<&'a str>,
+        host: &'a str,
+    },
 }
 
 /// One thing a grant change lets the agent do that it could not before,
@@ -779,6 +787,18 @@ impl Prompt<'_> {
                     widening(more, lang)
                 )
             }
+            (Prompt::SecretRequestProxy { agent, title, host }, Lang::En) => format!(
+                "save {} and let your credential proxy send it to {} (asked by {})",
+                title.map_or_else(|| "an item".to_owned(), name),
+                clean(host, MAX_NAME),
+                name(agent)
+            ),
+            (Prompt::SecretRequestProxy { agent, title, host }, Lang::Es) => format!(
+                "guardar {} y dejar que tu proxy de credenciales lo envíe a {} (pedido por {})",
+                title.map_or_else(|| "un elemento".to_owned(), name),
+                clean(host, MAX_NAME),
+                name(agent)
+            ),
         };
         match source {
             Some(source) => format!("{text} ({})", source.decided_from(lang)),
@@ -2286,5 +2306,22 @@ mod tests {
         );
         assert!(!text.contains('\n'));
         assert!(!text.contains('\u{202E}'));
+    }
+
+    #[test]
+    fn secret_request_proxy_prompt_renders_in_english_and_spanish() {
+        let prompt = Prompt::SecretRequestProxy {
+            agent: "claude-code",
+            title: Some("Stripe"),
+            host: "api.stripe.com",
+        };
+        assert_eq!(
+            prompt.reason(Lang::En, Some(Source::Terminal)),
+            "save “Stripe” and let your credential proxy send it to api.stripe.com (asked by “claude-code”) (from the terminal)"
+        );
+        assert_eq!(
+            prompt.reason(Lang::Es, Some(Source::App)),
+            "guardar «Stripe» y dejar que tu proxy de credenciales lo envíe a api.stripe.com (pedido por «claude-code») (desde la app de Klav)"
+        );
     }
 }
