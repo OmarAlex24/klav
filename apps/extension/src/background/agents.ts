@@ -13,6 +13,7 @@ import { originOf } from "../shared/origin";
 import { klavCore } from "../shared/wasm";
 import type { NativeBridge } from "./native";
 import { armPasskey } from "./passkeys";
+import { onPresenceEvent } from "./presence";
 
 export interface Here {
   url: string;
@@ -351,6 +352,8 @@ export function startAgents(bridge: NativeBridge): void {
     else if (event.kind === "rotate_probe") answer(id, () => rotateProbe(event as unknown as ProbeEvent));
     else if (event.kind === "rotate_fill") answer(id, () => rotateFill(event as unknown as RotateFillEvent));
     else if (event.kind === "passkey_arm") answer(id, () => armTab(event as unknown as PasskeyArmEvent));
+    // The presence gate (ADR 0041 §3.2): answered with `extension_presence`, or declined.
+    else if (event.kind === "presence") onPresenceEvent(bridge, event);
   });
   let delay = 1_000;
   const attach = (): void => {

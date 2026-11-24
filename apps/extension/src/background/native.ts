@@ -17,7 +17,19 @@ import {
 function hostError(error: ErrorBody): DaemonError {
   return error.code === "extension_not_allowed"
     ? new DaemonError("host_missing", error.message)
-    : new DaemonError(error.code, error.message);
+    : new DaemonError(error.code, error.message, error.presence);
+}
+
+/**
+ * The line for `request`. An unlock's `shown` (ADR 0041, own choice 34)
+ * belongs to the envelope, next to `id`: klavd reads it there.
+ */
+export function envelope(id: number, request: Request): Record<string, unknown> {
+  if (request.op === "unlock" && request.shown !== undefined) {
+    const { shown, ...rest } = request;
+    return { v: PROTOCOL_VERSION, id, request: rest, shown };
+  }
+  return { v: PROTOCOL_VERSION, id, request };
 }
 
 /** How long to wait for klavd (Touch ID prompts can take a while). */
@@ -103,7 +115,7 @@ export class NativeBridge {
       }, TIMEOUT_MS);
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
       try {
-        port.postMessage({ v: PROTOCOL_VERSION, id, request });
+        port.postMessage(envelope(id, request));
       } catch {
         clearTimeout(timer);
         this.pending.delete(id);

@@ -45,8 +45,11 @@ import {
   passkeySignIn,
   passkeyTab,
   passkeyWaiting,
+  hideFrameFor,
+  showFrameFor,
   startPasskeys,
 } from "./passkeys";
+import { callInTab, isPresenceId, presenceAnswer, presenceClosed, presenceLoad, presenceTab, presenceTabGone, startPresence } from "./presence";
 import { endFlow, FLOW_MS, type Flow, type FlowFrame, flowOf, nextStage, setFlow } from "./flow";
 import { closeSave, doSave, forgetTab, loadSave, offerSite, pendingFor, siteOfferHere, submitSeen, tabOfSave, usernameSeen } from "./save";
 import { GUARDED_IN_MENU, mayCall, pageOf } from "./surfaces";
@@ -57,6 +60,7 @@ startClipboard();
 startPasskeys(bridge, (tabId) => {
   closeCardsOf(tabId, false);
 });
+startPresence(showFrameFor, hideFrameFor);
 
 /**
  * A frame Klav may fill, as the browser describes it (`sender`), never as
@@ -263,7 +267,7 @@ async function fillItem(
   // fills it only with `chosen`, and never its code alone or a pending one.
   const parent = options.parent && !matching ? await parentLogin(target.url, item, offered) : undefined;
   try {
-    values = await bridge.call<AutofillValues>({
+    values = await callInTab<AutofillValues>(bridge, target.tabId, {
       op: "autofill",
       item,
       url: target.url,
@@ -427,7 +431,7 @@ async function popupFill(item: string, fromParent = false): Promise<{ filled: nu
     const s = await bridge.call<Suggestions>({ op: "suggest", url: here.url });
     if (!s.logins.some((l) => l.id === item)) parent = await parentLogin(here.url, item, s);
   }
-  const values = await bridge.call<AutofillValues>({ op: "autofill", item, url: here.url, ...(parent ? { chosen: true } : {}) });
+  const values = await callInTab<AutofillValues>(bridge, tab.id, { op: "autofill", item, url: here.url, ...(parent ? { chosen: true } : {}) });
   if (!parent) rememberLogin(tab.id, values);
   const options: { frameId: number; documentId?: string } = { frameId: 0 };
   if (__TARGET__ === "chromium" && here.documentId) options.documentId = here.documentId;
@@ -678,6 +682,14 @@ async function handlePage(message: PageMessage, sender: chrome.runtime.MessageSe
       });
     case "passkey_browser":
       return passkeyBrowser(message.passkeyId);
+    // The presence gate's master password in the same frame (ADR 0041 §3.2).
+    case "presence_load":
+      if (pageOf(sender.url) !== "passkey.html") throw new DaemonError("denied", "this part of the extension cannot do that");
+      return presenceLoad(message.presenceId, sender.tab?.id);
+    case "presence_answer":
+      if (pageOf(sender.url) !== "passkey.html") throw new DaemonError("denied", "this part of the extension cannot do that");
+      await ensureClear(topOf(presenceTab(message.presenceId)), "passkey", message.presenceId);
+      return presenceAnswer(message.presenceId, sender.tab?.id, message.password);
   }
 }
 
@@ -710,7 +722,8 @@ async function closeSurface(surface: Surface, id: string, tabId: number | undefi
       if (tabId !== undefined) await toTop(tabId, { type: "hide", surface, id });
       return;
     case "passkey":
-      passkeyClosed(id);
+      if (isPresenceId(id)) presenceClosed(id);
+      else passkeyClosed(id);
       return;
   }
 }
@@ -848,6 +861,7 @@ ext.tabs.onRemoved.addListener((tabId) => {
   for (const key of dismissed) if (key.startsWith(`${String(tabId)}|`)) dismissed.delete(key);
   recent.delete(tabId);
   endFlow(tabId);
+  presenceTabGone(tabId);
   // A login waiting to be saved goes with its tab.
   forgetTab(tabId);
 });

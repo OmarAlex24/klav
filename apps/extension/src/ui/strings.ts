@@ -36,6 +36,10 @@ export function errorText(code: ErrorCode, message: string): string {
       return t("error_disconnected");
     case "covered":
       return t("covered");
+    case "presence_busy":
+      return t("error_presence_busy");
+    case "browser_ambiguous":
+      return t("error_browser_ambiguous");
     default:
       return message;
   }

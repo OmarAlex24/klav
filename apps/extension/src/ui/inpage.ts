@@ -8,6 +8,7 @@ import { DaemonError, type DaemonStatus } from "../shared/protocol";
 import { ditherCanvas, keyhole } from "../shared/dither";
 import { h } from "./dom";
 import { errorText } from "./strings";
+import { unlockOpens } from "../shared/presence";
 
 export const isMac = navigator.platform.toLowerCase().includes("mac");
 /** The shortcut that opens the field menu (or the palette, with no field). */
@@ -62,7 +63,9 @@ export function lockedForm(status: DaemonStatus, onUnlocked: () => void, problem
   if (problem) say(slot, errorText(problem.code, problem.message));
   form.append(slot);
   const unlock = (password?: string): void => {
-    void daemon<DaemonStatus>(password === undefined ? { op: "unlock" } : { op: "unlock", password }).then(onUnlocked, (e: unknown) => {
+    const { shown } = unlockOpens(status);
+    const request = password === undefined ? { op: "unlock" as const } : { op: "unlock" as const, password, ...(shown ? { shown } : {}) };
+    void daemon<DaemonStatus>(request).then(onUnlocked, (e: unknown) => {
       form.replaceWith(lockedForm(status, onUnlocked, errorOf(e), extra));
     });
   };
@@ -85,6 +88,9 @@ export function lockedForm(status: DaemonStatus, onUnlocked: () => void, problem
     });
     const button = h("button", { class: "btn btn-primary", type: "submit" }, t("unlock"));
     form.append(h("div", { class: "unlock-row" }, input, button));
+    // With the presence gate, what the password also opens (ADR 0041, own choice 34).
+    const opens = unlockOpens(status).line;
+    if (opens) form.append(h("p", { class: "row-sub unlock-opens" }, opens));
     if (extra) form.append(extra);
     form.addEventListener("submit", (event) => {
       event.preventDefault();

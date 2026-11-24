@@ -1731,5 +1731,116 @@
   },
   "sr_save": {
     "message": "Save to Klav"
+  },
+  "presence_title": {
+    "message": "Confirm it’s you"
+  },
+  "presence_klav_wants": {
+    "message": "Klav wants to $1.",
+    "description": "$1: what the master password lets Klav do, starting with a verb (“let agents fill …”)."
+  },
+  "presence_until_lock": {
+    "message": "let agents fill $1 until Klav locks, starting with $2",
+    "description": "$1: presence_place_*; $2: presence_start_*. The same words as klavd’s Touch ID dialog."
+  },
+  "presence_place_browser": {
+    "message": "in a browser"
+  },
+  "presence_place_connection": {
+    "message": "through this browser connection"
+  },
+  "presence_start_fill": {
+    "message": "$1's fill of $2",
+    "description": "$1: the agent, quoted; $2: the login’s title, quoted."
+  },
+  "presence_start_fill_any": {
+    "message": "a fill $1 asked for",
+    "description": "$1: the agent, quoted."
+  },
+  "presence_start_change": {
+    "message": "$1's password change for $2",
+    "description": "$1: the agent, quoted; $2: the login’s title, quoted."
+  },
+  "presence_start_change_any": {
+    "message": "a password change $1 asked for",
+    "description": "$1: the agent, quoted."
+  },
+  "presence_start_passkey": {
+    "message": "$1's passkey sign-in to $2",
+    "description": "$1: the agent, quoted; $2: the passkey’s site, quoted."
+  },
+  "presence_start_passkey_any": {
+    "message": "a passkey sign-in $1 asked for",
+    "description": "$1: the agent, quoted."
+  },
+  "presence_once": {
+    "message": "let a browser connection receive $1's values for $2",
+    "description": "$1: the agent, quoted; $2: the item’s title, quoted."
+  },
+  "presence_once_any": {
+    "message": "let a browser connection receive $1's values",
+    "description": "$1: the agent, quoted."
+  },
+  "presence_attached": {
+    "message": "$1; $2 browser connections are attached",
+    "description": "$1: the rest of the sentence; $2: how many."
+  },
+  "presence_lasts_5m": {
+    "message": "let this browser use your vault for 5 minutes"
+  },
+  "presence_lasts_until_lock": {
+    "message": "let this browser use your vault until Klav locks"
+  },
+  "presence_value_fill": {
+    "message": "fill $1 in this browser",
+    "description": "$1: the item’s title, quoted."
+  },
+  "presence_value_show": {
+    "message": "show $1",
+    "description": "$1: the item’s title, quoted."
+  },
+  "presence_value_code": {
+    "message": "show the code of $1",
+    "description": "$1: the item’s title, quoted."
+  },
+  "presence_value_previous": {
+    "message": "show a previous password of $1",
+    "description": "$1: the item’s title, quoted."
+  },
+  "presence_value_generated": {
+    "message": "copy a password you generated"
+  },
+  "presence_value_any": {
+    "message": "use a value from your vault"
+  },
+  "presence_password": {
+    "message": "Master password, to confirm"
+  },
+  "presence_cancel": {
+    "message": "Not now"
+  },
+  "presence_declined": {
+    "message": "You declined: nothing was filled."
+  },
+  "presence_no_frame": {
+    "message": "Klav could not show its frame in this tab, so nothing was filled"
+  },
+  "unlock_opens_5m": {
+    "message": "Unlocking also lets this browser use your vault for 5 minutes."
+  },
+  "unlock_opens_until_lock": {
+    "message": "Unlocking also lets this browser use your vault until Klav locks."
+  },
+  "already_unlocked": {
+    "message": "Klav was already unlocked."
+  },
+  "error_presence_busy": {
+    "message": "Klav is already asking you to confirm something. Answer that first, then try again."
+  },
+  "error_browser_ambiguous": {
+    "message": "More than one browser is connected to Klav and it isn’t clear which one is in front. Bring the browser to use to the front, or close the others, then try again."
+  },
+  "presence_canceled": {
+    "message": "Canceled."
   }
 }

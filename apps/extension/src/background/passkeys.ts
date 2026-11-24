@@ -144,6 +144,16 @@ async function showFrame(tabId: number, id: string): Promise<void> {
   await toTop(tabId, { type: "passkey_show", id });
 }
 
+/** Opens Klav's frame in `tabId` for the presence gate's master password (`presence.ts`). */
+export function showFrameFor(tabId: number, id: string): Promise<void> {
+  return showFrame(tabId, id);
+}
+
+/** Closes a frame [`showFrameFor`] opened. */
+export function hideFrameFor(tabId: number, id: string): void {
+  void toTop(tabId, { type: "passkey_hide", id });
+}
+
 /** Whether Klav's passkey frame is open in `tab` (no top card meanwhile). */
 export function passkeyFrameIn(tabId: number): boolean {
   for (const p of pending.values()) {

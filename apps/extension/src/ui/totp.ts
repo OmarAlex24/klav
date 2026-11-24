@@ -3,8 +3,8 @@
  * its row is on screen and the popup is visible; between requests the
  * time blocks count down locally, one per second.
  */
-import { daemon } from "../shared/messages";
 import { DaemonError } from "../shared/protocol";
+import { gated } from "./presence";
 
 export interface Code {
   code: string;
@@ -77,7 +77,7 @@ export class CodeTicker {
     if (w.fetching) return;
     w.fetching = true;
     try {
-      const code = await daemon<Code>({ op: "totp", query: w.id });
+      const code = await gated<Code>({ op: "totp", query: w.id });
       w.code = code;
       for (const l of w.listeners) l(code);
     } catch (e) {

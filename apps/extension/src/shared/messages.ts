@@ -47,6 +47,9 @@ export type PageMessage =
   | { type: "popup_fill"; item: string; parent?: boolean }
   /** The passkey surface (ADR 0020): what to show, and what the person chose. */
   | { type: "passkey_load"; passkeyId: string }
+  /** The presence gate's frame (ADR 0041 §3.2): what klavd asks, and the master password for it. */
+  | { type: "presence_load"; presenceId: string }
+  | { type: "presence_answer"; presenceId: string; password: string }
   /** Sign in with the passkey of `item` (`password`: the master password, without Touch ID). */
   | { type: "passkey_sign_in"; passkeyId: string; item: string; password?: string }
   /** Save the new passkey: in `item`, else a new login; `replace`: the person confirmed replacing the account's passkey. */
@@ -297,7 +300,7 @@ export type Reply<T> = { ok: true; value: T } | { ok: false; error: ErrorBody };
 export async function ask<T>(message: unknown): Promise<T> {
   const reply = await ext.runtime.sendMessage<unknown, Reply<T> | undefined>(message);
   if (!reply) throw new DaemonError("disconnected", "the extension's background did not answer");
-  if (!reply.ok) throw new DaemonError(reply.error.code, reply.error.message);
+  if (!reply.ok) throw new DaemonError(reply.error.code, reply.error.message, reply.error.presence);
   return reply.value;
 }
 
@@ -325,7 +328,7 @@ export function daemon<T>(request: Request): Promise<T> {
 }
 
 export function toErrorBody(e: unknown): ErrorBody {
-  if (e instanceof DaemonError) return { code: e.code, message: e.message };
+  if (e instanceof DaemonError) return { code: e.code, message: e.message, ...(e.presence ? { presence: e.presence } : {}) };
   return { code: "internal", message: e instanceof Error ? e.message : "unexpected error" };
 }
 
