@@ -851,6 +851,7 @@ mod tests {
             ItemKind::File,
             ItemKind::GeneratorHistory,
             ItemKind::Preferences,
+            ItemKind::AgentLabels,
         ] {
             let mut p = sample_create();
             p.kind = Some(bad_kind);

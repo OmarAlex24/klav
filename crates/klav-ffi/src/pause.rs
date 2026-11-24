@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use klav_client::agents::{AgentView, GrantView};
 use klav_core::ids::AgentId;
+use klav_core::model::agent_labels::AgentLabels;
 use klav_core::policy::Permission;
 use klav_proto::agent::{AgentPause, PauseScope};
 
@@ -67,6 +68,10 @@ pub struct DevAgentInfo {
     pub issuer_count: u32,
     /// Number of per-item grants held by this agent.
     pub item_count: u32,
+    /// Person-owned friendly label stored E2E-encrypted in the vault (ADR 0047).
+    pub person_label: Option<String>,
+    /// Person-owned machine/host label stored E2E-encrypted in the vault (ADR 0047).
+    pub person_host: Option<String>,
     /// When the server last saw it (Unix ms).
     pub last_seen_ms: Option<i64>,
     /// When the person approved it (Unix ms).
@@ -138,7 +143,7 @@ fn is_proxy_grant(grant: &GrantView) -> bool {
 }
 
 /// Pending registrations first, then newest: the order of `agents`.
-pub(crate) fn dev_agents(list: Vec<AgentView>) -> Vec<DevAgentInfo> {
+pub(crate) fn dev_agents(list: Vec<AgentView>, labels: &AgentLabels) -> Vec<DevAgentInfo> {
     let names_by_id: BTreeMap<AgentId, String> =
         list.iter().map(|a| (a.id, a.name.clone())).collect();
     // Cross-reference issuer grants so each proxy learns the host its issuers
@@ -212,6 +217,9 @@ pub(crate) fn dev_agents(list: Vec<AgentView>) -> Vec<DevAgentInfo> {
                     None => (AgentRole::Standard, Vec::new(), None, None, 0, 0),
                 };
 
+            let person = labels.get(&view.id);
+            let person_label = person.and_then(|l| l.label.clone());
+            let person_host = person.and_then(|l| l.host.clone());
             DevAgentInfo {
                 agent: agent_item(view),
                 role,
@@ -220,6 +228,8 @@ pub(crate) fn dev_agents(list: Vec<AgentView>) -> Vec<DevAgentInfo> {
                 target_proxy_name,
                 issuer_count,
                 item_count,
+                person_label,
+                person_host,
                 last_seen_ms,
                 approved_ms,
                 paused,
@@ -410,7 +420,18 @@ mod tests {
             paused: None,
         };
 
-        let out = dev_agents(vec![proxy, issuer, cli]);
+        let mut labels = AgentLabels::default();
+        labels
+            .set(
+                proxy_id,
+                Some(klav_core::model::agent_labels::AgentLabel {
+                    label: Some("Proxmox proxy".into()),
+                    host: Some("pve-home".into()),
+                    role_hint: None,
+                }),
+            )
+            .unwrap();
+        let out = dev_agents(vec![proxy, issuer, cli], &labels);
         let p = out
             .iter()
             .find(|a| a.agent.id == proxy_id.to_string())
@@ -419,6 +440,8 @@ mod tests {
         assert_eq!(p.proxy_profiles, vec!["northflank"]);
         assert_eq!(p.proxy_host.as_deref(), Some("pve-home.ts.net"));
         assert_eq!(p.issuer_count, 1);
+        assert_eq!(p.person_label.as_deref(), Some("Proxmox proxy"));
+        assert_eq!(p.person_host.as_deref(), Some("pve-home"));
 
         let i = out
             .iter()

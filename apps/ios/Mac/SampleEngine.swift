@@ -1010,6 +1010,8 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
 
     // MARK: Development
 
+    private var sampleAgentLabels: [String: (label: String?, host: String?)] = [:]
+
     func devAgents() throws -> [DevAgentInfo] {
         try locked {
             let everyone = pauses.first { $0.agentId == nil }
@@ -1029,11 +1031,27 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
                 case .issuer?: .sandboxIssuer
                 default: .standard
                 }
+                let person = sampleAgentLabels[agent.id]
                 return DevAgentInfo(agent: agent, role: role, proxyProfiles: [], proxyHost: nil,
                                     targetProxyName: nil, issuerCount: 0, itemCount: 0,
+                                    personLabel: person?.label, personHost: person?.host,
                                     lastSeenMs: seen,
                                     approvedMs: agent.status == "active" ? agent.createdAt + 60_000 : nil,
                                     paused: agent.status == "active" ? pause : nil)
+            }
+        }
+    }
+
+    func setAgentLabel(id: String, label: String?, host: String?) throws {
+        try locked {
+            let cleanLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanHost = host?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let finalLabel = (cleanLabel?.isEmpty == false) ? cleanLabel : nil
+            let finalHost = (cleanHost?.isEmpty == false) ? cleanHost : nil
+            if finalLabel == nil && finalHost == nil {
+                sampleAgentLabels.removeValue(forKey: id)
+            } else {
+                sampleAgentLabels[id] = (finalLabel, finalHost)
             }
         }
     }

@@ -37,7 +37,10 @@ impl From<ItemKind> for Kind {
             // System items (the generator history, the preferences) are
             // never listed: they live in the system project. A note is the
             // closest shape if one ever shows up.
-            ItemKind::Note | ItemKind::GeneratorHistory | ItemKind::Preferences => Self::Note,
+            ItemKind::Note
+            | ItemKind::GeneratorHistory
+            | ItemKind::Preferences
+            | ItemKind::AgentLabels => Self::Note,
             ItemKind::ApiKey => Self::ApiKey,
         }
     }

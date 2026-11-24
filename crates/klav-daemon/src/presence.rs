@@ -146,6 +146,8 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::PasskeyCandidates { .. }
         | Request::Attach { .. }
         | Request::Agents
+        | Request::AgentLabels
+        | Request::SetAgentLabel { .. }
         | Request::DenyAgent { .. }
         | Request::Approvals { .. }
         | Request::DecideApproval { approve: false, .. }

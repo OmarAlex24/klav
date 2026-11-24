@@ -416,27 +416,35 @@ final class DevelopmentTests: XCTestCase {
         let proxy = DevAgentInfo(agent: baseItem("p1", "klav-proxy"), role: .proxy,
                                  proxyProfiles: ["northflank", "railway"], proxyHost: "pve-home",
                                  targetProxyName: nil, issuerCount: 1, itemCount: 2,
+                                 personLabel: "Proxmox proxy", personHost: "pve-home",
                                  lastSeenMs: nil, approvedMs: 1, paused: nil)
         XCTAssertEqual(ActivityWords.roleBadge(proxy), "Credential proxy")
         XCTAssertEqual(ActivityWords.originSummary(proxy), "Host: pve-home · Profiles: northflank, railway · 1 issuer")
+        XCTAssertEqual(ActivityWords.personLabelSummary(proxy), "Proxmox proxy · pve-home")
 
         let issuer = DevAgentInfo(agent: baseItem("i1", "sandbox-issuer"), role: .sandboxIssuer,
                                   proxyProfiles: [], proxyHost: "pve-home",
                                   targetProxyName: "klav-proxy", issuerCount: 0, itemCount: 0,
+                                  personLabel: nil, personHost: "Omar’s MacBook Pro",
                                   lastSeenMs: nil, approvedMs: 1, paused: nil)
         XCTAssertEqual(ActivityWords.roleBadge(issuer), "Sandbox issuer")
         XCTAssertEqual(ActivityWords.originSummary(issuer), "Starts sandboxes via klav-proxy (pve-home)")
+        XCTAssertEqual(ActivityWords.personLabelSummary(issuer), "Machine: Omar’s MacBook Pro")
 
         let mcp = DevAgentInfo(agent: baseItem("m1", "antigravity"), role: .standard,
                                proxyProfiles: [], proxyHost: nil, targetProxyName: nil,
-                               issuerCount: 0, itemCount: 0, lastSeenMs: nil, approvedMs: 1, paused: nil)
+                               issuerCount: 0, itemCount: 0, personLabel: nil, personHost: nil,
+                               lastSeenMs: nil, approvedMs: 1, paused: nil)
         XCTAssertEqual(ActivityWords.roleBadge(mcp), "MCP · Antigravity")
         XCTAssertNil(ActivityWords.originSummary(mcp))
+        XCTAssertNil(ActivityWords.personLabelSummary(mcp))
 
         let custom = DevAgentInfo(agent: baseItem("c1", "release-mac"), role: .standard,
                                   proxyProfiles: [], proxyHost: nil, targetProxyName: nil,
-                                  issuerCount: 0, itemCount: 0, lastSeenMs: nil, approvedMs: 1, paused: nil)
+                                  issuerCount: 0, itemCount: 0, personLabel: "Build Mac", personHost: nil,
+                                  lastSeenMs: nil, approvedMs: 1, paused: nil)
         XCTAssertEqual(ActivityWords.roleBadge(custom), "CLI / agent")
+        XCTAssertEqual(ActivityWords.personLabelSummary(custom), "Build Mac")
 
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("klav-local-\(UUID().uuidString)")
         let agentsDir = tmp.appendingPathComponent("agents", isDirectory: true)

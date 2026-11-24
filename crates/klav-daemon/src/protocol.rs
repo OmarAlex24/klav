@@ -246,6 +246,16 @@ pub enum Request {
     /// Stop the daemon.
     /// The account's agents (pending, active, denied, revoked).
     Agents,
+    /// Person-owned labels and machine/host notes for agents (ADR 0047).
+    AgentLabels,
+    /// Sets or clears a person-owned label and/or host for an agent (ADR 0047).
+    SetAgentLabel {
+        agent: klav_core::ids::AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+    },
     /// Approves an agent or replaces its grant. Asks for presence first:
     /// Touch ID, or the master password in `password` (ADR 0014).
     ApproveAgent {

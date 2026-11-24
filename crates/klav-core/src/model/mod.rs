@@ -1,5 +1,6 @@
 //! Item model and `klav://` references (design §3).
 
+pub mod agent_labels;
 pub mod history;
 pub mod item;
 pub mod meta;

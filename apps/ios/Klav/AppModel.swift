@@ -1134,6 +1134,16 @@ final class AppModel: ObservableObject {
         await loadRequests()
     }
 
+    /// Saves or clears a person-owned label and/or machine host for an agent
+    /// (ADR 0047). Stored E2E-encrypted in the personal vault's system project.
+    func setAgentLabel(id: String, label: String?, host: String?) async throws {
+        guard let service else { return }
+        try await service.run { core, _ in
+            try core.setAgentLabel(id: id, label: label, host: host)
+        }
+        await loadRequests()
+    }
+
     // MARK: Pausing agents (ADR 0033 §7, §9)
 
     /// The pause of every agent in effect, if there is one: never hidden.

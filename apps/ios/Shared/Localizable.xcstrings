@@ -16809,6 +16809,116 @@
           }
         }
       }
+    },
+    "Machine: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Equipo: %@"
+          }
+        }
+      }
+    },
+    "Your label & machine": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu etiqueta y equipo"
+          }
+        }
+      }
+    },
+    "Label": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Etiqueta"
+          }
+        }
+      }
+    },
+    "e.g. Proxmox proxy, Build runner": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "p. ej. Proxy Proxmox, Mac de releases"
+          }
+        }
+      }
+    },
+    "Machine": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Equipo"
+          }
+        }
+      }
+    },
+    "e.g. pve-home, Work MacBook": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "p. ej. pve-home, MacBook del trabajo"
+          }
+        }
+      }
+    },
+    "Save label": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar etiqueta"
+          }
+        }
+      }
+    },
+    "Saved (end-to-end encrypted)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardado (cifrado de extremo a extremo)"
+          }
+        }
+      }
+    },
+    "Machine or host (optional)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Equipo o servidor (opcional)"
+          }
+        }
+      }
+    },
+    "e.g. Work MacBook, pve-home": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "p. ej. MacBook del trabajo, pve-home"
+          }
+        }
+      }
+    },
+    "Saved end-to-end encrypted in your vault so you can tell which computer or server this agent runs on.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se guarda cifrado de extremo a extremo en tu bóveda para saber en qué computadora o servidor corre este agente."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

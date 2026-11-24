@@ -185,6 +185,11 @@ private struct DevAgentRow: View {
                         Text(verbatim: String(agent.id.prefix(8)))
                             .font(.mono(11)).foregroundStyle(Palette.gris)
                     }
+                    if let personLabel = ActivityWords.personLabelSummary(item) {
+                        Text(verbatim: personLabel)
+                            .font(.ui(12.5, .medium)).foregroundStyle(Palette.cobalto)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let origin = ActivityWords.originSummary(item) {
                         Text(verbatim: origin)
                             .font(.ui(12.5, .medium)).foregroundStyle(Palette.tinta)

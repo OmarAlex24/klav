@@ -26,6 +26,7 @@
 //! | `server-moved` | the server URL the account moved off, until `klav status` reports it (ADR 0028 §4) | mode 0600; not secret |
 
 pub mod activity;
+pub mod agent_labels;
 pub mod agent_passkeys;
 pub mod agents;
 pub mod api;

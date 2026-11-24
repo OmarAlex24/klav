@@ -254,6 +254,20 @@ enum ActivityWords {
         }
     }
 
+    /// Person-owned label and machine/host line (ADR 0047), stored E2E-encrypted
+    /// in the vault. Kept visually separate from `originSummary` (signed grants)
+    /// and `agent.note` (self-reported by the agent).
+    static func personLabelSummary(_ item: DevAgentInfo) -> String? {
+        let label = item.personLabel.map { AgentText.line($0, max: 64) }.flatMap { $0.isEmpty ? nil : $0 }
+        let host = item.personHost.map { AgentText.line($0, max: 64) }.flatMap { $0.isEmpty ? nil : $0 }
+        switch (label, host) {
+        case let (l?, h?): return "\(l) · \(h)"
+        case let (l?, nil): return l
+        case let (nil, h?): return String(localized: "Machine: \(h)")
+        case (nil, nil): return nil
+        }
+    }
+
     /// «Nov 3, 2026».
     static func date(_ ms: Int64) -> String {
         Date(timeIntervalSince1970: Double(ms) / 1000).formatted(date: .abbreviated, time: .omitted)

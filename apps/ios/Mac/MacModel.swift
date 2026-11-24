@@ -732,6 +732,13 @@ final class MacModel: ObservableObject, RequestsModel {
         try await run { try $0.projects(vaultId: nil) }
     }
 
+    /// Saves or clears a person-owned label and/or machine host for an agent
+    /// (ADR 0047). Stored E2E-encrypted in the personal vault's system project.
+    func setAgentLabel(id: String, label: String?, host: String?) async throws {
+        try await run { try $0.setAgentLabel(id: id, label: label, host: host) }
+        changed()
+    }
+
     /// The pairing words of an agent this account approved: its signed
     /// grant ties them to the agent's key, unlike the name. Nil for any
     /// other agent.

@@ -17,6 +17,12 @@ struct AgentPage: View {
     /// «Finish» was already pressed by itself once for a key change
     /// `klavd` finished in the background (so «Done» comes from a report).
     @State private var confirmed = false
+    /// Person-owned label and machine/host editor (ADR 0047).
+    @State private var editLabel = ""
+    @State private var editHost = ""
+    @State private var savingLabel = false
+    @State private var labelProblem: String?
+    @State private var labelSaved = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +48,8 @@ struct AgentPage: View {
                         header(agent)
                         revocation(agent.agent)
                         if let problem { Notice(text: problem).padding(.top, 16) }
+                        labelSection(agent)
+                            .padding(.top, 24)
                         if agent.agent.status == "active" {
                             // Revoking never waits on reading the grant
                             // (F1 gap 4): «Revoke…» shows whatever it says.
@@ -97,6 +105,11 @@ struct AgentPage: View {
                 Text(verbatim: "ID \(AgentText.idPrefix(agent.id))").font(.mono(11)).foregroundStyle(Palette.gris)
                     .textSelection(.enabled)
             }
+            if let personLabel = ActivityWords.personLabelSummary(item) {
+                Text(verbatim: personLabel)
+                    .font(.ui(13, .medium)).foregroundStyle(Palette.cobalto)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let origin = ActivityWords.originSummary(item) {
                 Text(verbatim: origin)
                     .font(.ui(13, .medium)).foregroundStyle(Palette.tinta)
@@ -136,6 +149,79 @@ struct AgentPage: View {
         }
     }
 
+    private func labelSection(_ item: DevAgentInfo) -> some View {
+        let dirty = editLabel.trimmingCharacters(in: .whitespacesAndNewlines) != (item.personLabel ?? "")
+            || editHost.trimmingCharacters(in: .whitespacesAndNewlines) != (item.personHost ?? "")
+        let hasExisting = (item.personLabel?.isEmpty == false) || (item.personHost?.isEmpty == false)
+        return VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("Your label & machine").padding(.bottom, 10)
+            FieldBlock {
+                HStack(alignment: .center, spacing: 12) {
+                    Text("Label")
+                        .font(.ui(13)).foregroundStyle(Palette.gris)
+                        .frame(width: 90, alignment: .leading)
+                    TextField(String(localized: "e.g. Proxmox proxy, Build runner"), text: $editLabel)
+                        .textFieldStyle(.plain)
+                        .font(.ui(13)).foregroundStyle(Palette.tinta)
+                        .onChange(of: editLabel) { _, _ in labelSaved = false }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                Rule()
+                HStack(alignment: .center, spacing: 12) {
+                    Text("Machine")
+                        .font(.ui(13)).foregroundStyle(Palette.gris)
+                        .frame(width: 90, alignment: .leading)
+                    TextField(String(localized: "e.g. pve-home, Work MacBook"), text: $editHost)
+                        .textFieldStyle(.plain)
+                        .font(.ui(13)).foregroundStyle(Palette.tinta)
+                        .onChange(of: editHost) { _, _ in labelSaved = false }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+            }
+            HStack(spacing: 10) {
+                Button(savingLabel ? String(localized: "Saving…") : String(localized: "Save label")) {
+                    Task { await saveLabel(clear: false) }
+                }
+                .buttonStyle(PrimaryButtonStyle(compact: true))
+                .fixedSize()
+                .disabled(savingLabel || !dirty)
+                if hasExisting {
+                    Button("Clear") { Task { await saveLabel(clear: true) } }
+                        .buttonStyle(SecondaryButtonStyle(compact: true))
+                        .fixedSize()
+                        .disabled(savingLabel)
+                }
+                if labelSaved {
+                    Text("Saved (end-to-end encrypted)")
+                        .font(.ui(12)).foregroundStyle(Palette.cobalto)
+                }
+            }
+            .padding(.top, 10)
+            if let labelProblem { Notice(text: labelProblem).padding(.top, 8) }
+        }
+    }
+
+    private func saveLabel(clear: Bool) async {
+        savingLabel = true
+        labelProblem = nil
+        labelSaved = false
+        let newLabel = clear ? nil : editLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newHost = clear ? nil : editHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try await model.setAgentLabel(id: agentId,
+                                          label: (newLabel?.isEmpty == false) ? newLabel : nil,
+                                          host: (newHost?.isEmpty == false) ? newHost : nil)
+            if clear {
+                editLabel = ""
+                editHost = ""
+            }
+            labelSaved = true
+        } catch {
+            labelProblem = describe(error)
+        }
+        savingLabel = false
+    }
+
     @ViewBuilder
     private func actions(_ agent: AgentItem, grant: GrantEditorInfo?) -> some View {
         HStack(spacing: 10) {
@@ -162,6 +248,10 @@ struct AgentPage: View {
         do {
             let (agents, listed) = try await model.agentsAndRevocations()
             agent = agents.first { $0.agent.id == id }
+            if let agent {
+                editLabel = agent.personLabel ?? ""
+                editHost = agent.personHost ?? ""
+            }
             self.listed = listed
             problem = agent == nil ? String(localized: "This agent isn’t in your account any more.") : nil
         } catch KlavError.Locked {

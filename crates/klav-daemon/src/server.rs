@@ -2330,6 +2330,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::Suggest { .. }
         | Request::PasskeyCandidates { .. }
         | Request::Agents
+        | Request::AgentLabels
         | Request::Approvals { .. }
         | Request::Tasks { .. }
         | Request::TaskLog { .. }
@@ -2423,7 +2424,8 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::AgentRotatePending { .. }
         | Request::ResolvePending { .. }
         | Request::ReusedOffer { .. }
-        | Request::OfferTask { .. } => true,
+        | Request::OfferTask { .. }
+        | Request::SetAgentLabel { .. } => true,
     }
 }
 
@@ -4202,6 +4204,16 @@ async fn dispatch(
             ok(serde_json::json!({}), warnings)
         }
         Request::Agents => ok(u.agents().await.map_err(e)?, warnings),
+        Request::AgentLabels => ok(u.agent_labels().map_err(e)?, warnings),
+        Request::SetAgentLabel { agent, label, host } => {
+            let entry = klav_core::model::agent_labels::AgentLabel {
+                label,
+                host,
+                role_hint: None,
+            };
+            let entry = (!entry.is_empty()).then_some(entry);
+            ok(u.set_agent_label(agent, entry).await.map_err(e)?, warnings)
+        }
         Request::ApproveAgent {
             agent,
             grant,

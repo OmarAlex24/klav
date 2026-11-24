@@ -63,6 +63,7 @@ fn kind_name(kind: ItemKind) -> &'static str {
         ItemKind::ApiKey => "api-key",
         ItemKind::GeneratorHistory => "generator-history",
         ItemKind::Preferences => "preferences",
+        ItemKind::AgentLabels => "agent-labels",
     }
 }
 

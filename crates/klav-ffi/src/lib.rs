@@ -1638,10 +1638,36 @@ impl KlavCore {
         })
     }
 
-    /// The account's agents with their last use and their pause, for
-    /// Agents (ADR 0033 §9): pending registrations first, then newest.
+    /// The account's agents with their last use, verified role, person-owned
+    /// labels (ADR 0047) and pause, for Agents (ADR 0033 §9): pending
+    /// registrations first, then newest.
     pub fn dev_agents(&self) -> KlavResult<Vec<DevAgentInfo>> {
-        self.with(|u| Ok(pause::dev_agents(self.runtime.block_on(u.agents())?)))
+        self.with(|u| {
+            let list = self.runtime.block_on(u.agents())?;
+            let labels = u.agent_labels().unwrap_or_default();
+            Ok(pause::dev_agents(list, &labels))
+        })
+    }
+
+    /// Sets or clears the person-owned label and/or machine host for an agent
+    /// (ADR 0047). Stored E2E-encrypted in the personal vault's system project.
+    pub fn set_agent_label(
+        &self,
+        id: String,
+        label: Option<String>,
+        host: Option<String>,
+    ) -> KlavResult<()> {
+        let agent = pause::agent_id(&id)?;
+        let entry = klav_core::model::agent_labels::AgentLabel {
+            label,
+            host,
+            role_hint: None,
+        };
+        let entry = (!entry.is_empty()).then_some(entry);
+        self.with(|u| {
+            self.runtime.block_on(u.set_agent_label(agent, entry))?;
+            Ok(())
+        })
     }
 
     /// The pauses in effect, as this iPhone last learned them (its sync,

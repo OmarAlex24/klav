@@ -823,6 +823,9 @@ pub(crate) enum AgentCommand {
         #[command(flatten)]
         json: JsonFlag,
     },
+    /// Set or clear your own E2E-encrypted label or machine/host note for an
+    /// agent (person side, ADR 0047).
+    Label(AgentLabelArgs),
     /// Pause every agent, or one, now (person side, ADR 0033 §7): the
     /// server refuses all they ask until you resume. No Touch ID: pausing
     /// must cost nothing. With `klavd` running, `--all` works locked.
@@ -845,6 +848,23 @@ pub(crate) enum AgentCommand {
         #[command(flatten)]
         json: JsonFlag,
     },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AgentLabelArgs {
+    /// Agent name or ID.
+    pub(crate) agent: String,
+    /// Friendly alias in your own words (e.g. "Proxmox proxy").
+    #[arg(long)]
+    pub(crate) label: Option<String>,
+    /// Machine, server or sandbox host (e.g. "pve-home").
+    #[arg(long)]
+    pub(crate) host: Option<String>,
+    /// Remove the label and host for this agent.
+    #[arg(long, conflicts_with_all = ["label", "host"])]
+    pub(crate) clear: bool,
+    #[command(flatten)]
+    pub(crate) json: JsonFlag,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

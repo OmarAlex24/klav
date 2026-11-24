@@ -379,6 +379,11 @@ private struct AgentSummary: View {
                 .fixedSize(horizontal: false, vertical: true)
             Tag(text: ActivityWords.roleBadge(item),
                 color: item.role == .proxy ? Palette.cobalto : item.role == .sandboxIssuer ? Palette.tinta : Palette.gris)
+            if let personLabel = ActivityWords.personLabelSummary(item) {
+                Text(verbatim: personLabel)
+                    .font(.ui(13, .medium, relativeTo: .footnote)).foregroundStyle(Palette.cobalto)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let origin = ActivityWords.originSummary(item) {
                 Text(verbatim: origin)
                     .font(.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.tinta)
@@ -542,6 +547,11 @@ struct AgentDetailView: View {
                 .font(.mono(12)).foregroundStyle(Palette.gris)
             Tag(text: ActivityWords.roleBadge(item),
                 color: item.role == .proxy ? Palette.cobalto : item.role == .sandboxIssuer ? Palette.tinta : Palette.gris)
+            if let personLabel = ActivityWords.personLabelSummary(item) {
+                Text(verbatim: personLabel)
+                    .font(.ui(13, .medium, relativeTo: .footnote)).foregroundStyle(Palette.cobalto)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let origin = ActivityWords.originSummary(item) {
                 Text(verbatim: origin)
                     .font(.ui(14, relativeTo: .subheadline)).foregroundStyle(Palette.tinta)

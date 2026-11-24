@@ -14,11 +14,13 @@ final class AgentActivityTests: XCTestCase {
                        lastSeen: Int64? = nil, createdAt: Int64 = 1_000, approvedMs: Int64? = 2_000,
                        role: AgentRole = .standard, proxyProfiles: [String] = [],
                        proxyHost: String? = nil, targetProxyName: String? = nil,
-                       issuerCount: UInt32 = 0, itemCount: UInt32 = 0) -> DevAgentInfo {
+                       issuerCount: UInt32 = 0, itemCount: UInt32 = 0,
+                       personLabel: String? = nil, personHost: String? = nil) -> DevAgentInfo {
         DevAgentInfo(agent: AgentItem(id: id, name: "bot", note: nil, status: status, pairingWords: "uno dos tres",
                                       createdAt: createdAt, expiresAt: 0, projects: ["Personal/General"]),
                      role: role, proxyProfiles: proxyProfiles, proxyHost: proxyHost,
                      targetProxyName: targetProxyName, issuerCount: issuerCount, itemCount: itemCount,
+                     personLabel: personLabel, personHost: personHost,
                      lastSeenMs: lastSeen, approvedMs: approvedMs, paused: paused)
     }
 

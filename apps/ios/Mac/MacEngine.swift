@@ -28,8 +28,9 @@ protocol MacEngine: VaultEngine {
     func offerTaskWithPassword(offer: OfferInput, password: String?) throws -> TaskItem
     func taskProgress(taskId: String) throws -> TaskProgressInfo
 
-    // Development (ADR 0033): pauses and the audit log.
+    // Development (ADR 0033, ADR 0047): pauses, person-owned labels and the audit log.
     func devAgents() throws -> [DevAgentInfo]
+    func setAgentLabel(id: String, label: String?, host: String?) throws
     func pauseAgents(agentId: String?, untilMs: Int64?) throws -> [PauseInfo]
     func resumeAgentsWithPassword(agentId: String?, password: String?) throws -> [PauseInfo]
     // Revoking an agent and changing its grant (ADR 0033, amendment of

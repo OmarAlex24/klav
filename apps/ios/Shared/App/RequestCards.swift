@@ -17,6 +17,8 @@ protocol RequestsModel: ObservableObject {
     func denySecretRequest(_ card: SecretRequestItem) async throws
     func approve(_ agent: AgentItem, projects: [String], expiresInDays: UInt32?) async throws
     func deny(_ agent: AgentItem) async throws
+    /// Saves or clears a person-owned label and/or machine host (ADR 0047).
+    func setAgentLabel(id: String, label: String?, host: String?) async throws
     /// The projects an agent can be given.
     func agentProjects() async throws -> [ProjectInfo]
     /// The pairing words of an agent this account approved: the grant it
@@ -295,6 +297,9 @@ struct AgentReviewView<Model: RequestsModel>: View {
     @State private var chosen: Set<String> = []
     @State private var expiry: Expiry = .never
     @State private var showWords = false
+    /// Optional machine/host label stored E2E-encrypted in the vault (ADR 0047).
+    /// On macOS, pre-filled with this Mac's name when `matched == true` (Q3).
+    @State private var hostText = ""
     @State private var busy = false
     @State private var problem: String?
 
@@ -353,6 +358,21 @@ struct AgentReviewView<Model: RequestsModel>: View {
 
                 FieldLabel("You give it access to").padding(.top, 24).padding(.bottom, 10)
                 projectChips
+
+                FieldLabel("Machine or host (optional)").padding(.top, 20).padding(.bottom, 8)
+                TextField(String(localized: "e.g. Work MacBook, pve-home"), text: $hostText)
+                    .textFieldStyle(.plain)
+                    .font(.ui(14, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.tinta)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Palette.papel)
+                    .overlay(Rectangle().strokeBorder(Palette.linea, lineWidth: 1))
+                Text("Saved end-to-end encrypted in your vault so you can tell which computer or server this agent runs on.")
+                    .font(.ui(12, relativeTo: .caption))
+                    .foregroundStyle(Palette.gris)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
 
                 FieldLabel("For how long").padding(.top, 20).padding(.bottom, 10)
                 Flow(spacing: 8) {
@@ -451,6 +471,13 @@ struct AgentReviewView<Model: RequestsModel>: View {
     }
 
     private func loadProjects() async {
+        #if os(macOS)
+        if matched == true && hostText.isEmpty,
+           let localName = Host.current().localizedName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !localName.isEmpty {
+            hostText = localName
+        }
+        #endif
         do {
             let list = try await model.agentProjects()
             projects = list.sorted { ($0.vault, $0.name) < ($1.vault, $1.name) }
@@ -464,9 +491,14 @@ struct AgentReviewView<Model: RequestsModel>: View {
         busy = true
         problem = nil
         let ids = projects.filter { chosen.contains($0.id) }.map(\.id)
+        let host = hostText.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             do {
                 try await model.approve(agent, projects: ids, expiresInDays: expiry.days)
+                if !host.isEmpty {
+                    // Best-effort: never roll back an approved grant if saving the label fails.
+                    try? await model.setAgentLabel(id: agent.id, label: nil, host: host)
+                }
                 dismiss()
             } catch {
                 problem = describeRequest(error)
