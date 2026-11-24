@@ -431,8 +431,31 @@ extension SkillCopy {
 
 /// The client an agent is for, when its name is a client's (§3.1).
 enum AgentClients {
-    static let names = ["claude-code": "Claude Code", "claude-desktop": "Claude Desktop", "codex": "Codex",
-                        "cursor": "Cursor", "vscode": "VS Code", "antigravity": "Antigravity"]
+    static let names = ActivityWords.knownClientNames
 
     static func client(of agentName: String) -> String? { names[agentName] }
+}
+
+/// Reads `$KLAV_HOME/agents/*.json` (read-only, holds no secrets) to tell
+/// which agents of the account have their local identity on this Mac.
+enum LocalAgents {
+    private struct ConfigHeader: Decodable {
+        let agent_id: String
+    }
+
+    static func ids(in klavHome: URL) -> Set<String> {
+        let dir = klavHome.appendingPathComponent("agents", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        var out = Set<String>()
+        let decoder = JSONDecoder()
+        for url in entries where url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let parsed = try? decoder.decode(ConfigHeader.self, from: data),
+                  !parsed.agent_id.isEmpty else { continue }
+            out.insert(parsed.agent_id)
+        }
+        return out
+    }
 }

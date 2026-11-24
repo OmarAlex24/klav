@@ -54,14 +54,18 @@ test("offers to save a new login after the form is sent, with the duplicate-titl
   await expect(bar.getByText("Saved to Klav")).toBeVisible({ timeout: 40_000 });
   expect(items().some((i) => i.title === "localhost" && i.username === "nuevo")).toBe(true);
 
-  // Another user on the same site: the default title already exists.
+  // Another user on the same site: «localhost» is already taken, so the bar
+  // suggests an available title («localhost (otra)») and still warns + offers
+  // a one-click fix if the person types a duplicate title manually.
   await page.goto(site.url("/login"));
   await page.locator("#username").fill("otra");
   await page.locator("#password").fill("MARKER-otra");
   await page.getByRole("button", { name: "Entrar" }).click();
   const second = await frameOf(page, "/save.html");
+  await expect(second.getByLabel("Title")).toHaveValue("localhost (otra)");
   await settled(second);
   await waitArmed(page);
+  await second.getByLabel("Title").fill("localhost");
   await clickIn(second.getByRole("button", { name: "Save" }));
   await expect(second.getByRole("alert")).toContainText("There’s already a login with that title");
   // The message pushes «Save» down: wait for the bar to grow around it.
@@ -71,7 +75,10 @@ test("offers to save a new login after the form is sent, with the duplicate-titl
   // this wait, the click got «The page is covering part of this box» on
   // CI (run 42666203652).
   await waitArmed(page);
-  await second.getByLabel("Title").fill("localhost (otra)");
+  await clickIn(second.getByRole("button", { name: "Use “localhost (otra)”" }));
+  await expect(second.getByLabel("Title")).toHaveValue("localhost (otra)");
+  await settled(second);
+  await waitArmed(page);
   await clickIn(second.getByRole("button", { name: "Save" }));
   await expect(second.getByText("Saved to Klav")).toBeVisible();
   expect(items().some((i) => i.title === "localhost (otra)" && i.username === "otra")).toBe(true);
@@ -166,7 +173,7 @@ test("a password-only form offers nothing when Klav already has that password", 
     ["item", "add", "login", "--title", "Sitio local (bea)", "--username", "bea", "--url", site.url("/"), "--secret-stdin", "password"],
     { unlocked: true, stdin: "MARKER-bea\n" },
   );
-  // A password no login has: the bar offers to save it, without a username.
+  // A password no login has: the bar offers to save it, with an editable username field.
   const unknown = await browser.context.newPage();
   await unknown.goto(site.url("/confirm"));
   await unknown.locator("#password").fill("MARKER-desconocida");
@@ -175,6 +182,8 @@ test("a password-only form offers nothing when Klav already has that password", 
   const bar = await frameOf(unknown, "/save.html");
   await expect(bar.getByText("Save this login to Klav?")).toBeVisible();
   await expect(bar.getByText("no username · localhost")).toBeVisible();
+  await bar.getByLabel("Username").fill("paso2@example.com");
+  await expect(bar.getByText("paso2@example.com · localhost")).toBeVisible();
   await unknown.close();
   // bea's password, sent without her username (it is not a box here).
   const known = await browser.context.newPage();

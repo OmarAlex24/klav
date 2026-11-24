@@ -48,7 +48,7 @@ import {
   startPasskeys,
 } from "./passkeys";
 import { endFlow, FLOW_MS, type Flow, type FlowFrame, flowOf, nextStage, setFlow } from "./flow";
-import { closeSave, doSave, forgetTab, loadSave, offerSite, pendingFor, siteOfferHere, submitSeen, tabOfSave } from "./save";
+import { closeSave, doSave, forgetTab, loadSave, offerSite, pendingFor, siteOfferHere, submitSeen, tabOfSave, usernameSeen } from "./save";
 import { GUARDED_IN_MENU, mayCall, pageOf } from "./surfaces";
 
 const bridge = new NativeBridge();
@@ -662,7 +662,7 @@ async function handlePage(message: PageMessage, sender: chrome.runtime.MessageSe
       await ensureClear(topOf(tab), "save", message.saveId);
       if (message.action === "add_site") await siteOfferHere(message.saveId, (await whereIs(tab)).url);
       // The bar says "saved" and then closes itself.
-      return doSave(bridge, message.saveId, message.action, message.title, message.project, message.item);
+      return doSave(bridge, message.saveId, message.action, message.title, message.project, message.item, message.username);
     }
     case "passkey_load":
       return passkeyLoad(message.passkeyId);
@@ -788,6 +788,11 @@ function handleContent(message: ContentMessage, sender: chrome.runtime.MessageSe
     case "submit_seen":
       if (typeof message.password === "string" && typeof message.username === "string") {
         void submitSeen(tabId, frame.url, message.username, message.password);
+      }
+      return null;
+    case "username_seen":
+      if (typeof message.username === "string") {
+        void usernameSeen(tabId, frame.url, message.username);
       }
       return null;
     case "save_pending":

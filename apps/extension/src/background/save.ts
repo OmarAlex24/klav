@@ -38,6 +38,61 @@ interface Pending {
 const pending = new Map<number, Pending>();
 
 /**
+ * Step-1 username seen in a multi-step sign-in (e.g. email first, password on
+ * the next screen). Kept in memory only, per tab, for 60 s and dropped if the
+ * tab leaves the site or closes.
+ */
+interface RecentUsername {
+  host: string;
+  username: string;
+  seen: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const recentUsernames = new Map<number, RecentUsername>();
+
+function forgetRecentUsername(tabId: number): void {
+  const r = recentUsernames.get(tabId);
+  if (r) clearTimeout(r.timer);
+  recentUsernames.delete(tabId);
+}
+
+/** Records a username typed on step 1 of a multi-step sign-in. */
+export async function usernameSeen(tabId: number, url: string, username: string): Promise<void> {
+  const name = username.trim();
+  if (!name) return;
+  const host = (await klavCore()).fillableHost(url);
+  if (!host) return;
+  forgetRecentUsername(tabId);
+  const timer = setTimeout(() => {
+    if (recentUsernames.get(tabId)?.timer === timer) forgetRecentUsername(tabId);
+  }, SAVE_TTL_MS + 1_000);
+  recentUsernames.set(tabId, { host, username: name, seen: Date.now(), timer });
+}
+
+/**
+ * Picks a free title for `base` in a project whose live items already use
+ * `taken`: `base` itself if free, then `base (username)` when a username is
+ * known, then `base (2)`, `base (3)`, …
+ */
+export function suggestFreeTitle(base: string, username: string, taken: Iterable<string>): string {
+  const used = new Set<string>();
+  for (const t of taken) used.add(t.trim().toLowerCase());
+  const cleanBase = base.trim() || base;
+  if (!used.has(cleanBase.toLowerCase())) return cleanBase;
+  const user = username.trim();
+  if (user) {
+    const withUser = `${cleanBase} (${user})`;
+    if (!used.has(withUser.toLowerCase())) return withUser;
+  }
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${cleanBase} (${String(n)})`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return cleanBase;
+}
+
+/**
  * «Add <host> to this item» (ADR 0025 §2): offered in the save bar after the
  * person filled a login saved for a subdomain of the page. It holds no
  * secret: only the item, its title and the page's address.
@@ -77,6 +132,7 @@ function forget(tabId: number): void {
 export function forgetTab(tabId: number): void {
   recording.delete(tabId);
   forget(tabId);
+  forgetRecentUsername(tabId);
   for (const [id, o] of siteOffers) if (o.tabId === tabId) siteOffers.delete(id);
 }
 
@@ -106,7 +162,14 @@ async function record(tabId: number, url: string, username: string, password: st
   // The tab closed meanwhile (`forgetTab`): keep nothing of it.
   if (!recording.has(tabId)) return;
   if (!host || !password) return;
-  const name = username.trim();
+  let name = username.trim();
+  if (!name) {
+    const recent = recentUsernames.get(tabId);
+    if (recent && Date.now() - recent.seen <= SAVE_TTL_MS && sameSite(recent.host, host)) {
+      name = recent.username;
+    }
+  }
+  forgetRecentUsername(tabId);
   const before = pending.get(tabId);
   // The same login again keeps its save; so does the same password seen
   // without a username (another scope of the page), which never takes away
@@ -237,7 +300,38 @@ export async function loadSave(bridge: NativeBridge, saveId: string): Promise<Sa
   }
   if (same.length > 0) return { ...base, updates: same };
   const projects = await bridge.call<ProjectSummary[]>({ op: "projects" });
-  return { ...base, projects, title: p.host };
+  const takenTitles: Record<string, string[]> = {};
+  const addTaken = (key: string, title: string): void => {
+    const list = (takenTitles[key] ??= []);
+    if (!list.includes(title)) list.push(title);
+  };
+  // Collect live item titles per project so we avoid duplicate-title errors.
+  try {
+    const listed = await bridge.call<ItemSummary[] | null>({ op: "list", filter: { trash: false } });
+    if (Array.isArray(listed)) {
+      for (const item of listed) {
+        if (!item.trashed) addTaken(`${item.vault}\u0000${item.project}`, item.title);
+      }
+    }
+  } catch {
+    // Non-fatal: fall back to site suggestions below.
+  }
+  for (const login of suggestions.logins) {
+    const sep = login.location.indexOf(" / ");
+    if (sep > 0) {
+      const key = `${login.location.slice(0, sep)}\u0000${login.location.slice(sep + 3)}`;
+      addTaken(key, login.title);
+    }
+  }
+  const firstProject = projects[0] ? `${projects[0].vault}\u0000${projects[0].name}` : "";
+  const suggestedTitle = suggestFreeTitle(p.host, p.username, firstProject ? (takenTitles[firstProject] ?? []) : []);
+  return {
+    ...base,
+    projects,
+    title: suggestedTitle,
+    ...(Object.keys(takenTitles).length > 0 ? { takenTitles } : {}),
+    ...(suggestions.logins.length > 0 ? { siteLogins: suggestions.logins } : {}),
+  };
 }
 
 /** Saves a new login or updates the password, as the person chose in the bar. */
@@ -248,6 +342,7 @@ export async function doSave(
   title: string | undefined,
   project: string | undefined,
   item?: string,
+  username?: string,
 ): Promise<ItemSummary> {
   if (action === "add_site") {
     // A normal edit of the item: this page's address joins its URLs.
@@ -267,9 +362,10 @@ export async function doSave(
   if (action === "update") {
     const state = await loadSave(bridge, saveId);
     const updates = state?.updates ?? [];
-    if (updates.length === 0) throw new DaemonError("not_found", "the login to update is gone");
+    const candidates = updates.length > 0 ? updates : (state?.siteLogins ?? []);
+    if (candidates.length === 0) throw new DaemonError("not_found", "the login to update is gone");
     // With several, only the one the person picked (and only one of these).
-    const chosen = item === undefined ? (updates.length === 1 ? updates[0] : undefined) : updates.find((u) => u.id === item);
+    const chosen = item === undefined ? (candidates.length === 1 ? candidates[0] : undefined) : candidates.find((u) => u.id === item);
     if (!chosen) throw new DaemonError("bad_request", "choose which login to update");
     saved = await bridge.call<ItemSummary>({
       op: "edit",
@@ -279,6 +375,7 @@ export async function doSave(
   } else {
     const where = project?.split("\u0000");
     const origin = new URL(p.url).origin;
+    const finalUsername = (username !== undefined ? username : p.username).trim();
     saved = await bridge.call<ItemSummary>({
       op: "create",
       item: {
@@ -287,7 +384,7 @@ export async function doSave(
         ...(where?.[0] ? { vault: where[0] } : {}),
         ...(where?.[1] ? { project: where[1] } : {}),
         fields: [
-          ...(p.username ? [{ name: "username", value: p.username, kind: "username" as const, secret: false }] : []),
+          ...(finalUsername ? [{ name: "username", value: finalUsername, kind: "username" as const, secret: false }] : []),
           password,
         ],
         urls: [origin],

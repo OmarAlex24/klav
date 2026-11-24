@@ -65,7 +65,7 @@ pub use error::{KlavError, KlavResult};
 pub use grants::*;
 pub use health::*;
 pub use import::ImportSession;
-pub use pause::{AgentPauseInfo, DevAgentInfo, PauseInfo};
+pub use pause::{AgentPauseInfo, AgentRole, DevAgentInfo, PauseInfo};
 pub use sandboxes::{
     ProxyNoSigns, SandboxCheckInfo, SandboxEndInfo, SandboxInfo, SandboxListCheckedInfo,
     SandboxListInfo, SandboxProxyInfo, SandboxRevokeInfo, SandboxSecurityInfo, SandboxStatusInfo,

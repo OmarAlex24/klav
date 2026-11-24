@@ -11,9 +11,14 @@ final class AgentActivityTests: XCTestCase {
     private let other = "0192f3a4-0000-7d8e-9f00-aabbccddeeff"
 
     private func agent(_ id: String, status: String = "active", paused: AgentPauseInfo? = nil,
-                       lastSeen: Int64? = nil, createdAt: Int64 = 1_000, approvedMs: Int64? = 2_000) -> DevAgentInfo {
+                       lastSeen: Int64? = nil, createdAt: Int64 = 1_000, approvedMs: Int64? = 2_000,
+                       role: AgentRole = .standard, proxyProfiles: [String] = [],
+                       proxyHost: String? = nil, targetProxyName: String? = nil,
+                       issuerCount: UInt32 = 0, itemCount: UInt32 = 0) -> DevAgentInfo {
         DevAgentInfo(agent: AgentItem(id: id, name: "bot", note: nil, status: status, pairingWords: "uno dos tres",
                                       createdAt: createdAt, expiresAt: 0, projects: ["Personal/General"]),
+                     role: role, proxyProfiles: proxyProfiles, proxyHost: proxyHost,
+                     targetProxyName: targetProxyName, issuerCount: issuerCount, itemCount: itemCount,
                      lastSeenMs: lastSeen, approvedMs: approvedMs, paused: paused)
     }
 

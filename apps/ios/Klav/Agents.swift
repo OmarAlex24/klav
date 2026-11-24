@@ -368,7 +368,7 @@ private struct AgentRow: View {
     }
 }
 
-/// The name, the start of the ID, the projects and when it was used.
+/// The name, verified role, host/proxy link, the projects and when it was used.
 private struct AgentSummary: View {
     let item: DevAgentInfo
 
@@ -377,6 +377,18 @@ private struct AgentSummary: View {
             (Text(verbatim: AgentText.line(item.agent.name, max: 40)).font(.ui(16, .medium)).foregroundStyle(Palette.tinta)
                 + Text(verbatim: "  " + AgentText.idPrefix(item.agent.id)).font(.mono(12)).foregroundStyle(Palette.gris))
                 .fixedSize(horizontal: false, vertical: true)
+            Tag(text: ActivityWords.roleBadge(item),
+                color: item.role == .proxy ? Palette.cobalto : item.role == .sandboxIssuer ? Palette.tinta : Palette.gris)
+            if let origin = ActivityWords.originSummary(item) {
+                Text(verbatim: origin)
+                    .font(.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.tinta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let note = item.agent.note, !note.isEmpty {
+                Text("\("“\(AgentText.line(note, max: 120))”") (according to the agent)")
+                    .font(.ui(12, relativeTo: .caption)).foregroundStyle(Palette.gris)
+                    .lineLimit(1)
+            }
             if !item.agent.projects.isEmpty {
                 Text(verbatim: item.agent.projects.joined(separator: ", "))
                     .font(.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.gris)
@@ -528,6 +540,13 @@ struct AgentDetailView: View {
                 .accessibilityAddTraits(.isHeader)
             Text(verbatim: "ID " + AgentText.idPrefix(item.agent.id))
                 .font(.mono(12)).foregroundStyle(Palette.gris)
+            Tag(text: ActivityWords.roleBadge(item),
+                color: item.role == .proxy ? Palette.cobalto : item.role == .sandboxIssuer ? Palette.tinta : Palette.gris)
+            if let origin = ActivityWords.originSummary(item) {
+                Text(verbatim: origin)
+                    .font(.ui(14, relativeTo: .subheadline)).foregroundStyle(Palette.tinta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let note = item.agent.note, !note.isEmpty {
                 Text("\("“\(AgentText.line(note, max: 200))”") (according to the agent)")
                     .font(.ui(14, relativeTo: .subheadline)).foregroundStyle(Palette.gris)

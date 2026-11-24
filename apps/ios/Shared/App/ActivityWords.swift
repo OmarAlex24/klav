@@ -190,6 +190,70 @@ enum ActivityWords {
         return String(localized: "Last used \(when(last, now: now)) · added \(added)")
     }
 
+    /// Known MCP client display names by default agent name (ADR 0033 §3.1).
+    static let knownClientNames: [String: String] = [
+        "claude-code": "Claude Code",
+        "claude-desktop": "Claude Desktop",
+        "codex": "Codex",
+        "cursor": "Cursor",
+        "vscode": "VS Code",
+        "antigravity": "Antigravity",
+    ]
+
+    /// Short role badge shown on every agent row (Mac and iOS).
+    /// `Proxy` and `SandboxIssuer` come from the account-signed grant;
+    /// `knownClient` only labels a recognized client name.
+    static func roleBadge(_ item: DevAgentInfo) -> String {
+        switch item.role {
+        case .proxy:
+            return String(localized: "Credential proxy")
+        case .sandboxIssuer:
+            return String(localized: "Sandbox issuer")
+        case .standard:
+            if let client = knownClientNames[item.agent.name] {
+                return String(localized: "MCP · \(client)")
+            }
+            return String(localized: "CLI / agent")
+        }
+    }
+
+    /// Verified host / proxy link line derived from the signed grants.
+    static func originSummary(_ item: DevAgentInfo) -> String? {
+        switch item.role {
+        case .proxy:
+            var parts: [String] = []
+            if let host = item.proxyHost, !host.isEmpty {
+                parts.append(String(localized: "Host: \(AgentText.line(host, max: 64))"))
+            }
+            if !item.proxyProfiles.isEmpty {
+                let shown = item.proxyProfiles.prefix(3).joined(separator: ", ")
+                let more = item.proxyProfiles.count > 3 ? " +\(item.proxyProfiles.count - 3)" : ""
+                parts.append(String(localized: "Profiles: \(shown)\(more)"))
+            }
+            if item.issuerCount > 0 {
+                parts.append(item.issuerCount == 1
+                             ? String(localized: "1 issuer")
+                             : String(localized: "\(Int64(item.issuerCount)) issuers"))
+            }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        case .sandboxIssuer:
+            let proxy = item.targetProxyName.map { AgentText.line($0, max: 40) }
+            let host = item.proxyHost.map { AgentText.line($0, max: 64) }
+            switch (proxy, host) {
+            case let (p?, h?):
+                return String(localized: "Starts sandboxes via \(p) (\(h))")
+            case let (p?, nil):
+                return String(localized: "Starts sandboxes via \(p)")
+            case let (nil, h?):
+                return String(localized: "Starts sandboxes via \(h)")
+            case (nil, nil):
+                return String(localized: "Starts sandboxes")
+            }
+        case .standard:
+            return nil
+        }
+    }
+
     /// «Nov 3, 2026».
     static func date(_ ms: Int64) -> String {
         Date(timeIntervalSince1970: Double(ms) / 1000).formatted(date: .abbreviated, time: .omitted)

@@ -1023,7 +1023,15 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
                 case "ag2": Self.now - 47 * 60_000
                 default: nil
                 }
-                return DevAgentInfo(agent: agent, lastSeenMs: seen,
+                let grant = grants[agent.id]
+                let role: AgentRole = switch grant?.readOnly {
+                case .proxy?: .proxy
+                case .issuer?: .sandboxIssuer
+                default: .standard
+                }
+                return DevAgentInfo(agent: agent, role: role, proxyProfiles: [], proxyHost: nil,
+                                    targetProxyName: nil, issuerCount: 0, itemCount: 0,
+                                    lastSeenMs: seen,
                                     approvedMs: agent.status == "active" ? agent.createdAt + 60_000 : nil,
                                     paused: agent.status == "active" ? pause : nil)
             }

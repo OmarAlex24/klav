@@ -211,6 +211,23 @@ final class DevelopmentTests: XCTestCase {
         XCTAssertTrue(AgentApproval.allowed(busy: false, chosen: 1, matched: nil), "compared by eye")
         XCTAssertFalse(AgentApproval.allowed(busy: false, chosen: 0, matched: true), "no project comes chosen (P4)")
         XCTAssertFalse(AgentApproval.allowed(busy: true, chosen: 1, matched: true))
+
+        // Local-Mac verified registrations use direct Approve/Deny wording and tuck the 6-word grid away.
+        XCTAssertEqual(AgentApproval.cardAction(matched: true), "Choose projects & approve")
+        XCTAssertEqual(AgentApproval.approveLabel(matched: true), "Approve")
+        XCTAssertEqual(AgentApproval.denyLabel(matched: true), "Deny")
+        XCTAssertFalse(AgentApproval.wordsExpandedByDefault(matched: true))
+
+        // Remote / terminal registrations keep "Compare words" and the 6-word grid open.
+        XCTAssertEqual(AgentApproval.cardAction(matched: nil), "Compare words")
+        XCTAssertEqual(AgentApproval.approveLabel(matched: nil), "They match: approve")
+        XCTAssertEqual(AgentApproval.denyLabel(matched: nil), "They don’t match")
+        XCTAssertTrue(AgentApproval.wordsExpandedByDefault(matched: nil))
+
+        // A mismatch keeps the words visible and lets the person inspect/deny.
+        XCTAssertEqual(AgentApproval.cardAction(matched: false), "Inspect words")
+        XCTAssertEqual(AgentApproval.denyLabel(matched: false), "Deny")
+        XCTAssertTrue(AgentApproval.wordsExpandedByDefault(matched: false))
     }
 
     /// The summary of «Connect» promises the comparison only when it
@@ -389,5 +406,44 @@ final class DevelopmentTests: XCTestCase {
          "orchestrators":[{"id":"t3-code","name":"T3 Code","installed":"/Applications/T3 Code.app","note":"Shares skills."}]}
         """.utf8))
         XCTAssertEqual(list.orchestrators?.first?.id, "t3-code")
+    }
+
+    func testAgentRoleBadgesOriginSummariesAndLocalIds() throws {
+        let baseItem = { (id: String, name: String) in
+            AgentItem(id: id, name: name, note: nil, status: "active", pairingWords: "a b c d e f",
+                      createdAt: 0, expiresAt: 0, projects: [])
+        }
+        let proxy = DevAgentInfo(agent: baseItem("p1", "klav-proxy"), role: .proxy,
+                                 proxyProfiles: ["northflank", "railway"], proxyHost: "pve-home",
+                                 targetProxyName: nil, issuerCount: 1, itemCount: 2,
+                                 lastSeenMs: nil, approvedMs: 1, paused: nil)
+        XCTAssertEqual(ActivityWords.roleBadge(proxy), "Credential proxy")
+        XCTAssertEqual(ActivityWords.originSummary(proxy), "Host: pve-home · Profiles: northflank, railway · 1 issuer")
+
+        let issuer = DevAgentInfo(agent: baseItem("i1", "sandbox-issuer"), role: .sandboxIssuer,
+                                  proxyProfiles: [], proxyHost: "pve-home",
+                                  targetProxyName: "klav-proxy", issuerCount: 0, itemCount: 0,
+                                  lastSeenMs: nil, approvedMs: 1, paused: nil)
+        XCTAssertEqual(ActivityWords.roleBadge(issuer), "Sandbox issuer")
+        XCTAssertEqual(ActivityWords.originSummary(issuer), "Starts sandboxes via klav-proxy (pve-home)")
+
+        let mcp = DevAgentInfo(agent: baseItem("m1", "antigravity"), role: .standard,
+                               proxyProfiles: [], proxyHost: nil, targetProxyName: nil,
+                               issuerCount: 0, itemCount: 0, lastSeenMs: nil, approvedMs: 1, paused: nil)
+        XCTAssertEqual(ActivityWords.roleBadge(mcp), "MCP · Antigravity")
+        XCTAssertNil(ActivityWords.originSummary(mcp))
+
+        let custom = DevAgentInfo(agent: baseItem("c1", "release-mac"), role: .standard,
+                                  proxyProfiles: [], proxyHost: nil, targetProxyName: nil,
+                                  issuerCount: 0, itemCount: 0, lastSeenMs: nil, approvedMs: 1, paused: nil)
+        XCTAssertEqual(ActivityWords.roleBadge(custom), "CLI / agent")
+
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("klav-local-\(UUID().uuidString)")
+        let agentsDir = tmp.appendingPathComponent("agents", isDirectory: true)
+        try FileManager.default.createDirectory(at: agentsDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try Data(#"{"v":1,"name":"claude-code","agent_id":"ag-local-1"}"#.utf8)
+            .write(to: agentsDir.appendingPathComponent("claude-code.json"))
+        XCTAssertEqual(LocalAgents.ids(in: tmp), ["ag-local-1"])
     }
 }

@@ -321,8 +321,14 @@ function reportSubmit(scope: Element | Document): void {
   const current = fields.find((f) => f.role === "current-password" && typed(f));
   // A sign-up or a password change saves the new one.
   const password = value(fresh[fresh.length - 1]) || value(current);
-  if (!password) return;
   const username = value(fields.find((f) => f.role === "username" && value(f) !== "" && isVisible(f.el)));
+  if (!password) {
+    // Step 1 of a multi-step sign-in (e.g. email first, password next): remember the username briefly.
+    if (username && asksOnlyForAccount(fields)) {
+      void send({ type: "username_seen", username }).catch(() => undefined);
+    }
+    return;
+  }
   void send({ type: "submit_seen", username, password }).catch(() => undefined);
   // A page that does not navigate (fetch): ask a moment later, once.
   clearTimeout(askTimer);
@@ -386,7 +392,8 @@ document.addEventListener(
     // A button that sends the form, not a «show password» eye.
     if (!button || !isSendButton(button)) return;
     const scope = scopeOf(button);
-    if (fieldsOf(scope).some((f) => f.role === "current-password" || f.role === "new-password")) reportSubmit(scope);
+    const fields = fieldsOf(scope);
+    if (fields.some((f) => f.role === "current-password" || f.role === "new-password") || asksOnlyForAccount(fields)) reportSubmit(scope);
   },
   true,
 );
@@ -396,7 +403,13 @@ document.addEventListener(
   (event) => {
     if (event.key !== "Enter" || !event.isTrusted) return;
     const target = event.composedPath()[0];
-    if (target instanceof HTMLInputElement && target.type === "password") reportSubmit(scopeOf(target));
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.type === "password") {
+      reportSubmit(scopeOf(target));
+    } else if (target.value.trim() !== "") {
+      const scope = scopeOf(target);
+      if (asksOnlyForAccount(fieldsOf(scope))) reportSubmit(scope);
+    }
   },
   true,
 );

@@ -93,6 +93,8 @@ If `$KLAV_HOME/agents/<nombre>.json` already exists and the agent is `active`, i
 
   If everything holds, the app computes the 6 words of the identity it received from the child and compares them with those of the server's request. When approving, the client computes them again with the identity the server delivers (ADR 0014 §1.3). The card says "They match (this Mac launched the registration)" with the words in view. If they don't match, it doesn't allow approving.
 
+  *UX note (2026-11-24):* when all four conditions hold and the words match (`matched == true`), the person has no terminal open to compare them against, so the card uses direct copy ("Started by this Mac · key verified", "Choose projects & approve") and the review sheet uses "Approve" / "Deny" with the 6-word grid collapsed behind a "Show verification words" toggle. For remote/terminal registrations (`matched == nil`) and mismatches (`matched == false`), the 6-word grid stays expanded and "Compare words" / "They match: approve" remain unchanged.
+
   **In any other case, the person compares them by eye, as today:**
   - a registration launched from a terminal or from another machine;
   - a registration the agent itself launched with `klav client connect` (amendment, E2);

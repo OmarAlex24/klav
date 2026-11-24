@@ -5,8 +5,10 @@ import SwiftUI
 /// with the grant in words, «Change permissions…» and «Revoke…».
 struct AgentPage: View {
     @EnvironmentObject private var model: MacModel
+    @EnvironmentObject private var installer: Installer
     let agentId: String
     @State private var agent: DevAgentInfo?
+    @State private var isLocal = false
     @State private var grant: GrantEditorInfo?
     @State private var listed: [RevocationInfo] = []
     @State private var problem: String?
@@ -37,7 +39,7 @@ struct AgentPage: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if let agent {
-                        header(agent.agent)
+                        header(agent)
                         revocation(agent.agent)
                         if let problem { Notice(text: problem).padding(.top, 16) }
                         if agent.agent.status == "active" {
@@ -68,8 +70,10 @@ struct AgentPage: View {
 
     // MARK: Parts
 
-    private func header(_ agent: AgentItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func header(_ item: DevAgentInfo) -> some View {
+        let agent = item.agent
+        let roleColor: Color = item.role == .proxy ? Palette.cobalto : item.role == .sandboxIssuer ? Palette.tinta : Palette.gris
+        return VStack(alignment: .leading, spacing: 6) {
             // The agent chose its name: one line, quoted, and said to be
             // its own (T136).
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -77,14 +81,26 @@ struct AgentPage: View {
                     .lineLimit(1)
                 Text("named by the agent").font(.ui(12)).foregroundStyle(Palette.gris)
             }
-            HStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Text(verbatim: status(agent)).font(.ui(13, .medium))
                     .foregroundStyle(agent.status == "active" ? Palette.cobalto : Palette.gris)
-                if let client = AgentClients.client(of: agent.name) {
-                    Text(verbatim: client).font(.ui(13)).foregroundStyle(Palette.gris)
+                Text(verbatim: ActivityWords.roleBadge(item))
+                    .font(.ui(11, .medium)).foregroundStyle(roleColor)
+                    .padding(.horizontal, 6).frame(height: 19)
+                    .overlay(Rectangle().strokeBorder(roleColor.opacity(item.role == .standard ? 0.5 : 1), lineWidth: 1))
+                if isLocal {
+                    Text("On this Mac")
+                        .font(.ui(11, .medium)).foregroundStyle(Palette.tinta)
+                        .padding(.horizontal, 6).frame(height: 19)
+                        .background(Palette.niebla)
                 }
                 Text(verbatim: "ID \(AgentText.idPrefix(agent.id))").font(.mono(11)).foregroundStyle(Palette.gris)
                     .textSelection(.enabled)
+            }
+            if let origin = ActivityWords.originSummary(item) {
+                Text(verbatim: origin)
+                    .font(.ui(13, .medium)).foregroundStyle(Palette.tinta)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let note = agent.note {
                 Text("“\(AgentText.line(note))”, according to the agent")
@@ -140,6 +156,9 @@ struct AgentPage: View {
     /// on its own: neither failing hides the agent or «Revoke…».
     private func load() async {
         let id = agentId
+        if installer.system.refusal(for: installer.paths) == nil {
+            isLocal = LocalAgents.ids(in: installer.paths.klavHome).contains(id)
+        }
         do {
             let (agents, listed) = try await model.agentsAndRevocations()
             agent = agents.first { $0.agent.id == id }

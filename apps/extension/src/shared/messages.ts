@@ -25,8 +25,8 @@ export type PageMessage =
   | { type: "menu_find"; menuId: string }
   /** The save bar asks what to show, and what the person decided. */
   | { type: "save_load"; saveId: string }
-  /** `item`: which login to update, when several of the site have this username. */
-  | { type: "save_do"; saveId: string; action: "create" | "update" | "add_site"; title?: string; project?: string; item?: string }
+  /** `item`: which login to update, when several of the site have this username (or chosen from siteLogins). */
+  | { type: "save_do"; saveId: string; action: "create" | "update" | "add_site"; title?: string; username?: string; project?: string; item?: string }
   /** The top card: what to show, and «Iniciar sesión». */
   | { type: "card_load"; cardId: string }
   | { type: "card_fill"; cardId: string; item?: string }
@@ -64,6 +64,8 @@ export type ContentMessage =
   | { type: "menu_open"; groups: Group[]; role: FieldRole; stopped?: StopReason; rules?: FieldRules }
   /** A form with a password was sent: maybe offer to save it. */
   | { type: "submit_seen"; username: string; password: string }
+  /** Step 1 of a multi-step sign-in (account only, no password box yet): remembered briefly for step 2. */
+  | { type: "username_seen"; username: string }
   /** A page loaded in the top frame: is a save waiting for it? */
   | { type: "save_pending" }
   /** A one-time code field got the focus: offer the login just filled? */
@@ -255,6 +257,10 @@ export interface SaveState {
   /** Where a new login can go, and the suggested title. */
   projects?: ProjectSummary[];
   title?: string;
+  /** Existing item titles per project key (`Vault\0Project`) so the bar avoids title collisions. */
+  takenTitles?: Record<string, string[]>;
+  /** Existing logins for this site when creating a new login (lets the person update one instead). */
+  siteLogins?: Suggestion[];
   /**
    * After the person filled a login saved for a subdomain (ADR 0025 §2):
    * «Add <host> to this item», so it matches exactly next time.
