@@ -748,7 +748,7 @@ struct SecretRequestCard<Model: RequestsModel>: View {
 
     var body: some View {
         AgentCard(highlighted: highlighted) {
-            AgentMark(text: String(localized: "\(card.agent) asks for a secret"))
+            AgentMark(text: "\(card.agent) asks for a secret")
                 .accessibilityAddTraits(.isHeader)
             AgentKey<Model>(agentId: card.agentId)
 

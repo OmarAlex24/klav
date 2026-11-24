@@ -575,25 +575,29 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
             card.status = "fulfilled"
             card.decidedAt = Self.now
             let title = input.title ?? card.title ?? card.targetTitle ?? "Secret"
+            let kind: Kind = switch card.kind ?? card.targetKind {
+            case "login": .login
+            case "note": .note
+            case "ssh_key": .sshKey
+            case "card": .card
+            default: .apiKey
+            }
             let item = ItemInfo(
                 id: card.targetItemId ?? UUID().uuidString,
+                reference: "klav://Personal/General/\(title)",
                 vaultId: input.vault ?? card.vaultId ?? "v-personal",
                 vault: "Personal",
                 projectId: input.project ?? card.projectId ?? "p-general",
                 project: "General",
-                kind: card.kind ?? card.targetKind ?? "api_key",
+                kind: kind,
                 title: title,
                 username: nil,
                 urls: input.urls ?? [],
-                pendingUrls: [],
                 tags: [],
                 version: 1,
                 updatedAt: Self.now,
                 trashed: false,
-                reference: "klav://Personal/General/\(title)",
-                hasPasskey: false,
-                passkeyRpId: nil,
-                passkeyUser: nil
+                confirmedUrls: input.urls ?? []
             )
             return SecretRequestFulfillOutput(
                 card: card,
