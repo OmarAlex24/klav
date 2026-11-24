@@ -287,9 +287,11 @@ function presenceFrame(question: PresenceAsk, problem?: DaemonError): void {
     for (const b of root.querySelectorAll<HTMLButtonElement>("button")) b.disabled = true;
     ask({ type: "presence_answer", presenceId: passkeyId, password: password ?? "" }).catch((e: unknown) => {
       const error = errorOf(e);
-      // A wrong password, or klavd now asks something else: ask again.
-      if (error.code === "wrong_credentials") presenceFrame(question, error);
-      else if (error.code === "presence_required" && error.presence) presenceFrame(error.presence);
+      // klavd now asks something else: the new question. Anything else (a
+      // wrong password, a frame the page covered) asks again with why; a
+      // question that is over closes the frame from the background.
+      if (error.code === "presence_required" && error.presence) presenceFrame(error.presence);
+      else presenceFrame(question, error);
     });
   };
   render(
