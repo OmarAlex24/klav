@@ -2247,10 +2247,15 @@ pub(crate) fn error_body(e: &ClientError) -> ErrorBody {
         ClientError::Rollback(_) => ErrorCode::Rollback,
         ClientError::Security(_) => ErrorCode::Security,
         ClientError::NotFound(_) => ErrorCode::NotFound,
+        // A quota or an invite: the message is what the person reads, as
+        // the server said it (ADR 0048 §2, §3.2), without a wire code of
+        // its own.
         ClientError::Ambiguous(_)
         | ClientError::Invalid(_)
         | ClientError::Reference(_)
-        | ClientError::Model(_) => ErrorCode::Invalid,
+        | ClientError::Model(_)
+        | ClientError::QuotaExceeded(_)
+        | ClientError::InviteInvalid => ErrorCode::Invalid,
         ClientError::Conflict(_) | ClientError::LaterPause(_) | ClientError::LaterRevocation(_) => {
             ErrorCode::Conflict
         }

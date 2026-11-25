@@ -29,6 +29,7 @@ use klav_client::passkeys::PasskeyCreateRequest;
 use klav_client::secret_requests::{FulfillSecretRequest, FulfillSecretResult, SecretRequestCard};
 use klav_client::tasks::{TaskCard, TaskChoice};
 use klav_client::{Home, ItemFilter, ItemLocation, LoginRequest, Unlocked};
+use klav_core::crypto::invite::InviteCode;
 use klav_core::crypto::kdf::MasterPassword;
 use klav_core::crypto::secret_key::SecretKey;
 use klav_core::ids::{AgentId, ApprovalId, ItemId, ProjectId, SecretRequestId, TaskId, VaultId};
@@ -108,6 +109,63 @@ pub fn server_from_input(text: String) -> KlavResult<String> {
 #[uniffi::export]
 pub fn server_name(server: String) -> String {
     klav_client::server::display_name(&server)
+}
+
+/// How a server takes new accounts (ADR 0048 §1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RegistrationMode {
+    /// Anyone can sign up.
+    Open,
+    /// Signing up needs an invite code: ask for it under the e-mail and
+    /// check it with [`check_invite`] before the master password.
+    Invite,
+    /// Nobody can sign up (also a mode this version does not know).
+    Closed,
+    /// An older server that does not say: sign-up is tried and the server
+    /// decides.
+    Unknown,
+}
+
+impl From<klav_client::server::Registration> for RegistrationMode {
+    fn from(r: klav_client::server::Registration) -> Self {
+        use klav_client::server::Registration as R;
+        match r {
+            R::Open => Self::Open,
+            R::Invite => Self::Invite,
+            R::Closed => Self::Closed,
+            R::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// A runtime for one blocking call outside a `KlavCore`.
+fn one_shot() -> KlavResult<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| KlavError::invalid(format!("cannot start the runtime: {e}")))
+}
+
+/// How `server` takes new accounts (`GET /v1/health`, ADR 0048 §1.2), for
+/// «Create your account» before anything is asked: the «Invite code» field
+/// follows it, also with «Use my own server». Blocks: call it off the main
+/// thread.
+#[uniffi::export]
+pub fn registration_mode(server: String) -> KlavResult<RegistrationMode> {
+    let mode = one_shot()?.block_on(klav_client::server::registration_mode(&server))?;
+    Ok(mode.into())
+}
+
+/// Whether `invite` can be used by `email` on `server` now
+/// (`POST /v1/auth/invite/check`, ADR 0048 §1.3): fails with
+/// [`KlavError::InviteInvalid`] otherwise. «Continue» runs it before the
+/// master password. Not a reservation: [`KlavCore::sign_up`] checks again.
+#[uniffi::export]
+pub fn check_invite(server: String, email: String, invite: String) -> KlavResult<()> {
+    // The string uniffi hands over is wiped when dropped.
+    let invite = InviteCode::new(zeroize::Zeroizing::new(invite).as_str());
+    one_shot()?.block_on(klav_client::server::check_invite(&server, &email, &invite))?;
+    Ok(())
 }
 
 /// A random password (`length` characters; letters and digits, plus
@@ -923,15 +981,20 @@ impl KlavCore {
     /// person saves where they choose, and never logs or keeps a copy. The
     /// account stays unlocked in this object until [`Self::lock`]; the Mac
     /// app locks it right away and asks `klavd` to unlock instead.
+    ///
+    /// On a server in `invite` mode (ADR 0048 §2), `invite` is checked
+    /// before the kit and the key derivation; elsewhere it is not sent.
     pub fn sign_up(
         &self,
         server: String,
         email: String,
         password: String,
         device_name: String,
+        invite: Option<String>,
     ) -> KlavResult<String> {
-        // The string uniffi hands over is wiped when dropped.
+        // The strings uniffi hands over are wiped when dropped.
         let password = zeroize::Zeroizing::new(password);
+        let invite = invite.map(zeroize::Zeroizing::new);
         let (unlocked, kit) = self.runtime.block_on(klav_client::signup(
             &self.home,
             klav_client::SignupRequest {
@@ -940,6 +1003,7 @@ impl KlavCore {
                 password: MasterPassword::new(password.as_str()),
                 device_name,
                 device_kind: DEVICE_KIND,
+                invite: invite.as_deref().map(|code| InviteCode::new(code.as_str())),
             },
         ))?;
         self.publish(unlocked);

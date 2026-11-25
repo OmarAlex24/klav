@@ -25,6 +25,7 @@ async fn project_repos_normalize_and_sync_across_devices() {
             password: MasterPassword::new(PASSWORD),
             device_name: "mac".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

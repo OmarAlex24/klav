@@ -179,6 +179,19 @@ pub enum KlavError {
         /// What happened.
         message: String,
     },
+    /// The invite code cannot be used by this e-mail on this server now
+    /// (ADR 0048 §1.3): show it under the «Invite code» field, with the
+    /// link to request one. The same for every reason.
+    #[error("This invite code isn't valid for this email.")]
+    InviteInvalid,
+    /// The write would take the account over a quota (ADR 0048 §3.2).
+    /// `message` is the server's: which limit, how much is used and the
+    /// maximum. Shown as it came.
+    #[error("{message}")]
+    QuotaExceeded {
+        /// The server's words (one line, short).
+        message: String,
+    },
     /// Invalid input or unexpected state.
     #[error("{message}")]
     Invalid {
@@ -208,6 +221,8 @@ impl From<ClientError> for KlavError {
                 Self::Denied { message }
             }
             ClientError::Api { status: 401, .. } => Self::SessionExpired,
+            ClientError::InviteInvalid => Self::InviteInvalid,
+            ClientError::QuotaExceeded(_) => Self::QuotaExceeded { message },
             ClientError::AccountDeleted(at) => Self::AccountDeleted {
                 delete_at: Some(at),
                 message,

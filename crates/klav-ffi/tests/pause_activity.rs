@@ -80,6 +80,7 @@ fn the_phone_pauses_an_agent_and_shows_what_it_did() {
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         )
         .await

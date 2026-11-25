@@ -39,6 +39,7 @@ async fn the_proxy_setting_syncs_and_fails_closed() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -201,6 +202,7 @@ async fn preferences_an_agent_wrote_flag_the_list_and_only_proxy_use_replaces_th
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

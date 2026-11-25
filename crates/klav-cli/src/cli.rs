@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use klav_core::crypto::invite::InviteCode;
 
 /// Klav: an end-to-end encrypted password manager for people and agents.
 #[derive(Debug, Parser)]
@@ -1510,6 +1511,11 @@ pub(crate) struct SignupArgs {
     /// (mode 0600) instead of showing it on the terminal.
     #[arg(long)]
     pub(crate) emergency_kit: Option<PathBuf>,
+    /// Invite code, for a server that takes new accounts by invite. Else
+    /// it is asked after the e-mail. It stays in the shell history and in
+    /// `ps` until used: prefer the prompt, or KLAV_INVITE.
+    #[arg(long, env = "KLAV_INVITE", hide_env_values = true, value_name = "CODE")]
+    pub(crate) invite: Option<InviteCode>,
 }
 
 #[derive(Debug, Args)]

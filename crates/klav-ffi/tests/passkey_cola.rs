@@ -79,6 +79,7 @@ impl World {
                     password: MasterPassword::new(PASSWORD),
                     device_name: "laptop".into(),
                     device_kind: DeviceKind::Cli,
+                    invite: None,
                 },
             ))
             .expect("test setup");

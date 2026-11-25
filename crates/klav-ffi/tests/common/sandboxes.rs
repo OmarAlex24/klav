@@ -85,6 +85,7 @@ pub async fn setup(server: &ServerProcess, home: &std::path::Path, email: &str) 
             password: MasterPassword::new(PASSWORD),
             device_name: "phone".into(),
             device_kind: klav_proto::auth::DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

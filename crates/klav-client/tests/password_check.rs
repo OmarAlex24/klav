@@ -24,6 +24,7 @@ async fn account(server: &ServerProcess, home: &Home, email: &str, password: &st
             password: MasterPassword::new(password),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

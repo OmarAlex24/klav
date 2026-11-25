@@ -128,6 +128,7 @@ async fn ask_cancel_ask_again_and_the_purge_leaves_nothing() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

@@ -146,6 +146,28 @@ impl Input {
             .map_err(|e| usage(format!("cannot read from the terminal: {e}")))
     }
 
+    /// A value that is not a long-lived secret, typed visibly on the
+    /// terminal (an invite code, ADR 0048 §2): it can be pasted and checked
+    /// by eye. Never read from a pipe, where it would take a line meant for
+    /// the master password; `missing` says how to give it instead.
+    pub(crate) fn prompt_visible(
+        &mut self,
+        prompt: &str,
+        missing: &str,
+    ) -> CliResult<Zeroizing<String>> {
+        if self.password_stdin
+            || !std::io::stdin().is_terminal()
+            || !std::io::stderr().is_terminal()
+        {
+            return Err(usage(missing));
+        }
+        eprint!("{prompt}");
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+        let line = self.raw_line(prompt.trim_end_matches(": "))?;
+        Ok(Zeroizing::new(line.trim().to_owned()))
+    }
+
     /// The master password: stdin if `--password-stdin`, else the TTY.
     pub(crate) fn password(&mut self, prompt: &str) -> CliResult<Zeroizing<String>> {
         if self.password_stdin {

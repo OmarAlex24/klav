@@ -158,6 +158,7 @@ fn the_mac_app_works_through_klavd() {
             "mac@example.com".into(),
             PASSWORD.into(),
             "Mac de prueba".into(),
+            None,
         )
         .expect("sign up");
     assert!(kit.contains("Secret Key: K1-"));
@@ -733,6 +734,7 @@ fn the_mac_app_asks_to_delete_the_account_and_klavd_learns_it() {
             "mac@example.com".into(),
             PASSWORD.into(),
             "Mac de Ana".into(),
+            None,
         )
         .expect("sign up"),
     );
@@ -1319,4 +1321,54 @@ fn the_sandboxes_on_a_klavd_older_than_them_say_update_klav() {
     assert_eq!(ops[1]["scope"], sandbox.as_str());
     assert_eq!(ops[2]["proxy"], proxy.as_str());
     assert_eq!(ops[2]["scope"], "all");
+}
+
+/// A quota through `klavd` (ADR 0048 §3.2): the Mac app's writes go through
+/// the socket, so the server's message comes back as `klavd` said it,
+/// whole, without a wire code of its own.
+#[test]
+fn a_quota_through_klavd_keeps_the_servers_message() {
+    let server = ServerProcess::start_config("[limits]\nmax_items_per_account = 1\n");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().join("klav");
+    let home_str = home.display().to_string();
+    let engine = DaemonEngine::new(home_str.clone()).expect("engine");
+    let _daemon = Daemon::start(&home);
+    wait_until("klavd", || engine.status().running);
+    let core = KlavCore::new(home_str).expect("core");
+    drop(
+        core.sign_up(
+            server.url.clone(),
+            "mac@example.com".into(),
+            PASSWORD.into(),
+            "Mac de Ana".into(),
+            None,
+        )
+        .expect("sign up"),
+    );
+    core.lock();
+    drop(core);
+    engine.unlock(Some(PASSWORD.into())).expect("unlock");
+    let login = |title: &str| NewItemInput {
+        kind: Kind::Login,
+        title: title.into(),
+        vault_id: None,
+        project_id: None,
+        fields: vec![FieldEdit {
+            name: "password".into(),
+            value: "not-a-real-password".into(),
+            kind: None,
+        }],
+        urls: vec!["https://example.com".into()],
+        tags: vec![],
+        notes: None,
+    };
+    engine.create_item(login("First")).expect("one item fits");
+    match engine.create_item(login("Second")) {
+        Err(KlavError::Invalid { message }) => assert!(
+            message.starts_with("This account is limited to 1 items"),
+            "{message}"
+        ),
+        other => panic!("expected the server's message, got {other:?}"),
+    }
 }

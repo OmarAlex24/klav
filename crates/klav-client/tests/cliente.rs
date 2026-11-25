@@ -51,6 +51,7 @@ async fn two_devices_sync_and_a_rollback_is_refused() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -74,6 +75,7 @@ async fn two_devices_sync_and_a_rollback_is_refused() {
                 password: MasterPassword::new("x"),
                 device_name: "x".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         )
         .await,
@@ -219,6 +221,7 @@ async fn two_processes_share_one_session_through_refreshes() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -261,6 +264,7 @@ async fn a_detached_sync_applies_only_where_it_was_planned_and_still_refuses_a_r
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -353,6 +357,7 @@ async fn lists_filter_by_type_and_by_codes() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -500,6 +505,7 @@ async fn suggest_lists_the_codes_on_their_own_that_name_the_page() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

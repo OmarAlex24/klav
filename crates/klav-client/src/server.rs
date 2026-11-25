@@ -9,11 +9,12 @@
 
 use std::time::Duration;
 
-use klav_proto::auth::AccountKeyset;
+use klav_core::crypto::invite::InviteCode;
+use klav_proto::auth::{AccountKeyset, InviteCheckRequest};
 use reqwest::{Method, StatusCode};
 
 use crate::api::{self, Api};
-use crate::error::ClientResult;
+use crate::error::{ClientError, ClientResult};
 use crate::home::{Home, write_private};
 use crate::session::Unlocked;
 use crate::state::AccountFile;
@@ -112,6 +113,87 @@ pub async fn registration_open(server: &str) -> ClientResult<Option<bool>> {
     let health: klav_proto::HealthResponse = api::json(res).await?;
     Ok(health.registration_open)
 }
+
+/// How a server takes new accounts, as a client reads it (ADR 0048 §1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registration {
+    /// Anyone can sign up.
+    Open,
+    /// Signing up needs an invite code: check it with [`check_invite`]
+    /// before the password, and send it with the sign-up.
+    Invite,
+    /// Nobody can sign up. Also a mode this client does not know (a newer
+    /// server).
+    Closed,
+    /// The server says neither `registration_mode` nor `registration_open`
+    /// (a server older than ADR 0028): sign-up is tried and the server
+    /// decides.
+    Unknown,
+}
+
+impl Registration {
+    /// From a `GET /v1/health` answer: `registration_mode` first, then
+    /// `registration_open` (an older server).
+    pub fn from_health(health: &klav_proto::HealthResponse) -> Self {
+        use klav_proto::RegistrationMode as Mode;
+        match (health.registration_mode, health.registration_open) {
+            (Some(Mode::Open), _) => Self::Open,
+            (Some(Mode::Invite), _) => Self::Invite,
+            // A mode from a newer server reads as closed (layer 1's choice).
+            (Some(Mode::Closed | Mode::Unknown), _) => Self::Closed,
+            (None, Some(true)) => Self::Open,
+            (None, Some(false)) => Self::Closed,
+            (None, None) => Self::Unknown,
+        }
+    }
+}
+
+/// How `server` takes new accounts (`GET /v1/health`, ADR 0048 §1.2). Asked
+/// before any password or emergency kit.
+pub async fn registration_mode(server: &str) -> ClientResult<Registration> {
+    let api = Api::new(ServerUrl::parse(&resolve(server)?)?)?;
+    let res = api
+        .send::<()>(Method::GET, "/v1/health", None, None)
+        .await?;
+    let health: klav_proto::HealthResponse = api::json(res).await?;
+    Ok(Registration::from_health(&health))
+}
+
+/// Whether `invite` can be used by `email` on `server` now
+/// (`POST /v1/auth/invite/check`, ADR 0048 §1.3): `Ok` or
+/// [`ClientError::InviteInvalid`]. Not a reservation: the sign-up checks it
+/// again. A code that does not even decode is refused here, without
+/// spending one of the server's invite attempts.
+pub async fn check_invite(server: &str, email: &str, invite: &InviteCode) -> ClientResult<()> {
+    if invite.canonical().is_err() {
+        return Err(ClientError::InviteInvalid);
+    }
+    let api = Api::new(ServerUrl::parse(&resolve(server)?)?)?;
+    let res = api
+        .send(
+            Method::POST,
+            "/v1/auth/invite/check",
+            None,
+            Some(&InviteCheckRequest {
+                email: email.trim().to_lowercase(),
+                invite: invite.clone(),
+            }),
+        )
+        .await?;
+    api::empty(res).await
+}
+
+/// What a person told to bring an invite hears (ADR 0048 §2): `server`
+/// takes new accounts only with one.
+pub fn invite_required_message(server: &str) -> String {
+    format!(
+        "{} takes new accounts by invite only. Give your invite code, or request one at {INVITE_REQUEST_URL}.",
+        display_name(server)
+    )
+}
+
+/// Where a person asks for an invite (ADR 0048 §4).
+pub const INVITE_REQUEST_URL: &str = "https://klav.dev";
 
 /// The message shown when registration on `server` is closed, before any
 /// password is asked (ADR 0028 §3).
@@ -266,6 +348,55 @@ mod tests {
         );
         assert!(
             registration_closed_message(DEFAULT_SERVER).starts_with("Registration on klav.dev")
+        );
+    }
+
+    #[test]
+    fn the_mode_comes_first_and_registration_open_is_the_fallback() {
+        let health = |json: &str| -> Registration {
+            Registration::from_health(&serde_json::from_str(json).unwrap())
+        };
+        assert_eq!(
+            health(
+                r#"{"status":"ok","version":"0.10.0","registration_open":false,"registration_mode":"invite"}"#
+            ),
+            Registration::Invite
+        );
+        assert_eq!(
+            health(
+                r#"{"status":"ok","version":"0.10.0","registration_open":true,"registration_mode":"open"}"#
+            ),
+            Registration::Open
+        );
+        assert_eq!(
+            health(
+                r#"{"status":"ok","version":"0.10.0","registration_open":false,"registration_mode":"closed"}"#
+            ),
+            Registration::Closed
+        );
+        // A newer server's mode is closed to this client.
+        assert_eq!(
+            health(
+                r#"{"status":"ok","version":"9.0.0","registration_open":false,"registration_mode":"waitlist"}"#
+            ),
+            Registration::Closed
+        );
+        // An older server: only `registration_open`, or nothing at all.
+        assert_eq!(
+            health(r#"{"status":"ok","version":"0.9.2","registration_open":true}"#),
+            Registration::Open
+        );
+        assert_eq!(
+            health(r#"{"status":"ok","version":"0.9.2","registration_open":false}"#),
+            Registration::Closed
+        );
+        assert_eq!(
+            health(r#"{"status":"ok","version":"0.1.0"}"#),
+            Registration::Unknown
+        );
+        assert!(
+            invite_required_message(DEFAULT_SERVER)
+                .starts_with("klav.dev takes new accounts by invite only")
         );
     }
 

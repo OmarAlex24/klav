@@ -1396,6 +1396,11 @@ pub(crate) async fn forbidden(res: reqwest::Response) -> ClientError {
         Err(ClientError::Paused(paused)) => return ClientError::Paused(paused),
         // The person asked to delete the account (ADR 0037 §3): exit 8.
         Err(ClientError::AccountDeleting(at)) => return ClientError::AccountDeleting(at),
+        // Over a quota (ADR 0048 §3.2): not a denial, and the server's
+        // message says which limit.
+        Err(ClientError::QuotaExceeded(message)) => {
+            return ClientError::QuotaExceeded(crate::text::untrusted(&message));
+        }
         Err(ClientError::Api { message, .. }) => message,
         _ => "forbidden".to_owned(),
     };
