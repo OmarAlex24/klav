@@ -165,7 +165,11 @@ async fn raw(home: &Home, request: &str) -> Value {
 }
 
 /// Every operation of §3's «window» row.
-fn window_ops() -> Vec<Request> {
+/// One request per operation of the window row, each naming something that
+/// exists: an instant of the generator history (`created_at`) and a
+/// reference to a field (`reference`), since `klavd` resolves both before
+/// it asks (Omar's decision K of 2026-11-19).
+fn window_ops(created_at: i64, reference: &str) -> Vec<Request> {
     vec![
         view(None),
         Request::PreviousPassword {
@@ -179,11 +183,11 @@ fn window_ops() -> Vec<Request> {
             password: None,
         },
         Request::GeneratedValue {
-            created_at: 1,
+            created_at,
             password: None,
         },
         Request::Resolve {
-            references: vec!["klav://Personal/Default/GitHub/password".into()],
+            references: vec![reference.to_owned()],
             password: None,
         },
         Request::Autofill {
@@ -263,7 +267,33 @@ async fn with_the_gate_on_values_follow_the_window_and_the_sealed_setting() {
         "always"
     );
     // …but now every value asks, and the client is told what to ask for.
-    for request in window_ops() {
+    let created_at = call::<Value>(
+        &c,
+        Request::GeneratorRecord {
+            value: SecretText::new("generated for the test"),
+            host: None,
+        },
+    )
+    .await
+    .expect("recorded")
+    .0["created_at"]
+        .as_i64()
+        .expect("created_at");
+    let github = call::<Value>(
+        &c,
+        Request::View {
+            query: "GitHub".into(),
+            reveal: false,
+            password: None,
+        },
+    )
+    .await
+    .expect("metadata");
+    let reference = format!(
+        "{}/username",
+        github.0["reference"].as_str().expect("reference")
+    );
+    for request in window_ops(created_at, &reference) {
         let what = format!("{request:?}");
         let e = call::<Value>(&c, request).await.expect_err(&what);
         assert_eq!(e.code, ErrorCode::PresenceRequired, "{what}: {e:?}");

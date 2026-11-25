@@ -2066,6 +2066,306 @@ async fn a_new_version_synced_during_the_dialog_is_not_handed_out() {
     assert!(holds(&shown, "from the phone"));
 }
 
+/// The reference, by name, of the field `field` of the item titled
+/// `title`, read through `klavd` without a value.
+async fn reference_of(c: &Conn, title: &str, field: &str) -> String {
+    let view = call::<Value>(c, view_of(title, None).without_reveal())
+        .await
+        .expect("view");
+    let reference = view["reference"].as_str().expect("reference");
+    format!("{reference}/{field}")
+}
+
+impl Request {
+    /// The same `view`, without `reveal`: metadata only, outside the gate.
+    fn without_reveal(self) -> Request {
+        match self {
+            Request::View { query, .. } => Request::View {
+                query,
+                reveal: false,
+                password: None,
+            },
+            other => other,
+        }
+    }
+}
+
+fn resolve_of(references: &[String], password: Option<&str>) -> Request {
+    Request::Resolve {
+        references: references.to_vec(),
+        password: secret(password),
+    }
+}
+
+/// The text values a `resolve` handed out (never printed).
+fn resolved(answer: Value) -> Vec<String> {
+    serde_json::from_value::<Vec<klav_client::ops::ResolvedValue>>(answer)
+        .expect("resolved values")
+        .iter()
+        .map(|v| v.text().expect("text").to_owned())
+        .collect()
+}
+
+/// `resolve` is bound to what its references named when it was asked
+/// about (Omar's decision K of 2026-11-19): every reference is resolved to
+/// its item before the ask, each item's version is kept with it, and the
+/// hand-out answers `conflict` if any of them was edited, renamed away or
+/// replaced in between, under Touch ID (the dialog held open) and under the
+/// password sent again. Under 5 minutes, that `conflict` opens no window,
+/// so the rerun asks again. A reference that names nothing is refused
+/// before any ask. Unedited items are still handed out, by both paths.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resolve_whose_items_change_while_it_asks_hands_out_nothing() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let keys = [session(40), session(41), session(42)];
+    let _klavd = daemon(&home, true, &fake, &keys, false).await;
+    let a = conn(&home).await;
+    let b = conn(&home).await;
+    let program = conn(&home).await;
+    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    create(&a, "Bank").await;
+    set_password(&a, "github 1").await;
+    call::<Value>(
+        &a,
+        Request::Edit {
+            query: "Bank".into(),
+            patch: password_patch("bank 1"),
+        },
+    )
+    .await
+    .expect("edited");
+    // By title, so a rename can point them at another item.
+    let references = vec![
+        reference_of(&a, "GitHub", "password").await,
+        reference_of(&a, "Bank", "password").await,
+    ];
+    assert!(
+        references[0].ends_with("/GitHub/password"),
+        "{references:?}"
+    );
+
+    // A reference that names nothing: refused before any ask.
+    let nothing = vec![references[0].replace("/GitHub/", "/Nowhere/")];
+    let e = call::<Value>(&a, resolve_of(&nothing, None))
+        .await
+        .expect_err("refused");
+    // As the hand-out refuses it: a reference error is `invalid`.
+    assert_eq!(e.code, ErrorCode::Invalid, "{}", e.message);
+    assert!(e.message.contains("not found"), "{}", e.message);
+    assert_eq!(fake.asked(), 0, "nothing was asked");
+
+    call::<Value>(&a, presence_window(Some(Window::FiveMinutes), Some(PERSON)))
+        .await
+        .expect("5 minutes");
+    let mut edits = 1;
+    // Touch ID: the program edits the second item while the dialog is
+    // open, then swaps the first one's title.
+    for change in ["edit", "rename"] {
+        let (open, release) = fake.hold_next();
+        let asked = {
+            let a = Arc::clone(&a);
+            let request = resolve_of(&references, None);
+            tokio::spawn(async move { call::<Value>(&a, request).await })
+        };
+        opened(open).await;
+        assert_eq!(
+            fake.last(),
+            "let the terminal ttys040 use your vault for 5 minutes",
+            "{change}"
+        );
+        if change == "edit" {
+            edits += 1;
+            call::<Value>(
+                &program,
+                Request::Edit {
+                    query: "Bank".into(),
+                    patch: password_patch(&format!("bank {edits}")),
+                },
+            )
+            .await
+            .expect("edited");
+        } else {
+            rename(&program, "GitHub", "GitHub (old)").await;
+            create(&program, "GitHub").await;
+            set_password(&program, "replaced").await;
+        }
+        release.send(()).unwrap();
+        let e = at_once(asked).await.unwrap().expect_err("refused");
+        assert_eq!(e.code, ErrorCode::Conflict, "{change}, Touch ID");
+        assert!(e.message.contains("nothing was handed out"), "{change}");
+        if change == "rename" {
+            call::<Value>(
+                &program,
+                Request::Trash {
+                    query: "GitHub".into(),
+                },
+            )
+            .await
+            .expect("trashed");
+            rename(&program, "GitHub (old)", "GitHub").await;
+        }
+        // No window from that answer: the rerun asks again, and the
+        // unedited items are handed out.
+        let before = fake.asked();
+        let values = resolved(
+            call::<Value>(&a, resolve_of(&references, None))
+                .await
+                .expect("handed out"),
+        );
+        assert_eq!(fake.asked(), before + 1, "{change}: the rerun asks");
+        assert_eq!(values, ["github 1".to_owned(), format!("bank {edits}")]);
+        call::<DaemonStatus>(&a, Request::Lock).await.expect("lock");
+        call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+            .await
+            .expect("unlock");
+    }
+
+    // The password sent again, on b's key: an edit between the ask and the
+    // resend is a `conflict` (the password answers the ask, and is
+    // checked); a swap makes `klavd` ask again (the request names other
+    // items now).
+    fake.available.store(false, Ordering::SeqCst);
+    assert_eq!(
+        code(&b, resolve_of(&references, None)).await,
+        ErrorCode::PresenceRequired
+    );
+    edits += 1;
+    call::<Value>(
+        &program,
+        Request::Edit {
+            query: "Bank".into(),
+            patch: password_patch(&format!("bank {edits}")),
+        },
+    )
+    .await
+    .expect("edited");
+    assert_eq!(
+        code(&b, resolve_of(&references, Some(PERSON))).await,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        code(&b, resolve_of(&references, None)).await,
+        ErrorCode::PresenceRequired,
+        "the conflict opened no window"
+    );
+    rename(&program, "GitHub", "GitHub (old)").await;
+    create(&program, "GitHub").await;
+    set_password(&program, "replaced").await;
+    assert_eq!(
+        code(&b, resolve_of(&references, Some(PERSON))).await,
+        ErrorCode::PresenceRequired,
+        "another item now: asked again, the password unchecked"
+    );
+    call::<Value>(
+        &program,
+        Request::Trash {
+            query: "GitHub".into(),
+        },
+    )
+    .await
+    .expect("trashed");
+    rename(&program, "GitHub (old)", "GitHub").await;
+    assert_eq!(
+        code(&b, resolve_of(&references, None)).await,
+        ErrorCode::PresenceRequired
+    );
+    let values = resolved(
+        call::<Value>(&b, resolve_of(&references, Some(PERSON)))
+            .await
+            .expect("handed out"),
+    );
+    assert_eq!(values, ["github 1".to_owned(), format!("bank {edits}")]);
+    call::<Value>(&b, resolve_of(&references, None))
+        .await
+        .expect("covered by the window the hand-out opened");
+}
+
+/// `generated_value` is bound to its generator history entry when it is
+/// asked about (Omar's decision K of 2026-11-19): an instant that names no
+/// entry is refused before any ask, and an entry deleted while the dialog
+/// is open is a `conflict` that opens no window, where the hand-out used
+/// to look the instant up afresh. An entry nobody touched is handed out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generated_value_whose_entry_goes_while_it_asks_hands_out_nothing() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let a = conn(&home).await;
+    let program = conn(&home).await;
+    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    call::<Value>(&a, presence_window(Some(Window::FiveMinutes), Some(PERSON)))
+        .await
+        .expect("5 minutes");
+    let record = |value: &'static str| {
+        let a = Arc::clone(&a);
+        async move {
+            let answer = call::<Value>(
+                &a,
+                Request::GeneratorRecord {
+                    value: SecretText::new(value),
+                    host: None,
+                },
+            )
+            .await
+            .expect("recorded");
+            answer["created_at"].as_i64().expect("created_at")
+        }
+    };
+    let generated = |created_at: i64, password: Option<&str>| Request::GeneratedValue {
+        created_at,
+        password: secret(password),
+    };
+    let first = record("generated one").await;
+    // An instant that names no entry: refused before any ask.
+    let e = call::<Value>(&a, generated(first - 1, None))
+        .await
+        .expect_err("refused");
+    assert_eq!(e.code, ErrorCode::NotFound, "{}", e.message);
+    assert_eq!(fake.asked(), 0, "nothing was asked");
+    // Deleted while the dialog is open.
+    let (open, release) = fake.hold_next();
+    let asked = {
+        let a = Arc::clone(&a);
+        tokio::spawn(async move { call::<Value>(&a, generated(first, None)).await })
+    };
+    opened(open).await;
+    call::<Value>(
+        &program,
+        Request::GeneratorDelete {
+            which: klav_client::history::GeneratedSelection::Some(vec![first]),
+        },
+    )
+    .await
+    .expect("deleted");
+    release.send(()).unwrap();
+    let e = at_once(asked).await.unwrap().expect_err("refused");
+    assert_eq!(e.code, ErrorCode::Conflict, "{}", e.message);
+    assert!(e.message.contains("nothing was handed out"));
+    // Untouched: handed out, and the window it opened covers the next.
+    let second = record("generated two").await;
+    let before = fake.asked();
+    let shown = call::<Value>(&a, generated(second, None))
+        .await
+        .expect("handed out");
+    assert_eq!(fake.asked(), before + 1, "the conflict opened no window");
+    assert!(holds(&shown, "generated two"));
+    call::<Value>(&a, generated(second, None))
+        .await
+        .expect("covered");
+    assert_eq!(fake.asked(), before + 1);
+}
+
 // ------------------------------------------------- the extension (layer 4)
 
 /// A browser's extension on the socket, as `klav-native-host` relays it.

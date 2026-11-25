@@ -381,19 +381,37 @@ pub(crate) enum Purpose<'a> {
 }
 
 /// What a master password sent again after `presence_required` must be
-/// for (finding 2 of layer 3's review): the same request, and, for a
-/// request that names an item, the same item. `klavd` checks the password
-/// only if it would ask exactly what it asked, for this. Its size is fixed,
-/// whatever the request's (the second review of layer 3, finding 5).
+/// for (finding 2 of layer 3's review): the same request, and the same
+/// thing the request names. `klavd` checks the password only if it would
+/// ask exactly what it asked, for this. Its size is fixed, whatever the
+/// request's (the second review of layer 3, finding 5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Bound {
     /// The request as sent, without its password: its SHA-256
     /// ([`request_digest`]), never the request itself.
     pub(crate) request: [u8; 32],
-    /// The item the request names, as `klavd` resolved it under the
-    /// session's lock: always set for `view`, `previous_password`, `totp`
-    /// and `autofill`, never for `generated_value` and `resolve`.
-    pub(crate) item: Option<klav_core::ids::ItemId>,
+    /// What the request names, as `klavd` resolved it under the session's
+    /// lock, as a digest through `klav-core`: the item for `view`,
+    /// `previous_password`, `totp` and `autofill`; every referenced item,
+    /// in order, for `resolve`; the generator history entry for
+    /// `generated_value` (Omar's decision K of 2026-11-19). Set for every
+    /// request of the window row that was asked about.
+    pub(crate) names: Option<[u8; 32]>,
+}
+
+/// The state of what a value request named when `klavd` asked about it,
+/// which the hand-out must still find (Omar's decisions F and K of
+/// 2026-11-19), as a digest through `klav-core`: the item's version, every
+/// referenced item's version for `resolve`, or the entry (its instant and
+/// its value) for `generated_value`. The last is derived from a password,
+/// so it never prints.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Version(pub(crate) [u8; 32]);
+
+impl std::fmt::Debug for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Version(…)")
+    }
 }
 
 /// The digest [`Bound::request`] keeps of `request` (taken out of its
@@ -415,10 +433,11 @@ struct Pending {
     generation: u64,
     ask: PresenceAsk,
     bound: Bound,
-    /// The version of `bound.item` that was asked about (Omar's decision F
-    /// of 2026-11-19): not part of what a resend must match, but what the
-    /// hand-out must still find (`Passed::version`).
-    version: Option<u64>,
+    /// The state of what `bound.names` names when it was asked about
+    /// (Omar's decisions F and K of 2026-11-19): not part of what a resend
+    /// must match, but what the hand-out must still find
+    /// (`Passed::version`).
+    version: Option<Version>,
 }
 
 impl Pending {
@@ -435,12 +454,12 @@ impl Pending {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub(crate) struct Passed {
-    /// The version of the item the ask was about, which the hand-out must
-    /// still find under the session's lock, in the same hold that hands it
-    /// out (Omar's decision F of 2026-11-19): for a password sent again,
-    /// the version when `klavd` asked, not now. `None` for a request bound
-    /// to no item.
-    pub(crate) version: Option<u64>,
+    /// The state of what the ask was about, which the hand-out must still
+    /// find under the session's lock, in the same hold that hands it out
+    /// (Omar's decisions F and K of 2026-11-19): for a password sent again,
+    /// the state when `klavd` asked, not now. `None` when a window covered
+    /// the request before anything was read.
+    pub(crate) version: Option<Version>,
     /// The window the answer opens, not open yet: [`Presence::open_window`] opens
     /// it once the hand-out finds what was asked about. A `conflict`, or any
     /// refusal before that check, drops it, and the next value asks again
@@ -449,7 +468,8 @@ pub(crate) struct Passed {
 }
 
 /// A window an answer was going to open (Omar's decision G of 2026-11-19):
-/// what the prompt stated, for the session it was stated in.
+/// what the prompt stated, for the session it was stated in, from the
+/// instant the verification passed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub(crate) struct Opening {
@@ -457,6 +477,11 @@ pub(crate) struct Opening {
     lasts: Lasts,
     declared: bool,
     setting: Window,
+    /// When the verification passed: the window counts from here, not
+    /// from the hand-out, so a request that then waits for the session's
+    /// lock gains nothing by waiting (the third layer-3 re-review; ADR
+    /// 0041, plan item 6).
+    at: Instant,
 }
 
 /// What [`Presence::first`] found.
@@ -1097,7 +1122,7 @@ impl Presence {
         purpose: Purpose<'_>,
         password: Option<SecretText>,
         bound: &Bound,
-        version: Option<u64>,
+        version: Option<Version>,
         verify: &dyn Verify,
         lang: Lang,
         now: &dyn Fn() -> Instant,
@@ -1201,6 +1226,9 @@ impl Presence {
             }
         };
         checked?;
+        // The window's start: the verification, read before anything else
+        // can wait (plan item 6).
+        let at = now();
         let inner = self.inner();
         if inner.settings.is_none() || inner.generation != generation {
             return Err(locked());
@@ -1212,15 +1240,17 @@ impl Presence {
             lasts,
             declared,
             setting,
+            at,
         });
         Ok(Passed { version, opens })
     }
 
     /// Opens the window a passed verification stated (`Passed::opens`),
-    /// called under the session's lock once the hand-out found the item and
-    /// the version that were asked about. What the prompt said, shortened by
-    /// any tightening since; nothing once Klav locked since.
-    pub(crate) fn open_window(&self, caller: &Caller, opening: Opening, now: Instant) {
+    /// called under the session's lock once the hand-out found what was
+    /// asked about, in the state it was asked about. What the prompt said,
+    /// shortened by any tightening since, counted from the verification
+    /// (`Opening::at`), not from now; nothing once Klav locked since.
+    pub(crate) fn open_window(&self, caller: &Caller, opening: Opening) {
         let mut inner = self.inner();
         let Some(settings) = inner
             .settings
@@ -1239,7 +1269,7 @@ impl Presence {
                 inner.held.insert(caller.conn);
             }
         } else {
-            inner.grant(caller, window, now);
+            inner.grant(caller, window, opening.at);
         }
     }
 

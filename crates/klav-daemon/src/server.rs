@@ -3424,14 +3424,15 @@ async fn route(
     }
 }
 
-/// What the window gate passed a request for: the session, and the item
-/// the request named when it was asked for, at the version it was asked
-/// about (set for `view`, `previous_password`, `totp` and `autofill` unless
-/// a window covered them before anything was read; never for `resolve` and
-/// `generated_value`). The request must still resolve to that item, at
-/// that version, under the session's lock, in the same hold that hands it
-/// out: a rename (findings 2 of layer 3's two reviews) or an edit (Omar's
-/// decision F of 2026-11-19) in between hands out nothing.
+/// What the window gate passed a request for: the session, and what the
+/// request named when it was asked for, in the state it was asked about
+/// (set for every request of the window row unless a window covered it
+/// before anything was read). The request must still name that, in that
+/// state, under the session's lock, in the same hold that hands it out: a
+/// rename (findings 2 of layer 3's two reviews), an edit (Omar's decision
+/// F of 2026-11-19), or, for `resolve` and `generated_value`, any change
+/// to a referenced item or to the history entry (his decision K) in
+/// between hands out nothing.
 struct Checked {
     slot: Arc<Slot>,
     item: Option<Asked>,
@@ -3440,11 +3441,18 @@ struct Checked {
     opens: Option<presence::Opening>,
 }
 
-/// An item as an ask named it: which one, and its version then.
+/// What an ask named, and its state then ([`asked_now`]): two digests
+/// through `klav-core`, so what is kept has a fixed size whatever the
+/// request's (the second review of layer 3, finding 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Asked {
-    item: klav_core::ids::ItemId,
-    version: u64,
+    /// Which item, which items in order (`resolve`), or which generator
+    /// history entry (`generated_value`): what a password sent again must
+    /// still match.
+    names: [u8; 32],
+    /// Their versions, or the entry's instant and value: what the hand-out
+    /// must still find.
+    version: presence::Version,
 }
 
 /// The window row (ADR 0041 §4): with the gate on, the session the value
@@ -3508,7 +3516,7 @@ async fn window_gate(
     // digest (finding 5), and the item it named.
     let bound = presence::Bound {
         request: presence::request_digest(request)?,
-        item: asked.map(|a| a.item),
+        names: asked.map(|a| a.names),
     };
     let passed = tokio::task::block_in_place(|| {
         state.presence.require(
@@ -3528,10 +3536,10 @@ async fn window_gate(
     // below (Omar's decision F of 2026-11-19).
     let item = match (asked, passed.version) {
         (Some(a), Some(version)) => Some(Asked {
-            item: a.item,
+            names: a.names,
             version,
         }),
-        // The ask named an item: its version must be known (fails closed).
+        // The ask named something: its state must be known (fails closed).
         (Some(_), None) => return Err(changed()),
         (None, _) => None,
     };
@@ -3542,9 +3550,11 @@ async fn window_gate(
     }))
 }
 
-/// The answer when the item a value was asked for was renamed away or
-/// edited before the hand-out: nothing goes (ADR 0041; Omar's decision F of
-/// 2026-11-19).
+/// The answer when what a value was asked for was renamed away, replaced or
+/// edited before the hand-out: nothing goes (ADR 0041; Omar's decisions F
+/// and K of 2026-11-19). The wording is matched by the clients
+/// (`klav-ffi`'s `CHANGED_WHILE_CONFIRMING`), so it stays one sentence for
+/// every request.
 fn changed() -> ErrorBody {
     ErrorBody {
         code: ErrorCode::Conflict,
@@ -3653,13 +3663,14 @@ async fn handle(
             {
                 return Err(error_body(&ClientError::AccountDeleted(at)));
             }
-            // The item the verification named, still the one the request
-            // names now (finding 2 of layer 3's review), and at the version
-            // it was asked about (Omar's decision F of 2026-11-19): under
+            // What the verification named, still what the request names
+            // now (finding 2 of layer 3's review), and in the state it was
+            // asked about (Omar's decisions F and K of 2026-11-19): under
             // the session's lock, in the hold that hands it out. A sync that
-            // brought a newer version meanwhile is an edit too.
+            // brought a newer version meanwhile is an edit too; a reference
+            // or an entry that names nothing now is a change as well.
             if let Some(named) = named
-                && value_asked(&session.unlocked, &request) != Some(named)
+                && asked_now(&session.unlocked, &request).ok().flatten() != Some(named)
             {
                 return Err(changed());
             }
@@ -3667,7 +3678,7 @@ async fn handle(
             // any refusal before it, opens none, and the next value asks
             // again (Omar's decision G of 2026-11-19).
             if let (Some(opening), Some(caller)) = (opens, caller) {
-                state.presence.open_window(caller, opening, Instant::now());
+                state.presence.open_window(caller, opening);
             }
             let reply = dispatch(
                 state,
@@ -3864,8 +3875,11 @@ async fn unlock(
             (unlocked, "touch_id")
         }
     };
-    // The unlock is a real verification (ADR 0020 §8).
-    let verified = uv::Verified::unlock(Instant::now(), passkey_flow);
+    // The unlock is a real verification (ADR 0020 §8). Its instant is the
+    // windows' start too: the sync below can take seconds, and a window
+    // counts from the verification (ADR 0041, plan item 6).
+    let verified_at = Instant::now();
+    let verified = uv::Verified::unlock(verified_at, passkey_flow);
     let mut unlocked = unlocked;
     // Before the first sync: it plans with the account's URL (ADR 0028
     // §4). At most a few seconds, and no session is published yet.
@@ -3951,7 +3965,7 @@ async fn unlock(
                 stated,
                 passkey,
                 passkey_flow,
-                Instant::now(),
+                verified_at,
             );
         }
     }
@@ -4096,8 +4110,12 @@ async fn setting_change(
 /// `dispatch` gives, `not_found` or `invalid` (ambiguous), which `view`
 /// without `reveal` already gives that caller. So its ask always names the
 /// item and its title, and the hand-out is checked against that item under
-/// the session's lock (`handle`). `generated_value` and `resolve` name no
-/// item and read nothing here. `touch`: a Touch ID prompt follows, so the
+/// the session's lock (`handle`). `resolve` and `generated_value` name no
+/// item in the ask, but are resolved here all the same, every reference to
+/// its item and the instant to its history entry, so a reference or an
+/// instant that names nothing is refused before any ask, and the hand-out
+/// is checked against what they named (Omar's decision K of 2026-11-19;
+/// [`asked_now`]). `touch`: a Touch ID prompt follows, so the
 /// session's lock is never awaited behind an open dialog: `presence_busy`
 /// instead (§2.4; the third layer-2 review, finding A).
 async fn value_text(
@@ -4107,26 +4125,12 @@ async fn value_text(
     touch: bool,
 ) -> Result<(AskValue, Option<Asked>), ErrorBody> {
     let (kind, query) = match request {
-        Request::View { query, .. } => (AskValueKind::Show, query),
-        Request::PreviousPassword { query, .. } => (AskValueKind::Previous, query),
-        Request::Totp { query, .. } => (AskValueKind::Code, query),
-        Request::Autofill { item, .. } => (AskValueKind::Fill, item),
-        Request::GeneratedValue { .. } => {
-            let value = AskValue {
-                kind: AskValueKind::Generated,
-                title: None,
-                count: None,
-            };
-            return Ok((value, None));
-        }
-        Request::Resolve { references, .. } => {
-            let value = AskValue {
-                kind: AskValueKind::Resolve,
-                title: None,
-                count: Some(u32::try_from(references.len()).unwrap_or(u32::MAX)),
-            };
-            return Ok((value, None));
-        }
+        Request::View { query, .. } => (AskValueKind::Show, Some(query)),
+        Request::PreviousPassword { query, .. } => (AskValueKind::Previous, Some(query)),
+        Request::Totp { query, .. } => (AskValueKind::Code, Some(query)),
+        Request::Autofill { item, .. } => (AskValueKind::Fill, Some(item)),
+        Request::GeneratedValue { .. } => (AskValueKind::Generated, None),
+        Request::Resolve { .. } => (AskValueKind::Resolve, None),
         // Only the window row reaches here (`presence::gate`).
         _ => {
             return Err(ErrorBody {
@@ -4143,47 +4147,99 @@ async fn value_text(
         slot.session.lock().await
     };
     let u = &session.unlocked;
-    let loc = u.find_item(query).map_err(|e| error_body(&e))?;
-    let summary = u.item_summary(loc).map_err(|e| error_body(&e))?;
-    let title = crate::prompt::clean(&summary.title, crate::prompt::MAX_NAME);
-    Ok((
-        AskValue {
-            kind,
-            title: Some(title),
-            count: None,
-        },
-        Some(Asked {
-            item: loc.item,
-            version: summary.version,
-        }),
-    ))
+    // What the request names, resolved before anything is asked: a query,
+    // a reference or an instant that names nothing is refused here (Omar's
+    // decision K of 2026-11-19 for `resolve` and `generated_value`).
+    let asked = asked_now(u, request).map_err(|e| error_body(&e))?;
+    let title = match query {
+        Some(query) => {
+            let loc = u.find_item(query).map_err(|e| error_body(&e))?;
+            let summary = u.item_summary(loc).map_err(|e| error_body(&e))?;
+            Some(crate::prompt::clean(
+                &summary.title,
+                crate::prompt::MAX_NAME,
+            ))
+        }
+        None => None,
+    };
+    let count = match request {
+        Request::Resolve { references, .. } => {
+            Some(u32::try_from(references.len()).unwrap_or(u32::MAX))
+        }
+        _ => None,
+    };
+    Ok((AskValue { kind, title, count }, asked))
 }
 
-/// The item a value request names, as the vault resolves it now, and its
-/// version: `view`, `previous_password`, `totp` and `autofill`. `None` for
-/// the others, and when it resolves to none. The version is the item's
-/// `version`, which every write to its content raises (a sync refuses a
-/// version lower than one already seen). The trash and a restore raise the
-/// server's `revision` instead, and change no content.
-fn value_asked(u: &Unlocked, request: &Request) -> Option<Asked> {
-    let loc = value_location(u, request)?;
-    let version = u.item_summary(loc).ok()?.version;
-    Some(Asked {
-        item: loc.item,
-        version,
-    })
-}
-
-/// Where [`value_asked`]'s item is.
-fn value_location(u: &Unlocked, request: &Request) -> Option<klav_client::ItemLocation> {
-    let query = match request {
+/// What a value request names now, and its state, as [`Asked`]'s digests:
+///
+/// - `view`, `previous_password`, `totp` and `autofill`: the item the query
+///   finds, at its `version`, which every write to its content raises (a
+///   sync refuses a version lower than one already seen; the trash and a
+///   restore raise the server's `revision` instead, and change no content);
+/// - `resolve`: every referenced item, in order, at its version, each
+///   reference checked as the hand-out resolves it
+///   (`klav_client::Unlocked::reference_items`);
+/// - `generated_value`: the generator history entry at that instant, by
+///   its instant and its value (`klav_client::Unlocked::generated_digest`).
+///
+/// `Ok(None)` for any other request. An error when the request names
+/// nothing now.
+fn asked_now(u: &Unlocked, request: &Request) -> Result<Option<Asked>, ClientError> {
+    let item = |loc: klav_client::ItemLocation| -> Result<(String, u64), ClientError> {
+        Ok((loc.item.to_string(), u.item_summary(loc)?.version))
+    };
+    let (label, names, versions): (&str, Vec<Vec<u8>>, Vec<Vec<u8>>) = match request {
         Request::View { query, .. }
         | Request::PreviousPassword { query, .. }
-        | Request::Totp { query, .. } => query,
-        Request::Autofill { item, .. } => item,
-        _ => return None,
+        | Request::Totp { query, .. }
+        | Request::Autofill { item: query, .. } => {
+            let (id, version) = item(u.find_item(query)?)?;
+            (
+                "item",
+                vec![id.clone().into_bytes()],
+                vec![id.into_bytes(), version.to_be_bytes().to_vec()],
+            )
+        }
+        Request::Resolve { references, .. } => {
+            let mut names = Vec::new();
+            let mut versions = Vec::new();
+            for loc in u.reference_items(references)? {
+                let (id, version) = item(loc)?;
+                names.push(id.clone().into_bytes());
+                versions.push(id.into_bytes());
+                versions.push(version.to_be_bytes().to_vec());
+            }
+            ("resolve", names, versions)
+        }
+        Request::GeneratedValue { created_at, .. } => {
+            let entry = u.generated_digest(*created_at)?;
+            (
+                "generated",
+                vec![created_at.to_be_bytes().to_vec()],
+                vec![entry.to_vec()],
+            )
+        }
+        _ => return Ok(None),
     };
-    u.find_item(query).ok()
+    Ok(Some(Asked {
+        names: bind_digest(label, "names", &names),
+        version: presence::Version(bind_digest(label, "version", &versions)),
+    }))
+}
+
+/// SHA-256, through `klav-core`, of `label`, `part` and `fields`, each
+/// prefixed with its length, so no two lists give the same bytes.
+fn bind_digest(label: &str, part: &str, fields: &[Vec<u8>]) -> [u8; 32] {
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    for field in [label.as_bytes(), part.as_bytes()]
+        .into_iter()
+        .chain(fields.iter().map(Vec::as_slice))
+    {
+        bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    klav_core::crypto::agent::body_digest(&bytes)
 }
 
 /// Every request that needs the account unlocked. `behind`: with the gate

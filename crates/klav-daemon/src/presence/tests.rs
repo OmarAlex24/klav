@@ -172,14 +172,14 @@ fn value(p: &Presence, who: &Caller, verify: &dyn Verify, clock: &Clock) -> Resu
         Lang::En,
         &|| clock.now(),
     )
-    .map(|passed| handed_out(p, who, passed, clock))
+    .map(|passed| handed_out(p, who, passed))
 }
 
 /// What the server does once the hand-out found what was asked about:
 /// opens the window the answer stated (Omar's decision G of 2026-11-19).
-fn handed_out(p: &Presence, who: &Caller, passed: Passed, clock: &Clock) {
+fn handed_out(p: &Presence, who: &Caller, passed: Passed) {
     if let Some(opening) = passed.opens {
-        p.open_window(who, opening, clock.now());
+        p.open_window(who, opening);
     }
 }
 
@@ -203,7 +203,7 @@ fn with_password(
         Lang::En,
         &|| clock.now(),
     )
-    .map(|passed| handed_out(p, who, passed, clock))
+    .map(|passed| handed_out(p, who, passed))
 }
 
 #[test]
@@ -1276,7 +1276,7 @@ fn the_remembered_request_is_a_fixed_size_digest() {
     let fake = Fake::without_touch_id();
     let bound = |request: &Request| Bound {
         request: request_digest(request).unwrap(),
-        item: None,
+        names: None,
     };
     let ask = |request: &Request, password: Option<&str>| {
         p.require(
@@ -1351,7 +1351,7 @@ fn a_passed_answer_opens_its_window_only_when_handed_out() {
     );
     // Handed out: the window opens, and covers the next value.
     let passed = require(Some(RIGHT), &typed).unwrap();
-    handed_out(&p, &a, passed, &clock);
+    handed_out(&p, &a, passed);
     assert!(p.inner().covers(&a, Window::FiveMinutes, clock.now()));
     let passed = require(None, &typed).unwrap();
     assert_eq!(
@@ -1359,4 +1359,207 @@ fn a_passed_answer_opens_its_window_only_when_handed_out() {
         "covered: nothing asked, nothing to open"
     );
     assert_eq!(typed.checks.get(), 2);
+}
+
+impl Clock {
+    /// A clock that starts an hour ago, so a window that counted from the
+    /// real `Instant::now()` instead of this clock would still cover every
+    /// instant a test reads.
+    fn an_hour_ago() -> Self {
+        let now = Instant::now();
+        Clock(Cell::new(
+            now.checked_sub(Duration::from_secs(3600)).unwrap_or(now),
+        ))
+    }
+}
+
+/// A window counts from the instant its verification passed, not from the
+/// hand-out (ADR 0041, plan item 6; the third layer-3 re-review): the
+/// person answers the dialog two minutes after it opened, and the hand-out
+/// then waits four more minutes for the session's lock. The 5-minute
+/// window still covers a value 4:59 after the verification, and not one
+/// 5:01 after it, though only 1:01 passed since the hand-out. By Touch ID
+/// and by the password sent again alike.
+#[test]
+fn a_window_counts_from_the_verification_not_the_hand_out() {
+    let clock = Clock::an_hour_ago();
+    let p = unlocked(Window::FiveMinutes, &caller(9, session(50)), &clock);
+    let touch = Fake::new();
+    touch.while_open(|| clock.advance(120));
+    let typed = Fake::without_touch_id();
+    for (who, verify, password) in [
+        (caller(1, session(40)), &touch, None),
+        (caller(2, session(41)), &typed, Some(RIGHT)),
+    ] {
+        let require = |password: Option<&str>| {
+            p.require(
+                GEN,
+                &who,
+                Purpose::Window { value: &code() },
+                password.map(SecretText::new),
+                &Bound::default(),
+                None,
+                verify,
+                Lang::En,
+                &|| clock.now(),
+            )
+        };
+        if password.is_some() {
+            assert_eq!(require(None).unwrap_err().code, ErrorCode::PresenceRequired);
+            clock.advance(120);
+        }
+        let passed = require(password).unwrap();
+        let verified = clock.now();
+        // The hand-out waits for the session's lock.
+        clock.advance(240);
+        p.open_window(&who, passed.opens.expect("a 5-minute window"));
+        clock.0.set(verified + Duration::from_secs(299));
+        assert!(
+            p.inner().covers(&who, Window::FiveMinutes, clock.now()),
+            "4:59 after the verification"
+        );
+        clock.0.set(verified + Duration::from_secs(301));
+        assert!(
+            !p.inner().covers(&who, Window::FiveMinutes, clock.now()),
+            "5:01 after the verification, 1:01 after the hand-out"
+        );
+    }
+    assert_eq!(touch.asked(), 1);
+    assert_eq!(typed.checks.get(), 1);
+}
+
+/// What `open_window` opens, built by hand: `require` never states some of
+/// these (a window for a key with none, a window under Always), so a test
+/// through it would pass with the guard removed.
+fn opening(lasts: Lasts, declared: bool, setting: Window, at: Instant) -> Opening {
+    Opening {
+        generation: GEN,
+        lasts,
+        declared,
+        setting,
+        at,
+    }
+}
+
+/// The window a key holds now, as stored (not as the setting caps it).
+fn stored(p: &Presence, who: &Caller) -> Option<Window> {
+    p.inner().windows.get(&who.key).map(|g| g.window)
+}
+
+/// `open_window`'s first guard: nothing once Klav locked since the
+/// verification, nor in a later session, unlocked again since.
+#[test]
+fn open_window_opens_nothing_after_a_lock() {
+    let clock = Clock::new();
+    let a = caller(1, session(40));
+    let p = unlocked(Window::Unlocked, &caller(9, session(50)), &clock);
+    let stated = opening(Lasts::UntilLock, false, Window::Unlocked, clock.now());
+    p.close(GEN + 1);
+    p.open_window(&a, stated);
+    assert_eq!(stored(&p, &a), None, "locked");
+    p.open(
+        GEN + 1,
+        settings(Window::Unlocked),
+        &caller(9, session(50)),
+        None,
+        false,
+        false,
+        clock.now(),
+    );
+    p.open_window(&a, stated);
+    assert_eq!(stored(&p, &a), None, "another session");
+    assert!(!p.inner().covers(&a, Window::Unlocked, clock.now()));
+    // The same opening, in its own session, opens it.
+    let p = unlocked(Window::Unlocked, &caller(9, session(50)), &clock);
+    p.open_window(&a, stated);
+    assert_eq!(stored(&p, &a), Some(Window::Unlocked));
+}
+
+/// `open_window` opens what the prompt stated: "for 5 minutes" is 5
+/// minutes under While unlocked too, and "until Klav locks" is the
+/// setting the prompt was shown under.
+#[test]
+fn open_window_opens_what_the_prompt_stated() {
+    let clock = Clock::new();
+    let a = caller(1, session(40));
+    let b = caller(2, session(41));
+    let p = unlocked(Window::Unlocked, &caller(9, session(50)), &clock);
+    p.open_window(
+        &a,
+        opening(Lasts::FiveMinutes, false, Window::Unlocked, clock.now()),
+    );
+    p.open_window(
+        &b,
+        opening(Lasts::UntilLock, false, Window::Unlocked, clock.now()),
+    );
+    assert_eq!(stored(&p, &a), Some(Window::FiveMinutes));
+    assert_eq!(stored(&p, &b), Some(Window::Unlocked));
+    clock.advance(360);
+    assert!(!p.inner().covers(&a, Window::Unlocked, clock.now()));
+    assert!(p.inner().covers(&b, Window::Unlocked, clock.now()));
+}
+
+/// `open_window` shortens what was stated by any tightening since the
+/// verification, and a loosening after the hand-out doesn't lengthen it
+/// back (§2.4): a prompt stated "until Klav locks", the setting moved to 5
+/// minutes, then back. Tightened to Always meanwhile, it opens nothing.
+#[test]
+fn open_window_keeps_a_tightening_made_while_it_asked() {
+    let clock = Clock::new();
+    let a = caller(1, session(40));
+    let b = caller(2, session(41));
+    let p = unlocked(Window::Unlocked, &caller(9, session(50)), &clock);
+    let stated = opening(Lasts::UntilLock, false, Window::Unlocked, clock.now());
+    p.set_presence(GEN, Window::FiveMinutes).unwrap();
+    p.open_window(&a, stated);
+    p.set_presence(GEN, Window::Unlocked).unwrap();
+    assert_eq!(stored(&p, &a), Some(Window::FiveMinutes));
+    clock.advance(360);
+    assert!(!p.inner().covers(&a, Window::Unlocked, clock.now()));
+    p.set_presence(GEN, Window::Always).unwrap();
+    p.open_window(&b, stated);
+    p.set_presence(GEN, Window::Unlocked).unwrap();
+    assert_eq!(stored(&p, &b), None, "Always since: nothing");
+    assert!(!p.inner().covers(&b, Window::Unlocked, clock.now()));
+}
+
+/// `open_window` holds a declared connection only while it is still
+/// declared, and never under Always; a key with no window gets none.
+#[test]
+fn open_window_holds_only_what_is_still_declared() {
+    let clock = Clock::new();
+    let p = unlocked(Window::FiveMinutes, &caller(9, session(50)), &clock);
+    let held = caller(1, Key::Connection(1));
+    assert_eq!(p.declare(1), (true, false));
+    p.open_window(
+        &held,
+        opening(Lasts::UntilLock, true, Window::FiveMinutes, clock.now()),
+    );
+    assert!(p.is_held(1), "declared: held");
+    // A declaration dropped since (the setting went to Always and back).
+    let dropped = caller(2, Key::Connection(2));
+    assert_eq!(p.declare(2), (true, false));
+    let stated = opening(Lasts::UntilLock, true, Window::FiveMinutes, clock.now());
+    p.set_presence(GEN, Window::Always).unwrap();
+    p.set_presence(GEN, Window::FiveMinutes).unwrap();
+    p.open_window(&dropped, stated);
+    assert!(!p.is_held(2), "no longer declared: not held");
+    // Under Always, even a connection still marked declared (no request
+    // makes one now; the guard stands on its own) isn't held.
+    p.set_presence(GEN, Window::Always).unwrap();
+    p.inner().declared.insert(3);
+    p.open_window(
+        &caller(3, Key::Connection(3)),
+        opening(Lasts::UntilLock, true, Window::FiveMinutes, clock.now()),
+    );
+    assert!(!p.is_held(3), "Always: not held");
+    // A key with no window (Linux without `SO_PEERPIDFD`) gets none.
+    p.set_presence(GEN, Window::FiveMinutes).unwrap();
+    let none = caller(4, Key::NoWindow(4));
+    p.open_window(
+        &none,
+        opening(Lasts::FiveMinutes, false, Window::FiveMinutes, clock.now()),
+    );
+    assert_eq!(stored(&p, &none), None);
+    assert!(!p.inner().covers(&none, Window::FiveMinutes, clock.now()));
 }
