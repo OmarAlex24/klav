@@ -15,13 +15,15 @@
 # /etc/klav/server.env, mode 0600 and owned by root: systemd reads it before
 # it starts the server as klav.
 #
-# Run every `klav-server invite …` through the same user, so that SQLite's
-# files in /var/lib/klav keep their owner (docs/self-hosting.md §1):
+# Run every `klav-server invite …` as that same user, with the same
+# configuration, so that SQLite's files in /var/lib/klav keep their owner
+# (docs/self-hosting.md §1). While the service runs, a second unit with
+# DynamicUser and User=klav shares its user:
 #
 #   sudo systemd-run --pipe --wait --quiet \
 #     -p DynamicUser=yes -p User=klav -p StateDirectory=klav \
-#     /usr/local/bin/klav-server invite create --config /etc/klav/server.toml \
-#       --email you@example.com
+#     -p EnvironmentFile=-/etc/klav/server.env -E KLAV_CONFIG=/etc/klav/server.toml \
+#     /usr/local/bin/klav-server invite create --email you@example.com
 
 [Unit]
 Description=Klav server (klav-server)

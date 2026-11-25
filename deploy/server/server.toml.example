@@ -14,9 +14,9 @@ data_dir = "/var/lib/klav"
 # Leave it off unless your proxy sets X-Forwarded-For (§3.2).
 trust_forwarded_for = false
 
-# Nobody signs up without an invite you create:
-#   klav-server invite create --email you@example.com
-# (through systemd-run, as the comment in klav-server.service shows).
+# Nobody signs up without an invite you create with
+# `klav-server invite create --email you@example.com`, run through
+# systemd-run as the comment in klav-server.service shows.
 # `allow_registration = false` agrees with "invite" and stays next to it, so
 # that removing registration_mode never opens the server to everyone (§2.1).
 allow_registration = false
