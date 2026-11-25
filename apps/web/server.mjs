@@ -3,7 +3,9 @@
 // Zero dependencies: node:http and node:sqlite (Node >= 22.13). It serves a
 // fixed list of files from public/, takes emails on POST /api/waitlist and
 // hands them back as CSV on GET /api/waitlist/export to whoever holds
-// KLAV_WEB_ADMIN_TOKEN. It never stores IP addresses.
+// KLAV_WEB_ADMIN_TOKEN, who also marks the ones already sent a beta invite
+// with POST /api/waitlist/mark-invited (ADR 0048 §4). It never stores IP
+// addresses.
 //
 // Downloads (docs/releasing.md): /download/... and /releases/mac/appcast.xml
 // redirect to the latest GitHub Release, but only for what KLAV_WEB_OPEN
@@ -82,8 +84,12 @@ export function renderPage(html, open) {
   );
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MAX_BODY = 2048;
+/** mark-invited: up to 200 emails and a note, so a larger body than a signup. */
+const MAX_ADMIN_BODY = 16 * 1024;
+const MAX_MARK = 200;
+const MAX_NOTE = 200;
 const MAX_EMAIL = 254;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const LANGS = new Set(["en", "es"]);
@@ -143,6 +149,23 @@ export function openDatabase(path) {
       COMMIT;
     `);
   }
+  if (version < 2) {
+    // Schema 2 (ADR 0048 §4): when the beta invite went out, and a note
+    // for Omar. Each column is added only if it's missing: rolling back is
+    // setting user_version = 1 by hand and leaving the columns, so coming
+    // forward again must not trip over them (docs/sitio-web.md §2).
+    const has = new Set(db.prepare("PRAGMA table_info(waitlist)").all().map((c) => c.name));
+    db.exec("BEGIN");
+    try {
+      if (!has.has("invited_at")) db.exec("ALTER TABLE waitlist ADD COLUMN invited_at TEXT");
+      if (!has.has("note")) db.exec("ALTER TABLE waitlist ADD COLUMN note TEXT");
+      db.exec("PRAGMA user_version = 2; COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      db.close();
+      throw err;
+    }
+  }
   return db;
 }
 
@@ -195,7 +218,10 @@ export function createSite(options = {}) {
   const now = options.now ?? Date.now;
   const db = openDatabase(options.dbPath ?? join(HERE, "data", "waitlist.db"));
   const insert = db.prepare("INSERT OR IGNORE INTO waitlist (email, lang, created_at) VALUES (?, ?, ?)");
-  const all = db.prepare("SELECT email, lang, created_at FROM waitlist ORDER BY id");
+  const all = db.prepare("SELECT email, lang, created_at, invited_at, note FROM waitlist ORDER BY id");
+  const pending = db.prepare("SELECT email, lang, created_at, invited_at, note FROM waitlist WHERE invited_at IS NULL ORDER BY id");
+  // A note left out keeps the one already there; a mark again moves the date.
+  const markOne = db.prepare("UPDATE waitlist SET invited_at = ?, note = coalesce(?, note) WHERE email = ?");
   const limiter = rateLimiter({ max: options.rateLimit?.max ?? 5, windowMs: options.rateLimit?.windowMs ?? 10 * 60_000, now });
   const sweep = setInterval(() => limiter.sweep(), 60_000);
   sweep.unref();
@@ -249,15 +275,15 @@ export function createSite(options = {}) {
     }
   }
 
-  function readBody(req) {
+  function readBody(req, max = MAX_BODY) {
     return new Promise((done, fail) => {
       const declared = Number(req.headers["content-length"] ?? 0);
-      if (declared > MAX_BODY) return fail(Object.assign(new Error("too large"), { status: 413 }));
+      if (declared > max) return fail(Object.assign(new Error("too large"), { status: 413 }));
       const chunks = [];
       let size = 0;
       req.on("data", (chunk) => {
         size += chunk.length;
-        if (size > MAX_BODY) {
+        if (size > max) {
           req.removeAllListeners("data");
           req.resume();
           fail(Object.assign(new Error("too large"), { status: 413 }));
@@ -294,19 +320,79 @@ export function createSite(options = {}) {
     return json(res, 200, { ok: true });
   }
 
-  function exportList(req, res) {
-    if (!adminToken) return text(res, 404, "Not found\n");
+  /** The admin routes: 404 without a token configured, 401 with a wrong one. True if it answered. */
+  function refuseAdmin(req, res) {
+    if (!adminToken) {
+      text(res, 404, "Not found\n");
+      return true;
+    }
     const auth = String(req.headers.authorization ?? "");
     const given = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!given || !sameToken(given, adminToken)) {
-      return json(res, 401, { error: "unauthorized" }, { "WWW-Authenticate": "Bearer" });
+      json(res, 401, { error: "unauthorized" }, { "WWW-Authenticate": "Bearer" });
+      return true;
     }
-    const lines = ["email,lang,created_at", ...all.all().map((r) => [r.email, r.lang, r.created_at].map(csvCell).join(","))];
+    return false;
+  }
+
+  /** The list as CSV; `?pending=1` keeps only who hasn't been sent an invite. */
+  function exportList(req, res, query) {
+    if (refuseAdmin(req, res)) return;
+    const rows = (query.get("pending") === "1" ? pending : all).all();
+    const lines = [
+      "email,lang,created_at,invited_at,note",
+      ...rows.map((r) => [r.email, r.lang, r.created_at, r.invited_at, r.note].map(csvCell).join(",")),
+    ];
     return send(res, 200, `${lines.join("\r\n")}\r\n`, {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": 'attachment; filename="klav-waitlist.csv"',
       "Cache-Control": "no-store",
     });
+  }
+
+  /**
+   * `{ "emails": [...], "note"?: "..." }` → `{ "marked", "unknown" }`. Called
+   * with curl after sending invites by hand (docs/sitio-web.md §3), so it
+   * doesn't look at Origin: the token is the only authentication. Emails
+   * are compared as signup stores them (trimmed, lowercased) and counted
+   * once each; an email already marked is marked again with today's date.
+   */
+  async function markInvited(req, res) {
+    if (refuseAdmin(req, res)) return;
+    const type = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+    if (type !== "application/json") return json(res, 415, { error: "json_only" });
+    let body;
+    try {
+      body = JSON.parse(await readBody(req, MAX_ADMIN_BODY));
+    } catch (err) {
+      if (err.status === 413) return json(res, 413, { error: "too_large" }, { Connection: "close" });
+      return json(res, 400, { error: "bad_json" });
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "bad_json" });
+    const { emails, note } = body;
+    if (!Array.isArray(emails) || emails.length === 0) return json(res, 400, { error: "emails_required" });
+    if (emails.length > MAX_MARK) return json(res, 400, { error: "too_many_emails", max: MAX_MARK });
+    const wanted = new Set();
+    for (const raw of emails) {
+      const email = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+      if (email.length > MAX_EMAIL || !EMAIL.test(email)) return json(res, 400, { error: "invalid_email" });
+      wanted.add(email);
+    }
+    if (note !== undefined && note !== null && (typeof note !== "string" || note.length > MAX_NOTE)) {
+      return json(res, 400, { error: "invalid_note", max: MAX_NOTE });
+    }
+    const keep = typeof note === "string" && note.trim() !== "" ? note.trim() : null;
+    const at = new Date(now()).toISOString();
+    let marked = 0;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const email of wanted) marked += Number(markOne.run(at, keep, email).changes);
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+    return json(res, 200, { marked, unknown: wanted.size - marked });
   }
 
   /**
@@ -337,8 +423,9 @@ export function createSite(options = {}) {
 
   const server = createServer(async (req, res) => {
     let path;
+    let query;
     try {
-      path = new URL(req.url ?? "/", "http://localhost").pathname;
+      ({ pathname: path, searchParams: query } = new URL(req.url ?? "/", "http://localhost"));
     } catch {
       return text(res, 400, "Bad request\n");
     }
@@ -349,7 +436,11 @@ export function createSite(options = {}) {
       }
       if (path === "/api/waitlist/export") {
         if (req.method !== "GET") return json(res, 405, { error: "method" }, { Allow: "GET" });
-        return exportList(req, res);
+        return exportList(req, res, query);
+      }
+      if (path === "/api/waitlist/mark-invited") {
+        if (req.method !== "POST") return json(res, 405, { error: "method" }, { Allow: "POST" });
+        return await markInvited(req, res);
       }
       if (path === "/healthz") return text(res, 200, "ok\n", { "Cache-Control": "no-store" });
       if (path === "/download" || path.startsWith("/download/") || path === "/releases/mac/appcast.xml") return download(req, res, path);
@@ -385,7 +476,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     testflightUrl: process.env.KLAV_WEB_TESTFLIGHT_URL,
   });
   server.listen(port, host, () => {
-    // The path, whether export is on and what is open; never the token.
+    // The path, whether export (and mark-invited) is on and what is open; never the token.
     const opened = OPENABLE.filter((name) => open.has(name)).join(",") || "nothing";
     console.log(`klav-web on http://${host}:${port} · db ${dbPath} · export ${process.env.KLAV_WEB_ADMIN_TOKEN ? "on" : "off"} · open ${opened}`);
   });
