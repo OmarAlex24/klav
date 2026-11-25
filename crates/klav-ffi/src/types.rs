@@ -37,10 +37,14 @@ impl From<ItemKind> for Kind {
             // System items (the generator history, the preferences) are
             // never listed: they live in the system project. A note is the
             // closest shape if one ever shows up.
+            // An environment (ADR 0032 §1) has no iOS screen yet: shown
+            // as a note with no fields. Edits keep its kind (the client
+            // rebuilds the decoded item), and it refuses fields.
             ItemKind::Note
             | ItemKind::GeneratorHistory
             | ItemKind::Preferences
-            | ItemKind::AgentLabels => Self::Note,
+            | ItemKind::AgentLabels
+            | ItemKind::Environment => Self::Note,
             ItemKind::ApiKey => Self::ApiKey,
         }
     }

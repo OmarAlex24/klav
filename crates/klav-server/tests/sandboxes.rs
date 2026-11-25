@@ -192,6 +192,7 @@ impl World {
                 }),
             }),
             local_clients: Vec::new(),
+            released: Vec::new(),
         };
         self.post(
             &self.issuer,
@@ -838,6 +839,7 @@ async fn an_issuer_listed_but_not_active_or_not_naming_the_proxy_is_refused() {
         issuers: Vec::new(),
         sandbox: Some(IssuerGrant { proxy: None }),
         local_clients: Vec::new(),
+        released: Vec::new(),
     };
     w.post(
         &w.issuer,
@@ -979,6 +981,7 @@ async fn an_issuer_that_names_no_proxy_is_gone_for_the_proxy() {
         issuers: Vec::new(),
         sandbox: Some(IssuerGrant { proxy: None }),
         local_clients: Vec::new(),
+        released: Vec::new(),
     };
     w.post(
         &w.issuer,

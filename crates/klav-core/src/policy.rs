@@ -17,6 +17,21 @@
 //!      lapses the permission **fails closed** to `deny`; it does not fall
 //!      back to the (possibly broader) default.
 //!
+//! # Environments: `once` and inherited rules (ADR 0032 §3.1, §4)
+//!
+//! * An `ask` rule may carry `once`: an approval given under it has no
+//!   lease, is spent in one use and never goes into a task. Among the rules
+//!   that apply, `ask once` is stricter than `ask`: the order is
+//!   `deny` > `ask once` > `ask` > `allow`. [`Decision::once`] says whether
+//!   the winning `ask` is `once`.
+//! * A rule with `origin: "protected"` is inherited from a protected
+//!   environment (always `ask once`, naming its items). It counts as a rule
+//!   for its permission (so, as ADR 0006 §2 says, the default stops
+//!   applying), but it never lifts a request above what the other rules
+//!   give: when it matches, an `allow` or `ask` becomes `ask once`, and a
+//!   `deny` stays `deny`. Adding one never makes a decision more
+//!   permissive.
+//!
 //! # Scope
 //!
 //! Each non-empty dimension of a [`Scope`] must match (AND across
@@ -868,9 +883,9 @@ pub struct Scope {
     /// Weekly time windows (the request time must fall in one of them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hours: Vec<TimeWindow>,
-    /// Items, by ID (the request's item must be one of them). Only in
-    /// `proxy` rules for now (ADR 0036 §2; ADR 0032 §4.1 defines the
-    /// dimension for every permission).
+    /// Items, by ID (the request's item must be one of them). In `proxy`
+    /// rules (ADR 0036 §2) and, per environment and for inherited
+    /// protection, in any rule (ADR 0032 §4.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ItemId>,
     /// HTTP methods (the proxied request's method must be one of them).
@@ -917,10 +932,11 @@ impl Scope {
             || !self.mcp_tools.is_empty()
     }
 
-    /// Whether the scope uses a dimension of the proxy (items, methods or
-    /// path prefixes): only a grant payload `v: 2` may carry one.
+    /// Whether the scope names HTTP methods or path prefixes: only `proxy`
+    /// rules, in a grant payload `v: 2` or later, may. Items are not part
+    /// of it: since ADR 0032 §4.1 any rule may name items.
     pub fn uses_http(&self) -> bool {
-        !self.items.is_empty() || !self.methods.is_empty() || !self.path_prefixes.is_empty()
+        !self.methods.is_empty() || !self.path_prefixes.is_empty()
     }
 
     /// Whether the scope names MCP tools: only a grant payload `v: 4` may
@@ -968,6 +984,30 @@ impl Scope {
     }
 }
 
+/// Where a rule comes from, when Klav wrote it on its own (ADR 0032 §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleOrigin {
+    /// Inherited from a protected environment by a reference: an `ask once`
+    /// rule naming the items of the protected set. The person's client keeps
+    /// it on every reissue unless the grant names the item in `released`,
+    /// and the server answers `409` otherwise.
+    Protected,
+}
+
+/// The permissions an inherited (`origin: "protected"`) rule may be for
+/// (ADR 0032 §3.1): every one that hands out or changes a value. `list` is
+/// unchanged, and `passkey` and `rotate` only exist in tasks, which never
+/// include an `ask once` target.
+pub const PROTECTED_PERMISSIONS: [Permission; 6] = [
+    Permission::Fill,
+    Permission::Inject,
+    Permission::Reveal,
+    Permission::Totp,
+    Permission::Update,
+    Permission::Delete,
+];
+
 /// A rule: `permission → effect` inside a scope, optionally until a time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -982,6 +1022,15 @@ pub struct Rule {
     /// Unix time (seconds) from which the rule no longer applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// «Ask every time» (ADR 0032 §4.2): only with `ask`. An approval under
+    /// it has no lease, is spent in one use and never goes into a task.
+    /// Omitted when false, so rules without it keep their bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub once: bool,
+    /// Set when Klav wrote the rule on its own (ADR 0032 §3.1). Omitted
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<RuleOrigin>,
 }
 
 impl Rule {
@@ -992,7 +1041,34 @@ impl Rule {
             effect,
             scope: Scope::default(),
             expires_at: None,
+            once: false,
+            origin: None,
         }
+    }
+
+    /// The inherited rule that protects `items` for `permission` (ADR 0032
+    /// §3.1): `ask once`, `origin: "protected"`.
+    pub fn protected(permission: Permission, items: Vec<ItemId>) -> Self {
+        Self {
+            scope: Scope {
+                items,
+                ..Scope::default()
+            },
+            once: true,
+            origin: Some(RuleOrigin::Protected),
+            ..Self::new(permission, Effect::Ask)
+        }
+    }
+
+    /// Whether the rule is inherited from a protected environment.
+    pub fn is_protected(&self) -> bool {
+        self.origin == Some(RuleOrigin::Protected)
+    }
+
+    /// How restrictive the rule's effect is, as [`Decision::strictness`]:
+    /// `allow` < `ask` < `ask once` < `deny`.
+    pub fn strictness(&self) -> u8 {
+        strictness(self.effect, self.once)
     }
 
     fn expired(&self, now: u64) -> bool {
@@ -1012,6 +1088,22 @@ pub struct Policy {
     pub expires_at: Option<u64>,
 }
 
+/// A grant policy whose `once` or inherited rules are malformed (ADR 0032
+/// §3.1, §4.2). The person's client does not sign it and the server answers
+/// `400`.
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum OnceRuleError {
+    /// `once` on a rule that is not `ask`.
+    #[error("`once` only goes with `ask`, not with a `{0}` rule that allows or denies")]
+    OnceWithoutAsk(Permission),
+    /// An inherited rule that is not `ask once` with items and no expiry,
+    /// or is for a permission it cannot protect.
+    #[error(
+        "an inherited (`origin: protected`) `{0}` rule is `ask once`, scoped by its items only, never expires, and only for fill, inject, reveal, totp, update or delete"
+    )]
+    MalformedProtected(Permission),
+}
+
 /// A grant policy with a rule for a task-only permission (ADR 0021 §5).
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 #[error(
@@ -1022,8 +1114,8 @@ pub struct TaskOnlyRule(pub Permission);
 /// A grant policy that breaks the rules of the proxy (ADR 0036 §2).
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyRuleError {
-    /// Items, methods or path prefixes in a rule that is not `proxy`.
-    #[error("only `proxy` rules may name items, HTTP methods or path prefixes, not `{0}` rules")]
+    /// Methods or path prefixes in a rule that is not `proxy`.
+    #[error("only `proxy` rules may name HTTP methods or path prefixes, not `{0}` rules")]
     HttpOutsideProxy(Permission),
     /// A `proxy` rule that can allow without naming its items.
     #[error("a `proxy` rule that allows or asks must name its items")]
@@ -1044,7 +1136,10 @@ pub enum ProxyRuleError {
 
 impl Policy {
     /// Whether the policy needs a grant payload `v: 2` (ADR 0036 §2): a
-    /// `proxy` rule, or a rule with items, methods or path prefixes. Old
+    /// `proxy` rule, or a rule with methods or path prefixes. Items in rules
+    /// of other permissions (ADR 0032 §4.1) need no version: older runtimes
+    /// reject them anyway ([`Policy::check_proxy`] there refused items
+    /// outside `proxy`), so they fail closed. Old
     /// runtimes fail closed on such a policy, because [`Scope`] and
     /// [`Permission`] reject what they do not know.
     pub fn needs_v2(&self) -> bool {
@@ -1070,7 +1165,8 @@ impl Policy {
     /// does not sign a grant that breaks them, and the server and the
     /// proxy reject it:
     ///
-    /// * only `proxy` rules name items, methods or path prefixes;
+    /// * only `proxy` rules name methods or path prefixes (any rule may name
+    ///   items, ADR 0032 §4.1);
     /// * a `proxy` rule that allows or asks names its items and its hosts,
     ///   none of them `*` or an IP address ([`is_ip_literal`]);
     /// * with such a rule, `reveal`, `inject` and `fill` are always `deny`:
@@ -1120,6 +1216,81 @@ impl Policy {
             Some(rule) => Err(TaskOnlyRule(rule.permission)),
             None => Ok(()),
         }
+    }
+
+    /// Checks the rules of ADR 0032 §3.1 and §4.2: `once` only with `ask`;
+    /// an inherited rule is `ask once`, is scoped by items only (at least
+    /// one, no other dimension), never
+    /// expires and is for one of [`PROTECTED_PERMISSIONS`]. Every grant
+    /// format checks it ([`crate`]'s callers: the person's client before
+    /// signing, the server with `400`, the runtime before using a grant).
+    pub fn check_once(&self) -> Result<(), OnceRuleError> {
+        for rule in &self.rules {
+            if rule.once && rule.effect != Effect::Ask {
+                return Err(OnceRuleError::OnceWithoutAsk(rule.permission));
+            }
+            if rule.is_protected()
+                && (!rule.once
+                    || rule.effect != Effect::Ask
+                    || rule.scope.items.is_empty()
+                    // Items only: a tag, host, hour or other dimension
+                    // would let it stop applying while it still counts
+                    // as kept.
+                    || rule.scope
+                        != (Scope {
+                            items: rule.scope.items.clone(),
+                            ..Scope::default()
+                        })
+                    || rule.expires_at.is_some()
+                    || !PROTECTED_PERMISSIONS.contains(&rule.permission))
+            {
+                return Err(OnceRuleError::MalformedProtected(rule.permission));
+            }
+        }
+        Ok(())
+    }
+
+    /// The `(permission, item)` pairs inherited rules protect.
+    pub fn protected_pairs(&self) -> std::collections::BTreeSet<(Permission, ItemId)> {
+        self.rules
+            .iter()
+            .filter(|r| r.is_protected())
+            .flat_map(|r| r.scope.items.iter().map(|i| (r.permission, *i)))
+            .collect()
+    }
+
+    /// Whether an inherited rule names `item`: it is in the protected set
+    /// (ADR 0032 §3.1), so `passkey` and `rotate`, which only exist in
+    /// tasks, never reach it.
+    pub fn protects(&self, item: ItemId) -> bool {
+        self.rules
+            .iter()
+            .any(|r| r.is_protected() && r.scope.items.contains(&item))
+    }
+
+    /// Whether `request` may need an approval that is spent once (ADR 0032
+    /// §4.2), judged without the claims the server cannot check: tags, host,
+    /// method, path and tool are taken to match. True when [`evaluate`]
+    /// says `ask once`, when a live `once` rule for the permission matches
+    /// the request's vault, project, hours and item, or, for `passkey` and
+    /// `rotate`, when an inherited rule names the item. What the server
+    /// uses to keep such targets out of leases and tasks: it errs on the
+    /// side of `once`.
+    pub fn may_require_once(&self, request: &Request) -> bool {
+        if request.permission.requires_task() {
+            return request.item.is_some_and(|item| self.protects(item));
+        }
+        if evaluate(self, request).once {
+            return true;
+        }
+        self.rules.iter().any(|r| {
+            r.permission == request.permission
+                && r.once
+                && !r.expired(request.now)
+                && r.scope.matches_location(request)
+                && (r.scope.items.is_empty()
+                    || request.item.is_some_and(|i| r.scope.items.contains(&i)))
+        })
     }
 }
 
@@ -1183,6 +1354,27 @@ pub struct Decision {
     pub effect: Effect,
     /// Why.
     pub reason: Reason,
+    /// With `ask`: the approval is «ask every time» (ADR 0032 §4.2): no
+    /// lease, spent in one use, never in a task. Always false otherwise.
+    pub once: bool,
+}
+
+impl Decision {
+    /// How restrictive the decision is: `allow` < `ask` < `ask once` <
+    /// `deny`. Comparing two decisions on this says which is more
+    /// permissive.
+    pub fn strictness(&self) -> u8 {
+        strictness(self.effect, self.once)
+    }
+}
+
+fn strictness(effect: Effect, once: bool) -> u8 {
+    match effect {
+        Effect::Allow => 0,
+        Effect::Ask if once => 2,
+        Effect::Ask => 1,
+        Effect::Deny => 3,
+    }
 }
 
 /// Evaluates `request` against `policy`. See the module docs for the semantics.
@@ -1194,6 +1386,7 @@ pub fn evaluate(policy: &Policy, request: &Request) -> Decision {
     let deny = |reason| Decision {
         effect: Effect::Deny,
         reason,
+        once: false,
     };
     if policy.expires_at.is_some_and(|t| request.now >= t) {
         return deny(Reason::PolicyExpired);
@@ -1217,36 +1410,59 @@ pub fn evaluate(policy: &Policy, request: &Request) -> Decision {
     // tool no rule names is denied.
     let tool_call = request.mcp_tool.is_some();
     let mut has_rules = false;
-    let mut best: Option<(Effect, usize)> = None;
+    let mut best: Option<(u8, usize)> = None;
+    // The first inherited rule that matches (ADR 0032 §3.1).
+    let mut protected: Option<usize> = None;
     for (index, rule) in policy.rules.iter().enumerate() {
         if rule.permission != request.permission {
             continue;
         }
         has_rules = true;
-        if rule.expired(request.now)
-            || !rule.scope.matches(request)
-            || (unjudgeable && rule.effect != Effect::Deny)
+        if rule.expired(request.now) || !rule.scope.matches(request) {
+            continue;
+        }
+        // An inherited rule only ever tightens: it is applied after the
+        // others decide, never as a candidate that could loosen.
+        if rule.is_protected() {
+            protected.get_or_insert(index);
+            continue;
+        }
+        if (unjudgeable && rule.effect != Effect::Deny)
             || (tool_call && rule.scope.mcp_tools.is_empty() && rule.effect != Effect::Deny)
         {
             continue;
         }
-        if best.is_none_or(|(effect, _)| rule.effect > effect) {
-            best = Some((rule.effect, index));
+        let rank = strictness(rule.effect, rule.once);
+        if best.is_none_or(|(r, _)| rank > r) {
+            best = Some((rank, index));
         }
     }
-    match (has_rules, best) {
+    let decision = match (has_rules, best) {
         // No default ever lets a tool call through: only a rule that
         // names it does.
         (false, _) if tool_call => deny(Reason::OutOfScope),
         (false, _) => Decision {
             effect: request.permission.default_effect(),
             reason: Reason::Default,
+            once: false,
         },
-        (true, Some((effect, index))) => Decision {
-            effect,
-            reason: Reason::Rule(index),
-        },
+        (true, Some((_, index))) => {
+            let rule = &policy.rules[index];
+            Decision {
+                effect: rule.effect,
+                reason: Reason::Rule(index),
+                once: rule.once && rule.effect == Effect::Ask,
+            }
+        }
         (true, None) => deny(Reason::OutOfScope),
+    };
+    match protected {
+        Some(index) if decision.strictness() < strictness(Effect::Ask, true) => Decision {
+            effect: Effect::Ask,
+            reason: Reason::Rule(index),
+            once: true,
+        },
+        _ => decision,
     }
 }
 
@@ -1283,6 +1499,7 @@ pub fn evaluate_upper_bound(policy: &Policy, request: &Request) -> Decision {
     let deny = |reason| Decision {
         effect: Effect::Deny,
         reason,
+        once: false,
     };
     if policy.expires_at.is_some_and(|t| request.now >= t) {
         return deny(Reason::PolicyExpired);
@@ -1298,7 +1515,10 @@ pub fn evaluate_upper_bound(policy: &Policy, request: &Request) -> Decision {
             continue;
         }
         has_rules = true;
-        if rule.expired(request.now) || !rule.scope.matches_location(request) {
+        // Inherited rules name items, so they need claims: they never
+        // apply whatever the claims, and they only tighten (module docs).
+        if rule.expired(request.now) || !rule.scope.matches_location(request) || rule.is_protected()
+        {
             continue;
         }
         if most_permissive.is_none_or(|(effect, _)| rule.effect < effect) {
@@ -1312,15 +1532,18 @@ pub fn evaluate_upper_bound(policy: &Policy, request: &Request) -> Decision {
         (false, _, _) => Decision {
             effect: request.permission.default_effect(),
             reason: Reason::Default,
+            once: false,
         },
         (true, None, _) => deny(Reason::OutOfScope),
         (true, Some((loose, _)), Some((strict, j))) if strict > loose => Decision {
             effect: strict,
             reason: Reason::Rule(j),
+            once: false,
         },
         (true, Some((effect, index)), _) => Decision {
             effect,
             reason: Reason::Rule(index),
+            once: false,
         },
     }
 }
@@ -1785,7 +2008,8 @@ mod tests {
                 evaluate(&Policy::default(), &w.request(permission)),
                 Decision {
                     effect,
-                    reason: Reason::Default
+                    reason: Reason::Default,
+                    once: false,
                 }
             );
         }
@@ -1811,6 +2035,7 @@ mod tests {
             let deny = Decision {
                 effect: Effect::Deny,
                 reason: Reason::TaskOnly,
+                once: false,
             };
             assert_eq!(evaluate(&policy, &w.request(permission)), deny);
             assert_eq!(evaluate_upper_bound(&policy, &w.request(permission)), deny);
@@ -1854,7 +2079,8 @@ mod tests {
                 evaluate(&policy, &w.request(permission)),
                 Decision {
                     effect: Effect::Deny,
-                    reason: Reason::PolicyExpired
+                    reason: Reason::PolicyExpired,
+                    once: false,
                 }
             );
         }
@@ -1882,7 +2108,8 @@ mod tests {
             evaluate(&policy, &w.request(Permission::Reveal)),
             Decision {
                 effect: Effect::Ask,
-                reason: Reason::Rule(0)
+                reason: Reason::Rule(0),
+                once: false,
             }
         );
         assert_eq!(
@@ -1896,7 +2123,8 @@ mod tests {
             evaluate(&policy, &elsewhere),
             Decision {
                 effect: Effect::Deny,
-                reason: Reason::OutOfScope
+                reason: Reason::OutOfScope,
+                once: false,
             }
         );
         elsewhere.domain = None;
@@ -1937,7 +2165,8 @@ mod tests {
             evaluate(&policy, &w.request(Permission::Inject)),
             Decision {
                 effect: Effect::Deny,
-                reason: Reason::Rule(1)
+                reason: Reason::Rule(1),
+                once: false,
             }
         );
         let mut staging = w.request(Permission::Inject);
@@ -1946,7 +2175,8 @@ mod tests {
             evaluate(&policy, &staging),
             Decision {
                 effect: Effect::Ask,
-                reason: Reason::Rule(2)
+                reason: Reason::Rule(2),
+                once: false,
             }
         );
         staging.vault = Target {
@@ -1957,7 +2187,8 @@ mod tests {
             evaluate(&policy, &staging),
             Decision {
                 effect: Effect::Allow,
-                reason: Reason::Rule(0)
+                reason: Reason::Rule(0),
+                once: false,
             }
         );
     }
@@ -2028,7 +2259,8 @@ mod tests {
             evaluate(&temporary, &w.request(Permission::Update)),
             Decision {
                 effect: Effect::Deny,
-                reason: Reason::OutOfScope
+                reason: Reason::OutOfScope,
+                once: false,
             }
         );
 
@@ -2238,7 +2470,8 @@ mod tests {
             evaluate(&policy, &request),
             Decision {
                 effect: Effect::Deny,
-                reason: Reason::OutOfScope
+                reason: Reason::OutOfScope,
+                once: false,
             }
         );
     }
@@ -2301,7 +2534,8 @@ mod tests {
             evaluate_upper_bound(&other_project, &request),
             Decision {
                 effect: Effect::Deny,
-                reason: Reason::OutOfScope
+                reason: Reason::OutOfScope,
+                once: false,
             }
         );
         assert!(
@@ -2310,6 +2544,232 @@ mod tests {
                 ..Scope::default()
             }
             .uses_ids_only()
+        );
+    }
+
+    // ------------------------------------------- environments (ADR 0032) --
+
+    fn item_rule(permission: Permission, effect: Effect, items: &[ItemId]) -> Rule {
+        Rule {
+            scope: Scope {
+                items: items.to_vec(),
+                ..Scope::default()
+            },
+            ..Rule::new(permission, effect)
+        }
+    }
+
+    fn on_item(w: &World, permission: Permission, item: ItemId) -> Request {
+        Request {
+            item: Some(item),
+            ..w.request(permission)
+        }
+    }
+
+    #[test]
+    fn once_only_with_ask_and_inherited_rules_are_well_formed() {
+        let x = ItemId::from_bytes([5; 16]);
+        let with = |rules: Vec<Rule>| Policy {
+            rules,
+            expires_at: None,
+        };
+        for effect in [Effect::Allow, Effect::Deny] {
+            let rule = Rule {
+                once: true,
+                ..Rule::new(Permission::Inject, effect)
+            };
+            assert_eq!(
+                with(vec![rule]).check_once(),
+                Err(OnceRuleError::OnceWithoutAsk(Permission::Inject))
+            );
+        }
+        assert!(
+            with(vec![Rule {
+                once: true,
+                ..Rule::new(Permission::Inject, Effect::Ask)
+            }])
+            .check_once()
+            .is_ok()
+        );
+        assert!(
+            with(vec![Rule::protected(Permission::Reveal, vec![x])])
+                .check_once()
+                .is_ok()
+        );
+        let malformed = [
+            Rule::protected(Permission::Inject, vec![]),
+            Rule::protected(Permission::List, vec![x]),
+            Rule::protected(Permission::Proxy, vec![x]),
+            Rule {
+                once: false,
+                ..Rule::protected(Permission::Inject, vec![x])
+            },
+            Rule {
+                effect: Effect::Deny,
+                once: false,
+                ..Rule::protected(Permission::Inject, vec![x])
+            },
+            Rule {
+                expires_at: Some(NOW),
+                ..Rule::protected(Permission::Inject, vec![x])
+            },
+            Rule {
+                scope: Scope {
+                    items: vec![x],
+                    tags: vec!["never".into()],
+                    ..Scope::default()
+                },
+                ..Rule::protected(Permission::Inject, vec![x])
+            },
+            Rule {
+                scope: Scope {
+                    items: vec![x],
+                    projects: vec![Selector::Id(ProjectId::from_bytes([3; 16]))],
+                    ..Scope::default()
+                },
+                ..Rule::protected(Permission::Inject, vec![x])
+            },
+        ];
+        for rule in malformed {
+            assert!(
+                matches!(
+                    with(vec![rule.clone()]).check_once(),
+                    Err(OnceRuleError::MalformedProtected(_))
+                ),
+                "{rule:?}"
+            );
+        }
+        // Items are fine in any rule now (ADR 0032 §4.1), without `v: 2`.
+        let p = with(vec![item_rule(Permission::Inject, Effect::Ask, &[x])]);
+        assert!(p.check_proxy().is_ok() && !p.needs_v2());
+    }
+
+    #[test]
+    fn once_and_origin_keep_old_rules_byte_for_byte() {
+        let plain = Rule::new(Permission::Inject, Effect::Ask);
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"permission":"inject","effect":"ask","scope":{}}"#
+        );
+        let x = ItemId::from_bytes([5; 16]);
+        let inherited = Rule::protected(Permission::Inject, vec![x]);
+        let json = serde_json::to_string(&inherited).unwrap();
+        assert_eq!(
+            json,
+            format!(
+                r#"{{"permission":"inject","effect":"ask","scope":{{"items":["{x}"]}},"once":true,"origin":"protected"}}"#
+            )
+        );
+        assert_eq!(serde_json::from_str::<Rule>(&json).unwrap(), inherited);
+        assert!(
+            serde_json::from_str::<Rule>(
+                r#"{"permission":"inject","effect":"ask","origin":"someone"}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn inherited_rules_only_tighten() {
+        let w = World::new();
+        let stripe = ItemId::from_bytes([5; 16]);
+        let other = ItemId::from_bytes([7; 16]);
+        // inject allow by default, written explicitly (ADR 0032 §3.1), and
+        // the inherited rule for Stripe.
+        let policy = Policy {
+            rules: vec![
+                scoped(
+                    Permission::Inject,
+                    Effect::Allow,
+                    Scope {
+                        projects: vec![Selector::Id(w.acme)],
+                        ..Scope::default()
+                    },
+                ),
+                Rule::protected(Permission::Inject, vec![stripe]),
+            ],
+            expires_at: None,
+        };
+        let d = evaluate(&policy, &on_item(&w, Permission::Inject, stripe));
+        assert_eq!(
+            (d.effect, d.once, d.reason),
+            (Effect::Ask, true, Reason::Rule(1))
+        );
+        let d = evaluate(&policy, &on_item(&w, Permission::Inject, other));
+        assert_eq!((d.effect, d.once), (Effect::Allow, false));
+        // Without the explicit default, the inherited rule leaves the rest
+        // out of scope, and does not lift its own item above that.
+        let bare = Policy {
+            rules: vec![Rule::protected(Permission::Inject, vec![stripe])],
+            expires_at: None,
+        };
+        assert_eq!(
+            evaluate(&bare, &on_item(&w, Permission::Inject, other)).effect,
+            Effect::Deny
+        );
+        assert_eq!(
+            evaluate(&bare, &on_item(&w, Permission::Inject, stripe)).effect,
+            Effect::Deny
+        );
+        // `reveal` is `deny` by default and with a deny rule: an inherited
+        // rule never turns it into `ask`.
+        let reveal = Policy {
+            rules: vec![
+                Rule::new(Permission::Reveal, Effect::Deny),
+                Rule::protected(Permission::Reveal, vec![stripe]),
+            ],
+            expires_at: None,
+        };
+        assert_eq!(
+            evaluate(&reveal, &on_item(&w, Permission::Reveal, stripe)).effect,
+            Effect::Deny
+        );
+        // `ask` and `ask once` both apply: `once` wins.
+        let both = Policy {
+            rules: vec![
+                Rule::new(Permission::Inject, Effect::Ask),
+                Rule {
+                    once: true,
+                    ..item_rule(Permission::Inject, Effect::Ask, &[stripe])
+                },
+            ],
+            expires_at: None,
+        };
+        let d = evaluate(&both, &on_item(&w, Permission::Inject, stripe));
+        assert_eq!(
+            (d.effect, d.once, d.reason),
+            (Effect::Ask, true, Reason::Rule(1))
+        );
+        assert!(!evaluate(&both, &on_item(&w, Permission::Inject, other)).once);
+        // The server's view, without claims, and for task-only permissions.
+        assert!(policy.may_require_once(&on_item(&w, Permission::Inject, stripe)));
+        assert!(!policy.may_require_once(&on_item(&w, Permission::Inject, other)));
+        assert!(policy.may_require_once(&on_item(&w, Permission::Passkey, stripe)));
+        assert!(!policy.may_require_once(&on_item(&w, Permission::Rotate, other)));
+        let tagged_once = Policy {
+            rules: vec![Rule {
+                once: true,
+                scope: Scope {
+                    tags: vec!["prod".into()],
+                    ..Scope::default()
+                },
+                ..Rule::new(Permission::Inject, Effect::Ask)
+            }],
+            expires_at: None,
+        };
+        let untagged = Request {
+            tags: vec![],
+            ..on_item(&w, Permission::Inject, other)
+        };
+        assert!(!evaluate(&tagged_once, &untagged).once);
+        assert!(
+            tagged_once.may_require_once(&untagged),
+            "claims are not trusted"
+        );
+        // The upper bound for `list` ignores them.
+        assert_eq!(
+            evaluate_upper_bound(&policy, &w.request(Permission::Inject)).effect,
+            Effect::Allow
         );
     }
 
@@ -2405,6 +2865,8 @@ mod tests {
                 effect,
                 scope,
                 expires_at,
+                once: false,
+                origin: None,
             })
     }
 
@@ -2447,6 +2909,8 @@ mod tests {
                     ..scope
                 },
                 expires_at: None,
+                once: false,
+                origin: None,
             });
         let denies = prop::collection::vec(scope(), 3..6).prop_map(|scopes| {
             scopes
@@ -2462,6 +2926,8 @@ mod tests {
                         effect: Effect::Deny,
                         scope,
                         expires_at: None,
+                        once: false,
+                        origin: None,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -2590,7 +3056,7 @@ mod tests {
         fn prop_adding_a_deny_rule_never_loosens(policy in policy(), request in request(), scope in scope(), expires_at in prop::option::of(NOW - 5..NOW + 5)) {
             let before = evaluate(&policy, &request).effect;
             let mut stricter = policy.clone();
-            stricter.rules.push(Rule { permission: request.permission, effect: Effect::Deny, scope, expires_at });
+            stricter.rules.push(Rule { permission: request.permission, effect: Effect::Deny, scope, expires_at, once: false, origin: None });
             prop_assert!(evaluate(&stricter, &request).effect >= before);
         }
 
@@ -2820,6 +3286,8 @@ mod tests {
                 ..base.clone()
             },
             expires_at: None,
+            once: false,
+            origin: None,
         };
         Policy {
             rules: vec![
@@ -2835,6 +3303,8 @@ mod tests {
                         ..base.clone()
                     },
                     expires_at: None,
+                    once: false,
+                    origin: None,
                 },
                 with(Effect::Allow, tools(&["get_*", "list_*", "query_*"])),
                 with(Effect::Ask, tools(&["create_*", "update_*", "delete_*"])),
@@ -2883,7 +3353,8 @@ mod tests {
             evaluate(&session_only, &mcp_request(Some("query_logs"))),
             Decision {
                 effect: Effect::Deny,
-                reason: Reason::OutOfScope
+                reason: Reason::OutOfScope,
+                once: false,
             }
         );
         // A deny rule without tools still denies a tool call.
@@ -2893,6 +3364,8 @@ mod tests {
             effect: Effect::Deny,
             scope: Scope::default(),
             expires_at: None,
+            once: false,
+            origin: None,
         });
         assert_eq!(
             evaluate(&closed, &mcp_request(Some("query_logs"))).effect,
@@ -2959,6 +3432,8 @@ mod tests {
                 ..Scope::default()
             },
             expires_at: None,
+            once: false,
+            origin: None,
         });
         assert_eq!(
             outside.check_proxy(),
@@ -2977,6 +3452,7 @@ mod tests {
         let deny = |reason| Decision {
             effect: Effect::Deny,
             reason,
+            once: false,
         };
         if policy.expires_at.is_some_and(|t| request.now >= t) {
             return deny(Reason::PolicyExpired);
@@ -3006,10 +3482,12 @@ mod tests {
             (false, _) => Decision {
                 effect: request.permission.default_effect(),
                 reason: Reason::Default,
+                once: false,
             },
             (true, Some((effect, index))) => Decision {
                 effect,
                 reason: Reason::Rule(index),
+                once: false,
             },
             (true, None) => deny(Reason::OutOfScope),
         }
@@ -3095,6 +3573,127 @@ mod tests {
         fn prop_rules_without_tools_never_allow_a_tool(policy in policy(), request in request(), tool in tool()) {
             let request = Request { mcp_tool: Some(tool), ..request };
             prop_assert_eq!(evaluate(&policy, &request).effect, Effect::Deny);
+        }
+    }
+
+    // --------------------------------- environments: never more permissive --
+
+    fn protectable() -> impl Strategy<Value = Permission> {
+        prop::sample::select(PROTECTED_PERMISSIONS.to_vec())
+    }
+
+    fn some_items() -> impl Strategy<Value = Vec<ItemId>> {
+        prop::collection::vec(
+            prop::sample::select(vec![
+                ItemId::from_bytes([5; 16]),
+                ItemId::from_bytes([6; 16]),
+                ItemId::from_bytes([7; 16]),
+            ]),
+            1..3,
+        )
+    }
+
+    /// The policies of [`policy`], with some `ask` rules made `once` and
+    /// some inherited rules: what a grant with environments looks like.
+    fn environment_policy() -> impl Strategy<Value = Policy> {
+        (
+            policy(),
+            prop::collection::vec(any::<bool>(), 6),
+            prop::collection::vec((protectable(), some_items()), 0..3),
+        )
+            .prop_map(|(mut policy, onces, inherited)| {
+                for (rule, once) in policy.rules.iter_mut().zip(onces) {
+                    rule.once = once && rule.effect == Effect::Ask;
+                }
+                policy.rules.extend(
+                    inherited
+                        .into_iter()
+                        .map(|(permission, items)| Rule::protected(permission, items)),
+                );
+                policy
+            })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 1024, ..ProptestConfig::default() })]
+
+        /// Adding an inherited rule never makes any decision more permissive
+        /// (ADR 0032 §3.1).
+        #[test]
+        fn prop_adding_an_inherited_rule_never_loosens(
+            policy in environment_policy(),
+            request in request(),
+            permission in protectable(),
+            items in some_items(),
+        ) {
+            let before = evaluate(&policy, &request);
+            let mut after = policy.clone();
+            after.rules.push(Rule::protected(permission, items));
+            prop_assert!(after.check_once().is_ok() || policy.check_once().is_err());
+            prop_assert!(evaluate(&after, &request).strictness() >= before.strictness());
+        }
+
+        /// Making an `ask` rule `once` never makes any decision more
+        /// permissive (ADR 0032 §4.2).
+        #[test]
+        fn prop_once_never_loosens(policy in environment_policy(), request in request(), pick in any::<prop::sample::Index>()) {
+            let asks: Vec<usize> = policy.rules.iter().enumerate()
+                .filter(|(_, r)| r.effect == Effect::Ask && !r.once)
+                .map(|(i, _)| i)
+                .collect();
+            if asks.is_empty() {
+                return Ok(());
+            }
+            let before = evaluate(&policy, &request);
+            let mut after = policy.clone();
+            after.rules[asks[pick.index(asks.len())]].once = true;
+            let decided = evaluate(&after, &request);
+            prop_assert!(decided.strictness() >= before.strictness());
+            prop_assert_eq!(decided.effect, before.effect);
+        }
+
+        /// Narrowing an `allow` rule to some items never makes any decision
+        /// more permissive (ADR 0032 §4.1). (Narrowing an `ask` or `deny`
+        /// rule can: it then covers fewer requests.)
+        #[test]
+        fn prop_narrowing_an_allow_rule_by_items_never_loosens(
+            policy in environment_policy(),
+            request in request(),
+            pick in any::<prop::sample::Index>(),
+            items in some_items(),
+        ) {
+            let allows: Vec<usize> = policy.rules.iter().enumerate()
+                .filter(|(_, r)| r.effect == Effect::Allow && r.scope.items.is_empty())
+                .map(|(i, _)| i)
+                .collect();
+            if allows.is_empty() {
+                return Ok(());
+            }
+            let before = evaluate(&policy, &request);
+            let mut after = policy.clone();
+            after.rules[allows[pick.index(allows.len())]].scope.items = items;
+            prop_assert!(evaluate(&after, &request).strictness() >= before.strictness());
+        }
+
+        /// An item a live inherited rule covers is never `allow` nor plain
+        /// `ask` for that permission (ADR 0032 §3.1: «impossible to bypass»).
+        #[test]
+        fn prop_an_inherited_item_always_asks_once_or_is_denied(policy in environment_policy(), request in request()) {
+            let covered = !request.permission.requires_task()
+                && policy.expires_at.is_none_or(|t| request.now < t)
+                && policy.rules.iter().any(|r| r.is_protected()
+                    && r.permission == request.permission
+                    && r.scope.matches(&request));
+            let d = evaluate(&policy, &request);
+            if covered {
+                prop_assert!(d.effect == Effect::Deny || (d.effect == Effect::Ask && d.once));
+            }
+            // `once` only ever comes with `ask`.
+            prop_assert!(!d.once || d.effect == Effect::Ask);
+            // What the server checks without claims never misses `once`.
+            if d.once {
+                prop_assert!(policy.may_require_once(&request));
+            }
         }
     }
 }

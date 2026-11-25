@@ -23,8 +23,8 @@ use klav_proto::agent::{
     AccessGranted, AccessRequest, AgentAsk, AgentAsked, AgentAttachment, AgentCreateItem,
     AgentItems, AgentProjectItems, AgentTrashItem, AgentTrashed, AgentUpdateItem, AgentWritten,
     ApprovalCaller, ApprovalInfo, ApprovalRequest, ApprovalStatus, Claims, GrantPayload,
-    LocalClient, MAX_AGENT_ATTACHMENTS_BYTES, MAX_APPROVAL_WAIT_SECS, MAX_REASON, PasskeyAccess,
-    PendingApproval, PersonVersion, ProxyProfile,
+    LocalClient, MAX_AGENT_ATTACHMENTS_BYTES, MAX_APPROVAL_ITEMS, MAX_APPROVAL_WAIT_SECS,
+    MAX_REASON, PasskeyAccess, PendingApproval, PersonVersion, ProxyProfile,
 };
 use klav_proto::audit::{ActorKind, AuditEvent};
 use klav_proto::task::TaskStatus;
@@ -360,6 +360,10 @@ pub(crate) struct Action<'a> {
     /// The local client a proxied call is for (ADR 0049 §3.2), if any,
     /// already checked against the proxy's grant.
     pub(crate) local_client: Option<&'a str>,
+    /// With `inject` on an environment (ADR 0032 §3.1): the other items
+    /// this call resolves, sorted, each already granted and not denied.
+    /// One approval covers them all, one access each.
+    pub(crate) items: &'a [ItemId],
 }
 
 /// Outcome of [`gate`].
@@ -401,6 +405,35 @@ fn policy_request(action: &Action<'_>, now: i64) -> policy::Request {
     }
 }
 
+/// Whether the approval `request` is for a target that always asks (ADR
+/// 0032 §4.2) under the agent's current grant, judged without trusting the
+/// claims: then the person's decision carries no lease and does not go in
+/// a task. A request with items (an environment and its protected items)
+/// always is.
+pub(crate) async fn approval_is_once(
+    state: &AppState,
+    request: &ApprovalRequest,
+    now: i64,
+) -> ApiResult<bool> {
+    if !request.items.is_empty() {
+        return Ok(true);
+    }
+    let grant = grant_of(state, request.agent_id).await?;
+    let action = Action {
+        permission: request.permission,
+        vault: request.vault_id,
+        project: request.project_id,
+        item: request.item_id,
+        claims: &request.claims,
+        reason: "",
+        attachments: &[],
+        sandbox: None,
+        local_client: None,
+        items: &[],
+    };
+    Ok(grant.policy.may_require_once(&policy_request(&action, now)))
+}
+
 /// What an approval is for (ADR 0015 §1): grant version, permission,
 /// vault, project, item and claimed domain, and for `proxy` also the method
 /// and path (ADR 0036 §9: an approval for `DELETE /a` is not one for
@@ -439,6 +472,18 @@ pub(crate) fn target_key(grant_version: u64, action: &Action<'_>) -> String {
         && let Some(parts) = key.as_array_mut()
     {
         parts.push(mcp);
+    }
+    // An environment's approval for its protected items (ADR 0032 §3.1):
+    // one nested array, `["items", …sorted IDs]`, so it never reads as
+    // another position, and an approval for the environment alone never
+    // serves a call with items, nor the other way round. Keys without
+    // items stay what they always were.
+    if !action.items.is_empty()
+        && let Some(parts) = key.as_array_mut()
+    {
+        let mut items = vec![serde_json::Value::from("items")];
+        items.extend(action.items.iter().map(|i| i.to_string().into()));
+        parts.push(items.into());
     }
     key.to_string()
 }
@@ -545,6 +590,15 @@ pub(crate) async fn gate(
         ));
     }
     if action.permission.requires_task() {
+        // A protected item (ADR 0032 §3.1) never goes in a task, and
+        // `passkey` and `rotate` only exist in one: a task signed before
+        // the protection does not open it.
+        if action.item.is_some_and(|item| grant.policy.protects(item)) {
+            return Err(ApiError::Denied(format!(
+                "`{}` is not available on a protected item: it always asks for approval and never goes in a task",
+                permission_name(action.permission)
+            )));
+        }
         return match task_for(state, auth, action, task_id).await? {
             Some(task) => Ok(Gate::Allow {
                 approval: None,
@@ -556,7 +610,8 @@ pub(crate) async fn gate(
             ))),
         };
     }
-    let decision = policy::evaluate(&grant.policy, &policy_request(action, now));
+    let request = policy_request(action, now);
+    let decision = policy::evaluate(&grant.policy, &request);
     match decision.effect {
         Effect::Allow => Ok(Gate::Allow {
             approval: None,
@@ -567,16 +622,35 @@ pub(crate) async fn gate(
             permission_name(action.permission)
         ))),
         Effect::Ask => {
+            // «Ask every time» (ADR 0032 §4.2), judged without trusting the
+            // claims: no lease serves it and no task covers it, even one
+            // signed before the rule. A call with items is always once.
+            let once = !action.items.is_empty() || grant.policy.may_require_once(&request);
             let key = target_key(grant.version, action);
-            let lease = lease_key(grant.version, action);
+            let lease = if once {
+                None
+            } else {
+                lease_key(grant.version, action)
+            };
             if let Some(id) = approval_id {
-                use_approval(state, auth, grant, &key, lease.as_deref(), id, now).await?;
+                use_approval(
+                    state,
+                    auth,
+                    grant,
+                    action,
+                    &key,
+                    lease.as_deref(),
+                    id,
+                    once,
+                    now,
+                )
+                .await?;
                 return Ok(Gate::Allow {
                     approval: Some(id),
                     task: None,
                 });
             }
-            if let Some(task) = task_for(state, auth, action, task_id).await? {
+            if !once && let Some(task) = task_for(state, auth, action, task_id).await? {
                 if !probe {
                     spend_once_for_target(state, auth, &key, task, now).await?;
                 }
@@ -585,8 +659,17 @@ pub(crate) async fn gate(
                     task: Some(task),
                 });
             }
-            if let Some(id) =
-                reuse_approved(state, auth, &key, lease.as_deref(), now, probe).await?
+            if let Some(id) = reuse_approved(
+                state,
+                auth,
+                &key,
+                lease.as_deref(),
+                action.item,
+                once,
+                now,
+                probe,
+            )
+            .await?
             {
                 return Ok(Gate::Allow {
                     approval: Some(id),
@@ -738,7 +821,7 @@ pub(crate) async fn checked(
                 // A probe only read the decision (`reuse_approved`), so it
                 // has nothing to give back: another request may have spent
                 // it meanwhile.
-                unspend(state, *id).await?;
+                unspend(state, *id, action.item).await?;
             }
             logged?;
         }
@@ -760,27 +843,91 @@ pub(crate) fn permission_name(permission: Permission) -> String {
         .unwrap_or_default()
 }
 
+/// Whether approval `id` covers several items (ADR 0032 §3.1): it has rows
+/// in `approval_items`, one per item, spent one by one.
+async fn is_bundle(conn: &mut sqlx::AnyConnection, id: &str) -> ApiResult<bool> {
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM approval_items WHERE approval_id = $1")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(rows > 0)
+}
+
 /// Spends an approve-once decision, unless it was already spent (only one
-/// concurrent request wins).
-async fn spend(state: &AppState, id: &str, now: i64) -> ApiResult<bool> {
-    let spent = sqlx::query("UPDATE approvals SET used_at = $1 WHERE id = $2 AND used_at IS NULL")
-        .bind(now)
-        .bind(id)
-        .execute(&state.db().pool)
-        .await?;
-    Ok(spent.rows_affected() == 1)
+/// concurrent request wins). An approval for an environment and its
+/// protected items (ADR 0032 §3.1) spends only `item`'s access, and is
+/// spent as a whole once every item's is: in one transaction, so two
+/// concurrent uses of the same item never both win.
+async fn spend(state: &AppState, id: &str, item: Option<ItemId>, now: i64) -> ApiResult<bool> {
+    let mut tx = state.db().pool.begin().await?;
+    if !is_bundle(&mut tx, id).await? {
+        let spent =
+            sqlx::query("UPDATE approvals SET used_at = $1 WHERE id = $2 AND used_at IS NULL")
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        return Ok(spent.rows_affected() == 1);
+    }
+    let Some(item) = item else {
+        return Ok(false);
+    };
+    let spent = sqlx::query(
+        "UPDATE approval_items SET used_at = $1 \
+         WHERE approval_id = $2 AND item_id = $3 AND used_at IS NULL",
+    )
+    .bind(now)
+    .bind(id)
+    .bind(item.to_string())
+    .execute(&mut *tx)
+    .await?;
+    if spent.rows_affected() != 1 {
+        return Ok(false);
+    }
+    let left: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM approval_items WHERE approval_id = $1 AND used_at IS NULL",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if left == 0 {
+        sqlx::query("UPDATE approvals SET used_at = $1 WHERE id = $2 AND used_at IS NULL")
+            .bind(now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Gives back an approve-once decision spent by an action the log refused
-/// (see [`checked`]). Leases are never spent, so they are left alone.
-async fn unspend(state: &AppState, id: ApprovalId) -> ApiResult<()> {
+/// (see [`checked`]). Leases are never spent, so they are left alone. For
+/// an approval that covers several items, only `item`'s access comes back.
+async fn unspend(state: &AppState, id: ApprovalId, item: Option<ItemId>) -> ApiResult<()> {
+    let mut tx = state.db().pool.begin().await?;
+    if is_bundle(&mut tx, &id.to_string()).await? {
+        let Some(item) = item else {
+            return Ok(());
+        };
+        sqlx::query(
+            "UPDATE approval_items SET used_at = NULL WHERE approval_id = $1 AND item_id = $2",
+        )
+        .bind(id.to_string())
+        .bind(item.to_string())
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query(
         "UPDATE approvals SET used_at = NULL \
          WHERE id = $1 AND (lease_until IS NULL OR lease_until = 0)",
     )
     .bind(id.to_string())
-    .execute(&state.db().pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -817,11 +964,14 @@ async fn spend_once_for_target(
 /// request spends (with `probe`, it is only returned). Never one bound to a
 /// task by «Add to the task»: that one serves only by name, while its task
 /// runs ([`use_approval`]).
+#[allow(clippy::too_many_arguments)]
 async fn reuse_approved(
     state: &AppState,
     auth: &AgentAuth,
     key: &str,
     lease: Option<&str>,
+    item: Option<ItemId>,
+    once: bool,
     now: i64,
     probe: bool,
 ) -> ApiResult<Option<ApprovalId>> {
@@ -858,18 +1008,23 @@ async fn reuse_approved(
     .bind(now - ONCE_WINDOW_MS)
     .fetch_all(&state.db().pool)
     .await?;
-    // A lease first: it does not need spending a one-time decision.
+    // A lease first: it does not need spending a one-time decision. Never
+    // for a target that always asks (ADR 0032 §4.2), even a lease given
+    // before the rule.
     for row in &rows {
-        if row.try_get::<Option<i64>, _>("lease_until")?.unwrap_or(0) > now {
+        if !once && row.try_get::<Option<i64>, _>("lease_until")?.unwrap_or(0) > now {
             return Ok(Some(path_id(&row.try_get::<String, _>("id")?)?));
         }
     }
     for row in &rows {
+        if row.try_get::<Option<i64>, _>("lease_until")?.unwrap_or(0) != 0 {
+            continue;
+        }
         let id: String = row.try_get("id")?;
         if probe {
             return Ok(Some(path_id(&id)?));
         }
-        if spend(state, &id, now).await? {
+        if spend(state, &id, item, now).await? {
             return Ok(Some(path_id(&id)?));
         }
     }
@@ -884,14 +1039,16 @@ async fn use_approval(
     state: &AppState,
     auth: &AgentAuth,
     grant: &Grant,
+    action: &Action<'_>,
     key: &str,
     lease: Option<&str>,
     id: ApprovalId,
+    once: bool,
     now: i64,
 ) -> ApiResult<()> {
     let row = sqlx::query(
         "SELECT status, expires_at, target_key, grant_version, decided_at, lease_until, used_at, \
-         task_id, lease_key FROM approvals WHERE id = $1 AND agent_id = $2",
+         task_id, lease_key, permission FROM approvals WHERE id = $1 AND agent_id = $2",
     )
     .bind(id.to_string())
     .bind(auth.agent_id.to_string())
@@ -903,9 +1060,27 @@ async fn use_approval(
             "the grant changed since the approval: ask again",
         ));
     }
+    // An approval for an environment and its protected items (ADR 0032
+    // §3.1) also serves one access to each listed item, with the same
+    // permission and without items of its own.
+    let same_key = row.try_get::<Option<String>, _>("target_key")?.as_deref() == Some(key);
+    let listed = match action.item {
+        Some(item) if !same_key && action.items.is_empty() => {
+            let found: Option<String> = sqlx::query_scalar(
+                "SELECT item_id FROM approval_items WHERE approval_id = $1 AND item_id = $2",
+            )
+            .bind(id.to_string())
+            .bind(item.to_string())
+            .fetch_optional(&state.db().pool)
+            .await?;
+            found.is_some()
+                && row.try_get::<String, _>("permission")? == permission_name(action.permission)
+        }
+        _ => false,
+    };
     // The same tool with other arguments: only a lease on the tool serves
     // it (ADR 0049 §5.4), checked below once the status is known.
-    let other_args = row.try_get::<Option<String>, _>("target_key")?.as_deref() != Some(key);
+    let other_args = !same_key && !listed;
     if other_args
         && (lease.is_none() || row.try_get::<Option<String>, _>("lease_key")?.as_deref() != lease)
     {
@@ -949,6 +1124,11 @@ async fn use_approval(
         }
     }
     let lease: i64 = row.try_get::<Option<i64>, _>("lease_until")?.unwrap_or(0);
+    if once && lease != 0 {
+        return Err(ApiError::conflict(
+            "this target always asks for approval: a lease does not cover it, ask again",
+        ));
+    }
     if lease > now {
         return Ok(());
     }
@@ -971,7 +1151,7 @@ async fn use_approval(
             "the approval was not used within 10 minutes: ask again",
         ));
     }
-    if spend(state, &id.to_string(), now).await? {
+    if spend(state, &id.to_string(), action.item, now).await? {
         Ok(())
     } else {
         Err(ApiError::conflict(
@@ -1100,6 +1280,7 @@ async fn ask(
         grant_version: grant.version,
         requested_at: now,
         caller,
+        items: action.items.to_vec(),
     };
     let bytes = serde_json::to_vec(&request)
         .map_err(|e| ApiError::Internal(format!("approval request: {e}")))?;
@@ -1128,6 +1309,19 @@ async fn ask(
     .await;
     match inserted {
         Ok(_) => {
+            // One access to the environment and one to each listed item
+            // (ADR 0032 §3.1).
+            if !action.items.is_empty() {
+                for item in action.item.iter().chain(action.items) {
+                    sqlx::query(
+                        "INSERT INTO approval_items (approval_id, item_id) VALUES ($1, $2)",
+                    )
+                    .bind(id.to_string())
+                    .bind(item.to_string())
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
             audit::append_in(&mut tx, auth.account_id, &mut event, now_ms()).await?;
             tx.commit().await?;
             state.push(auth.account_id, PushKind::Approval, id.to_string());
@@ -1169,6 +1363,7 @@ async fn list_items(State(state): State<AppState>, auth: AgentAuth) -> ApiResult
             attachments: &[],
             sandbox: None,
             local_client: None,
+            items: &[],
         };
         let decision = policy::evaluate_upper_bound(&grant.policy, &policy_request(&action, now));
         if decision.effect != Effect::Allow {
@@ -1387,6 +1582,7 @@ async fn passkey_access(
         attachments: &[],
         sandbox: None,
         local_client: None,
+        items: &[],
     };
     match checked(
         state,
@@ -1505,6 +1701,7 @@ async fn access(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Res
         Vec::new()
     };
     let delivered: Vec<AttachmentId> = metas.iter().map(|a| a.id).collect();
+    let bundle = bundle_items(&state, &grant, &req, &item).await?;
     let action = Action {
         permission: req.permission,
         vault: item.vault_id,
@@ -1515,6 +1712,7 @@ async fn access(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Res
         attachments: &delivered,
         sandbox: req.sandbox,
         local_client: req.local_client.as_deref(),
+        items: &bundle,
     };
     // `rotate` is used through `klavd` and its own route (ADR 0022), never
     // by handing the item to the agent: outside a task it is denied (and
@@ -1570,6 +1768,59 @@ async fn access(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Res
             .into_response())
         }
     }
+}
+
+/// The other items of an `inject` on an environment (ADR 0032 §3.1),
+/// sorted: only with `inject`, at most [`MAX_APPROVAL_ITEMS`], without
+/// repeats or the item itself, each granted (`404` otherwise, as for the
+/// item) and not denied by the policy (a `deny` is never asked about).
+async fn bundle_items(
+    state: &AppState,
+    grant: &Grant,
+    req: &AccessRequest,
+    item: &klav_proto::vault::Item,
+) -> ApiResult<Vec<ItemId>> {
+    if req.items.is_empty() {
+        return Ok(Vec::new());
+    }
+    if req.permission != Permission::Inject {
+        return Err(ApiError::bad_request("items only go with inject"));
+    }
+    if req.items.len() > MAX_APPROVAL_ITEMS {
+        return Err(ApiError::bad_request(format!(
+            "at most {MAX_APPROVAL_ITEMS} items in one approval"
+        )));
+    }
+    let mut items = req.items.clone();
+    items.sort();
+    items.dedup();
+    if items.len() != req.items.len() || items.contains(&item.id) {
+        return Err(ApiError::bad_request(
+            "items: each once, and not the item itself",
+        ));
+    }
+    let now = now_ms();
+    for id in &items {
+        let other = granted_item(state, grant, *id).await?;
+        let action = Action {
+            permission: Permission::Inject,
+            vault: other.vault_id,
+            project: other.project_id,
+            item: Some(other.id),
+            claims: &Claims::default(),
+            reason: "",
+            attachments: &[],
+            sandbox: None,
+            local_client: None,
+            items: &[],
+        };
+        if policy::evaluate(&grant.policy, &policy_request(&action, now)).effect == Effect::Deny {
+            return Err(ApiError::Denied(format!(
+                "the policy denies `inject` on item {id}"
+            )));
+        }
+    }
+    Ok(items)
 }
 
 /// The last stored version of `item` the person wrote (ADR 0030 §7): its
@@ -1628,6 +1879,7 @@ async fn create_item(State(state): State<AppState>, auth: AgentAuth) -> ApiResul
         attachments: &[],
         sandbox: None,
         local_client: None,
+        items: &[],
     };
     match checked(
         &state,
@@ -1691,6 +1943,7 @@ async fn update_item(
         attachments: &[],
         sandbox: None,
         local_client: None,
+        items: &[],
     };
     match checked(
         &state,
@@ -1747,6 +2000,7 @@ async fn trash_item(
         attachments: &[],
         sandbox: None,
         local_client: None,
+        items: &[],
     };
     match checked(
         &state,
@@ -1819,6 +2073,7 @@ async fn ask_first(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<
         attachments: &[],
         sandbox: None,
         local_client: None,
+        items: &[],
     };
     match checked(
         &state,
@@ -1934,6 +2189,7 @@ mod tests {
             attachments: &[],
             sandbox,
             local_client: None,
+            items: &[],
         };
         let before = format!(
             r#"[3,"proxy","{vault}","{project}","{item}","backboard.railway.app","POST","/graphql"]"#
@@ -1995,6 +2251,7 @@ mod tests {
                 attachments: &[],
                 sandbox,
                 local_client,
+                items: &[],
             };
             (target_key(7, &action), lease_key(7, &action))
         };

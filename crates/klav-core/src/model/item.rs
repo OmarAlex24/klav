@@ -11,6 +11,9 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use super::agent_labels::AgentLabels;
+use super::environment::{
+    Environment, EnvironmentSummary, RawVariable, is_production_name, validate_environment_name,
+};
 use super::history::GeneratedEntry;
 use super::passkey::{Passkey, PasskeySummary, RawPasskey};
 use super::preferences::Preferences;
@@ -66,6 +69,20 @@ pub enum ModelError {
     /// Encryption or decryption failed.
     #[error(transparent)]
     Crypto(#[from] CryptoError),
+    /// The item is of a kind this build does not know (a newer client wrote
+    /// it). Not tampering: the person should update Klav (ADR 0032 §1).
+    #[error("unknown item kind {0:?}; update Klav")]
+    UnknownKind(String),
+    /// A variable of an environment: a bad name, both or neither of value
+    /// and reference, or a reference not stored by IDs (ADR 0032 §1).
+    #[error("invalid variable {0:?}")]
+    InvalidVariable(String),
+    /// Two variables of an environment share a name.
+    #[error("duplicate variable {0:?}")]
+    DuplicateVariable(String),
+    /// A variable points to an environment (no chains, ADR 0032 §1).
+    #[error("variable {0:?} points to an environment")]
+    ReferenceToEnvironment(String),
 }
 
 /// Item types (design §3).
@@ -97,6 +114,9 @@ pub enum ItemKind {
     /// Person-owned labels and machine notes for agents (ADR 0047 §1). Lives
     /// only in the system project; never listed, never in a grant.
     AgentLabels,
+    /// One set of variables of a project for one environment (ADR 0032 §1):
+    /// `development`, `staging`, `production`.
+    Environment,
 }
 
 impl ItemKind {
@@ -439,6 +459,10 @@ pub struct Overview {
     /// Summary of the login's passkey (ADR 0020 §3), without secrets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passkey: Option<PasskeySummary>,
+    /// An environment's flag and variable names (ADR 0032 §1). Present
+    /// exactly when `kind = environment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentSummary>,
 }
 
 /// An item: a login, card, identity, SSH key, file, TOTP, note or API key.
@@ -463,6 +487,9 @@ pub struct Item {
     agent_labels: Option<AgentLabels>,
     /// The login's passkey, its key sealed with the vault key (ADR 0020).
     passkey: Option<Passkey>,
+    /// What an `environment` item holds (ADR 0032 §1); `Some` exactly for
+    /// that kind.
+    environment: Option<Environment>,
 }
 
 /// Field templates per item type: `(name, label, type)`.
@@ -504,7 +531,8 @@ pub fn template(kind: ItemKind) -> &'static [(&'static str, &'static str, FieldK
         ItemKind::Note
         | ItemKind::GeneratorHistory
         | ItemKind::Preferences
-        | ItemKind::AgentLabels => &[],
+        | ItemKind::AgentLabels
+        | ItemKind::Environment => &[],
         ItemKind::ApiKey => &[
             ("api_key", "API key", F::Concealed),
             ("key_id", "Key ID", F::Text),
@@ -558,6 +586,8 @@ struct RawDetails {
     agent_labels: Option<AgentLabels>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     passkey: Option<RawPasskey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    variables: Option<Vec<RawVariable>>,
 }
 
 impl Drop for RawGenerated {
@@ -590,6 +620,28 @@ impl Drop for RawDetails {
     }
 }
 
+/// The longest unknown kind an error repeats.
+const MAX_SHOWN_KIND: usize = 32;
+
+/// If `section` is JSON whose `kind` is text this build does not know,
+/// that kind (shortened): a newer client wrote the item.
+fn unknown_kind(section: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct KindOnly {
+        kind: String,
+    }
+    let KindOnly { kind } = serde_json::from_slice(section).ok()?;
+    if serde_json::from_value::<ItemKind>(serde_json::Value::String(kind.clone())).is_ok() {
+        return None;
+    }
+    Some(
+        kind.chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_SHOWN_KIND)
+            .collect(),
+    )
+}
+
 fn json_error(err: serde_json::Error) -> ModelError {
     // serde_json messages can quote input fragments; keep only the position.
     ModelError::Json(format!(
@@ -604,6 +656,9 @@ impl Item {
     /// A new, empty item.
     pub fn new(kind: ItemKind, title: &str) -> Result<Self, ModelError> {
         validate_text(title, "title", false).map_err(|_| ModelError::InvalidTitle)?;
+        if kind == ItemKind::Environment {
+            validate_environment_name(title)?;
+        }
         Ok(Self {
             id: ItemId::generate(),
             kind,
@@ -618,6 +673,9 @@ impl Item {
             preferences: None,
             agent_labels: None,
             passkey: None,
+            // `production` and `prod` start protected (ADR 0032 §3).
+            environment: (kind == ItemKind::Environment)
+                .then(|| Environment::new(is_production_name(title))),
         })
     }
 
@@ -648,6 +706,9 @@ impl Item {
     /// Renames the item.
     pub fn set_title(&mut self, title: &str) -> Result<(), ModelError> {
         validate_text(title, "title", false).map_err(|_| ModelError::InvalidTitle)?;
+        if self.kind == ItemKind::Environment {
+            validate_environment_name(title)?;
+        }
         self.title = title.to_string();
         Ok(())
     }
@@ -680,6 +741,7 @@ impl Item {
     /// Adds a URL for autofill: an `http` or `https` address (or a bare
     /// host), without user info.
     pub fn add_url(&mut self, url: &str) -> Result<(), ModelError> {
+        self.refuse_on_environment("URL")?;
         validate_item_url(url)?;
         self.urls.push(url.to_string());
         Ok(())
@@ -699,6 +761,7 @@ impl Item {
 
     /// Adds a field; its name and ID must be unique in the item.
     pub fn add_field(&mut self, field: Field) -> Result<(), ModelError> {
+        self.refuse_on_environment("field")?;
         if self
             .fields
             .iter()
@@ -748,6 +811,7 @@ impl Item {
 
     /// Records an attachment.
     pub fn add_attachment(&mut self, meta: AttachmentMeta) -> Result<(), ModelError> {
+        self.refuse_on_environment("attachment")?;
         validate_text(&meta.file_name, "file name", false)?;
         self.attachments.push(meta);
         Ok(())
@@ -769,7 +833,7 @@ impl Item {
     pub fn set_password_record(&mut self, blob: Option<Vec<u8>>) -> Result<(), ModelError> {
         if let Some(b) = &blob {
             check_record_blob(b)?;
-            if self.kind.is_system() {
+            if self.kind.is_system() || self.kind == ItemKind::Environment {
                 return Err(ModelError::InvalidText("password record"));
             }
         }
@@ -837,6 +901,40 @@ impl Item {
         Ok(())
     }
 
+    /// An environment carries no URLs, fields, attachments, passkey or
+    /// password record (ADR 0032 §1).
+    fn refuse_on_environment(&self, what: &'static str) -> Result<(), ModelError> {
+        if self.kind == ItemKind::Environment {
+            return Err(ModelError::InvalidText(match what {
+                "URL" => "URL in an environment",
+                "field" => "field in an environment (use a variable)",
+                _ => "attachment in an environment",
+            }));
+        }
+        Ok(())
+    }
+
+    /// What an `environment` item holds (`None` in any other kind).
+    pub fn environment(&self) -> Option<&Environment> {
+        self.environment.as_ref()
+    }
+
+    /// What an `environment` item holds, to edit it.
+    pub fn environment_mut(&mut self) -> Option<&mut Environment> {
+        self.environment.as_mut()
+    }
+
+    /// Replaces what an `environment` item holds. Any other kind refuses.
+    pub fn set_environment(&mut self, environment: Environment) -> Result<(), ModelError> {
+        if self.kind != ItemKind::Environment {
+            return Err(ModelError::InvalidText(
+                "variables outside an environment item",
+            ));
+        }
+        self.environment = Some(environment);
+        Ok(())
+    }
+
     /// The login's passkey, if any.
     pub fn passkey(&self) -> Option<&Passkey> {
         self.passkey.as_ref()
@@ -883,6 +981,7 @@ impl Item {
             urls: self.urls.clone(),
             tags: self.tags.clone(),
             passkey: self.passkey.as_ref().map(Passkey::summary),
+            environment: self.environment.as_ref().map(Environment::summary),
         }
     }
 
@@ -922,6 +1021,7 @@ impl Item {
             preferences: self.preferences.clone(),
             agent_labels: self.agent_labels.clone(),
             passkey: self.passkey.as_ref().map(Passkey::to_raw),
+            variables: self.environment.as_ref().map(Environment::to_raw),
         };
         let details = Zeroizing::new(serde_json::to_vec(&details).expect("details serialize"));
         (overview, details)
@@ -929,7 +1029,9 @@ impl Item {
 
     /// Parses an overview section.
     pub fn decode_overview(overview: &[u8]) -> Result<Overview, ModelError> {
-        let overview: Overview = serde_json::from_slice(overview).map_err(json_error)?;
+        let overview: Overview = serde_json::from_slice(overview).map_err(|e| {
+            unknown_kind(overview).map_or_else(|| json_error(e), ModelError::UnknownKind)
+        })?;
         if overview.v != SCHEMA_VERSION {
             return Err(ModelError::UnsupportedSchema(overview.v));
         }
@@ -943,7 +1045,9 @@ impl Item {
         details: &[u8],
     ) -> Result<Self, ModelError> {
         let overview = Self::decode_overview(overview)?;
-        let details: RawDetails = serde_json::from_slice(details).map_err(json_error)?;
+        let details: RawDetails = serde_json::from_slice(details).map_err(|e| {
+            unknown_kind(details).map_or_else(|| json_error(e), ModelError::UnknownKind)
+        })?;
         if details.v != SCHEMA_VERSION {
             return Err(ModelError::UnsupportedSchema(details.v));
         }
@@ -955,8 +1059,29 @@ impl Item {
         for tag in &overview.tags {
             item.add_tag(tag)?;
         }
+        // An environment: its flag in the overview, its variables in the
+        // details, the same names in the same order in both (ADR 0032 §1).
+        match (overview.kind, &overview.environment, &details.variables) {
+            (ItemKind::Environment, Some(summary), Some(raw)) => {
+                let environment = Environment::from_raw(summary.protected, raw)?;
+                if environment.summary().variables != summary.variables {
+                    return Err(ModelError::SectionMismatch);
+                }
+                item.environment = Some(environment);
+            }
+            (ItemKind::Environment, _, _) => return Err(ModelError::SectionMismatch),
+            (_, None, None) => {}
+            _ => {
+                return Err(ModelError::InvalidText(
+                    "variables outside an environment item",
+                ));
+            }
+        }
         // Read as saved: a URL that the rules for new ones refuse now
         // stays, and the site rule decides whether it fills.
+        if overview.kind == ItemKind::Environment && !overview.urls.is_empty() {
+            return Err(ModelError::InvalidText("URL in an environment"));
+        }
         for url in &overview.urls {
             validate_url(url)?;
             item.urls.push(url.clone());
@@ -998,7 +1123,10 @@ impl Item {
             item.passkey = Some(Passkey::from_raw(raw)?);
         }
         let derived = item.overview();
-        if derived.username != overview.username || derived.passkey != overview.passkey {
+        if derived.username != overview.username
+            || derived.passkey != overview.passkey
+            || derived.environment != overview.environment
+        {
             return Err(ModelError::SectionMismatch);
         }
         Ok(item)
@@ -1171,6 +1299,7 @@ mod tests {
             urls: vec![],
             tags: vec![],
             passkey: None,
+            environment: None,
         })
         .unwrap();
         let item =
@@ -1391,6 +1520,103 @@ mod tests {
         assert_eq!(back.agent_labels(), Some(&labels));
         let mut login = Item::new(ItemKind::Login, "x").unwrap();
         assert!(login.set_agent_labels(Some(labels)).is_err());
+    }
+
+    #[test]
+    fn environment_items() {
+        use crate::ids::{FieldId, ProjectId, VaultId};
+        use crate::model::environment::{Variable, VariableSource};
+        use crate::model::reference::{Reference, Selector, resolve_variable};
+
+        assert!(!ItemKind::Environment.is_system());
+        assert!(Item::new(ItemKind::Environment, "Production").is_err());
+        assert!(Item::new(ItemKind::Environment, "my env").is_err());
+        let mut item = Item::new(ItemKind::Environment, "production").unwrap();
+        assert!(
+            item.environment().unwrap().protected(),
+            "production starts protected"
+        );
+        assert!(
+            !Item::new(ItemKind::Environment, "staging")
+                .unwrap()
+                .environment()
+                .unwrap()
+                .protected()
+        );
+        // No URLs, fields, attachments or record in an environment.
+        assert!(item.add_url("https://example.com").is_err());
+        assert!(
+            item.add_field(Field::new("x", "", FieldKind::Text, "").unwrap())
+                .is_err()
+        );
+        assert!(item.set_title("Staging").is_err());
+        let stripe = Reference {
+            vault: Selector::Id(VaultId::generate()),
+            project: Selector::Id(ProjectId::generate()),
+            item: Selector::Id(ItemId::generate()),
+            field: Selector::Id(FieldId::generate()),
+        };
+        {
+            let env = item.environment_mut().unwrap();
+            env.add(Variable::with_value("DATABASE_URL", "postgres://secret").unwrap())
+                .unwrap();
+            env.add(Variable::with_reference("STRIPE_KEY", stripe.clone()).unwrap())
+                .unwrap();
+        }
+        let (o, d) = item.encode_sections();
+        let overview = String::from_utf8(o.clone()).unwrap();
+        assert!(!overview.contains("postgres://secret") && !overview.contains("klav://"));
+        let json: serde_json::Value = serde_json::from_slice(&o).unwrap();
+        assert_eq!(
+            json["environment"],
+            serde_json::json!({"protected": true, "variables": ["DATABASE_URL", "STRIPE_KEY"]})
+        );
+        let back = Item::decode_sections(item.id(), &o, &d).unwrap();
+        assert!(back == item);
+        let var = resolve_variable(&back, &Selector::Name("STRIPE_KEY".into())).unwrap();
+        assert!(matches!(var.source(), VariableSource::Ref(r) if *r == stripe));
+        assert!(resolve_variable(&back, &Selector::Name("stripe_key".into())).is_err());
+        // The parser accepts a variable name as the fourth segment.
+        let r = Reference::parse("klav://Trabajo/acme-api/production/STRIPE_KEY").unwrap();
+        assert_eq!(r.field, Selector::Name("STRIPE_KEY".into()));
+        // Overview and details must list the same names in the same order.
+        let mut swapped: serde_json::Value = serde_json::from_slice(&o).unwrap();
+        swapped["environment"]["variables"] = serde_json::json!(["STRIPE_KEY", "DATABASE_URL"]);
+        assert_eq!(
+            Item::decode_sections(item.id(), &serde_json::to_vec(&swapped).unwrap(), &d).err(),
+            Some(ModelError::SectionMismatch)
+        );
+        // `environment` and `variables` only with this kind, and always with it.
+        let lo = login();
+        let (lo_o, lo_d) = lo.encode_sections();
+        let mut forged: serde_json::Value = serde_json::from_slice(&lo_d).unwrap();
+        forged["variables"] = serde_json::json!([]);
+        assert!(
+            Item::decode_sections(lo.id(), &lo_o, &serde_json::to_vec(&forged).unwrap()).is_err()
+        );
+        let mut bare: serde_json::Value = serde_json::from_slice(&d).unwrap();
+        bare.as_object_mut().unwrap().remove("variables");
+        assert!(Item::decode_sections(item.id(), &o, &serde_json::to_vec(&bare).unwrap()).is_err());
+    }
+
+    #[test]
+    fn unknown_kinds_say_so() {
+        let o = br#"{"v":1,"kind":"vault_of_the_future","title":"x"}"#;
+        assert_eq!(
+            Item::decode_overview(o).err(),
+            Some(ModelError::UnknownKind("vault_of_the_future".into()))
+        );
+        assert!(
+            Item::decode_overview(o)
+                .unwrap_err()
+                .to_string()
+                .contains("update Klav")
+        );
+        // A known kind with a bad document is still a JSON error.
+        assert!(matches!(
+            Item::decode_overview(br#"{"v":1,"kind":"login"}"#),
+            Err(ModelError::Json(_))
+        ));
     }
 
     #[test]

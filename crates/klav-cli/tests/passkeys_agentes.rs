@@ -348,6 +348,7 @@ fn asked(item: ItemId, host: &str, task: TaskId) -> AccessRequest {
         include_attachments: false,
         sandbox: None,
         local_client: None,
+        items: Vec::new(),
     }
 }
 

@@ -1037,7 +1037,7 @@ async fn fill(server: &TestServer, creds: &Credentials) -> (Session, TestVault) 
         )
         .await;
     assert_eq!(res.status(), StatusCode::ACCEPTED);
-    let _: PendingApproval = res.json().await.expect("database");
+    let approval: PendingApproval = res.json().await.expect("database");
     let res = server
         .agent_call(
             &agent,
@@ -1059,6 +1059,13 @@ async fn fill(server: &TestServer, creds: &Credentials) -> (Session, TestVault) 
     sqlx::query("INSERT INTO task_targets (task_id, target_key, hosts) VALUES ($1, $2, '[]')")
         .bind(task.pending_task_id.to_string())
         .bind(target)
+        .execute(&db)
+        .await
+        .expect("database");
+    // An approval that covers several items (ADR 0032 §3.1).
+    sqlx::query("INSERT INTO approval_items (approval_id, item_id) VALUES ($1, $2)")
+        .bind(approval.pending_approval_id.to_string())
+        .bind(item.id().to_string())
         .execute(&db)
         .await
         .expect("database");

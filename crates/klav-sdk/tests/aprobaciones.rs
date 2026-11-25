@@ -123,6 +123,8 @@ fn rule(permission: Permission, effect: Effect, tags: &[&str]) -> Rule {
             ..Scope::default()
         },
         expires_at: None,
+        once: false,
+        origin: None,
     }
 }
 

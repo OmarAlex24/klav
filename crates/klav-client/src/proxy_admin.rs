@@ -1442,6 +1442,7 @@ fn check_candidate(grant: &ProxyGrant, request: &ItemGrantRequest) -> ClientResu
         issuers: request.issuers.clone(),
         sandbox: None,
         local_clients: request.local_clients.clone(),
+        released: Vec::new(),
     };
     // The `v` the signer writes: 3 while issuers remain (a candidate
     // labelled 2 with issuers was refused before any re-grant of an item).
@@ -1548,6 +1549,8 @@ fn tool_rules(item: ItemId, session: &[Rule], mcp: &McpSpec) -> ClientResult<Vec
                 ..Scope::default()
             },
             expires_at: None,
+            once: false,
+            origin: None,
         });
     }
     if total > MAX_TOOL_PATTERNS_PER_PROFILE {
@@ -1758,6 +1761,8 @@ fn credential_rules(
             ..Scope::default()
         },
         expires_at: None,
+        once: false,
+        origin: None,
     };
     let mut rules = Vec::new();
     if !allowed.is_empty() {

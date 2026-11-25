@@ -266,6 +266,7 @@ impl Unlocked {
             issuers: request.issuers,
             sandbox: None,
             local_clients: request.local_clients,
+            released: Vec::new(),
         };
         // At least 2 (it is a per-item grant), 3 only while it carries
         // issuers.

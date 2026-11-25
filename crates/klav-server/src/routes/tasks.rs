@@ -19,7 +19,7 @@ use axum::{Json, Router};
 use klav_core::crypto::agent::{self as agent_crypto, TaskDecisionToSign};
 use klav_core::crypto::sign::{SIGNATURE_LEN, Signature};
 use klav_core::ids::{AccountId, AgentId, ItemId, ProjectId, TaskId, VaultId};
-use klav_core::policy::Permission;
+use klav_core::policy::{self, Permission, Policy, Target};
 use klav_core::task::{TaskDecision, TaskRequest};
 use klav_proto::Blob;
 use klav_proto::agent::AgentStatus;
@@ -787,6 +787,7 @@ async fn offer(
             )));
         }
     }
+    no_ask_once(&grant.policy, &decision, now)?;
     sweep(&state, Sweep::Agent(req.agent_id), now).await?;
     let sig = signature(&req.signature)?;
     agent_crypto::verify_task_decision(
@@ -938,6 +939,12 @@ async fn decide(
             )));
         }
     };
+    // «Ask every time» targets never go in a task (ADR 0032 §4.2): the row
+    // is unchecked on the card and cannot be checked.
+    if req.approve {
+        let grant = grant_of(&state, info.agent_id).await?;
+        no_ask_once(&grant.policy, &decision, now)?;
+    }
     // The agent must still be active.
     let agent = sqlx::query("SELECT status, expires_at FROM agents WHERE id = $1")
         .bind(info.agent_id.to_string())
@@ -1046,6 +1053,43 @@ async fn decide(
     tx.commit().await?;
     state.task_changed(id);
     task_from_row(&fetch(&state, auth.account_id, id).await?, now_ms()).map(Json)
+}
+
+/// Refuses a task decision that includes a target the grant says always
+/// asks for (ADR 0032 §4.2): an `ask once` rule, an inherited protection,
+/// or `passkey`/`rotate` on a protected item. Judged without the claims
+/// the server cannot check ([`Policy::may_require_once`]).
+fn no_ask_once(policy: &Policy, decision: &TaskDecision, now: i64) -> ApiResult<()> {
+    for access in &decision.access {
+        for &permission in &access.permissions {
+            let request = policy::Request {
+                permission,
+                vault: Target {
+                    id: access.vault_id,
+                    name: String::new(),
+                },
+                project: Target {
+                    id: access.project_id,
+                    name: String::new(),
+                },
+                tags: Vec::new(),
+                domain: None,
+                item: Some(access.item_id),
+                method: None,
+                path: None,
+                mcp_tool: None,
+                now: u64::try_from(now / 1000).unwrap_or(0),
+            };
+            if policy.may_require_once(&request) {
+                return Err(ApiError::bad_request(format!(
+                    "`{}` on item {} always asks for approval: it cannot go in a task",
+                    permission_name(permission),
+                    access.item_id
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `POST /v1/tasks/{id}/end`: the person ends a running task («End task»),

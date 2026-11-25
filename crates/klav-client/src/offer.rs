@@ -431,7 +431,9 @@ impl Unlocked {
             // Like a card on a request (ADR 0021 §3): the policy's deny
             // wins, on every host of the item.
             let denied = hosts.iter().all(|h| {
-                self.task_effect(grant, &asked, Permission::Totp, Some(h)) == Effect::Deny
+                self.task_effect(grant, &asked, Permission::Totp, Some(h))
+                    .effect
+                    == Effect::Deny
             });
             if !denied {
                 permissions.push(Permission::Totp);

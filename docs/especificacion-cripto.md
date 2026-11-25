@@ -351,12 +351,13 @@ Ambas secciones son objetos JSON UTF-8 que **rechazan claves desconocidas**. `v`
 | Clave | Tipo | Obligatoria | Notas |
 |---|---|---|---|
 | `v` | entero | sí | `1` |
-| `kind` | texto | sí | `login`, `card`, `identity`, `ssh_key`, `file`, `totp`, `note`, `api_key`, `generator_history` (ADR 0022), `preferences` (ADR 0032 §7, ADR 0036 §3) |
-| `title` | texto | sí | 1–256 caracteres, sin caracteres de control; es el nombre del elemento en `klav://` |
+| `kind` | texto | sí | `login`, `card`, `identity`, `ssh_key`, `file`, `totp`, `note`, `api_key`, `generator_history` (ADR 0022), `preferences` (ADR 0032 §7, ADR 0036 §3), `agent_labels` (ADR 0047), `environment` (ADR 0032 §1) |
+| `title` | texto | sí | 1–256 caracteres, sin caracteres de control; es el nombre del elemento en `klav://`. Con `kind = environment`, además `[a-z0-9][a-z0-9_-]{0,63}` y sin forma de UUID: es el nombre del entorno |
 | `username` | texto | no | valor del primer campo de tipo `username` no vacío |
 | `urls` | lista de texto | no | URLs para autocompletar (hasta 2048 bytes cada una) |
 | `tags` | lista de texto | no | etiquetas (1–256 caracteres) |
 | `passkey` | objeto | no | ADR 0020: solo con `kind = login`; resumen `{rp_id, credential_id, user_name}` de la passkey de *details* (§14.2), sin secretos |
+| `environment` | objeto | no | ADR 0032 §1: obligatoria con `kind = environment` y prohibida en los demás tipos; `{protected, variables}`, que rechaza claves desconocidas: `protected` (booleano) es la marca de esa versión y `variables` la lista de nombres, en el orden de *details* |
 
 *Details*:
 
@@ -376,8 +377,22 @@ Ambas secciones son objetos JSON UTF-8 que **rechazan claves desconocidas**. `v`
 | `password_record` | base64url | no | ADR 0022: blob `0x16` con las contraseñas anteriores y la pendiente (§7.3); los clientes lo conservan intacto al editar otros campos |
 | `generated` | lista | no | ADR 0022: solo con `kind = generator_history`; entradas `{value, created_at, host?, saved_in?}`, `value` secreto |
 | `preferences` | objeto | no | ADR 0032 §7 y ADR 0036 §3: solo con `kind = preferences`; `{developer?, proxy?}`, que rechaza claves desconocidas. Ver «Preferencias de la cuenta» en §7.3 |
+| `variables` | lista | no | ADR 0032 §1: obligatoria con `kind = environment` (puede estar vacía) y prohibida en los demás tipos. Cada variable es `{name, value}` o `{name, ref}`, nunca las dos ni ninguna, y rechaza claves desconocidas. `name`: `[A-Za-z_][A-Za-z0-9_]{0,127}`, único y **distingue mayúsculas**; `value`: secreto, como un campo `concealed`; `ref`: una referencia `klav://` con los cuatro segmentos como UUID (bóveda, proyecto, elemento y campo), a un elemento que no es un entorno. Hasta 512 variables |
 
 Los tipos `password`, `totp` y `concealed` son secretos: el núcleo los guarda en memoria como `SecretValue` y nunca los incluye en el *overview*. Al reconstruir un elemento, el cliente comprueba que `kind` y `username` del *overview* coincidan con lo que se deriva de *details*; si no, lo rechaza (`SectionMismatch`). La misma comprobación vale para el resumen `passkey` del *overview* frente a la `passkey` de *details* (ADR 0020).
+
+**Entornos** (`kind = environment`, ADR [0032](decisiones/0032-entornos-por-repositorio.md) §1). Un elemento por proyecto y entorno (`development`, `staging`, `production`):
+
+- `environment.variables` del *overview* es exactamente la lista de nombres de `variables` de *details*, en el mismo orden; si no, `SectionMismatch`.
+- Un entorno no lleva `urls`, `fields`, `attachments`, `passkey` ni `password_record`.
+- Los valores (`value`) son secretos y nunca van en el *overview*; las referencias (`ref`) tampoco.
+- Una referencia no apunta a un entorno, tampoco al propio: no hay cadenas ni ciclos. El elemento solo no lo sabe; lo comprueba quien conoce el tipo del destino (`Environment::check_references`).
+- En una referencia a un entorno, el cuarto segmento es el nombre de una variable y distingue mayúsculas (`klav://Trabajo/acme-api/production/STRIPE_KEY`); en los demás tipos sigue siendo un campo. Al analizar una referencia, el cuarto segmento puede ser un nombre de campo o de variable; `resolve_variable` y `resolve_field` lo resuelven según el tipo.
+- **La marca efectiva** (`effective_protected`, ADR 0032 §3): cuenta la `protected` de la última versión que escribió la persona. Sin versión de la persona, el entorno está protegido si alguna versión tiene la marca o se llama `production` o `prod` (sin distinguir mayúsculas ASCII); sin ninguna versión, también.
+- **El conjunto protegido** (`protected_set`, ADR 0032 §3.1): para cada entorno se toma su última versión escrita por la persona; si tiene `protected`, el elemento de destino de cada `ref` entra en el conjunto. Las versiones de un agente no cuentan, y un entorno que solo escribieron agentes no añade nada.
+- Vectores en [`docs/vectores/entorno.json`](vectores/entorno.json).
+
+**Tipo desconocido.** Si el JSON no se lee y su `kind` es un texto que este cliente no conoce, el error es `UnknownKind` («unknown item kind; update Klav»), no «does not decrypt»: lo escribió un cliente más nuevo, no es una manipulación. El elemento se salta igual, y este cliente no puede editarlo ni sobrescribirlo.
 
 ### 7.2 Metadatos de bóvedas y proyectos (`kind = 0x12, 0x13`)
 
@@ -397,6 +412,7 @@ Los nombres de las bóvedas y los proyectos (los que usan las referencias `klav:
 | `v` | entero | sí | `1` |
 | `name` | texto | sí | 1–64 caracteres, sin caracteres de control, sin `/`, sin espacios a los lados y sin forma de UUID |
 | `description` | texto | no | hasta 1024 caracteres |
+| `repos` | lista de texto | no | ADR 0032 §2: solo en un proyecto, los repositorios enlazados, normalizados a `host/dueño/repo` (minúsculas, sin esquema, usuario, contraseña, puerto, `.git` ni `/` final; las rutas con grupos van enteras). Hasta 32, sin repetir, cada uno hasta 256 bytes. Vacía no se escribe: los metadatos sin enlaces no cambian. Un lector anterior la rechaza y salta el proyecto entero (ADR 0032 §2, «los lectores primero») |
 
 ### 7.3 Registro de contraseñas (`kind = 0x16`)
 
@@ -527,6 +543,7 @@ Están en [`docs/vectores/`](vectores/), uno por formato, en JSON (campos binari
 | `identidad.json` | identidad, huella y llaves privadas selladas (§6) |
 | `envoltura.json` | llaves de proyecto, elemento y adjunto envueltas (§5.2) |
 | `elemento.json` | secciones *overview* y *details* (§7) |
+| `entorno.json` | entornos (ADR 0032): *overview* y *details* de un entorno con un valor y una referencia, documentos que hay que rechazar (variable repetida, valor y referencia a la vez, referencia a otro entorno, referencia por nombre, listas que no coinciden) y el conjunto protegido a partir de versiones de la persona y de agentes (§7.1) |
 | `compartir.json` | llaves de bóveda y de proyecto con HPKE (§8) |
 | `item-grant.json` | llave de un elemento con HPKE (`0x23`, §8.2), y un `GrantPayload` `v: 2` que la lleva, con su mensaje y la firma de la cuenta (§13.4) |
 | `sandbox-grant.json` | dos `GrantPayload` `v: 3` (§13.4): el del proxy, con un emisor en `issuers`, y el del emisor, con `sandbox` y sin proyectos, cada uno con su mensaje y la firma de la cuenta |
@@ -758,6 +775,21 @@ payload v4      = payload v3 del proxy + { local_clients: [ { name, token_digest
 - **`v: 4` solo con algo de lo anterior**, y siempre con ello: un `v` menor con un perfil MCP, una regla con `mcp_tools` o `local_clients` se rechaza, y un `v: 4` sin nada de eso también. Al volver a emitir el grant, el cliente escribe el `v` que necesita lo que lleva, sin bajar de 2: vuelve a 3 o a 2 al quitar lo último de la pasarela.
 - Los clientes, `klavd`, el verificador de la bitácora, los servidores y los `klav-proxy` anteriores rechazan `v: 4` (`deny_unknown_fields`, versión desconocida): fallan cerrados. Un `klav-proxy` de las capas 1–3 lo lee pero **no sirve** ningún perfil MCP hasta la capa 4.
 
+**Entornos (ADR [0032](decisiones/0032-entornos-por-repositorio.md) §3.1 y §4), en cualquier versión.** Tres claves nuevas en la política y una en el payload, que no se escriben vacías o en falso, así que los grants sin ellas no cambian ni un byte:
+
+```
+regla           = regla + { once?: true, origin?: "protected" }
+scope de regla  = scope + { items: [ item_id ] }      ← ahora en cualquier permiso
+payload         = payload + { released?: [ item_id ] }
+```
+
+- **`Scope.items` en cualquier regla** (§4.1), por ID: el servidor ve el elemento de cada petición. AND entre dimensiones, OR dentro de la lista. Ya no exige `v: 2`: solo las reglas de `proxy` siguen nombrando únicamente elementos del grant, y una regla de otro permiso nombra elementos de los proyectos compartidos. Los lectores anteriores rechazan `items` fuera de `proxy`, así que fallan cerrados.
+- **`once`** (§4.2) solo con `ask`: una aprobación bajo esa regla no lleva arrendamiento, se gasta en un uso y nunca va en una tarea. Entre las reglas que aplican, el orden es `deny` > `ask once` > `ask` > `allow`, y `Decision::once` dice si el `ask` ganador es `once`.
+- **`origin: "protected"`** (§3.1): una regla **heredada** del conjunto protegido. Es `ask once`, su alcance son solo sus elementos (ninguna otra dimensión: una etiqueta, un host o unas horas la dejarían sin aplicar aunque siguiera escrita), no caduca y solo puede ser de `fill`, `inject`, `reveal`, `totp`, `update` o `delete` (`Policy::check_once`). Cuenta como regla de su permiso, así que el valor por defecto deja de aplicar, pero nunca sube una petición por encima de lo que dan las demás reglas: si aplica, un `allow` o un `ask` pasa a `ask once`, y un `deny` sigue siendo `deny`. Añadir una no hace más permisiva ninguna decisión (*proptests* en `klav-core::policy`).
+- **`released`**: los elementos cuya protección heredada el grant deja a propósito, porque el cliente de la persona vio su versión del entorno que los quitó. Sin repetir, hasta 1024, y ninguno nombrado aún por una regla heredada.
+- El cliente de la persona no firma, y el servidor responde `400`, a un grant con `once` fuera de `ask` o una regla heredada mal formada. El servidor responde **`409`** a un grant nuevo que pierde un par `(permiso, elemento)` heredado del grant en vigor sin nombrar el elemento en `released` (`GrantPayload::lost_protection`).
+- Para el servidor, un destino «pide cada vez» si `evaluate` dice `ask once` o, sin fiarse de las etiquetas, el host, el método, la ruta ni la herramienta que declara el agente, si alguna regla `once` viva de ese permiso coincide con la bóveda, el proyecto, las horas y el elemento (`Policy::may_require_once`). `passkey` y `rotate` sobre un elemento protegido se deniegan siempre, también dentro de una tarea.
+
 ### 13.5 Decisión sobre una aprobación
 
 ```
@@ -766,6 +798,8 @@ mensaje = tuple("klav/v1/sig/approval", approval_id(16), agent_id(16), petición
 
 - `petición` son los bytes JSON de la petición pendiente, tal como los guarda el servidor y se le muestran a la persona.
 - `lease_until_ms` es el fin del arrendamiento ("aprobar 15 min"), o `0` para "solo esta vez" y para las negativas.
+- **Un entorno y sus elementos protegidos** (ADR [0032](decisiones/0032-entornos-por-repositorio.md) §3.1). Un `inject` sobre un entorno puede nombrar en `items` los demás elementos que resuelve la misma llamada. La petición pendiente gana entonces `items`, con sus IDs ordenados, y la aprobación vale **un** acceso a `item_id` y uno a cada elemento de la lista, cada uno con su propio `access` que nombra la aprobación. Nunca lleva arrendamiento ni va a una tarea. Se gasta cuando se usan todos o cuando pasa la ventana de una sola vez. Sin `items`, la petición es la de siempre byte a byte; un dispositivo anterior la rechaza (`deny_unknown_fields`) y no muestra la tarjeta.
+- **Sin arrendamiento ni tarea en lo que pide cada vez** (ADR 0032 §4.2): el servidor responde `400` a una decisión con `lease_until_ms > 0`, o con «Añadir a la tarea», sobre un destino que pide cada vez (§13.4) o una petición con `items`.
 - **La pasarela MCP** (ADR [0049](decisiones/0049-mcp-gateway.md) §5.4). Con el interruptor `mcp_gateway` de la cuenta encendido, la petición gana `caller`, `{"sandbox_id": …}` o `{"local_client": …}` (exactamente uno), cuando la llamada es de un sandbox o de un cliente local, y sus `claims` pueden traer `mcp_tool` y `mcp_args` (§13.16). Con el interruptor apagado no aparecen, y la petición es la de siempre byte a byte. El dispositivo comprueba la gramática de la herramienta y del cliente antes de mostrar nada; si falla, muestra una tarjeta de seguridad y no firma nada.
 
 ### 13.6 Revocación
@@ -1225,3 +1259,4 @@ Un UUID v4 fijo de Klav, constante en `klav-core` (`crypto::passkey::AAGUID`) y 
 | 2026-11-25 | **ADR 0048 en código, capa 1** (invitaciones al registro): §2.3: etiqueta `klav/v1/server/invite`; §4.7 nueva: el código de invitación (128 bits en Crockford base32 tras `KLAV-`), su forma canónica y su resumen, en `klav_core::crypto::invite`. Vector nuevo `invite.json`; los demás no cambian. |
 | 2026-11-25 | **ADR 0049 aceptado y en código, capas 1–3** (la pasarela MCP): §2.3: etiquetas `klav/v1/proxy/local-client` y `klav/v1/proxy/mcp-args`; §13.4: grant `v: 4` (perfiles MCP, `mcp_tools`, `local_clients`) y la regla de evaluación de las herramientas; §13.5: `caller` y las *claims* de la pasarela, solo con el interruptor de la cuenta encendido; §13.16 nueva: el token de cliente local (`klc1_`) y el resumen de los argumentos, en `klav_core::crypto::mcp`. §13.15 queda reservada para `0x27`. Vector nuevo `mcp-gateway.json`; los demás no cambian. |
 | 2026-11-25 | **ADR 0049 en código, capa 4** (el proxy): §2.3: etiqueta `klav/v1/proxy/tool-definition`, solo local, sin formato en el cable ni vectores. Nada más cambia: el proxy calcula `mcp_args` y compara `token_digest` con las funciones de §13.16. |
+| 2026-11-25 | **ADR 0032 en código, capas 1–2** (entornos por repositorio): §7.1: el tipo `environment`, la clave `environment` del *overview* y `variables` de *details*, con sus reglas, la marca efectiva, el conjunto protegido y el error `UnknownKind`; §7.2: `repos` en los metadatos de proyecto (ya en código); §11: `entorno.json`; §13.4: `Scope.items` en cualquier regla sin `v: 2`, `once`, `origin: "protected"` y `released`, en cualquier versión, con el `400` y el `409` del servidor; §13.5: `items` en la petición de aprobación y sin arrendamiento ni tarea en lo que pide cada vez. Ningún formato binario, etiqueta ni AAD cambia; los vectores existentes no cambian. |

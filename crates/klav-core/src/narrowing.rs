@@ -36,6 +36,16 @@
 //!
 //! Projects are not part of a [`Policy`]: the caller checks that the new
 //! grant's projects are among the old ones.
+//!
+//! # Environments (ADR 0032)
+//!
+//! Effects compare with `once`: `allow` < `ask` < `ask once` < `deny`, so
+//! dropping `once` widens. Inherited (`origin: "protected"`) rules only
+//! tighten: the new policy narrows only if it keeps every inherited
+//! `(permission, item)` of the old one, and they are left out of the
+//! comparison of the other rules. They still make a permission's default
+//! stop applying, so an old policy with inherited rules for a permission is
+//! read as `deny` out of scope there.
 
 use crate::policy::{Effect, Permission, Policy, Rule, Scope};
 
@@ -64,29 +74,58 @@ pub fn permission_narrows(old: &Policy, new: &Policy, permission: Permission) ->
     if permission.requires_task() {
         return true;
     }
+    let inherited = |policy: &Policy| -> Vec<(Permission, crate::ids::ItemId)> {
+        policy
+            .protected_pairs()
+            .into_iter()
+            .filter(|(p, _)| *p == permission)
+            .collect()
+    };
+    let (old_inherited, new_inherited) = (inherited(old), inherited(new));
+    if !old_inherited
+        .iter()
+        .all(|pair| new_inherited.contains(pair))
+    {
+        return false;
+    }
     let old_rules = rules_for(old, permission);
     let new_rules = rules_for(new, permission);
     if only_tightened(&old_rules, &new_rules) {
         return true;
     }
     let default = permission.default_effect();
-    let Some(old_max) = old_rules.iter().map(|r| r.effect).max() else {
-        return new_rules.iter().all(|r| r.effect >= default);
+    let rank = |effect: Effect| Rule::new(permission, effect).strictness();
+    // With inherited rules the old default no longer applied: out of the
+    // other rules' scope it was `deny`.
+    let old_baseline = if old_inherited.is_empty() {
+        default
+    } else {
+        Effect::Deny
+    };
+    let Some(old_max) = old_rules.iter().map(|r| r.strictness()).max() else {
+        return new_rules
+            .iter()
+            .all(|r| r.strictness() >= rank(old_baseline));
     };
     if new_rules.is_empty() {
-        return default == Effect::Deny
-            || (default >= old_max && old_rules.iter().any(|r| always_applies(r)));
+        // Inherited rules alone: `deny` everywhere else, and never looser
+        // than that where they apply.
+        return !new_inherited.is_empty()
+            || default == Effect::Deny
+            || (rank(default) >= old_max && old_rules.iter().any(|r| always_applies(r)));
     }
     new_rules.iter().all(|n| {
-        n.effect == Effect::Deny || (n.effect >= old_max && old_rules.iter().any(|o| covers(o, n)))
+        n.effect == Effect::Deny
+            || (n.strictness() >= old_max && old_rules.iter().any(|o| covers(o, n)))
     })
 }
 
+/// The rules for `permission`, without the inherited ones (module docs).
 fn rules_for(policy: &Policy, permission: Permission) -> Vec<&Rule> {
     policy
         .rules
         .iter()
-        .filter(|r| r.permission == permission)
+        .filter(|r| r.permission == permission && !r.is_protected())
         .collect()
 }
 
@@ -103,9 +142,11 @@ fn only_tightened(old: &[&Rule], new: &[&Rule]) -> bool {
             .iter()
             .enumerate()
             .filter(|(_, n)| {
-                n.scope == o.scope && n.expires_at == o.expires_at && n.effect >= o.effect
+                n.scope == o.scope
+                    && n.expires_at == o.expires_at
+                    && n.strictness() >= o.strictness()
             })
-            .min_by_key(|(_, n)| n.effect)
+            .min_by_key(|(_, n)| n.strictness())
             .map(|(i, _)| i);
         match twin {
             Some(i) => {
@@ -435,6 +476,8 @@ mod tests {
                 effect,
                 scope,
                 expires_at: e,
+                once: false,
+                origin: None,
             }
         })
     }
@@ -500,8 +543,92 @@ mod tests {
         new
     }
 
+    #[test]
+    fn once_and_inherited_rules_narrow_only_when_they_tighten() {
+        let x = item(0);
+        let with = |rules: Vec<Rule>| policy(rules);
+        let once = |p: Permission| Rule {
+            once: true,
+            ..Rule::new(p, Effect::Ask)
+        };
+        // Dropping `once` widens; adding it narrows.
+        assert!(!policy_narrows(
+            &with(vec![once(Permission::Inject)]),
+            &with(vec![Rule::new(Permission::Inject, Effect::Ask)])
+        ));
+        assert!(policy_narrows(
+            &with(vec![Rule::new(Permission::Inject, Effect::Ask)]),
+            &with(vec![once(Permission::Inject)])
+        ));
+        // Adding an inherited rule narrows; dropping one widens.
+        let allow = Rule::new(Permission::Inject, Effect::Allow);
+        let inherited = Rule::protected(Permission::Inject, vec![x]);
+        assert!(policy_narrows(
+            &with(vec![allow.clone()]),
+            &with(vec![allow.clone(), inherited.clone()])
+        ));
+        assert!(!policy_narrows(
+            &with(vec![allow.clone(), inherited.clone()]),
+            &with(vec![allow.clone()])
+        ));
+        // With only inherited rules, the rest was `deny`: allowing it widens.
+        assert!(!policy_narrows(
+            &with(vec![inherited.clone()]),
+            &with(vec![allow, inherited])
+        ));
+    }
+
+    fn with_environments(
+        policy: Policy,
+        onces: Vec<bool>,
+        inherited: Vec<(Permission, u8)>,
+    ) -> Policy {
+        let mut policy = policy;
+        for (rule, once) in policy.rules.iter_mut().zip(onces) {
+            rule.once = once && rule.effect == Effect::Ask;
+        }
+        policy.rules.extend(
+            inherited
+                .into_iter()
+                .filter(|(p, _)| crate::policy::PROTECTED_PERMISSIONS.contains(p))
+                .map(|(p, i)| Rule::protected(p, vec![item(i)])),
+        );
+        policy
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// With `once` and inherited rules too, a "narrows" holds for every
+        /// request, counting `ask once` stricter than `ask` (ADR 0032).
+        #[test]
+        fn narrows_holds_with_environments(
+            old in a_policy(),
+            new in a_policy(),
+            old_onces in prop::collection::vec(any::<bool>(), 5),
+            new_onces in prop::collection::vec(any::<bool>(), 5),
+            old_inherited in prop::collection::vec((permission(), 0u8..2), 0..2),
+            new_inherited in prop::collection::vec((permission(), 0u8..2), 0..3),
+            same in any::<bool>(),
+            requests in prop::collection::vec(a_request(), 32),
+        ) {
+            let old = with_environments(old, old_onces, old_inherited);
+            let new = if same {
+                // The old policy with more inherited rules: always narrows.
+                with_environments(old.clone(), Vec::new(), new_inherited)
+            } else {
+                with_environments(new, new_onces, new_inherited)
+            };
+            if same {
+                prop_assert!(policy_narrows(&old, &new));
+            }
+            if policy_narrows(&old, &new) {
+                for r in &requests {
+                    let (before, after) = (evaluate(&old, r), evaluate(&new, r));
+                    prop_assert!(after.strictness() >= before.strictness(), "{r:?}: {before:?} -> {after:?}");
+                }
+            }
+        }
 
         #[test]
         fn narrows_never_gives_a_request_more(
