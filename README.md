@@ -45,18 +45,19 @@ See [`docs/features.md`](docs/features.md) for the full feature-by-feature matri
 
 ## Quick start
 
-1. **Host your server** (Docker Compose with SQLite, or Postgres / Railway — see [`docs/self-hosting.md`](docs/self-hosting.md) or [docs.klav.dev/self-hosting](https://docs.klav.dev/self-hosting/)):
+1. **Host your server** with the published image, SQLite and invite mode (no Rust build; Postgres and Railway are in [`docs/self-hosting.md`](docs/self-hosting.md) and [docs.klav.dev/self-hosting](https://docs.klav.dev/self-hosting/)):
    ```sh
-   # Start once with registration open to create your accounts
-   KLAV_ALLOW_REGISTRATION=true docker compose up -d --build
-   # After creating your accounts, close registration
+   mkdir klav && cd klav
+   curl -fsSLO https://raw.githubusercontent.com/OmarAlex24/klav/v0.10.0/docker-compose.yml
    docker compose up -d
+   # Create the invite you sign up with; nobody registers without one
+   docker compose exec klav klav-server invite create --email you@example.com
    ```
-   Put a reverse proxy with TLS (Caddy, nginx, Traefik) in front before connecting from other devices.
+   Put TLS in front before connecting from other devices: `tailscale serve --bg 8080` (private, your tailnet only) or `caddy reverse-proxy --from klav.example.com --to 127.0.0.1:8080` (public). Without Docker: the Linux `klav-server-linux-x86_64.tar.gz` with its systemd unit, or `brew install omaralex24/tap/klav-server` on Linux and macOS ([quick start](https://docs.klav.dev/self-hosting/quick-start/#without-docker)).
 
 2. **Install Klav:**
-   - **macOS:** Download `Klav.dmg` from [klav.dev/#download](https://klav.dev/#download) (or GitHub Releases), drag Klav to Applications, and run **Set up this Mac** to install `klavd`, `/usr/local/bin/klav`, browser native messaging, and the agent skill.
-   - **Linux:** Download `klav-linux-x86_64.tar.gz` from [klav.dev/#download](https://klav.dev/#download) (contains `klav`, `klavd`, and `klav-native-host`).
+   - **macOS:** Download `Klav.dmg` from [klav.dev/#download](https://klav.dev/#download) (or GitHub Releases, or `brew install --cask omaralex24/tap/klav`), drag Klav to Applications, and run **Set up this Mac** to install `klavd`, `/usr/local/bin/klav`, browser native messaging, and the agent skill.
+   - **Linux:** Download `klav-linux-x86_64.tar.gz` from [klav.dev/#download](https://klav.dev/#download) (contains `klav`, `klavd`, and `klav-native-host`), or `brew install omaralex24/tap/klav-cli`.
    - **From source:** `cargo build --release -p klav-cli -p klav-daemon` (requires the Rust toolchain in `rust-toolchain.toml`).
 
 3. **Connect an agent:**

@@ -29,41 +29,54 @@ and the apps use `https://api.klav.dev`. For yours:
 
 > The steps for people who use Klav are on the public page [`quick-start.mdx`](../apps/docs/src/content/docs/self-hosting/quick-start.mdx) (in `apps/docs/src/content/docs/self-hosting/`); a change to those steps goes there first.
 
-Requirements: Docker with the `compose` plugin.
+Requirements: Docker with the `compose` plugin, on Linux x86_64 (the image is
+`linux/amd64` only; other machines below). No `git clone` and no Rust build:
+the release's [`docker-compose.yml`](../docker-compose.yml) runs the published
+image (ADR [0048](decisiones/0048-invite-beta-and-distribution.md) §5.1).
 
 ```sh
-git clone https://github.com/OmarAlex24/klav
-cd klav
-# First start: registration open only to create your accounts.
-KLAV_ALLOW_REGISTRATION=true docker compose up -d --build
+mkdir klav && cd klav
+curl -fsSLO https://raw.githubusercontent.com/OmarAlex24/klav/v0.10.0/docker-compose.yml
+docker compose up -d
 curl http://127.0.0.1:8080/v1/health
-# {"status":"ok","version":"…","registration_open":true}
+# {"status":"ok",…,"registration_open":false,"registration_mode":"invite",…}
+# Then TLS in front (§3), and the invite you sign up with:
+docker compose exec klav klav-server invite create --email you@example.com
 ```
+
+`invite create` prints the code once, on stdout, with its ID. Create your
+account with it (`klav signup --server https://<your domain> --email …`, which
+asks for the code before the master password; [`cli.md`](cli.md) §3), and one
+invite per person after that. Managing invites (`ls`, `revoke`, batch codes) is
+in §2.5.
 
 The root [`docker-compose.yml`](../docker-compose.yml):
 
-- publishes the port only on `127.0.0.1:8080`: put a reverse proxy with TLS
-  in front of it (§3);
+- runs `ghcr.io/omaralex24/klav-server:<version>`, pinned to the release: the
+  version-bump PR raises it ([`releasing.md`](releasing.md) §2, step 1), so the
+  file at tag `vX.Y.Z` names image `X.Y.Z`. There is no `build:`;
+  [`docker-compose.build.yml`](../docker-compose.build.yml) adds it
+  (`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`,
+  from a checkout);
+- publishes the port only on `127.0.0.1:8080`: put TLS in front of it (§3);
 - stores everything in the `klav-data` volume (`/data` in the container): the
   SQLite database, its WAL and attachments;
 - runs as an unprivileged user (`klav`, UID 10001), with a read-only
   filesystem, no capabilities and `no-new-privileges`;
 - has a health check (`klav-server healthcheck`), so `docker ps` shows
   `healthy` when it responds;
-- leaves **registration closed** (`KLAV_ALLOW_REGISTRATION` is `false` unless
-  you set it on startup), so nobody else creates accounts on your server.
+- starts in **invite mode** (`KLAV_REGISTRATION_MODE=invite`), with
+  `KLAV_ALLOW_REGISTRATION=false` next to it (§2.5): an image from before
+  invite mode ignores the first and reads the second, so pinning an older
+  image under this file leaves the server closed, not open (T253). Checked
+  with the `0.9.2` image: it starts healthy with `registration_open: false`.
 
-Once you have created your accounts (`klav signup`, [`cli.md`](cli.md) §3),
-start it again without the variable to close registration (`GET /v1/health`
-then reports `registration_open: false`, and clients warn you before asking for
-the password):
-
-```sh
-docker compose up -d
-```
-
-Check that it wasn't left set in your shell or in a `.env` next to
-`docker-compose.yml`: Compose reads both.
+**Other machines.** On Apple silicon, Docker Desktop runs the `amd64` image
+through emulation with `DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose up -d`
+(without it: `no matching manifest for linux/arm64/v8`); Homebrew is simpler
+there (below). On Linux ARM, build from a checkout of the tag with
+`docker-compose.build.yml`. A `linux/arm64` image waits for a native arm64
+runner (ADR 0048 §5.1).
 
 The base images (`rust` and `debian`) are pinned by digest in the
 [`Dockerfile`](../Dockerfile) and in Railway's (§8). To bump them, take the
@@ -76,14 +89,66 @@ to Apple with the system roots (§2.4).
 
 ### Without Docker
 
+**Linux, the release binary and systemd.** Each release carries
+`klav-server-linux-x86_64.tar.gz` (glibc 2.36 or later), a folder with
+`klav-server`, [`klav-server.service`](../deploy/server/klav-server.service)
+and [`server.toml.example`](../deploy/server/server.toml.example)
+([`releasing.md`](releasing.md) §1):
+
+```sh
+tag=v0.10.0
+curl -fsSLO "https://github.com/OmarAlex24/klav/releases/download/$tag/klav-server-linux-x86_64.tar.gz"
+curl -fsSLO "https://github.com/OmarAlex24/klav/releases/download/$tag/SHA256SUMS"
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xzf klav-server-linux-x86_64.tar.gz && cd klav-server-linux-x86_64
+sudo install -m 0755 klav-server /usr/local/bin/klav-server
+sudo install -d -m 0755 /etc/klav
+sudo install -m 0644 server.toml.example /etc/klav/server.toml
+sudo install -m 0644 klav-server.service /etc/systemd/system/klav-server.service
+sudo systemctl daemon-reload && sudo systemctl enable --now klav-server
+```
+
+- The unit runs the server as a dynamic user named `klav` (`DynamicUser=yes`)
+  that can write only to `StateDirectory=klav` (`/var/lib/klav`, really
+  `/var/lib/private/klav`), with `ProtectSystem=strict`, `ProtectHome=yes`,
+  `PrivateTmp=yes`, `NoNewPrivileges=yes`, no capabilities,
+  `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` and a `@system-service`
+  system call filter.
+- `/etc/klav/server.toml` must be readable by that user (0644), so it holds no
+  secrets. Secrets go in `/etc/klav/server.env` (`KLAV_*` lines, 0600, owned by
+  root): systemd reads `EnvironmentFile=` before it drops to the user.
+- **Invites run as the same user.** Run as root, `klav-server invite` could
+  leave SQLite files in `/var/lib/klav` owned by root that the service can't
+  write (ADR 0048 §1.4). A second unit with `DynamicUser=yes` and the same
+  `User=klav` shares the running service's user:
+
+  ```sh
+  sudo systemd-run --pipe --wait --quiet \
+    -p DynamicUser=yes -p User=klav -p StateDirectory=klav \
+    -p EnvironmentFile=-/etc/klav/server.env -E KLAV_CONFIG=/etc/klav/server.toml \
+    /usr/local/bin/klav-server invite create --email you@example.com
+  ```
+
+**Homebrew (Linux or macOS):** `brew install omaralex24/tap/klav-server`, then
+`brew services start klav-server`. On Linux it installs the release tarball; on
+macOS it builds from the tag's source with Homebrew's Rust (there is no macOS
+`klav-server` on the release, [`releasing.md`](releasing.md) §1). Its first
+install writes `$(brew --prefix)/etc/klav/server.toml` (127.0.0.1:8080, invite
+mode, SQLite under `$(brew --prefix)/var/klav`) and never overwrites it. Invites:
+`KLAV_CONFIG="$(brew --prefix)/etc/klav/server.toml" klav-server invite create --email you@example.com`.
+The formula is in [`deploy/homebrew/`](../deploy/homebrew/README.md).
+
+**From source:**
+
 ```sh
 cargo build --release -p klav-server
 ./target/release/klav-server --config /etc/klav/server.toml
 ```
 
-The binary needs nothing else (SQLite is bundled). `klav-server --version`
-prints the version and `klav-server healthcheck` exits with code 0 if the
-configured server responds on `/v1/health`.
+The binary needs nothing else (SQLite is bundled). Without a configuration it
+is **open to everyone** (`registration_mode` defaults to `open`, §2.5).
+`klav-server --version` prints the version and `klav-server healthcheck` exits
+with code 0 if the configured server responds on `/v1/health`.
 
 ## 2. Configuration
 
@@ -107,7 +172,8 @@ Unknown keys in the TOML are an error: a typo does not pass silently.
 | `KLAV_DATA_DIR` | `data_dir` | `data` (`/data` in the image) | Attachments directory |
 | `KLAV_TRUST_FORWARDED_FOR` | `trust_forwarded_for` | `false` | Use `X-Forwarded-For` as the client IP (§3.2) |
 | `KLAV_TRUSTED_IP_HEADER` | `trusted_ip_header` | — (none) | Header your proxy sets to the client IP, e.g. `x-real-ip` (§3.2); mutually exclusive with the above |
-| `KLAV_ALLOW_REGISTRATION` | `allow_registration` | `true` (`false` in `docker-compose.yml`, §1) | Accept new accounts |
+| `KLAV_REGISTRATION_MODE` | `registration_mode` | `open` (`invite` in `docker-compose.yml`, Homebrew and `deploy/server/`, §1) | `open`, `invite` or `closed` (§2.5) |
+| `KLAV_ALLOW_REGISTRATION` | `allow_registration` | `true` (`false` in `docker-compose.yml`, Homebrew and `deploy/server/`, §1) | The older switch: `true` = `open`, `false` = `closed`; with `invite` it must be `false` (§2.5) |
 | `KLAV_LOG_FORMAT` | `log.format` | `json` | `json` or `pretty` |
 | `KLAV_LOG` | `log.filter` | `info` | `tracing` filter, e.g. `info,klav_server=debug` |
 | `KLAV_APNS_KEY_PATH` | `push.apns.key_path` | — | APNs `.p8` file (§2.4) |
@@ -115,6 +181,10 @@ Unknown keys in the TOML are an error: a typo does not pass silently.
 | `KLAV_APNS_KEY_ID` | `push.apns.key_id` | — | That key's ID |
 | `KLAV_APNS_TEAM_ID` | `push.apns.team_id` | — | Apple team ID |
 | `KLAV_APNS_TOPIC` | `push.apns.topic` | — | Bundle ID of the iOS app |
+| `KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES` | `limits.max_account_attachment_bytes` | 10 GiB | Attachments per account; `0` is no limit (§2.6) |
+| `KLAV_MAX_ACCOUNT_VAULT_BYTES` | `limits.max_account_vault_bytes` | 1 GiB | Vault data per account, without attachments (§2.6) |
+| `KLAV_MAX_ITEMS_PER_ACCOUNT` | `limits.max_items_per_account` | 100,000 | Items per account (§2.6) |
+| `KLAV_MAX_VAULTS_PER_ACCOUNT` | `limits.max_vaults_per_account` | 1,000 | Vaults per account (§2.6) |
 
 Booleans accept `true`/`false`, `1`/`0` and `yes`/`no`.
 
@@ -127,6 +197,7 @@ data_dir = "data"
 trust_forwarded_for = false
 # trusted_ip_header = "x-real-ip"   # or this one, never both (§3.2)
 allow_registration = true
+registration_mode = "open"     # or "invite" or "closed" (§2.5)
 
 [sessions]
 access_ttl_secs = 900          # access token: 15 min
@@ -149,6 +220,10 @@ max_item_versions = 50               # previous versions per item
 max_attachment_bytes = 104857600     # 100 MiB per attachment (encrypted)
 max_attachment_chunk_bytes = 8388608 # 8 MiB per upload chunk
 max_pending_upload_bytes = 1073741824 # 1 GiB of unfinished uploads per account
+max_account_attachment_bytes = 10737418240 # 10 GiB per account (§2.6); 0: no limit
+max_account_vault_bytes = 1073741824 # 1 GiB of vault data per account; 0: no limit
+max_items_per_account = 100000       # 0: no limit
+max_vaults_per_account = 1000        # 0: no limit
 
 [rate_limit]                   # token buckets: refill per minute and burst
 ip_per_minute = 600            # every request, per IP
@@ -159,6 +234,8 @@ auth_email_per_minute = 10     # attempts per email and per IP
 auth_email_burst = 5
 account_per_minute = 1200      # authenticated requests per account
 account_burst = 300
+invite_ip_per_minute = 1       # invite checks and invite failures, per IP (§2.5)
+invite_ip_burst = 10
 
 [push.apns]                    # optional: approval notifications to the iPhone (§2.4)
 key_path = "/run/secrets/AuthKey_ABC123DEFG.p8"
@@ -236,6 +313,79 @@ accepts only notifications signed with that person's key: if you self-host the
 server and use an app you didn't sign yourself, notifications will arrive
 through the hosted plan's relay (phase 8).
 
+### 2.5 Registration and invites
+
+`registration_mode` (ADR [0048](decisiones/0048-invite-beta-and-distribution.md) §1):
+
+- `open`: anyone can register; the bare binary's default, as
+  `allow_registration = true` was.
+- `invite`: `register/start` and `register/finish` need a valid invite.
+- `closed`: nobody can.
+
+`allow_registration` is still read: `true` means `open`, `false` means
+`closed`. After the file and the environment are merged, the two must agree,
+or the server stops at start-up naming both keys: `true` agrees only with
+`open`, and `false` agrees with `closed` **and** `invite`. Every shipped
+configuration (`docker-compose.yml`, `deploy/server/server.toml.example`,
+Homebrew's) keeps `false` next to `invite`, so that a binary from before
+`registration_mode`, which ignores `KLAV_REGISTRATION_MODE`, stays closed
+instead of open (T253). Remove it only to choose `open`.
+
+`GET /v1/health` gains `registration_mode`. `registration_open` stays, and is
+`false` in `invite` mode, so clients from before invites stop with their "not
+open yet" message before the emergency kit and Argon2id.
+
+**Invites** are managed with subcommands of the same binary, against the
+configured database (`--config`, `KLAV_CONFIG` or `KLAV_DATABASE_URL`), while
+the server runs. There is no HTTP admin API:
+
+```text
+klav-server invite create [--email EMAIL] [--uses N] [--expires 30d] [--note TEXT]
+klav-server invite ls [--all]
+klav-server invite revoke <ID>
+```
+
+- `create` prints the code once, on stdout, and its ID; only a labelled
+  SHA-256 of the code is stored. `--email` binds it to that address, normalized
+  as registration does. `--expires` defaults to 30 days.
+- Without `--email` and with `--uses` above 1, it is a batch code: it needs
+  `--expires`, at most 14 days, and at most 50 uses (Q3).
+- `ls` never shows codes; without `--all`, only usable invites. `revoke`
+  doesn't touch accounts already created.
+- They never migrate the database: against a schema older than the binary's,
+  they stop and say to upgrade and start the server first.
+- How to run them: `docker compose exec klav klav-server invite …` (§1), the
+  `systemd-run` command of §1 for the systemd unit, or directly with Homebrew.
+
+A failed invite (`POST /v1/auth/invite/check`, or an invite refused in
+`register/*`) costs a token from a per-IP bucket, `invite_ip_per_minute` and
+`invite_ip_burst` (60 per hour sustained), on top of the `auth_*` limits, and
+writes one `warn` log line with the client's IP key, never the code or the
+email. Behind a proxy without a trusted IP header (§3.2), every client shares
+that bucket; for a personal server that is fine.
+
+### 2.6 Quotas per account
+
+`0` turns a quota off. The owner of the vault is counted.
+
+| Key | What it counts | Default |
+|---|---|---|
+| `max_account_attachment_bytes` | Declared size of every attachment not purged in the owner's vaults: finished, pending, and those of trashed items | 10 GiB |
+| `max_account_vault_bytes` | `overview` + `details` + `wrapped_key` of every item not purged, with their kept versions, plus the `meta` of every vault and project | 1 GiB |
+| `max_items_per_account` | Items not purged (trashed ones count until purged) | 100,000 |
+| `max_vaults_per_account` | Owned vaults not deleted, and deleted ones until purged | 1,000 |
+
+- Checked inside the transaction that holds the owner's account lock, so two
+  concurrent writes can't both take the last free space (T248). Attachments
+  count from their declaration (`create`), not from `complete`.
+- A write that doesn't grow the account, deleting, moving to the trash and
+  reading are never refused. Over a quota, a growing write gets
+  `403 quota_exceeded` with the limit, the usage and the maximum.
+- A non-zero attachment quota must be at least `max_attachment_bytes`.
+  `max_pending_upload_bytes` keeps its own meaning.
+- There is no global ceiling: the disk must fit the accounts times their
+  quotas (ADR 0048 §3.3).
+
 ## 3. TLS and reverse proxy
 
 > The steps for people who use Klav are on the public page [`tls-and-reverse-proxy.mdx`](../apps/docs/src/content/docs/self-hosting/tls-and-reverse-proxy.mdx) (in `apps/docs/src/content/docs/self-hosting/`); a change to those steps goes there first.
@@ -253,9 +403,70 @@ the query string also breaks the signature. In addition, that request stays
 open for up to 30 s: the proxy's read timeout must be longer. Pass paths
 unchanged, as in the examples below.
 
+### 3.0 One command: Tailscale Serve or Caddy
+
+Both keep the server on `127.0.0.1:8080` and pass paths and query strings
+unchanged (ADR [0048](decisiones/0048-invite-beta-and-distribution.md) §5.4).
+Checked on 2026-11-25 against Tailscale's and Caddy's docs, and Tailscale's
+source where its docs say nothing.
+
+**Private (a home Mac mini, a VPS with no open ports): Tailscale Serve.**
+
+```sh
+tailscale serve --bg 8080
+```
+
+- Serves `http://127.0.0.1:8080` as `https://<machine>.<tailnet>.ts.net`
+  (`tailscale serve status` shows it), with a certificate Tailscale issues.
+  Only devices in the tailnet reach it; every device that syncs needs
+  Tailscale connected.
+- "Tailscale Serve requires you to enable HTTPS certificates in your tailnet"
+  ([Serve](https://tailscale.com/kb/1312/serve)); if they are off, the CLI
+  offers to turn them on. That needs MagicDNS, and publishes the machine's and
+  the tailnet's names in Certificate Transparency logs
+  ([Enabling HTTPS](https://tailscale.com/kb/1153/enabling-https)): don't use
+  a machine name with anything private in it.
+- With `--bg` it "runs persistently in the background until you disable it",
+  and resumes after a reboot ([CLI](https://tailscale.com/kb/1242/tailscale-serve)).
+  `tailscale serve reset` removes it.
+- **Client IP.** Serve's documentation names only its `Tailscale-User-*`
+  identity headers. Its source (`ipn/ipnlocal/serve.go`,
+  `addProxyForwardedHeaders`) sets `X-Forwarded-For` to the tailnet address
+  of the device, replacing any the device sent. The docs leave
+  `KLAV_TRUST_FORWARDED_FOR` off anyway: all devices share one bucket per IP,
+  which a personal server can live with (§3.2), and a later Tailscale could
+  change undocumented behavior.
+- **`tailscale funnel` is not recommended:** it publishes the server to the
+  internet (T252).
+- It doesn't bring iPhone push approvals: that still needs your own APNs key
+  with an app you signed, or the phase-8 relay (§2.4).
+
+**Public (a VPS with a domain): Caddy.**
+
+```sh
+caddy reverse-proxy --from klav.example.com --to 127.0.0.1:8080
+```
+
+- "If the `--from` address has a host or IP, Caddy will attempt to serve the
+  proxy over HTTPS with a certificate" ([command line](https://caddyserver.com/docs/command-line#caddy-reverse-proxy)):
+  the domain's `A`/`AAAA` record must point at the machine, with ports 80 and
+  443 open.
+- It is a command, not a service: it serves while it runs, and its docs call it
+  "useful for quick deployments, demos, and development". To keep it across
+  reboots, use the Caddyfile of §3.1 with the distribution's `caddy` service.
+- `reverse_proxy` "sets or augments the `X-Forwarded-For` header field", and
+  from clients that aren't `trusted_proxies` "the proxy will ignore their
+  values from incoming requests, to prevent spoofing"
+  ([reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)):
+  the last address is the client's, so set `KLAV_TRUST_FORWARDED_FOR=true`
+  (§3.2). It flushes `text/event-stream` responses immediately, so
+  `/v1/events` needs nothing.
+
 ### 3.1 Caddy
 
-Caddy obtains and renews the certificate on its own:
+Caddy obtains and renews the certificate on its own (the same proxy as
+`caddy reverse-proxy` in §3.0, as a service; set
+`KLAV_TRUST_FORWARDED_FOR=true`):
 
 ```caddyfile
 klav.example.com {
@@ -434,15 +645,17 @@ on disk.
   balancer. On restart, half-finished logins are lost and clients reconnect
   their SSE streams.
 - **No S3.** Attachments are stored on local disk only.
-- **Per-account quotas, only for unfinished uploads.** Half-finished uploads
-  across an account's vaults cannot exceed `max_pending_upload_bytes` (1 GiB),
-  and any idle for a day are deleted. Finished attachments have no quota: any
-  account can fill the disk up to the per-attachment limits. Close registration
-  (`allow_registration = false`) on personal instances.
+- **Quotas are per account, not global.** Each account has quotas on
+  attachments, vault data, items and vaults (§2.6), and half-finished uploads
+  cannot exceed `max_pending_upload_bytes` (1 GiB; any idle for a day are
+  deleted). Nothing caps the sum across accounts, and the audit log and other
+  per-account rows grow outside the quotas: keep registration in `invite` mode
+  on personal instances, and watch the disk.
 - **Registration reveals whether an email exists** (`409` on registration).
-  Prelogin does not: it returns decoy parameters for unknown emails, which is
-  why the server accepts new accounts only with the default Argon2id
-  parameters, the same as the decoy.
+  In `invite` mode only someone with a valid invite for that email, or a batch
+  code, gets that far (ADR 0048 §3.5). Prelogin does not: it returns decoy
+  parameters for unknown emails, which is why the server accepts new accounts
+  only with the default Argon2id parameters, the same as the decoy.
 - **No password change or account recovery** yet. If you lose your master
   password and your emergency kit, the account is unrecoverable by design.
 
@@ -458,16 +671,18 @@ and what happens when it goes down.
 |---|---|---|---|
 | **VPS with Docker Compose** (§1, recommended) | A small VPS, around 5 USD/month | You: operating system, Docker, proxy with TLS (§3), backups (§4) | The provider's, high |
 | **Railway** (§8) | 5 USD/month for the Hobby plan, which already includes that usage | Little: Railway provides TLS, restarts and volume backups | High; a brief outage on each deploy |
-| **Mac mini at home with a tunnel** (Cloudflare Tunnel, Tailscale Funnel) | Electricity; you already own the machine | You, plus the tunnel and your home connection | Your home's: power outages, internet outages, reboots for updates |
+| **Mac mini at home**, private with Tailscale Serve (§3.0) or public with a tunnel (Cloudflare Tunnel) | Electricity; you already own the machine | You, plus Tailscale or the tunnel and your home connection | Your home's: power outages, internet outages, reboots for updates |
 | **Hosted plan** (phase 8, does not exist yet) | ~5 USD/month | None | Ours; includes the iPhone notification relay (§2.4) |
 
 We recommend a **VPS with Docker Compose**: it is the option with the fewest
 third-party pieces, the image runs with a read-only filesystem and no
 capabilities, and backups are a `tar` (§4.2). **Railway** is the easiest if you
 do not want to administer a server. A **Mac mini** works for testing or if you
-already have one always on; with a tunnel, pass paths and the query string
-unchanged (§3) and leave `KLAV_TRUST_FORWARDED_FOR=false` until you verify how
-the tunnel sets `X-Forwarded-For` (§3.2).
+already have one always on: Homebrew's `klav-server` (§1) with Tailscale Serve
+(§3.0) keeps it on your tailnet only. With a public tunnel, pass paths and the
+query string unchanged (§3) and leave `KLAV_TRUST_FORWARDED_FOR=false` until
+you verify how the tunnel sets `X-Forwarded-For` (§3.2). Not Tailscale Funnel,
+which publishes the server to the internet.
 
 **If the server goes down, you do not lose access to your passwords**: every
 client keeps reading its local copy (the CLI warns you, [`cli.md`](cli.md) §3).

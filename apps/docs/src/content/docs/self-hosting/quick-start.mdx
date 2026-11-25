@@ -1,73 +1,166 @@
 ---
 title: "Quick start with Docker Compose"
-description: "Run klav-server with Docker Compose and SQLite, create your accounts with registration open, then close it."
+description: "Run klav-server's published image with Docker Compose and SQLite, in invite mode, and sign up with an invite you create; or install it without Docker."
 sidebar:
   order: 1
 ---
 
-This page runs your own Klav server with Docker Compose and SQLite, creates your accounts, and closes registration so nobody else can make one. You need Docker with the `compose` plugin, and a copy of Klav's source code, which has `docker-compose.yml` at its root.
+This page runs your own Klav server with Docker Compose, SQLite and the image Klav publishes, so nothing is compiled. The server starts in invite mode: nobody can create an account on it without an invite you make. You need Docker with the `compose` plugin on a Linux x86_64 machine. For other machines, or without Docker, see [Without Docker](#without-docker).
 
 ## Start it
 
 <Steps>
 
-1. From the folder with Klav's source code, start the server with registration open, only for this start:
+1. Download the release's Compose file into a folder of its own. Use the tag of the release you install, here `v0.10.0`:
 
    ```sh
-   KLAV_ALLOW_REGISTRATION=true docker compose up -d --build
+   mkdir klav && cd klav
+   curl -fsSLO https://raw.githubusercontent.com/OmarAlex24/klav/v0.10.0/docker-compose.yml
    ```
 
-2. Check that it answers:
-
-   ```sh
-   curl http://127.0.0.1:8080/v1/health
-   ```
-
-   ```text
-   {"status":"ok","version":"…","registration_open":true,"account_deletion":true}
-   ```
-
-3. Put a reverse proxy with TLS in front of it before any device connects from another machine: see [TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/).
-
-4. Create your accounts against your server's address, with the Mac app ("Use my own server") or the CLI. See [Create an account](/get-started/create-an-account/):
-
-   ```sh
-   klav signup --server https://klav.example.com --email you@example.com
-   ```
-
-5. Close registration by starting the server again without the variable:
+2. Start the server:
 
    ```sh
    docker compose up -d
    ```
 
-   `/v1/health` then says `"registration_open":false`, and a client tells you before it asks for a password. Check that `KLAV_ALLOW_REGISTRATION` isn't left in your shell or in a `.env` file next to `docker-compose.yml`: Compose reads both.
+3. Check that it answers:
+
+   ```sh
+   curl http://127.0.0.1:8080/v1/health
+   ```
+
+   The answer has `"status":"ok"` and `"registration_mode":"invite"`.
+
+4. Put TLS in front of it before any device connects from another machine. One command does it: `tailscale serve --bg 8080` for a server only your devices reach, or Caddy for a public domain. See [TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/).
+
+5. Create the invite you sign up with:
+
+   ```sh
+   docker compose exec klav klav-server invite create --email you@example.com
+   ```
+
+   It prints the invite code once, and its ID. The code works once, only for that email, for 30 days. It isn't stored anywhere: if you lose it, create another.
+
+6. Create your account against your server's address, with the Mac app ("Use my own server") or the CLI, and give the invite code when it asks. See [Create an account](/get-started/create-an-account/):
+
+   ```sh
+   klav signup --server https://klav.example.com --email you@example.com
+   ```
 
 </Steps>
 
+Each person who uses your server needs an invite of their own: repeat step 5 with their email, and send them the code.
+
+## Invites
+
+`klav-server invite` works on the server's database directly, while the server runs. There is no web page or API for it: whoever can run it already controls the server.
+
+```sh
+docker compose exec klav klav-server invite create --email friend@example.com
+docker compose exec klav klav-server invite ls          # usable invites; --all for every one
+docker compose exec klav klav-server invite revoke <ID>
+```
+
+- `--expires` sets how long a code works (30 days by default), and `--note` a note only you see in `ls`.
+- Without `--email`, a code works for any email. With `--uses` above 1 as well, it is a batch code, for a group: it needs `--expires`, and works at most 50 times and for at most 14 days. Anyone who gets it can take a seat, so `ls` shows how many were used, and `revoke` stops it.
+- `ls` never shows codes, only their IDs. Revoking an invite doesn't touch the accounts already created with it.
+
+**To open registration to everyone,** or close it completely, change `KLAV_REGISTRATION_MODE` in `docker-compose.yml` to `open` or `closed`, and run `docker compose up -d` again. For `open`, also remove the `KLAV_ALLOW_REGISTRATION: "false"` line, which must agree with it. See [Registration](/self-hosting/configuration/#registration).
+
 ## What the Compose file does
 
+- **Runs the published image** `ghcr.io/omaralex24/klav-server`, pinned to the release's version. A newer release's Compose file names the newer image: download it again, then `docker compose up -d`.
 - **Publishes the port on `127.0.0.1:8080` only.** The server speaks plain HTTP: never expose it to the internet without TLS in front.
 - **Keeps everything in the `klav-data` volume** (`/data` in the container): the SQLite database and the attachments.
 - **Runs locked down:** as an unprivileged user (`klav`, UID 10001), with a read-only file system, no capabilities and `no-new-privileges`.
 - **Has a health check** (`klav-server healthcheck`), so `docker ps` shows `healthy` when it answers.
-- **Keeps registration closed** unless you set `KLAV_ALLOW_REGISTRATION=true` for one start.
+- **Starts in invite mode,** with `KLAV_ALLOW_REGISTRATION` set to `false` next to it, so an older image, which doesn't know invite mode, stays closed instead of opening to everyone.
+
+## Other machines
+
+The image is for `linux/amd64` only.
+
+- **Apple silicon with Docker Desktop:** `DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose up -d` runs it through emulation. On a Mac, [Homebrew](#homebrew-linux-or-macos) is simpler.
+- **Linux on ARM (a Raspberry Pi, an ARM VPS):** build the image from Klav's source code instead. From a copy of the repository at the release's tag:
+
+  ```sh
+  docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+  ```
 
 ## Without Docker
 
-Build and run the binary; SQLite is built in:
+### Linux: the release binary and systemd
+
+Each release has `klav-server-linux-x86_64.tar.gz`: the server, a hardened systemd unit and an example configuration, for Linux x86_64 with glibc 2.36 or later (Debian 12, Ubuntu 23.04 or newer).
+
+<Steps>
+
+1. Download it with the release's checksums, and check it:
+
+   ```sh
+   tag=v0.10.0
+   curl -fsSLO "https://github.com/OmarAlex24/klav/releases/download/$tag/klav-server-linux-x86_64.tar.gz"
+   curl -fsSLO "https://github.com/OmarAlex24/klav/releases/download/$tag/SHA256SUMS"
+   sha256sum --ignore-missing -c SHA256SUMS
+   tar -xzf klav-server-linux-x86_64.tar.gz
+   cd klav-server-linux-x86_64
+   ```
+
+2. Install the binary, the configuration and the service, and start it:
+
+   ```sh
+   sudo install -m 0755 klav-server /usr/local/bin/klav-server
+   sudo install -d -m 0755 /etc/klav
+   sudo install -m 0644 server.toml.example /etc/klav/server.toml
+   sudo install -m 0644 klav-server.service /etc/systemd/system/klav-server.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now klav-server
+   curl http://127.0.0.1:8080/v1/health
+   ```
+
+3. Create your invite, as the service's own user, so the database keeps its owner:
+
+   ```sh
+   sudo systemd-run --pipe --wait --quiet \
+     -p DynamicUser=yes -p User=klav -p StateDirectory=klav \
+     -p EnvironmentFile=-/etc/klav/server.env -E KLAV_CONFIG=/etc/klav/server.toml \
+     /usr/local/bin/klav-server invite create --email you@example.com
+   ```
+
+</Steps>
+
+The service runs as a user systemd creates for it while it runs (`klav`), which can write only to `/var/lib/klav`, where the database and attachments live. It listens on `127.0.0.1:8080` in invite mode. `/etc/klav/server.toml` must stay readable by that user, so keep secrets, such as a Postgres password, out of it: put them as `KLAV_*` variables in `/etc/klav/server.env`, readable only by root (`chmod 600`). Logs go to the journal: `journalctl -u klav-server`.
+
+### Homebrew (Linux or macOS)
+
+```sh
+brew install omaralex24/tap/klav-server
+brew services start klav-server
+KLAV_CONFIG="$(brew --prefix)/etc/klav/server.toml" klav-server invite create --email you@example.com
+```
+
+- On Linux it installs the release binary. On a Mac it builds the server from the release's source code with Homebrew's Rust, which takes a few minutes; there is no prebuilt Mac server.
+- The first install writes `$(brew --prefix)/etc/klav/server.toml`: `127.0.0.1:8080`, invite mode, and the database and attachments in `$(brew --prefix)/var/klav`. Upgrades never overwrite it.
+- `brew services` starts it now and at login, and keeps it running. Logs go to `$(brew --prefix)/var/log/klav-server.log`.
+
+### From source
+
+With the Rust toolchain in `rust-toolchain.toml`; SQLite is built in:
 
 ```sh
 cargo build --release -p klav-server
 ./target/release/klav-server --config /etc/klav/server.toml
 ```
 
+Without a file or variables, a server built this way listens on `127.0.0.1:8080`, keeps its data in `./data`, and is **open to everyone**: set `registration_mode = "invite"` and `allow_registration = false` as in [Registration](/self-hosting/configuration/#registration).
+
 ```sh
 klav-server --version
 klav-server healthcheck
 ```
 
-`klav-server healthcheck` exits with code 0 when the configured server answers on `/v1/health`, and 1 when it doesn't. Without a file or variables, the server listens on `127.0.0.1:8080` and keeps its data in `./data`. See [Configuration](/self-hosting/configuration/).
+`klav-server healthcheck` exits with code 0 when the configured server answers on `/v1/health`, and 1 when it doesn't.
 
 ## Next
 

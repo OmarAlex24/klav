@@ -1,11 +1,45 @@
 ---
 title: "TLS and a reverse proxy"
-description: "Put Caddy or nginx with TLS in front of klav-server, pass agents' signed requests unchanged, and tell the server where the client's IP address is."
+description: "Put TLS in front of klav-server with one command (Tailscale Serve or Caddy) or a reverse proxy configuration, pass agents' signed requests unchanged, and tell the server where the client's IP address is."
 sidebar:
   order: 3
 ---
 
-This page explains how to put a reverse proxy with TLS in front of `klav-server`, which speaks plain HTTP and must never be exposed to the internet that way: session tokens travel in a header, and without TLS anyone on the network could copy them. It also covers what the proxy must leave alone, and how the server learns each client's IP address.
+This page explains how to put TLS in front of `klav-server`, which speaks plain HTTP and must never be exposed to the internet that way: session tokens travel in a header, and without TLS anyone on the network could copy them. The quickest way is one command, Tailscale Serve or Caddy; after them come a Caddy service and nginx. It also covers what the proxy must leave alone, and how the server learns each client's IP address.
+
+In every example the server stays on `127.0.0.1:8080`, as the [quick start](/self-hosting/quick-start/) leaves it: only the proxy reaches it.
+
+## One command
+
+### Private: Tailscale Serve
+
+For a server only your own devices use, such as a computer at home or a VPS with no open ports. On the server's machine, with [Tailscale](https://tailscale.com/) installed and signed in:
+
+```sh
+tailscale serve --bg 8080
+```
+
+- **It serves the server at `https://<machine>.<tailnet>.ts.net`,** with a certificate Tailscale gets for that name. `tailscale serve status` shows the address; use it as your server's address in the apps and the CLI.
+- **Only devices in your tailnet reach it.** Nothing opens to the internet, so every device that syncs (your Mac, your iPhone) needs Tailscale connected.
+- **Your tailnet needs HTTPS certificates turned on.** If they're off, the command offers to turn them on. Tailscale publishes the machine's name and your tailnet's name in public certificate logs when it issues the certificate, so don't use a machine name you want to keep private.
+- **It stays on across reboots** with `--bg`. `tailscale serve reset` removes it.
+- **Leave `KLAV_TRUST_FORWARDED_FOR` off.** All your devices then share one limit per IP address, which a personal server can live with.
+- **Never use `tailscale funnel` for Klav:** it publishes the server to the whole internet.
+- **It doesn't bring approval notifications to the iPhone.** Those need your own APNs key and an iPhone app you sign yourself; see [Configuration](/self-hosting/configuration/#approval-notifications-to-the-iphone).
+
+### Public: Caddy
+
+For a server with a domain of its own, reachable from anywhere. With [Caddy](https://caddyserver.com/) installed, the domain's `A` or `AAAA` record pointing at the machine, and ports 80 and 443 open:
+
+```sh
+caddy reverse-proxy --from klav.example.com --to 127.0.0.1:8080
+```
+
+- **Caddy gets the certificate and renews it** by itself.
+- **It runs as long as the command does.** To keep it running across reboots, use the Caddyfile below with your system's Caddy service.
+- **Set `KLAV_TRUST_FORWARDED_FOR=true`.** Caddy sets `X-Forwarded-For` to the client's address and ignores the one a client sends, so the server can trust it. See [The client's IP address](#the-clients-ip-address).
+
+Both pass paths and query strings unchanged, and send the live events stream as it comes, as the next section asks.
 
 ## What the proxy must not change
 
@@ -15,15 +49,17 @@ This page explains how to put a reverse proxy with TLS in front of `klav-server`
 
 The server already sends `Strict-Transport-Security`.
 
-## Caddy
+## Caddy as a service
 
-Caddy gets and renews the certificate by itself, and passes the event stream without buffering:
+The same proxy as the command above, in `/etc/caddy/Caddyfile`, for the `caddy` service that Caddy's packages install. Caddy gets and renews the certificate by itself, and passes the event stream without buffering:
 
 ```text
 klav.example.com {
 	reverse_proxy 127.0.0.1:8080
 }
 ```
+
+Reload it with `sudo systemctl reload caddy`, and set `KLAV_TRUST_FORWARDED_FOR=true` on the server.
 
 ## nginx
 
@@ -47,7 +83,7 @@ Add your `server` block, certificate and `listen 443 ssl` as usual.
 
 Limits per IP address need each client's real address. Behind a proxy, the server sees only the proxy's, so by default all clients share one limit. The server trusts no header by default. Choose one of these, never both:
 
-- **`KLAV_TRUST_FORWARDED_FOR=true`** takes the **last** address in `X-Forwarded-For`, the one your proxy added. Use it with the nginx example above.
+- **`KLAV_TRUST_FORWARDED_FOR=true`** takes the **last** address in `X-Forwarded-For`, the one your proxy added. Use it with Caddy or the nginx example above.
 - **`KLAV_TRUSTED_IP_HEADER=<header>`** takes that header's value, which your proxy must **replace** with the client's address, such as `x-real-ip`. If the header is missing or isn't one address, the server uses the connection's address.
 
 Turn either on **only** if a proxy in front always sets that header and never passes the client's own: otherwise a client could invent an address on every request and get around the limits.

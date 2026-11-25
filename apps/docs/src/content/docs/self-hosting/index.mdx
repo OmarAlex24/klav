@@ -6,11 +6,11 @@ sidebar:
   order: 5
 ---
 
-This section explains how to run your own Klav server, `klav-server`, instead of using klav.dev: a quick start with Docker Compose, its configuration, TLS behind a reverse proxy, backups, Postgres and Railway. Then you point the apps and the CLI to it.
+This section explains how to run your own Klav server, `klav-server`, instead of using klav.dev: a quick start with Docker Compose or without Docker, its configuration, TLS in front of it, backups, Postgres and Railway. Then you point the apps and the CLI to it.
 
-1. [Quick start with Docker Compose](/self-hosting/quick-start/): the server on your machine in a few commands.
-2. [Configuration](/self-hosting/configuration/): every setting, as an environment variable or in a TOML file, the logs, and notifications to the iPhone.
-3. [TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/): Caddy or nginx in front, and the client's IP address.
+1. [Quick start with Docker Compose](/self-hosting/quick-start/): the published image on your machine in a few commands, in invite mode, and the invite you sign up with. Also without Docker: the Linux binary with systemd, or Homebrew.
+2. [Configuration](/self-hosting/configuration/): every setting, as an environment variable or in a TOML file, who can register, the quotas per account, the logs, and notifications to the iPhone.
+3. [TLS and a reverse proxy](/self-hosting/tls-and-reverse-proxy/): one command with Tailscale Serve or Caddy, or Caddy or nginx as a service, and the client's IP address.
 4. [Data and backups](/self-hosting/data-and-backups/): what the server keeps, how to back it up and restore it, and deleted accounts.
 5. [Postgres](/self-hosting/postgres/): instead of SQLite.
 6. [Railway](/self-hosting/railway/): one service with a volume, without running a machine yourself.
@@ -25,9 +25,9 @@ The server stores and syncs vaults that are encrypted on your devices. It never 
 
 | Option | You maintain | When it goes down |
 |---|---|---|
-| A small VPS with Docker Compose (recommended) | The system, Docker, the reverse proxy with TLS and the backups | Rarely: as reliable as the provider |
+| A small VPS with Docker Compose (recommended) | The system, Docker, TLS in front (Caddy) and the backups | Rarely: as reliable as the provider |
 | Railway | Little: Railway provides TLS, restarts and volume backups | A short gap on each deploy |
-| A computer at home behind a tunnel (Cloudflare Tunnel, Tailscale Funnel) | Everything, plus the tunnel and your home connection | With your power, your internet connection and your updates |
+| A computer at home, private with Tailscale Serve, or public behind a tunnel such as Cloudflare Tunnel | Everything, plus Tailscale or the tunnel and your home connection | With your power, your internet connection and your updates |
 
 **If the server goes down, you don't lose access to your passwords:** every device keeps reading its own copy. While it is down, nothing syncs between devices, changes can't be saved, and agents get no service: their approval requests and tasks don't arrive. If agents work for you on their own, the server's uptime matters more than its price.
 
@@ -43,6 +43,6 @@ See [Create an account](/get-started/create-an-account/).
 
 - **One instance only.** Rate limits, half-finished sign-ins and live events live in memory: don't run several copies behind a load balancer.
 - **Attachments are on local disk only**, not S3.
-- **No quota for finished attachments:** any account can fill the disk up to the per-file limit. Keep registration closed on a personal server.
-- **Registration tells whether an email already has an account.** Signing in doesn't.
+- **Quotas are per account, not for the whole disk.** Each account has limits on attachments, vault data, items and vaults, but nothing caps their sum. Keep registration in invite mode on a personal server. See [Quotas per account](/self-hosting/configuration/#quotas-per-account).
+- **Registration tells whether an email already has an account.** In invite mode, only someone with an invite for that email, or a batch code, gets that far. Signing in doesn't tell.
 - **No master password change and no account recovery yet.** If you forget your master password, or lose your emergency kit and every signed-in device, the account can't be recovered, by design.
