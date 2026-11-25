@@ -6,7 +6,7 @@
  * steer the match with the labels before its own domain.
  */
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, launch, type Stack, startStack } from "./harness";
+import { type Browser, launch, type Stack, startStack, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 /** Example seeds (RFC 6238-style test values), never real accounts. */
@@ -39,8 +39,8 @@ test.beforeAll(async () => {
   // A login with a code saved for a subdomain of hooli.localhost (ADR 0025).
   const hooli = `http://my.hooli.localhost:${String(site.port)}/`;
   add(["login", "--title", "Hooli", "--username", "ana", "--url", hooli, "--secret-stdin", "password", "--secret-stdin", "totp"], `MARKER-hooli\n${SEEDS[4]}\n`);
-  mine.klav(["unlock"], { unlocked: true });
   browser = await launch(mine);
+  await unlockInBrowser(mine, browser);
 });
 
 // Everything started is stopped, also when the start failed halfway.

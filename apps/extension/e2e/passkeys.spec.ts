@@ -311,7 +311,7 @@ async function passkeyWindow(name: RegExp, password: boolean): Promise<void> {
   await popup.close();
 }
 
-test("the verification window: «While Klav is unlocked» signs with the click alone; «Every time» asks again", async () => {
+test("the verification window: «While Klav is unlocked» after one verification signs with the click alone; «Every time» asks again", async () => {
   await passkeyWindow(/While Klav is unlocked/, true);
   const page = await browser.context.newPage();
   try {
@@ -322,6 +322,9 @@ test("the verification window: «While Klav is unlocked» signs with the click a
       const frame = await passkeyFrame(page);
       await waitArmed(page);
       await clickIn(frame.getByRole("button", { name: /Sitio RP/ }));
+      // Loosening the window opens nothing (ADR 0041 §3): the first use
+      // still asks, and its verification holds until Klav locks.
+      if (i === 1) await confirmWithPassword(frame);
       await expect(page.locator("#out")).toHaveText("dentro como ana");
       expect(rp.signedIn).toHaveLength(before + i);
       // Still a real verification behind it: UV is set.

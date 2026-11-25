@@ -9,7 +9,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, launch, type Stack, startStack } from "./harness";
+import { type Browser, launch, type Stack, startStack, unlockInBrowser } from "./harness";
 
 const RTT = Number(process.env.KLAV_PERF_RTT ?? "270");
 const ITEMS = 350;
@@ -48,8 +48,8 @@ test.beforeAll(async () => {
   const csv = join(stack.dir, "logins.csv");
   writeFileSync(csv, `${rows.join("\n")}\n`);
   stack.klav(["import", "--from", "chrome", csv], { unlocked: true });
-  stack.klav(["unlock"], { unlocked: true });
   browser = await launch(stack);
+  await unlockInBrowser(stack, browser);
   await stack.latency?.set(RTT / 2);
 });
 

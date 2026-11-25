@@ -7,7 +7,7 @@
  */
 import { resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, launch, shoot, type Stack, startStack } from "./harness";
+import { type Browser, launch, shoot, type Stack, startStack, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
@@ -41,7 +41,7 @@ test.beforeAll(async () => {
   stack.klav(["project", "create", "Trabajo"], { unlocked: true });
   stack.klav(["item", "add", "note", "--title", "Plan", "--project", "Trabajo"], { unlocked: true });
   browser = await launch(stack);
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
 });
 
 test.afterAll(async () => {

@@ -6,7 +6,7 @@
  */
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { type Browser, clickIn, launch, openMenu, settled, shoot, startStack, type Stack, waitArmed } from "./harness";
+import { type Browser, clickIn, launch, openMenu, settled, shoot, startStack, type Stack, waitArmed, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
@@ -35,7 +35,7 @@ test.beforeAll(async () => {
   // A new password: the old one goes to the item's previous passwords.
   stack.klav(["item", "edit", "Banco", "-g", "password"], { unlocked: true });
   browser = await launch(stack);
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
 });
 
 test.afterAll(async () => {
@@ -81,7 +81,7 @@ test("the field menu follows the field's rules, switches type and keeps what it 
   const after = history();
   expect(after.length).toBe(before + 1);
   expect(after[0]?.host).toBe("localhost");
-  const shown = stack.klav(["generated", "show", "0"], { unlocked: true }).trim();
+  const shown = (await stack.klavInTerminal(["generated", "show", "0"], { unlocked: true })).trim();
   expect(shown).toBe(chosen);
   await page.close();
 });
@@ -93,7 +93,7 @@ test("the menu's history lists what Klav generated, without values", async () =>
   await clickIn(menu.getByRole("button", { name: "Generator history" }));
   await expect(menu.getByText("localhost").first()).toBeVisible();
   await expect(menu.getByRole("button", { name: /^Copy the password generated/ }).first()).toBeVisible();
-  const shown = stack.klav(["generated", "show", "0"], { unlocked: true }).trim();
+  const shown = (await stack.klavInTerminal(["generated", "show", "0"], { unlocked: true })).trim();
   expect(await menu.locator("body").textContent()).not.toContain(shown);
   await settled(menu);
   await shoot(page, shots, "generador-historial");

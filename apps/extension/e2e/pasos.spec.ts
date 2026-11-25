@@ -9,7 +9,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, clickIn, freePort, launch, openMenu, shoot, startStack, type Stack, waitArmed } from "./harness";
+import { type Browser, clickIn, freePort, launch, openMenu, shoot, startStack, type Stack, waitArmed, unlockInBrowser } from "./harness";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
 const SERVER = resolve(import.meta.dirname, "..", "..", "..", "examples", "sitio-extension", "server.mjs");
@@ -35,7 +35,7 @@ test.beforeAll(async () => {
   );
   browser = await launch(stack);
   started = browser;
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
 });
 
 test.afterAll(async () => {

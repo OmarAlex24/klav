@@ -5,7 +5,7 @@
  */
 import { resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, launch, openMenu, shoot, startStack, type Stack, waitArmed } from "./harness";
+import { type Browser, launch, openMenu, shoot, startStack, type Stack, waitArmed, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
@@ -33,7 +33,7 @@ test.beforeAll(async () => {
     stdin: "4111111111111111\n",
   });
   browser = await launch(stack);
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
 });
 
 test.afterAll(async () => {

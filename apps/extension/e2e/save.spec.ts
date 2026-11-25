@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { type Browser, clickIn, frameOf, launch, openMenu, settled, shoot, startStack, type Stack, unlockForm, waitArmed } from "./harness";
+import { type Browser, clickIn, frameOf, launch, openMenu, settled, shoot, startStack, type Stack, unlockForm, waitArmed, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
@@ -16,8 +16,8 @@ test.beforeAll(async () => {
     { unlocked: true, stdin: "MARKER-viejo\nJBSWY3DPEHPK3PXP\n" },
   );
   browser = await launch(stack);
-  // Unlocked through the CLI, so the bars and menus show their main state.
-  stack.klav(["unlock"], { unlocked: true });
+  // Unlocked in the browser, so the bars and menus show their main state.
+  await unlockInBrowser(stack, browser);
 });
 
 test.afterAll(async () => {
@@ -97,7 +97,7 @@ test("offers to update the password of a known login", async () => {
   await waitArmed(page);
   await clickIn(bar.getByRole("button", { name: "Update" }));
   await expect(bar.getByText("Saved to Klav")).toBeVisible({ timeout: 40_000 });
-  const view = stack.klav(["item", "get", "klav://Personal/General/Sitio%20local/password", "--reveal"], { unlocked: true });
+  const view = await stack.klavInTerminal(["item", "get", "klav://Personal/General/Sitio%20local/password", "--reveal"], { unlocked: true });
   expect(view).toContain("MARKER-nueva-clave");
   // The same password again: nothing to offer.
   await page.goto(site.url("/login"));
@@ -131,7 +131,7 @@ test("generates a password for a sign-up form and offers to save it", async () =
   await bar.getByLabel("Title").fill("Sitio local (registro)");
   await clickIn(bar.getByRole("button", { name: "Save" }));
   await expect(bar.getByText("Saved to Klav")).toBeVisible({ timeout: 40_000 });
-  const view = stack.klav(["item", "get", "klav://Personal/General/Sitio%20local%20(registro)/password", "--reveal"], { unlocked: true });
+  const view = await stack.klavInTerminal(["item", "get", "klav://Personal/General/Sitio%20local%20(registro)/password", "--reveal"], { unlocked: true });
   expect(view).toContain(generated);
   await page.close();
 });

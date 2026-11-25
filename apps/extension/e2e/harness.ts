@@ -5,7 +5,7 @@
  * unpacked extension. Nothing touches the user's own browsers or homes.
  */
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, closeSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -79,6 +79,13 @@ export interface Stack {
   latency?: Latency;
   /** Runs `klav` as the person (first stdin line: the master password if `unlocked`). */
   klav(args: string[], options?: { stdin?: string; unlocked?: boolean; env?: Record<string, string> }): string;
+  /**
+   * Like `klav`, in a terminal of its own, for the commands that read a
+   * value from klavd: with the presence gate (ADR 0041) they ask for the
+   * master password on their controlling terminal, never on stdin, and
+   * this types it there each time the question shows, as a person would.
+   */
+  klavInTerminal(args: string[], options?: { stdin?: string; unlocked?: boolean }): Promise<string>;
   stop(): void;
 }
 
@@ -141,6 +148,8 @@ ${options.serverToml ?? ""}`,
     }
     return out.stdout;
   };
+  const klavInTerminal: Stack["klavInTerminal"] = (args, options = {}) =>
+    inTerminal(dir, home, options.unlocked ? ["--password-stdin", ...args] : args, options.unlocked ? `${PASSWORD}\n${options.stdin ?? ""}` : (options.stdin ?? ""));
   klav(
     ["signup", "--server", serverUrl, "--email", "ana@example.com", "--device-name", "e2e", "--emergency-kit", join(dir, "kit.txt")],
     { unlocked: true },
@@ -162,6 +171,7 @@ ${options.serverToml ?? ""}`,
     serverUrl,
     ...(latency ? { latency } : {}),
     klav,
+    klavInTerminal,
     stop() {
       try {
         execFileSync(bin("klav"), ["lock", "--stop"], { env: { ...process.env, KLAV_HOME: home }, stdio: "ignore" });
@@ -173,6 +183,98 @@ ${options.serverToml ?? ""}`,
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/** What every presence question of the CLI ends with (`crates/klav-cli/src/presence.rs`). */
+const QUESTION = "Master password for ";
+let terminals = 0;
+
+/**
+ * `klav <args>` under `script`, a new pseudo-terminal that is its
+ * controlling terminal, with `stdin` as its standard input and its standard
+ * output and error kept apart in files. Each presence question gets
+ * `PASSWORD`. Fails with stderr if the command does.
+ */
+async function inTerminal(dir: string, home: string, args: string[], stdin: string): Promise<string> {
+  const work = join(dir, `tty-${String(terminals++)}`);
+  mkdirSync(work);
+  const input = join(work, "stdin");
+  const out = join(work, "stdout");
+  const err = join(work, "stderr");
+  writeFileSync(input, stdin);
+  const quote = (arg: string): string => `'${arg.replaceAll("'", "'\\''")}'`;
+  const line = `${quote(bin("klav"))} ${args.map(quote).join(" ")} < ${quote(input)} > ${quote(out)} 2> ${quote(err)}; echo "KLAV-EXIT $?"`;
+  // `script` reads the keys from a real pipe (`cat`): fed straight from
+  // Node's socket, macOS's `script` shows nothing.
+  const run = process.platform === "darwin" ? 'cat | script -q /dev/null /bin/sh -c "$0"' : 'cat | script -q -e -c "$0" /dev/null';
+  const child = spawn("/bin/sh", ["-c", run, line], {
+    env: { ...process.env, KLAV_HOME: home, KLAV_NO_TOUCH_ID: "1" },
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  let shown = "";
+  let answered = 0;
+  const code = await new Promise<number>((done, fail) => {
+    const timer = setTimeout(() => {
+      child.stdin.end();
+      child.kill();
+      fail(new Error(`klav ${args.join(" ")} did not finish in its terminal:\n${shown}`));
+    }, 120_000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      shown += chunk.toString("utf8");
+      // `klav` writes the question once echo is off and what was typed
+      // before it is thrown away.
+      while (shown.split(QUESTION).length - 1 > answered) {
+        answered += 1;
+        child.stdin.write(`${PASSWORD}\n`);
+      }
+      const exit = /KLAV-EXIT (\d+)/.exec(shown);
+      if (exit) {
+        clearTimeout(timer);
+        child.stdin.end();
+        done(Number(exit[1]));
+      }
+    });
+  });
+  const stdout = readFileSync(out, "utf8");
+  const stderr = readFileSync(err, "utf8");
+  rmSync(work, { recursive: true, force: true });
+  if (code !== 0) throw new Error(`klav ${args.join(" ")} failed (${String(code)}): ${stderr}`);
+  return stdout;
+}
+
+/**
+ * Klav's frame in `page` (`passkey.html`) for the presence gate (ADR
+ * 0041), answered with the master password: the person's own fill after an
+ * unlock that opened no window, or an agent's first value through this
+ * browser. Sent with Enter, as a person may: after another tab was in
+ * front (the popup), Chromium under test does not route a click to the
+ * tab's extension frame, but it does route the keyboard.
+ */
+export async function confirmPresence(page: Page): Promise<void> {
+  const frame = await frameOf(page, "/passkey.html");
+  await expect(frame.getByText("Confirm it’s you")).toBeVisible();
+  await waitArmed(page);
+  const field = frame.getByLabel("Master password, to confirm");
+  await field.fill(PASSWORD);
+  await field.press("Enter");
+}
+
+/**
+ * Unlocks klavd from the extension's popup, as the person would in the
+ * browser: locked first, so the unlock is the popup's. With the presence
+ * gate (ADR 0041) a password unlock opens what its question says for the
+ * browser's key (`shown`); an unlock through the CLI (`--password-stdin`)
+ * opens none, and the browser's first value would ask. In any language.
+ */
+export async function unlockInBrowser(stack: Stack, browser: Browser): Promise<void> {
+  stack.klav(["lock"]);
+  const popup = await browser.popup();
+  const form = popup.locator("form.unlock-form");
+  await expect(form).toBeVisible({ timeout: UNLOCK_MS });
+  await form.locator("input[type=password]").fill(PASSWORD);
+  await form.locator("button[type=submit]").click();
+  await expect(form).toHaveCount(0, { timeout: UNLOCK_MS });
+  await popup.close();
 }
 
 /** `klav` from target/debug (for the MCP client). */
@@ -243,6 +345,16 @@ function browserFor(stack: Stack, lang: Lang): { executablePath?: string; args: 
 export async function launch(stack: Stack, options: { extension?: string; lang?: Lang; args?: string[] } = {}): Promise<Browser> {
   const extension = options.extension ?? EXTENSION;
   const lang = options.lang ?? "en";
+  // The presence gate (ADR 0041): the first unlock since klavd started
+  // opens no window (Omar's decision A), so the first value after it asks.
+  // A person has unlocked before; so has this klavd: started here, unlocked
+  // once and locked again, the extension's own unlock opens what its
+  // question says. presencia.spec.ts starts a fresh klavd to test the first
+  // unlock.
+  if (!existsSync(join(stack.home, "klavd.sock"))) {
+    stack.klav(["unlock"], { unlocked: true });
+    stack.klav(["lock"]);
+  }
   const browser = browserFor(stack, lang);
   const context = await chromium.launchPersistentContext(stack.profile, {
     ...(browser.executablePath ? { executablePath: browser.executablePath } : { channel: "chromium" }),

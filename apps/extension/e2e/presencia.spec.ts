@@ -1,5 +1,5 @@
-// The presence gate in the browser (ADR 0041, layer 4): with klavd started
-// with `--presence-gate` and Touch ID off, an agent's first fill through
+// The presence gate in the browser (ADR 0041, layer 4; on by default since
+// layer 6): with klavd started with Touch ID off, an agent's first fill through
 // the extension asks for the master password in Klav's own frame, and with
 // a second browser connection attached, values go only when exactly one
 // connection reports focus, the one that gets them (P25).
@@ -20,12 +20,12 @@ let klavd: ChildProcess | undefined;
 let agent: Agent;
 const clients: McpClient[] = [];
 
-/** klavd for the stack's home again, now with the presence gate, unlocked with the master password. */
+/** klavd for the stack's home again, now with Touch ID off, unlocked with the master password. */
 async function gatedKlavd(): Promise<ChildProcess> {
   stack.klav(["lock", "--stop"]);
   const socket = join(stack.home, "klavd.sock");
   await expect.poll(() => existsSync(socket), { timeout: 10_000 }).toBe(false);
-  const child = spawn(join(stack.dir, "bin", "klavd"), ["--presence-gate", "--no-touch-id", "--idle-lock", "10m"], {
+  const child = spawn(join(stack.dir, "bin", "klavd"), ["--no-touch-id", "--idle-lock", "10m"], {
     env: { ...process.env, KLAV_HOME: stack.home, KLAV_NO_DEFAULT_SERVER: "1" },
     stdio: "ignore",
   });

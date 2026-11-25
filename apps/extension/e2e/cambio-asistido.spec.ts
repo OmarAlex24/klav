@@ -15,7 +15,7 @@
  * site refuses the new one and both the current and the pending one stay.
  */
 import { expect, type Page, test } from "@playwright/test";
-import { type Agent, type Browser, clickIn, KLAV_BIN, launch, openMenu, PASSWORD, registerAgent, type Stack, startStack, unlockForm, waitArmed } from "./harness";
+import { type Agent, type Browser, clickIn, KLAV_BIN, launch, openMenu, PASSWORD, registerAgent, type Stack, startStack, unlockForm, waitArmed, confirmPresence } from "./harness";
 import { McpClient, type ToolResult } from "./mcp";
 import { type Site, startSite } from "./site";
 
@@ -87,8 +87,8 @@ test.afterAll(async () => {
 });
 
 /** The item's password now, as the person sees it. */
-function current(title: string): string {
-  const view = JSON.parse(stack.klav(["item", "get", title, "--reveal", "--json"], { unlocked: true })) as {
+async function current(title: string): Promise<string> {
+  const view = JSON.parse(await stack.klavInTerminal(["item", "get", title, "--reveal", "--json"], { unlocked: true })) as {
     fields: { name: string; value?: string }[];
   };
   const value = view.fields.find((f) => f.name === "password")?.value;
@@ -112,8 +112,8 @@ function events(action: string, by: "agent" | "person"): number {
 }
 
 /** A previous password's value («Contraseñas anteriores»). */
-function previous(title: string, index: number): string {
-  return stack.klav(["item", "history", title, "--reveal", String(index)], { unlocked: true }).trim();
+async function previous(title: string, index: number): Promise<string> {
+  return (await stack.klavInTerminal(["item", "history", title, "--reveal", String(index)], { unlocked: true })).trim();
 }
 
 /** The tab the agent works on: in front, so `klavd` sees it as the active tab. */
@@ -153,7 +153,7 @@ async function typed(page: Page, selector: string): Promise<string> {
 async function popup(): Promise<Page> {
   const p = await browser.popup();
   const locked = p.getByRole("heading", { name: "Klav is locked" });
-  await expect(locked.or(p.getByText("Your vault"))).toBeVisible();
+  await expect(locked.or(p.getByText("Your vault", { exact: true }))).toBeVisible();
   if (await locked.isVisible()) {
     await unlockForm(p);
   }
@@ -213,13 +213,17 @@ test("the agent changes a password on the site's change page and confirms it", a
   expect(where).toMatchObject({ url: `https://localhost:${String(site.port)}/.well-known/change-password`, source: "well_known" });
 
   const page = await open(site.url("/password"));
-  const pending = pendingOf(await rotate(BANK, "the bank password is reused"));
+  // The first change through this browser asks in Klav's frame (ADR 0041
+  // §3.1); until Klav locks, the next ones don't.
+  const rotating = rotate(BANK, "the bank password is reused");
+  await confirmPresence(page);
+  const pending = pendingOf(await rotating);
   await expect(page.locator("#current")).toHaveValue(OLD.Banco ?? "");
   const next = await typed(page, "#new");
   expect(next).not.toBe(OLD.Banco);
   await expect(page.locator("#confirm")).toHaveValue(next);
   // Nothing changes in the item before the agent confirms; the new one waits as pending.
-  expect(current("Banco")).toBe(OLD.Banco);
+  expect(await current("Banco")).toBe(OLD.Banco);
   expect(history("Banco").pending).toBe(true);
 
   // The agent submits the form: the site gets the old and the new one.
@@ -233,16 +237,16 @@ test("the agent changes a password on the site's change page and confirms it", a
   const confirmed = await mcp.tool("rotate_confirm", { ref: BANK, pending_id: pending, reason: "the site said the password changed" });
   expect(confirmed.isError, confirmed.text).toBe(false);
   expect(JSON.parse(confirmed.text)).toEqual({ ok: true });
-  expect(current("Banco")).toBe(next);
+  expect(await current("Banco")).toBe(next);
   const after = history("Banco");
   expect(after.pending).toBe(false);
   expect(after.entries[0]?.unconfirmed ?? false).toBe(false);
-  expect(previous("Banco", after.entries[0]?.index ?? -1)).toBe(OLD.Banco);
+  expect(await previous("Banco", after.entries[0]?.index ?? -1)).toBe(OLD.Banco);
   await page.close();
 });
 
 test("cancelling keeps the current password and files the new one as not confirmed", async () => {
-  const before = current("Banco");
+  const before = await current("Banco");
   const page = await open(site.url("/password"));
   const pending = pendingOf(await rotate(BANK, "try another password"));
   const next = await typed(page, "#new");
@@ -251,11 +255,11 @@ test("cancelling keeps the current password and files the new one as not confirm
   const cancelled = await mcp.tool("rotate_cancel", { ref: BANK, pending_id: pending, reason: "the site said the password is too long" });
   expect(cancelled.isError, cancelled.text).toBe(false);
   expect(JSON.parse(cancelled.text)).toEqual({ ok: true });
-  expect(current("Banco")).toBe(before);
+  expect(await current("Banco")).toBe(before);
   const after = history("Banco");
   expect(after.pending).toBe(false);
   expect(after.entries[0]?.unconfirmed).toBe(true);
-  expect(previous("Banco", after.entries[0]?.index ?? -1)).toBe(next);
+  expect(await previous("Banco", after.entries[0]?.index ?? -1)).toBe(next);
   // The CLI says so in words too.
   expect(stack.klav(["item", "history", "Banco"], { unlocked: true })).toContain("generated, not confirmed");
   await page.close();
@@ -287,8 +291,8 @@ test("a focused text box gets nothing", async () => {
   const after = history("Foro");
   expect(after.pending).toBe(false);
   expect(after.entries[0]?.unconfirmed).toBe(true);
-  secrets.push(previous("Foro", after.entries[0]?.index ?? -1));
-  expect(current("Foro")).toBe(OLD.Foro);
+  secrets.push(await previous("Foro", after.entries[0]?.index ?? -1));
+  expect(await current("Foro")).toBe(OLD.Foro);
   await page.close();
 });
 
@@ -306,7 +310,7 @@ test("a tab on a host that is not the item's gets nothing", async () => {
 test("the popup's «Pending change» card uses the new password or keeps the current one", async () => {
   // Use the new one: Banco.
   let page = await open(site.url("/password"));
-  const bankBefore = current("Banco");
+  const bankBefore = await current("Banco");
   const bankPending = pendingOf(await rotate(BANK, "change it once more"));
   const bankNext = await typed(page, "#new");
   await page.close();
@@ -318,10 +322,10 @@ test("the popup's «Pending change» card uses the new password or keeps the cur
   await card.getByRole("button", { name: "Use the new one" }).click();
   await expect(card).toBeHidden({ timeout: 15_000 });
   await p.close();
-  expect(current("Banco")).toBe(bankNext);
+  expect(await current("Banco")).toBe(bankNext);
   let after = history("Banco");
   expect(after.pending).toBe(false);
-  expect(previous("Banco", after.entries[0]?.index ?? -1)).toBe(bankBefore);
+  expect(await previous("Banco", after.entries[0]?.index ?? -1)).toBe(bankBefore);
   // The person's klavd recorded the decision with the server. The agent's
   // confirm afterwards is told the person decided, and logs nothing.
   expect(events("rotate.confirmed", "person")).toBe(1);
@@ -330,7 +334,7 @@ test("the popup's «Pending change» card uses the new password or keeps the cur
   expect(late.isError).toBe(true);
   expect(late.text).toContain("the person may have decided already");
   expect(events("rotate.confirmed", "agent")).toBe(confirmedByAgent);
-  expect(current("Banco")).toBe(bankNext);
+  expect(await current("Banco")).toBe(bankNext);
 
   // Keep the current one: Tienda.
   page = await open(site.url("/password"));
@@ -345,11 +349,11 @@ test("the popup's «Pending change» card uses the new password or keeps the cur
   await card.getByRole("button", { name: "Keep the current one" }).click();
   await expect(card).toBeHidden({ timeout: 15_000 });
   await p.close();
-  expect(current("Tienda")).toBe(OLD.Tienda);
+  expect(await current("Tienda")).toBe(OLD.Tienda);
   after = history("Tienda");
   expect(after.pending).toBe(false);
   expect(after.entries[0]?.unconfirmed).toBe(true);
-  expect(previous("Tienda", after.entries[0]?.index ?? -1)).toBe(shopNext);
+  expect(await previous("Tienda", after.entries[0]?.index ?? -1)).toBe(shopNext);
   // Kept: the person's cancel is the one in the log. klavd no longer holds
   // the change's password, so the agent's cancel afterwards is told so and
   // logs nothing.
@@ -376,7 +380,7 @@ test("on two sites, the second refuses the new password: the current and the pen
   await expect(page.getByRole("heading", { name: "Hola" })).toBeVisible();
   const confirmed = await mcp.tool("rotate_confirm", { ref: CLUB, pending_id: clubPending, reason: "the club said the password changed" });
   expect(confirmed.isError, confirmed.text).toBe(false);
-  expect(current("Club")).toBe(clubNext);
+  expect(await current("Club")).toBe(clubNext);
   await page.close();
 
   // The mail, on another host, refuses it: the agent reads the error and cancels.
@@ -399,14 +403,14 @@ test("on two sites, the second refuses the new password: the current and the pen
   // Nothing lost: the old one is still the mail's password, the refused one
   // is in its history as generated, not confirmed, and the club kept its old
   // one among its previous passwords.
-  expect(current("Correo")).toBe(SHARED);
+  expect(await current("Correo")).toBe(SHARED);
   const mail = history("Correo");
   expect(mail.pending).toBe(false);
   expect(mail.entries[0]?.unconfirmed).toBe(true);
-  expect(previous("Correo", mail.entries[0]?.index ?? -1)).toBe(mailNext);
+  expect(await previous("Correo", mail.entries[0]?.index ?? -1)).toBe(mailNext);
   const club = history("Club");
   expect(club.entries[0]?.unconfirmed ?? false).toBe(false);
-  expect(previous("Club", club.entries[0]?.index ?? -1)).toBe(SHARED);
+  expect(await previous("Club", club.entries[0]?.index ?? -1)).toBe(SHARED);
   expect(sites(both)).toEqual({ Club: "changed", Correo: "failed" });
 });
 
@@ -423,7 +427,7 @@ test("a sign-up the site refuses keeps the password the agent generated, in the 
   expect(created.isError, created.text).toBe(false);
   // Sealed in the item before any page sees it; the agent gets its metadata only.
   stack.klav(["sync"], { unlocked: true });
-  const generated = current("Registro");
+  const generated = await current("Registro");
   secrets.push(generated);
   expect(generated.length).toBeGreaterThanOrEqual(12);
 
@@ -438,7 +442,7 @@ test("a sign-up the site refuses keeps the password the agent generated, in the 
   expect(sent?.get("password")).toBe(generated);
   expect(sent?.get("password_confirmation")).toBe(generated);
   // The form is gone; the password is not: the item still has it.
-  expect(current("Registro")).toBe(generated);
+  expect(await current("Registro")).toBe(generated);
   await page.close();
 });
 
@@ -465,7 +469,7 @@ test("a sign-up the site refuses keeps the password the person generated, in the
   // The page lost it; Klav did not: the generator history has it, for this site.
   const kept = JSON.parse(stack.klav(["generated", "ls", "--json"], { unlocked: true })) as Generated[];
   expect(kept[0]?.host).toBe("localhost");
-  expect(stack.klav(["generated", "show", "0"], { unlocked: true }).trim() === chosen, "the generator history lost the password").toBe(true);
+  expect((await stack.klavInTerminal(["generated", "show", "0"], { unlocked: true })).trim() === chosen, "the generator history lost the password").toBe(true);
   await page.close();
 });
 
