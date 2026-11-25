@@ -1282,6 +1282,7 @@ fn issuers_keep(lang: Lang, n: usize) -> String {
 }
 
 /// The reason for a proxy grant: every host, method and path it signs.
+#[allow(clippy::too_many_arguments)]
 fn proxy_grant(
     lang: Lang,
     agent: &str,
