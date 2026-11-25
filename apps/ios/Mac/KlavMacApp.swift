@@ -203,6 +203,8 @@ struct KlavCommands: Commands {
                     .keyboardShortcut("6", modifiers: [.command])
                 Button("Sandboxes") { model.section = .sandboxes }
                     .keyboardShortcut("7", modifiers: [.command])
+                Button("MCP servers") { model.section = .mcpServers }
+                    .keyboardShortcut("8", modifiers: [.command])
             }
             .disabled(model.accountDeleted)
         }

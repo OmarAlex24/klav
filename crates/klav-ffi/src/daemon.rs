@@ -18,6 +18,9 @@ use std::time::Instant;
 use klav_client::Home;
 use klav_client::activity::ItemActivity;
 use klav_client::agents::{AgentView, ApprovalView};
+use klav_client::proxy_admin::ProxyStatus;
+
+use crate::mcp::McpServersInfo;
 use klav_client::audit::{ChainStatus, LogLine, VerifyReport};
 use klav_client::history::{GeneratedSelection, GeneratedView, PasswordHistoryView};
 use klav_client::ops::{ItemView, SecretText, TotpCode};
@@ -1215,7 +1218,8 @@ impl DaemonEngine {
     /// Pending approval requests from agents.
     pub fn approvals(&self) -> KlavResult<Vec<ApprovalItem>> {
         let list: Vec<ApprovalView> = self.call(Request::Approvals { all: false })?;
-        Ok(list.into_iter().map(approval_item).collect())
+        let names = self.mcp_names(crate::mcp::approvals_need_names(&list));
+        Ok(list.into_iter().map(|a| approval_item(a, &names)).collect())
     }
 
     /// Deny, approve once (`lease_minutes = 0`) or for a while. Approving
@@ -1608,13 +1612,47 @@ impl DaemonEngine {
         if let Some(limit) = limit {
             lines.truncate(limit);
         }
-        Ok(lines.into_iter().map(log_entry).collect())
+        let names = self.mcp_names(crate::mcp::lines_need_names(&lines));
+        Ok(crate::mcp::fold_sessions(
+            lines.into_iter().map(|l| log_entry(l, &names)).collect(),
+        ))
     }
 
     /// «Who used it» for one item (its ID or reference).
     pub fn item_activity(&self, item: String) -> KlavResult<ItemActivityInfo> {
         let activity: ItemActivity = self.call(Request::ItemActivity { item })?;
-        Ok(item_activity_info(activity))
+        let names = self.mcp_names(crate::activity::uses_need_names(&activity));
+        Ok(item_activity_info(activity, &names))
+    }
+
+    /// «Development › MCP servers» (ADR 0049 §3, §9): the proxy's MCP
+    /// profiles with their tool rules, the local clients its grant names,
+    /// and the account's switch (`None` from a server older than the
+    /// gateway). Never a value, a token or a token's digest.
+    pub fn mcp_servers(&self) -> KlavResult<McpServersInfo> {
+        let status: ProxyStatus = self.call(Request::ProxyStatus)?;
+        let gateway_on: Option<bool> = self.call(Request::McpGateway)?;
+        Ok(crate::mcp::mcp_servers_info(status, gateway_on))
+    }
+
+    /// Turns the account's MCP gateway switch on (ADR 0049 §9), after the
+    /// sheet's «update every device first»: `every_device_updated` is that
+    /// acknowledgement, and `klavd` refuses without it. Asks for Touch ID
+    /// in `klavd` unless the switch is already on. Nothing turns it off.
+    pub fn turn_mcp_gateway_on(&self, every_device_updated: bool) -> KlavResult<bool> {
+        self.turn_mcp_gateway_on_with_password(every_device_updated, None)
+    }
+
+    /// `turn_mcp_gateway_on` with the master password instead of Touch ID.
+    pub fn turn_mcp_gateway_on_with_password(
+        &self,
+        every_device_updated: bool,
+        password: Option<String>,
+    ) -> KlavResult<bool> {
+        self.call(Request::McpGatewayOn {
+            every_device_updated,
+            password: password.map(SecretText::new),
+        })
     }
 
     /// How much of the log this Mac has downloaded and verified, without
@@ -1743,6 +1781,17 @@ impl DaemonEngine {
             password: password.map(SecretText::new),
         })?;
         Ok(pauses.into_iter().map(pause_info).collect())
+    }
+}
+
+impl DaemonEngine {
+    /// The proxy's MCP profiles, when `wanted`: best effort, from
+    /// `proxy_status` (ADR 0049 §5.4, §6). A failure names nothing.
+    fn mcp_names(&self, wanted: bool) -> crate::mcp::McpNames {
+        let status = wanted
+            .then(|| self.call::<ProxyStatus>(Request::ProxyStatus).ok())
+            .flatten();
+        crate::mcp::McpNames::from_status(status.as_ref())
     }
 }
 

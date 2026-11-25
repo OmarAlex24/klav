@@ -16,7 +16,9 @@ enum ActivityWords {
     /// «You», or the agent's name in one line. The person's pause of an
     /// agent names the agent (`agentId`) but is the person's.
     static func actor(_ e: LogEntryInfo) -> String {
-        isAgent(e) ? shown(e.actor, max: 40) : String(localized: "You")
+        guard isAgent(e) else { return String(localized: "You") }
+        // An MCP call through the proxy names its caller (ADR 0049 §6).
+        return McpWords.actor(e) ?? shown(e.actor, max: 40)
     }
 
     /// What the person did, as one sentence: «You paused an agent»,
@@ -57,6 +59,7 @@ enum ActivityWords {
     /// «filled it in on github.com», «injected it into a process»… for an
     /// agent; «approved a request», «paused every agent»… for the person.
     static func did(_ e: LogEntryInfo) -> String {
+        if e.action == "agent.access", let mcp = McpWords.did(e) { return mcp }
         let site = e.domain.map { self.site($0) }
         switch (e.action, e.permission) {
         case ("agent.access", "fill"):

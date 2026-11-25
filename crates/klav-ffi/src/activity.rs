@@ -11,6 +11,7 @@ use klav_client::activity::{How, ItemActivity, ItemUse};
 use klav_client::audit::{ChainStatus, LogFilter, LogLine, Unpinned, VerifyReport};
 use klav_core::policy::Permission;
 
+use crate::mcp::{McpNames, fold_uses};
 use crate::{KlavError, KlavResult};
 
 /// Which events «Activity» shows. Every field narrows; empty lists and
@@ -84,6 +85,30 @@ pub struct LogEntryInfo {
     pub alerts: Vec<String>,
     /// At or before the last event this device verified.
     pub verified: bool,
+    /// A proxied MCP tool call (ADR 0049 §6): the tool, according to the
+    /// MCP server, as the proxy signed it. Only in its grammar
+    /// (`A-Z a-z 0-9 _ - .`).
+    #[uniffi(default = None)]
+    pub mcp_tool: Option<String>,
+    /// The MCP profile the call went through, from the proxy's verified
+    /// grant, when this device knows it.
+    #[uniffi(default = None)]
+    pub mcp_profile: Option<String>,
+    /// The local MCP client that called, according to the proxy. Only in
+    /// its grammar (`a-z 0-9 -`).
+    #[uniffi(default = None)]
+    pub local_client: Option<String>,
+    /// The sandbox that called, according to the proxy.
+    #[uniffi(default = None)]
+    pub sandbox_id: Option<String>,
+    /// An MCP session message, not a tool call: connecting or listing the
+    /// tools («connected to maple»).
+    #[uniffi(default = false)]
+    pub mcp_session: bool,
+    /// How many more session messages of the same caller and profile,
+    /// just before this one, the row stands for (folded, ADR 0049 §6).
+    #[uniffi(default = 0)]
+    pub folded: u32,
 }
 
 /// How an agent's use went, for the app to say in words.
@@ -211,8 +236,22 @@ pub(crate) fn log_filter(input: LogFilterInput) -> KlavResult<LogFilter> {
     })
 }
 
-pub(crate) fn log_entry(l: LogLine) -> LogEntryInfo {
+/// One line for the apps; `names` gives a proxied call its MCP profile.
+pub(crate) fn log_entry(l: LogLine, names: &McpNames) -> LogEntryInfo {
+    let proxied = l.permission.as_deref() == Some("proxy");
+    let mcp_profile = names.profile(l.agent_id, l.item_id).filter(|_| proxied);
+    // A proxied message with no tool is a session message when it came
+    // from a local client (only MCP profiles have them) or went through
+    // an MCP profile.
+    let mcp_session =
+        proxied && l.mcp_tool.is_none() && (l.local_client.is_some() || mcp_profile.is_some());
     LogEntryInfo {
+        mcp_tool: l.mcp_tool.clone(),
+        mcp_profile,
+        local_client: l.local_client.clone(),
+        sandbox_id: l.sandbox.map(|s| s.to_string()),
+        mcp_session,
+        folded: 0,
         seq: l.seq,
         at_ms: l.at,
         actor: l.actor,
@@ -247,9 +286,9 @@ fn use_how(how: How) -> UseHow {
     }
 }
 
-fn item_use(u: ItemUse) -> ItemUseInfo {
+fn item_use(u: ItemUse, names: &McpNames) -> ItemUseInfo {
     ItemUseInfo {
-        entry: log_entry(u.line),
+        entry: log_entry(u.line, names),
         how: use_how(u.how),
         lease_until_ms: u.lease_until,
         approved_at_ms: u.approved_at,
@@ -257,13 +296,20 @@ fn item_use(u: ItemUse) -> ItemUseInfo {
     }
 }
 
-pub(crate) fn item_activity_info(a: ItemActivity) -> ItemActivityInfo {
+/// Some use of the item went through the proxy: it may be an MCP call.
+pub(crate) fn uses_need_names(a: &ItemActivity) -> bool {
+    a.uses
+        .iter()
+        .any(|u| u.line.permission.as_deref() == Some("proxy"))
+}
+
+pub(crate) fn item_activity_info(a: ItemActivity, names: &McpNames) -> ItemActivityInfo {
     ItemActivityInfo {
         item_id: a.item_id.to_string(),
         reference: a.reference,
         trashed: a.trashed,
         deleted: a.deleted,
-        uses: a.uses.into_iter().map(item_use).collect(),
+        uses: fold_uses(a.uses.into_iter().map(|u| item_use(u, names)).collect()),
     }
 }
 
@@ -334,10 +380,10 @@ mod tests {
     #[test]
     fn who_wrote_an_event_crosses_apart_from_the_actor_text() {
         // The person paused an agent: the agent is named, the person wrote it.
-        let person = log_entry(line("you", false));
+        let person = log_entry(line("you", false), &McpNames::default());
         assert!(!person.by_agent && person.agent_id.is_some());
         // An agent the person called «you» is still an agent.
-        let agent = log_entry(line("you", true));
+        let agent = log_entry(line("you", true), &McpNames::default());
         assert!(agent.by_agent);
         assert_eq!(agent.actor, "you");
     }

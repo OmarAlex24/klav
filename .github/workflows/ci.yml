@@ -826,8 +826,8 @@ jobs:
             --language swift --out-dir target/uniffi-swift
           test -s target/uniffi-swift/klav_ffi.swift
           # The Mac app's engine, DaemonEngine, against a real klavd (ADR 0027),
-          # and its bindings.
-          cargo test -p klav-ffi --features daemon --locked --test daemon
+          # the MCP gateway in the apps (ADR 0049, layer 6), and its bindings.
+          cargo test -p klav-ffi --features daemon --locked --test daemon --test mcp_gateway
           cargo build -p klav-ffi --features daemon --locked
           target/debug/uniffi-bindgen generate --library target/debug/libklav_ffi.so \
             --language swift --out-dir target/uniffi-swift-mac

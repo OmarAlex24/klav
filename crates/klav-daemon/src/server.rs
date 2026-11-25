@@ -2431,6 +2431,7 @@ fn person_write(request: &Request) -> bool {
             | Request::ProxyIssuerAdd { .. }
             | Request::ProxyIssuerRemove { .. }
             | Request::LocalClientChange { .. }
+            | Request::McpGatewayOn { .. }
             | Request::ResumeAgents { .. }
             | Request::DenyAgent { .. }
             | Request::AgentRotateConfirm { .. }
@@ -2475,6 +2476,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ProxyGrantPreview { .. }
         | Request::ProxyIssuerPreview { .. }
         | Request::LocalClientPreview { .. }
+        | Request::McpGateway
         | Request::AuditLog { .. }
         | Request::AuditStatus
         | Request::ItemActivity { .. }
@@ -2534,6 +2536,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ProxyIssuerAdd { .. }
         | Request::ProxyIssuerRemove { .. }
         | Request::LocalClientChange { .. }
+        | Request::McpGatewayOn { .. }
         | Request::PauseAgents { .. }
         | Request::ResumeAgents { .. }
         | Request::ConfirmPresence { .. }
@@ -3615,6 +3618,7 @@ fn will_ask(state: &State, request: &Request, caller: Option<&Caller>) -> bool {
         | Request::ProxyIssuerAdd { password, .. }
         | Request::ProxyIssuerRemove { password, .. }
         | Request::LocalClientChange { password, .. }
+        | Request::McpGatewayOn { password, .. }
         | Request::ResumeAgents { password, .. }
         | Request::CancelAccountDeletion { password } => password.is_none(),
         Request::PasskeyGet { password, .. } | Request::PasskeyCreate { password, .. } => {
@@ -4118,6 +4122,15 @@ fn bind_digest(label: &str, part: &str, fields: &[Vec<u8>]) -> [u8; 32] {
     klav_core::crypto::agent::body_digest(&bytes)
 }
 
+/// The MCP profile an approval's tool call goes through, from the proxy's
+/// verified grant (ADR 0049 §5.4): best effort, `None` when this device
+/// can't name it. Only the proxy's own requests have one.
+async fn mcp_profile(u: &mut Unlocked, view: &klav_client::agents::ApprovalView) -> Option<String> {
+    let item = view.item_id?;
+    let status = u.proxy_status().await.ok()?;
+    klav_client::proxy_admin::mcp_profile_names(&status, Some(view.agent_id)).remove(&item)
+}
+
 /// Every request that needs the account unlocked. `behind`: with the gate
 /// on, a prompt opened while this request waited for the session's lock,
 /// so a Touch ID prompt of its own would follow that one: `presence_busy`
@@ -4406,15 +4419,29 @@ async fn dispatch(
         } => {
             let view = u.find_approval(&approval).await.map_err(e)?;
             let id = view.id;
+            // A security card (ADR 0049 §5.4, T260) is never decided, and
+            // never reaches Touch ID: refused before any prompt.
+            klav_client::agents::refuse_security_card(&view).map_err(e)?;
             if approve {
-                confirm(
-                    Prompt::Request {
+                // An MCP tool call's prompt is fixed text, the profile the
+                // person signed and the tool: never the agent's words.
+                let profile = match view.mcp_tool {
+                    Some(_) => mcp_profile(u, &view).await,
+                    None => None,
+                };
+                let prompt = match &view.mcp_tool {
+                    Some(tool) => Prompt::McpTool {
+                        profile: profile.as_deref(),
+                        tool,
+                        lease: lease_secs.is_some(),
+                    },
+                    None => Prompt::Request {
                         agent: &view.agent,
                         permission: view.permission,
                         target: view.target_name.as_deref(),
                     },
-                    password,
-                )?;
+                };
+                confirm(prompt, password)?;
             }
             ok(
                 u.decide_approval(
@@ -4461,6 +4488,7 @@ async fn dispatch(
             password,
         } => {
             let view = u.find_approval(&approval).await.map_err(e)?;
+            klav_client::agents::refuse_security_card(&view).map_err(e)?;
             confirm(
                 Prompt::AddToTask {
                     agent: &view.agent,
@@ -4775,6 +4803,33 @@ async fn dispatch(
                 password,
             )?;
             ok(u.commit_local_client(prepared).await.map_err(e)?, warnings)
+        }
+        Request::McpGateway => ok(u.mcp_gateway_state().await.map_err(e)?, warnings),
+        Request::McpGatewayOn {
+            every_device_updated,
+            password,
+        } => {
+            // A server older than the gateway, or an acknowledgement
+            // missing, is refused before presence; an account already on
+            // asks for nothing.
+            match u.mcp_gateway_state().await.map_err(e)? {
+                None => {
+                    return Err(e(ClientError::Invalid(
+                        "this Klav server is older than the MCP gateway (ADR 0049): update the server first".into(),
+                    )));
+                }
+                Some(true) => return ok(true, warnings),
+                Some(false) => {}
+            }
+            if !every_device_updated {
+                return Err(e(ClientError::Invalid(format!(
+                    "{}. Then confirm that every device is updated",
+                    klav_client::proxy_admin::OLDER_CLIENTS_MCP
+                ))));
+            }
+            confirm(Prompt::McpGatewayOn, password)?;
+            u.turn_mcp_gateway_on().await.map_err(e)?;
+            ok(true, warnings)
         }
         Request::ProxyRevoke { item, password } => {
             let prepared = u.prepare_proxy_revoke(&item).await.map_err(e)?;

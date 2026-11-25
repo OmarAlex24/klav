@@ -50,6 +50,7 @@ mod error;
 mod grants;
 mod health;
 mod import;
+mod mcp;
 mod pause;
 #[cfg(feature = "daemon")]
 mod presence;
@@ -68,6 +69,7 @@ pub use error::{KlavError, KlavResult};
 pub use grants::*;
 pub use health::*;
 pub use import::ImportSession;
+pub use mcp::{McpLocalClientInfo, McpServerInfo, McpServersInfo};
 pub use pause::{AgentPauseInfo, AgentRole, DevAgentInfo, PauseInfo};
 #[cfg(feature = "daemon")]
 pub use presence::{
@@ -846,8 +848,17 @@ fn generated_entry(e: klav_client::history::GeneratedView) -> GeneratedEntryInfo
     }
 }
 
-fn approval_item(a: klav_client::agents::ApprovalView) -> ApprovalItem {
+fn approval_item(a: klav_client::agents::ApprovalView, names: &mcp::McpNames) -> ApprovalItem {
+    let mcp_profile = a
+        .mcp_tool
+        .as_ref()
+        .and_then(|_| names.profile(Some(a.agent_id), a.item_id));
     ApprovalItem {
+        mcp_tool: a.mcp_tool,
+        mcp_profile,
+        local_client: a.local_client,
+        sandbox_id: a.sandbox.map(|s| s.to_string()),
+        security: a.security.is_some(),
         id: a.id.to_string(),
         status: wire_name(&a.status),
         agent_id: a.agent_id.to_string(),
@@ -1473,7 +1484,12 @@ impl KlavCore {
     pub fn approvals(&self) -> KlavResult<Vec<ApprovalItem>> {
         self.with(|u| {
             let list = self.runtime.block_on(u.approvals(false))?;
-            Ok(list.into_iter().map(approval_item).collect())
+            // The profile of an MCP tool call, best effort (ADR 0049 §5.4).
+            let status = mcp::approvals_need_names(&list)
+                .then(|| self.runtime.block_on(u.proxy_status()).ok())
+                .flatten();
+            let names = mcp::McpNames::from_status(status.as_ref());
+            Ok(list.into_iter().map(|a| approval_item(a, &names)).collect())
         })
     }
 
@@ -1879,7 +1895,17 @@ impl KlavCore {
         let filter = activity::log_filter(filter)?;
         self.with(|u| {
             let lines = self.runtime.block_on(u.audit_log(&filter))?;
-            Ok(lines.into_iter().map(activity::log_entry).collect())
+            // The profile of a proxied MCP call, best effort (ADR 0049 §6).
+            let status = mcp::lines_need_names(&lines)
+                .then(|| self.runtime.block_on(u.proxy_status()).ok())
+                .flatten();
+            let names = mcp::McpNames::from_status(status.as_ref());
+            Ok(mcp::fold_sessions(
+                lines
+                    .into_iter()
+                    .map(|l| activity::log_entry(l, &names))
+                    .collect(),
+            ))
         })
     }
 
@@ -1888,7 +1914,11 @@ impl KlavCore {
     pub fn item_activity(&self, item: String) -> KlavResult<ItemActivityInfo> {
         self.with(|u| {
             let activity = self.runtime.block_on(u.item_activity(&item))?;
-            Ok(activity::item_activity_info(activity))
+            let status = activity::uses_need_names(&activity)
+                .then(|| self.runtime.block_on(u.proxy_status()).ok())
+                .flatten();
+            let names = mcp::McpNames::from_status(status.as_ref());
+            Ok(activity::item_activity_info(activity, &names))
         })
     }
 

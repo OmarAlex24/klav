@@ -848,7 +848,7 @@ pub fn pick_approval(views: Vec<ApprovalView>, wanted: &str) -> ClientResult<App
 
 /// Refuses to decide on an approval that shows a security card (ADR 0049
 /// §5.4): nothing is signed, approve or deny.
-pub(crate) fn refuse_security_card(view: &ApprovalView) -> ClientResult<()> {
+pub fn refuse_security_card(view: &ApprovalView) -> ClientResult<()> {
     match view.security {
         Some(_) => Err(ClientError::Security(MCP_SECURITY_CARD.to_owned())),
         None => Ok(()),

@@ -88,6 +88,7 @@ enum Snapshot {
         case "requests": model.section = .requests
         case "agents": model.section = .agents
         case "sandboxes": model.section = .sandboxes
+        case "mcp": model.section = .mcpServers
         case "activity": model.section = .activity
         case "clients": model.section = .clients
         case "health": model.section = .health
@@ -101,6 +102,7 @@ enum Snapshot {
         case "changeGrant", "reviewGrant": if let agent { model.changingGrant = GrantChangeRequest(agentId: agent) }
         case "uninstall": model.uninstalling = true
         case "revokeAllSandboxes": model.revokingAllSandboxes = true
+        case "mcpGatewayOn": model.turningOnMcpGateway = true
         case "newItem": model.editor = .create(.login)
         case "editItem": if let item = defaults.string(forKey: "KlavItem") { model.editor = .edit(item) }
         case "presenceValue":

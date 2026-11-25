@@ -15,6 +15,8 @@ import Foundation
 /// change (ADR 0033, amendment of 2026-11-10); `-KlavSamplePresence YES`
 /// has the presence gate on (ADR 0041): with `-KlavSampleNoTouchID YES`,
 /// values ask for the master password (`sample`) until its window opens.
+/// `-KlavSampleMcp card|security|off` adds an MCP tool call's card, a
+/// security card, or has the account's MCP gateway off (ADR 0049).
 final class SampleEngine: MacEngine, @unchecked Sendable {
     private let mutex = NSLock()
     private var unlocked: Bool
@@ -22,6 +24,8 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     private var approvalList: [ApprovalItem]
     private var taskList: [TaskItem]
     private var secretRequestList: [SecretRequestItem] = []
+    /// The account's MCP gateway switch (ADR 0049 §9).
+    private var mcpGatewayOn = UserDefaults.standard.string(forKey: "KlavSampleMcp") != "off"
     private var agentList: [AgentItem]
     private var breachCheck = false
     private let touchID: Bool
@@ -139,6 +143,22 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
                          task: OutsideTaskItem(id: "t2", task: "Ship version 0.9", expiresAt: now + 3_000_000, canAdd: true),
                          requestDigest: "sample-ap2"),
         ]
+        switch defaults.string(forKey: "KlavSampleMcp") {
+        case "card":
+            approvalList.append(
+                ApprovalItem(id: "ap3", status: "pending", agentId: "ag-proxy", agent: "klav-proxy", permission: "proxy",
+                             target: "klav://Trabajo/Infra/Maple", reason: "MCP tools/call from claude-code",
+                             domain: "api.maple.dev", createdAt: now - 5_000, expiresAt: now + 290_000, task: nil,
+                             requestDigest: "sample-ap3", mcpTool: "delete_service", mcpProfile: "maple",
+                             localClient: "claude-code"))
+        case "security":
+            approvalList.append(
+                ApprovalItem(id: "ap3", status: "pending", agentId: "ag-proxy", agent: "klav-proxy", permission: "proxy",
+                             target: "klav://Trabajo/Infra/Maple", reason: "", domain: nil, createdAt: now - 5_000,
+                             expiresAt: now + 290_000, task: nil, requestDigest: "sample-ap3", security: true))
+        default:
+            break
+        }
         let fill = TaskPermissionItem(permission: "fill", checked: true, asked: true, addedByKlav: false, deniedByPolicy: false, noSite: false)
         let code = TaskPermissionItem(permission: "totp", checked: true, asked: false, addedByKlav: true, deniedByPolicy: false, noSite: false)
         let inject = TaskPermissionItem(permission: "inject", checked: true, asked: true, addedByKlav: false, deniedByPolicy: false, noSite: false)
@@ -191,6 +211,13 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
             let words = HealthWords.input(agent: agent.id, rows: [], unchecked: [], secs: 7200)
             taskList.append(fixTask(id: "t3", agent: agent, items: ["i-cf", "i-aws"], title: words.task ?? "",
                                     reason: words.reason ?? "", secs: 7200, startedAgo: 20 * 60_000))
+        }
+        // An MCP card or a security card on its own, at the top of
+        // Requests, for its screenshot.
+        if ["card", "security"].contains(defaults.string(forKey: "KlavSampleMcp")) {
+            approvalList.removeAll { $0.id != "ap3" }
+            taskList.removeAll()
+            agentList.removeAll { $0.status == "pending" }
         }
     }
 
@@ -1867,6 +1894,46 @@ enum SampleSafety {
 extension MacModel {
     static func sample(_ engine: SampleEngine) -> MacModel {
         MacModel(engine: engine, accounts: SampleAccounts(engine: engine))
+    }
+}
+
+// MARK: - The MCP gateway (ADR 0049, layer 6)
+
+extension SampleEngine {
+    func mcpServers() throws -> McpServersInfo {
+        try locked {
+            let maple = McpServerInfo(
+                profile: "maple", itemId: "i-maple", title: "Maple", upstream: "https://api.maple.dev",
+                endpoint: "/mcp", localUrl: "http://127.0.0.1:8790/maple/mcp",
+                toolsAllow: ["get_*", "list_*", "query_*", "search_*", "find_*", "inspect_*"],
+                toolsAsk: ["create_*", "update_*", "delete_*", "manage_*"],
+                toolsDeny: ["create_api_key", "update_role"],
+                clients: ["claude-code", "codex"])
+            let cloudflare = McpServerInfo(
+                profile: "cloudflare", itemId: "i-cf", title: "Cloudflare", upstream: "https://mcp.cloudflare.com",
+                endpoint: "/mcp", localUrl: "http://127.0.0.1:8790/cloudflare/mcp",
+                toolsAllow: ["list_*", "get_*"], toolsAsk: ["purge_*"], toolsDeny: [], clients: [])
+            return McpServersInfo(
+                gatewayOn: mcpGatewayOn,
+                proxy: "klav-proxy",
+                servers: mcpGatewayOn ? [maple, cloudflare] : [],
+                localClients: mcpGatewayOn
+                    ? [McpLocalClientInfo(name: "claude-code", profiles: ["maple"]),
+                       McpLocalClientInfo(name: "codex", profiles: ["maple"])]
+                    : [],
+                problems: [])
+        }
+    }
+
+    func turnMcpGatewayOnWithPassword(everyDeviceUpdated: Bool, password: String?) throws -> Bool {
+        guard everyDeviceUpdated else {
+            throw KlavError.Invalid(message: "Update Klav on every device first, then confirm it.")
+        }
+        try presence(true, password)
+        return try locked {
+            mcpGatewayOn = true
+            return true
+        }
     }
 }
 #endif

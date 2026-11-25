@@ -511,6 +511,29 @@ pub struct ApprovalItem {
     /// 0030 §5). `decide_approval` and `add_to_task` take it back and sign
     /// nothing if the request changed since.
     pub request_digest: String,
+    /// An MCP tool call through the credential proxy (ADR 0049 §5.4): the
+    /// tool, according to the MCP server. Only once it passed the tool
+    /// grammar on this device (`A-Z a-z 0-9 _ - .`).
+    #[uniffi(default = None)]
+    pub mcp_tool: Option<String>,
+    /// The MCP profile the call goes through (`maple`), from the proxy's
+    /// grant the account signed, when this device knows it.
+    #[uniffi(default = None)]
+    pub mcp_profile: Option<String>,
+    /// The local MCP client the call is for, according to the proxy: only
+    /// in its grammar (`a-z 0-9 -`).
+    #[uniffi(default = None)]
+    pub local_client: Option<String>,
+    /// The sandbox the call is for, according to the proxy.
+    #[uniffi(default = None)]
+    pub sandbox_id: Option<String>,
+    /// The request names an MCP tool or a caller in a form the server
+    /// should have refused (ADR 0049 §5.4, T260): the card shows the app's
+    /// fixed text and nothing to decide, and nothing of the offending
+    /// field ever reaches it. `klavd` and `klav-client` refuse to decide
+    /// it either way, before any prompt.
+    #[uniffi(default = false)]
+    pub security: bool,
 }
 
 /// The running task an approval request falls outside of (ADR 0021 §6).
