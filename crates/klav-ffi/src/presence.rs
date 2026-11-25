@@ -549,6 +549,7 @@ mod tests {
                 title: Some("Git\u{1b}[2JHub\u{202e}\nx".into()),
                 count: None,
             }),
+            browser: None,
         };
         let info = PresenceAskInfo::from(ask);
         let title = info.value.and_then(|v| v.title).expect("title");
