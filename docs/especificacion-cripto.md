@@ -49,6 +49,7 @@ Etiquetas usadas en v1 (todas empiezan con `klav/v1/`):
 | `klav/v1/opaque` | contexto de OPAQUE (§4.5) |
 | `klav/v1/server/decoy-kdf-salt` | sal de los parámetros señuelo (§4.5) |
 | `klav/v1/server/token` | resumen de los tokens de sesión (§4.6) |
+| `klav/v1/server/invite` | resumen de los códigos de invitación al registro, ADR [0048](decisiones/0048-invite-beta-and-distribution.md) (§4.7) |
 | `klav/v1/secret-key/checksum` | checksum del Secret Key (§4.2) |
 | `klav/v1/identity/secrets` | AAD de las llaves privadas selladas (§6.3) |
 | `klav/v1/identity/fingerprint` | huella de una identidad (§6.2) |
@@ -245,6 +246,19 @@ resumen = SHA-256(tuple("klav/v1/server/token", token))
 ```
 
 El servidor solo guarda `resumen`, así que una copia de la base de datos no contiene tokens utilizables. Usar un *refresh token* ya rotado revoca la sesión entera (detección de robo). Revocar un dispositivo revoca todas sus sesiones.
+
+### 4.7 Códigos de invitación al registro
+Con `registration_mode = "invite"` (ADR [0048](decisiones/0048-invite-beta-and-distribution.md) §1.3), registrarse pide un código de invitación. No es un formato binario con versión: lo fijan su forma canónica, su resumen y los vectores de `invite.json`.
+
+```
+código  = "KLAV-" ‖ g1 "-" g2 "-" g3 "-" g4 "-" g5       grupos de 5, 5, 5, 5 y 6 símbolos
+símbolos = Crockford base32 (0123456789ABCDEFGHJKMNPQRSTVWXYZ) de 16 bytes aleatorios (128 bits) seguidos de 2 bits a cero
+resumen = SHA-256(tuple("klav/v1/server/invite", 16 bytes canónicos))
+```
+
+**Forma canónica:** se quitan guiones y espacios y se pasa a mayúsculas (cualquier otro carácter lo invalida). Con 30 caracteres, los 4 primeros deben ser `KLAV` y se quitan por longitud, no por patrón (`K`, `A` y `V` son símbolos de Crockford, y `L` se lee como `1`); con 26, es el código sin prefijo; cualquier otra longitud lo invalida. Después `I` y `L` valen `1`, y `O` vale `0`, y los 26 símbolos se decodifican a 16 bytes. Los 2 bits que sobran del último símbolo deben ser cero: si no, dos escrituras darían los mismos bytes. Un código que no cumple todo esto se rechaza antes de tocar la base de datos.
+
+El servidor guarda solo `resumen`, como con los tokens (§4.6). El código va en un `SecretString` (`klav_core::crypto::invite::InviteCode`), sin `Debug` que lo muestre.
 
 ## 5. Jerarquía de llaves
 
@@ -527,6 +541,7 @@ Están en [`docs/vectores/`](vectores/), uno por formato, en JSON (campos binari
 | `agentes.json` | código de emparejamiento, llave privada de agente (`0x07`), nombres del grant (`0x14`), firmas de peticiones, grants, aprobaciones y revocaciones, la cadena de la bitácora con su cabeza firmada, la solicitud, la decisión, la negativa y el fin de una tarea, y las pausas y la reanudación (§13) |
 | `passkey.json` | llave privada de una passkey sellada (`0x15`), su llave pública (SEC1 y SPKI), una firma ES256 determinista, y un registro y una aserción de Klav (COSE, `authData`, `attestationObject` y `clientDataJSON`) (§14) |
 | `webauthn-l3.json` | vector oficial de WebAuthn nivel 3, «ES256 Credential with No Attestation», transcrito del texto: con la misma llave, AAGUID, `credential_id` y banderas, `klav-core` produce el mismo `attestationObject`, el mismo `authenticatorData`, el mismo `clientDataJSON` de la aserción y la misma firma (RFC 6979) (§14) |
+| `invite.json` | códigos de invitación: escritura canónica, otras escrituras que dan los mismos bytes (minúsculas, sin prefijo ni guiones, con espacios, con `I`/`L`/`O`), resumen, y códigos que hay que rechazar (§4.7) |
 | `totp.json` | vectores oficiales de RFC 6238 (TOTP, SHA-1/256/512) y RFC 4226 (HOTP), transcritos de los RFC |
 
 Para regenerarlos tras un cambio **intencional** de formato: `KLAV_REGEN_VECTORS=1 cargo test -p klav-core vectors`.
@@ -1159,3 +1174,4 @@ Un UUID v4 fijo de Klav, constante en `klav-core` (`crypto::passkey::AAGUID`) y 
 | 2026-11-16 | **ADR 0036 en código, capa 5a** (la marca del latido, empates): §13.12 ya lo decía y esta tabla no lo recogía. Para el mismo proxy y la misma época se guarda el `seq` mayor; un latido con el mismo `seq` que la marca cuenta y no la mueve, y solo uno menor es un *rollback*. Entre épocas, en un empate de `epoch_seq` se queda la marca guardada. Un latido que retrocede es un aviso, no un fallo: la lista no sale con 3 por él (decidido por Omar el 2026-11-16, ADR 0036). Ningún formato ni vector cambia. |
 | 2026-11-19 | **ADR 0041 en código, capa 2** (la puerta de presencia, apagada): §12.2: los propósitos `presence` y `passkey-window` de los datos locales (`0x41`). El sobre y la AAD no cambian; ningún vector cambia. |
 | 2026-11-23 | **ADR 0046 en código, capa 1** (solicitudes de secreto por un agente): §2.3, §3 y §13.14 nueva: tipo `0x25` (`secret-request-proposal`, HPKE con `klav/v1/agent/secret-request`), firma `klav/v1/sig/secret-request-decision`, tipos `SecretRequestProposal`/`SecretRequestDecision` y validador de `setup_url` en `klav-core`. Vector nuevo `secret-request.json`; los demás no cambian. |
+| 2026-11-25 | **ADR 0048 en código, capa 1** (invitaciones al registro): §2.3: etiqueta `klav/v1/server/invite`; §4.7 nueva: el código de invitación (128 bits en Crockford base32 tras `KLAV-`), su forma canónica y su resumen, en `klav_core::crypto::invite`. Vector nuevo `invite.json`; los demás no cambian. |
