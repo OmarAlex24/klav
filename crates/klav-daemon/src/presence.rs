@@ -137,6 +137,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::Projects { .. }
         | Request::CreateVault { .. }
         | Request::CreateProject { .. }
+        | Request::SetProjectRepos { .. }
         | Request::List { .. }
         | Request::View { reveal: false, .. }
         | Request::Create { .. }
@@ -146,6 +147,8 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::PasskeyCandidates { .. }
         | Request::Attach { .. }
         | Request::Agents
+        | Request::AgentLabels
+        | Request::SetAgentLabel { .. }
         | Request::DenyAgent { .. }
         | Request::Approvals { .. }
         | Request::DecideApproval { approve: false, .. }

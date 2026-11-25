@@ -17,7 +17,8 @@ struct RequestsPane: View {
                         empty
                     }
                     ForEach(model.registrations) { agent in
-                        RegistrationCard<MacModel>(agent: agent, warning: model.sameName(as: agent)) { reviewing = agent }
+                        RegistrationCard<MacModel>(agent: agent, warning: model.sameName(as: agent),
+                                                   matched: model.launchedMatch(agent)) { reviewing = agent }
                     }
                     ForEach(model.secretRequests, id: \.decisionKey) { sr in
                         SecretRequestCard<MacModel>(card: sr)

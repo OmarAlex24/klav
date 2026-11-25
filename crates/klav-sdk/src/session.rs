@@ -134,6 +134,9 @@ pub struct Session {
     /// `project_version`. A project whose key rotated after the grant is
     /// missing, and nothing is written to it.
     pub(crate) project_versions: HashMap<ProjectId, u64>,
+    /// Normalized Git repositories (`host/owner/repo`) linked to each granted
+    /// project, read from its decrypted project metadata (ADR 0032 §2).
+    pub(crate) project_repos: HashMap<ProjectId, Vec<String>>,
     pub(crate) claim: Option<Claim>,
     /// Running tasks, with their decision verified (ADR 0021).
     pub(crate) tasks: Vec<crate::tasks::LiveTask>,
@@ -232,6 +235,7 @@ impl Session {
             grant,
             items: HashMap::new(),
             project_versions: HashMap::new(),
+            project_repos: HashMap::new(),
             claim: None,
             tasks: Vec::new(),
             task: None,
@@ -291,6 +295,7 @@ impl Session {
         }
         let mut items = HashMap::new();
         let mut project_versions = HashMap::new();
+        let mut project_repos = HashMap::new();
         for mut project in list.projects {
             let attachments = std::mem::take(&mut project.attachments);
             let Some(granted) = self.grant.keys.get(&project.project_id) else {
@@ -304,15 +309,16 @@ impl Session {
             // The version goes in the AAD of the metadata: it opens only
             // with this key at this version, so a write never claims the
             // current version with a key the person already rotated.
-            if open_project_meta(
+            if let Ok(meta) = open_project_meta(
                 &granted.key,
                 &granted.ctx,
                 project.project_version,
                 project.project_meta.as_bytes(),
-            )
-            .is_ok()
-            {
+            ) {
                 project_versions.insert(project.project_id, project.project_version);
+                if !meta.repos().is_empty() {
+                    project_repos.insert(project.project_id, meta.repos().to_vec());
+                }
             }
             for wire in project.items {
                 if wire.project_id != project.project_id || wire.vault_id != project.vault_id {
@@ -361,7 +367,27 @@ impl Session {
         }
         self.items = items;
         self.project_versions = project_versions;
+        self.project_repos = project_repos;
         self.load_tasks().await
+    }
+
+    /// Granted `(vault_name, project_name)` pairs linked to `normalized_repo`
+    /// (ADR 0032 §2). Strictly scoped to projects already in this agent's
+    /// signed grant (T125): never reveals or grants access to other projects.
+    pub fn projects_for_repo(&self, normalized_repo: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .project_repos
+            .iter()
+            .filter(|(_, repos)| repos.iter().any(|r| r == normalized_repo))
+            .filter_map(|(id, _)| {
+                let g = self.grant.keys.get(id)?;
+                Some((g.labels.vault.clone(), g.labels.project.clone()))
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            (a.0.to_lowercase(), a.1.to_lowercase()).cmp(&(b.0.to_lowercase(), b.1.to_lowercase()))
+        });
+        out
     }
 
     /// The `project_version` to write to `project` with the key of the

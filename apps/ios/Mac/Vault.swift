@@ -7,14 +7,40 @@ struct VaultPane: View {
 
     @State private var query = ""
     @State private var items: [ItemInfo] = []
+    @State private var projects: [ProjectInfo] = []
+    @State private var repoProjectFilter: String?
+    @State private var linkingRepo = false
     @State private var problem: String?
     @FocusState private var searching: Bool
     @FocusState private var listFocused: Bool
+
+    private var projectsById: [String: ProjectInfo] {
+        Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
+    }
+
+    private var repoProjects: [ProjectInfo] {
+        projects.filter { !$0.repos.isEmpty }
+    }
+
+    private var visibleItems: [ItemInfo] {
+        guard let repoProjectFilter else { return items }
+        return items.filter { $0.projectId == repoProjectFilter }
+    }
+
+    private var showsRepoBar: Bool {
+        switch filter {
+        case .kind(.apiKey), .project: return true
+        default: return false
+        }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 searchBar
+                if showsRepoBar {
+                    repoBar
+                }
                 Rule()
                 list
             }
@@ -30,6 +56,53 @@ struct VaultPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: "\(filter)|\(query)|\(model.generation)") { await load() }
+        .onChange(of: filter) { _, _ in repoProjectFilter = nil }
+        .sheet(isPresented: $linkingRepo) {
+            LinkRepoSheet(projects: projects, initialProjectId: initialLinkProjectId)
+                .environmentObject(model)
+                .frame(width: 460, height: 380)
+        }
+    }
+
+    private var initialLinkProjectId: String? {
+        if case .project(let id) = filter { return id }
+        return repoProjectFilter ?? projects.first?.id
+    }
+
+    private var repoBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if case .project(let id) = filter, let project = projectsById[id] {
+                    Text(verbatim: project.displayWithRepo)
+                        .font(.ui(12, .medium)).foregroundStyle(Palette.tinta)
+                        .lineLimit(1).truncationMode(.middle)
+                } else {
+                    Text("Repositories")
+                        .font(.ui(12, .medium)).foregroundStyle(Palette.gris)
+                }
+                Spacer(minLength: 6)
+                if model.canChangeItems {
+                    SmallAction(title: "Link repo…") { linkingRepo = true }
+                }
+            }
+            if case .kind(.apiKey) = filter, !repoProjects.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Chip(text: String(localized: "All"), on: repoProjectFilter == nil) {
+                            repoProjectFilter = nil
+                        }
+                        ForEach(repoProjects, id: \.id) { project in
+                            Chip(text: project.primaryRepoShort ?? project.name,
+                                 on: repoProjectFilter == project.id) {
+                                repoProjectFilter = repoProjectFilter == project.id ? nil : project.id
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
     }
 
     private var searchBar: some View {
@@ -61,6 +134,7 @@ struct VaultPane: View {
         case .all: return String(localized: "Search your vault")
         case .kind(let kind): return String(localized: "Search \(kind.plural.lowercased())")
         case .vault: return String(localized: "Search this vault")
+        case .project: return String(localized: "Search this repository")
         }
     }
 
@@ -70,14 +144,16 @@ struct VaultPane: View {
                 LazyVStack(spacing: 0) {
                     if let problem {
                         Notice(text: problem).padding(14)
-                    } else if items.isEmpty {
+                    } else if visibleItems.isEmpty {
                         Text(query.isEmpty ? "Nothing here yet." : "Nothing matches “\(query)”.")
                             .font(.ui(13)).foregroundStyle(Palette.gris)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(16)
                     }
-                    ForEach(items) { item in
-                        ItemRow(item: item, selected: model.selectedItem == item.id)
+                    ForEach(visibleItems) { item in
+                        ItemRow(item: item,
+                                repoBadge: rowBadge(for: item),
+                                selected: model.selectedItem == item.id)
                             .id(item.id)
                             .onTapGesture { model.selectedItem = item.id }
                         Rule().padding(.leading, 58)
@@ -92,12 +168,22 @@ struct VaultPane: View {
         }
     }
 
+    private func rowBadge(for item: ItemInfo) -> String? {
+        if let repo = projectsById[item.projectId]?.primaryRepoShort {
+            return repo
+        }
+        if item.kind == .apiKey {
+            return "\(item.vault) / \(item.project)"
+        }
+        return nil
+    }
+
     private var empty: some View {
         VStack(spacing: 14) {
             KeyGlyphShape(square: true)
                 .fill(Palette.linea)
                 .frame(width: 56, height: 56)
-            Text(items.isEmpty ? "Your vault is empty" : "Pick an item")
+            Text(visibleItems.isEmpty ? "Your vault is empty" : "Pick an item")
                 .font(.ui(15, .medium)).foregroundStyle(Palette.tinta)
             Text("Copy a password with ⌘C and a user name with ⇧⌘C once it’s open.")
                 .font(.ui(13)).foregroundStyle(Palette.gris)
@@ -105,11 +191,12 @@ struct VaultPane: View {
     }
 
     private func move(_ step: Int, _ proxy: ScrollViewProxy) {
-        guard !items.isEmpty else { return }
-        let index = items.firstIndex { $0.id == model.selectedItem } ?? (step > 0 ? -1 : items.count)
-        let next = min(max(index + step, 0), items.count - 1)
-        model.selectedItem = items[next].id
-        proxy.scrollTo(items[next].id)
+        let shown = visibleItems
+        guard !shown.isEmpty else { return }
+        let index = shown.firstIndex { $0.id == model.selectedItem } ?? (step > 0 ? -1 : shown.count)
+        let next = min(max(index + step, 0), shown.count - 1)
+        model.selectedItem = shown[next].id
+        proxy.scrollTo(shown[next].id)
     }
 
     private func load() async {
@@ -121,15 +208,19 @@ struct VaultPane: View {
         case .all: break
         case .kind(let kind): q.kind = kind
         case .vault(let id): q.vaultId = id
+        case .project(let id): q.projectId = id
         }
         let query = q
         do {
-            items = try await model.run { try $0.items(query: query) }
+            async let loadedItems = model.run { try $0.items(query: query) }
+            async let loadedProjects = model.run { try $0.projects(vaultId: nil) }
+            items = try await loadedItems
+            projects = (try? await loadedProjects) ?? []
             problem = nil
-            if let selected = model.selectedItem, !items.contains(where: { $0.id == selected }) {
-                model.selectedItem = items.first?.id
+            if let selected = model.selectedItem, !visibleItems.contains(where: { $0.id == selected }) {
+                model.selectedItem = visibleItems.first?.id
             } else if model.selectedItem == nil {
-                model.selectedItem = items.first?.id
+                model.selectedItem = visibleItems.first?.id
             }
         } catch KlavError.Locked {
             model.refresh()
@@ -139,11 +230,143 @@ struct VaultPane: View {
     }
 }
 
+/// Sheet to link or unlink Git repositories on a project (ADR 0032 §2).
+private struct LinkRepoSheet: View {
+    @EnvironmentObject private var model: MacModel
+    @Environment(\.dismiss) private var dismiss
+    let projects: [ProjectInfo]
+    let initialProjectId: String?
+
+    @State private var selectedProjectId = ""
+    @State private var repoInput = ""
+    @State private var repos: [String] = []
+    @State private var busy = false
+    @State private var problem: String?
+
+    private var selectedProject: ProjectInfo? {
+        projects.first { $0.id == selectedProjectId }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Title("Link a repository", size: 20)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
+            }
+            .padding(.horizontal, 22)
+            .frame(height: 56)
+            .overlay(alignment: .bottom) { Rule() }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Link a Git repository to a project so Klav groups its API keys and helps agents find the right project automatically.")
+                        .font(.ui(13)).foregroundStyle(Palette.gris)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        FieldLabel("Project")
+                        Picker(String(localized: "Project"), selection: $selectedProjectId) {
+                            ForEach(projects, id: \.id) { project in
+                                Text(project.displayWithRepo).tag(project.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .onChange(of: selectedProjectId) { _, _ in syncSelected() }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        FieldLabel("Repository URL")
+                        HStack(spacing: 8) {
+                            TextField(String(localized: "github.com/owner/repo or git@github.com:owner/repo.git"), text: $repoInput)
+                                .textFieldStyle(.plain)
+                                .font(.ui(13)).foregroundStyle(Palette.tinta)
+                                .padding(.horizontal, 10).padding(.vertical, 8)
+                                .overlay(Rectangle().strokeBorder(Palette.linea, lineWidth: 1))
+                                .onSubmit { Task { await addRepo() } }
+                            Button(busy ? String(localized: "Saving…") : String(localized: "Link")) {
+                                Task { await addRepo() }
+                            }
+                            .buttonStyle(PrimaryButtonStyle(compact: true))
+                            .fixedSize()
+                            .disabled(busy || repoInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedProject == nil)
+                        }
+                    }
+
+                    if !repos.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            FieldLabel("Linked repositories")
+                            FieldBlock {
+                                ForEach(Array(repos.enumerated()), id: \.element) { idx, repo in
+                                    if idx > 0 { Rule() }
+                                    HStack {
+                                        Text(verbatim: repo).font(.mono(12)).foregroundStyle(Palette.tinta)
+                                        Spacer()
+                                        SmallAction(title: "Remove") { Task { await removeRepo(repo) } }
+                                    }
+                                    .padding(.horizontal, 12).padding(.vertical, 8)
+                                }
+                            }
+                        }
+                    }
+
+                    if let problem { Notice(text: problem) }
+                }
+                .padding(22)
+            }
+        }
+        .background(Palette.papel)
+        .onAppear {
+            selectedProjectId = initialProjectId ?? projects.first?.id ?? ""
+            syncSelected()
+        }
+    }
+
+    private func syncSelected() {
+        repos = selectedProject?.repos ?? []
+        problem = nil
+    }
+
+    private func addRepo() async {
+        guard let project = selectedProject else { return }
+        let raw = repoInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        busy = true
+        problem = nil
+        do {
+            let updated = try await model.setProjectRepos(vaultId: project.vaultId, projectId: project.id,
+                                                          repos: repos + [raw])
+            repos = updated.repos
+            repoInput = ""
+        } catch {
+            problem = describe(error)
+        }
+        busy = false
+    }
+
+    private func removeRepo(_ repo: String) async {
+        guard let project = selectedProject else { return }
+        busy = true
+        problem = nil
+        do {
+            let next = repos.filter { $0 != repo }
+            let updated = try await model.setProjectRepos(vaultId: project.vaultId, projectId: project.id,
+                                                          repos: next)
+            repos = updated.repos
+        } catch {
+            problem = describe(error)
+        }
+        busy = false
+    }
+}
+
 /// A row: the site's tile, the title, the user name, and the live code of
 /// an item with one (docs/diseno-visual §4.1).
 private struct ItemRow: View {
     @EnvironmentObject private var model: MacModel
     let item: ItemInfo
+    let repoBadge: String?
     let selected: Bool
     @State private var noCode = false
 
@@ -153,7 +376,7 @@ private struct ItemRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: item.title)
                     .font(.ui(13, .medium)).foregroundStyle(Palette.tinta).lineLimit(1)
-                Text(verbatim: item.username ?? item.kind.shortName)
+                Text(verbatim: subtitle)
                     .font(.ui(12)).foregroundStyle(Palette.gris).lineLimit(1)
             }
             Spacer(minLength: 6)
@@ -170,6 +393,16 @@ private struct ItemRow: View {
             if selected { Rectangle().fill(Palette.tinta).frame(width: 2) }
         }
         .contentShape(Rectangle())
+    }
+
+    private var subtitle: String {
+        if let username = item.username, !username.isEmpty {
+            return username
+        }
+        if let repoBadge {
+            return repoBadge
+        }
+        return item.kind.shortName
     }
 
     private var fetchCode: @Sendable (String) async throws -> TotpInfo {

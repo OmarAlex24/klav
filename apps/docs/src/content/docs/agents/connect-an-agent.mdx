@@ -51,7 +51,16 @@ Restart the client if it was open, so it loads its MCP servers again.
 - `klav client restore claude-code` puts back the settings file from before Klav's last change.
 - An entry Klav didn't write is left alone unless you pass `--replace` or `--adopt`. Klav doesn't write a file it can't read, or one an organization manages.
 
-In the Mac app, Development › Clients does the same with a button per client, and shows the change before it writes.
+In the Mac app, Development › Clients does the same with a button per client, and shows the change before it writes. When the Mac app starts the registration itself, it verifies the six words for you, pre-fills this Mac's name as the agent's machine label, and lets you choose projects and approve directly (the words stay available under "Show verification words"). Development › Agents shows each agent's role (credential proxy, sandbox issuer with its target proxy and host, MCP client, or CLI), your own encrypted label and machine note, and marks agents whose local identity lives on this Mac.
+
+To label any agent or record which machine or server it runs on (stored end-to-end encrypted in your personal vault, never readable by the server or by agents):
+
+```sh
+klav agent label klav-proxy --label "Proxmox proxy" --host pve-home
+klav agent label klav-proxy --clear
+```
+
+You can also edit an agent's label and machine directly on its page in the Mac app.
 
 An agent can also connect itself: Klav's skill tells it to run `klav client connect <client> --yes --json`, give you the six words, and wait until you approve.
 
@@ -113,7 +122,7 @@ A registered agent works through `klav agent …` (see [Use secrets without seei
 | `change_password_url`, `rotate_password`, `rotate_confirm`, `rotate_cancel` | Change a password in your browser without the agent seeing it | `list`; `rotate` inside a task |
 | `passkey_sign_in` | Sign in to a site with your passkey, in your browser | `passkey` inside a task |
 
-`klav mcp` uses the `klav.toml` of the folder it starts in: short references, and only that project.
+`klav mcp` uses the `klav.toml` of the folder it starts in: short references, and only that project. If the current folder is a Git repository linked to one or more projects already in the agent's grant (`klav project link <vault/project>`), `search_items` lists items from those projects first and includes `repo_context` naming the matched repository and project(s) — strictly within the agent's existing grant.
 
 ## Klav's skills
 

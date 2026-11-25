@@ -125,7 +125,9 @@ main > .notice { margin: 12px; }
 .field-label { font-size: 11px; color: var(--gris); }
 .save-field select.input { appearance: auto; }
 .save-form .notice-slot { padding: 0; }
-.save-actions { display: flex; gap: 8px; }
+.save-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.save-alt { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 2px; }
+.save-recovery { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
 .save-done { display: flex; align-items: center; gap: 8px; padding: 16px 14px; }
 .save-done svg { width: 16px; height: 16px; flex: none; }
 .save-done strong { font-weight: 600; }

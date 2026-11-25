@@ -17,8 +17,8 @@ use klav_sdk::{Agent, AgentState, KeyStore, KeyStoreChoice, Registration};
 
 use crate::backend::{Backend, call};
 use crate::cli::{
-    AgentApproveArgs, AgentCommand, AgentPauseArgs, AgentRegisterArgs, AgentResumeArgs,
-    AgentStatusArgs, AgentTotpArgs, ApprovalCommand, KeyStoreArg,
+    AgentApproveArgs, AgentCommand, AgentLabelArgs, AgentPauseArgs, AgentRegisterArgs,
+    AgentResumeArgs, AgentStatusArgs, AgentTotpArgs, ApprovalCommand, KeyStoreArg,
 };
 use crate::context::Ctx;
 use crate::error::{CliError, CliResult, usage};
@@ -33,7 +33,8 @@ pub(crate) async fn agent_cmd(ctx: &mut Ctx, cmd: AgentCommand) -> CliResult<()>
             if flag.json {
                 return output::json(&agents);
             }
-            print_agents(&agents);
+            let labels = agent_labels(ctx).await;
+            print_agents(&agents, &labels);
             Ok(())
         }
         AgentCommand::Approve(args) => approve(ctx, args).await,
@@ -55,7 +56,16 @@ pub(crate) async fn agent_cmd(ctx: &mut Ctx, cmd: AgentCommand) -> CliResult<()>
             if json.json {
                 return output::json(&exposure);
             }
-            print_agents(std::slice::from_ref(&exposure.agent));
+            let labels = agent_labels(ctx).await;
+            print_agents(std::slice::from_ref(&exposure.agent), &labels);
+            if let Some(entry) = labels.get(&exposure.agent.id) {
+                if let Some(label) = &entry.label {
+                    output::info(&format!("Your label: {label}"));
+                }
+                if let Some(host) = &entry.host {
+                    output::info(&format!("Your host:  {host}"));
+                }
+            }
             if let Some(grant) = &exposure.agent.grant {
                 output::info(&format!(
                     "Grant v{} ({} rules{}).",
@@ -79,6 +89,7 @@ pub(crate) async fn agent_cmd(ctx: &mut Ctx, cmd: AgentCommand) -> CliResult<()>
             }
             Ok(())
         }
+        AgentCommand::Label(args) => label_agent(ctx, args).await,
         AgentCommand::Revoke {
             agent,
             rotate,
@@ -690,12 +701,95 @@ async fn resume(ctx: &mut Ctx, args: AgentResumeArgs) -> CliResult<()> {
     Ok(())
 }
 
-fn print_agents(agents: &[AgentView]) {
+async fn agent_labels(ctx: &mut Ctx) -> klav_core::model::agent_labels::AgentLabels {
+    match ctx.backend().await {
+        Ok(Backend::Direct(u)) => u.agent_labels().unwrap_or_default(),
+        Ok(Backend::Daemon(d)) => d
+            .call(Request::AgentLabels)
+            .await
+            .map(|(l, _)| l)
+            .unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
+}
+
+async fn label_agent(ctx: &mut Ctx, args: AgentLabelArgs) -> CliResult<()> {
+    if !args.clear && args.label.is_none() && args.host.is_none() {
+        return Err(usage("give --label, --host, or --clear"));
+    }
+    let found = find(ctx, &args.agent).await?;
+    let current = agent_labels(ctx).await;
+    let existing = current.get(&found.id).cloned().unwrap_or_default();
+    let (label, host) = if args.clear {
+        (None, None)
+    } else {
+        (args.label.or(existing.label), args.host.or(existing.host))
+    };
+    let updated: klav_core::model::agent_labels::AgentLabels = match ctx.backend().await? {
+        Backend::Direct(u) => {
+            let entry = klav_core::model::agent_labels::AgentLabel {
+                label: label.clone(),
+                host: host.clone(),
+                role_hint: existing.role_hint.filter(|_| !args.clear),
+            };
+            let entry = (!entry.is_empty()).then_some(entry);
+            u.set_agent_label(found.id, entry).await?
+        }
+        Backend::Daemon(d) => {
+            call(
+                d,
+                Request::SetAgentLabel {
+                    agent: found.id,
+                    label: label.clone(),
+                    host: host.clone(),
+                },
+            )
+            .await?
+        }
+    };
+    if args.json.json {
+        return output::json(&updated.get(&found.id));
+    }
+    match updated.get(&found.id) {
+        Some(entry) => {
+            let mut parts = Vec::new();
+            if let Some(l) = &entry.label {
+                parts.push(format!("label {l:?}"));
+            }
+            if let Some(h) = &entry.host {
+                parts.push(format!("host {h:?}"));
+            }
+            output::info(&format!(
+                "Updated {} ({}): {}.",
+                found.name,
+                found.id,
+                parts.join(", ")
+            ));
+        }
+        None => output::info(&format!("Cleared label for {} ({}).", found.name, found.id)),
+    }
+    Ok(())
+}
+
+fn print_agents(agents: &[AgentView], labels: &klav_core::model::agent_labels::AgentLabels) {
+    let any_labeled = agents.iter().any(|a| labels.get(&a.id).is_some());
     let rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
-            vec![
-                a.name.clone(),
+            let mut row = vec![a.name.clone()];
+            if any_labeled {
+                let text = labels
+                    .get(&a.id)
+                    .map(|l| match (&l.label, &l.host) {
+                        (Some(lbl), Some(h)) => format!("{lbl} ({h})"),
+                        (Some(lbl), None) => lbl.clone(),
+                        (None, Some(h)) => h.clone(),
+                        (None, None) => String::new(),
+                    })
+                    .unwrap_or_default();
+                row.push(text);
+            }
+            row.extend([
                 a.status.as_str().to_owned(),
                 a.paused.as_ref().map_or_else(String::new, |p| {
                     p.until.map_or_else(
@@ -712,13 +806,29 @@ fn print_agents(agents: &[AgentView]) {
                 }),
                 a.pairing_code.clone(),
                 a.id.to_string(),
-            ]
+            ]);
+            row
         })
         .collect();
-    output::table(
-        &["AGENT", "STATUS", "PAUSED", "PROJECTS", "WORDS", "ID"],
-        &rows,
-    );
+    if any_labeled {
+        output::table(
+            &[
+                "AGENT",
+                "LABEL / HOST",
+                "STATUS",
+                "PAUSED",
+                "PROJECTS",
+                "WORDS",
+                "ID",
+            ],
+            &rows,
+        );
+    } else {
+        output::table(
+            &["AGENT", "STATUS", "PAUSED", "PROJECTS", "WORDS", "ID"],
+            &rows,
+        );
+    }
 }
 
 fn permissions(list: &[String]) -> CliResult<Vec<Permission>> {

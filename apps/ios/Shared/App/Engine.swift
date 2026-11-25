@@ -16,6 +16,7 @@ protocol VaultEngine: AnyObject, Sendable {
     // Reading the vault (metadata only, unless the person asks for a value).
     func vaults() throws -> [VaultInfo]
     func projects(vaultId: String?) throws -> [ProjectInfo]
+    func setProjectRepos(vaultId: String, projectId: String, repos: [String]) throws -> ProjectInfo
     func items(query: ItemQuery) throws -> [ItemInfo]
     func item(id: String) throws -> ItemDetail
     func fieldValue(id: String, field: String) throws -> String
@@ -56,6 +57,32 @@ protocol VaultEngine: AnyObject, Sendable {
     func vaultHealth() throws -> VaultHealthInfo
     func healthSettings() throws -> HealthSettingsInfo
     func setBreachCheck(on: Bool) throws -> HealthSettingsInfo
+}
+
+extension ProjectInfo {
+    /// Shortens well-known hosts (`github.com/omar/klav` → `omar/klav`) while
+    /// preserving custom Git hosts in full.
+    static func shortRepoName(_ normalized: String) -> String {
+        for prefix in ["github.com/", "gitlab.com/", "bitbucket.org/"] {
+            if normalized.hasPrefix(prefix) {
+                return String(normalized.dropFirst(prefix.count))
+            }
+        }
+        return normalized
+    }
+
+    /// Short display label for the project's primary linked repository, if any.
+    var primaryRepoShort: String? {
+        repos.first.map(Self.shortRepoName)
+    }
+
+    /// `Vault / Project` or `Vault / Project · owner/repo` when linked.
+    var displayWithRepo: String {
+        let base = "\(vault) / \(name)"
+        guard let repo = primaryRepoShort else { return base }
+        let extra = repos.count > 1 ? " +\(repos.count - 1)" : ""
+        return "\(base) · \(repo)\(extra)"
+    }
 }
 
 extension KlavCore: VaultEngine {}

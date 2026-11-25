@@ -7,8 +7,10 @@ import SwiftUI
 /// 2026-11-10, F5).
 struct AgentsPane: View {
     @EnvironmentObject private var model: MacModel
+    @EnvironmentObject private var installer: Installer
     @State private var agents: [DevAgentInfo] = []
     @State private var revocations: [RevocationInfo] = []
+    @State private var localIds: Set<String> = []
     @State private var problem: String?
     @State private var loaded = false
 
@@ -70,6 +72,7 @@ struct AgentsPane: View {
                 ForEach(Array(list.enumerated()), id: \.element.agent.id) { index, item in
                     if index > 0 { Rule() }
                     DevAgentRow(item: item, pause: pause(of: item),
+                                isLocal: localIds.contains(item.agent.id),
                                 revocation: RevokeWords.state(model.revocationFlows[item.agent.id],
                                                               left: model.keysLeft(of: item.agent.id, listed: revocations)))
                 }
@@ -101,6 +104,9 @@ struct AgentsPane: View {
     }
 
     private func load() async {
+        if installer.system.refusal(for: installer.paths) == nil {
+            localIds = LocalAgents.ids(in: installer.paths.klavHome)
+        }
         do {
             (agents, revocations) = try await model.agentsAndRevocations()
             problem = nil
@@ -117,6 +123,8 @@ private struct DevAgentRow: View {
     @EnvironmentObject private var model: MacModel
     let item: DevAgentInfo
     let pause: AgentPauseInfo?
+    /// This agent's local config (`agents/<name>.json`) lives on this Mac.
+    let isLocal: Bool
     /// «Revoked. Keys left to change (3 of 5)», while a revocation's key
     /// change is not finished.
     let revocation: String?
@@ -151,16 +159,46 @@ private struct DevAgentRow: View {
         .disabled(busy)
     }
 
+    private var roleColor: Color {
+        switch item.role {
+        case .proxy: return Palette.cobalto
+        case .sandboxIssuer: return Palette.tinta
+        case .standard: return Palette.gris
+        }
+    }
+
     private var summary: some View {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(verbatim: agent.name)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .center, spacing: 8) {
+                        Text(verbatim: AgentText.line(agent.name, max: 64))
                             .font(.ui(14, .medium)).foregroundStyle(Palette.tinta)
-                        if let client = AgentClients.client(of: agent.name) {
-                            Text(verbatim: client).font(.ui(12.5)).foregroundStyle(Palette.gris)
+                        Text(verbatim: ActivityWords.roleBadge(item))
+                            .font(.ui(11, .medium)).foregroundStyle(roleColor)
+                            .padding(.horizontal, 6).frame(height: 19)
+                            .overlay(Rectangle().strokeBorder(roleColor.opacity(item.role == .standard ? 0.5 : 1), lineWidth: 1))
+                        if isLocal {
+                            Text("On this Mac")
+                                .font(.ui(11, .medium)).foregroundStyle(Palette.tinta)
+                                .padding(.horizontal, 6).frame(height: 19)
+                                .background(Palette.niebla)
                         }
                         Text(verbatim: String(agent.id.prefix(8)))
                             .font(.mono(11)).foregroundStyle(Palette.gris)
+                    }
+                    if let personLabel = ActivityWords.personLabelSummary(item) {
+                        Text(verbatim: personLabel)
+                            .font(.ui(12.5, .medium)).foregroundStyle(Palette.cobalto)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let origin = ActivityWords.originSummary(item) {
+                        Text(verbatim: origin)
+                            .font(.ui(12.5, .medium)).foregroundStyle(Palette.tinta)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let note = agent.note, !note.isEmpty {
+                        Text("\("“\(AgentText.line(note, max: 120))”") (according to the agent)")
+                            .font(.ui(12)).foregroundStyle(Palette.gris)
+                            .lineLimit(1)
                     }
                     if !agent.projects.isEmpty {
                         Text(verbatim: agent.projects.joined(separator: ", "))

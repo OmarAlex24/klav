@@ -65,7 +65,7 @@ pub use error::{KlavError, KlavResult};
 pub use grants::*;
 pub use health::*;
 pub use import::ImportSession;
-pub use pause::{AgentPauseInfo, DevAgentInfo, PauseInfo};
+pub use pause::{AgentPauseInfo, AgentRole, DevAgentInfo, PauseInfo};
 pub use sandboxes::{
     ProxyNoSigns, SandboxCheckInfo, SandboxEndInfo, SandboxInfo, SandboxListCheckedInfo,
     SandboxListInfo, SandboxProxyInfo, SandboxRevokeInfo, SandboxSecurityInfo, SandboxStatusInfo,
@@ -1264,6 +1264,25 @@ impl KlavCore {
         })
     }
 
+    /// Replaces the normalized Git repositories linked to a project (ADR 0032).
+    pub fn set_project_repos(
+        &self,
+        vault_id: String,
+        project_id: String,
+        repos: Vec<String>,
+    ) -> KlavResult<ProjectInfo> {
+        let vault =
+            VaultId::from_str(vault_id.trim()).map_err(|_| KlavError::invalid("not a vault ID"))?;
+        let project = ProjectId::from_str(project_id.trim())
+            .map_err(|_| KlavError::invalid("not a project ID"))?;
+        self.with(|u| {
+            let updated = self
+                .runtime
+                .block_on(u.set_project_repos(vault, project, repos))?;
+            Ok(updated.into())
+        })
+    }
+
     /// Items matching `query`, by title.
     pub fn items(&self, query: ItemQuery) -> KlavResult<Vec<ItemInfo>> {
         self.with(|u| Ok(item_infos(u.list_items(&item_filter(query))?)))
@@ -1638,10 +1657,36 @@ impl KlavCore {
         })
     }
 
-    /// The account's agents with their last use and their pause, for
-    /// Agents (ADR 0033 §9): pending registrations first, then newest.
+    /// The account's agents with their last use, verified role, person-owned
+    /// labels (ADR 0047) and pause, for Agents (ADR 0033 §9): pending
+    /// registrations first, then newest.
     pub fn dev_agents(&self) -> KlavResult<Vec<DevAgentInfo>> {
-        self.with(|u| Ok(pause::dev_agents(self.runtime.block_on(u.agents())?)))
+        self.with(|u| {
+            let list = self.runtime.block_on(u.agents())?;
+            let labels = u.agent_labels().unwrap_or_default();
+            Ok(pause::dev_agents(list, &labels))
+        })
+    }
+
+    /// Sets or clears the person-owned label and/or machine host for an agent
+    /// (ADR 0047). Stored E2E-encrypted in the personal vault's system project.
+    pub fn set_agent_label(
+        &self,
+        id: String,
+        label: Option<String>,
+        host: Option<String>,
+    ) -> KlavResult<()> {
+        let agent = pause::agent_id(&id)?;
+        let entry = klav_core::model::agent_labels::AgentLabel {
+            label,
+            host,
+            role_hint: None,
+        };
+        let entry = (!entry.is_empty()).then_some(entry);
+        self.with(|u| {
+            self.runtime.block_on(u.set_agent_label(agent, entry))?;
+            Ok(())
+        })
     }
 
     /// The pauses in effect, as this iPhone last learned them (its sync,

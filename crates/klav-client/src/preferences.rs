@@ -204,7 +204,7 @@ impl Unlocked {
 
     /// The vaults this account owns (a shared vault's owner could plant a
     /// preferences item there).
-    fn owned_vaults(&self, account: AccountId) -> Vec<VaultId> {
+    pub(crate) fn owned_vaults(&self, account: AccountId) -> Vec<VaultId> {
         let mut vaults: Vec<VaultId> = self
             .vaults
             .iter()

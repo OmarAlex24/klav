@@ -37,7 +37,10 @@ impl From<ItemKind> for Kind {
             // System items (the generator history, the preferences) are
             // never listed: they live in the system project. A note is the
             // closest shape if one ever shows up.
-            ItemKind::Note | ItemKind::GeneratorHistory | ItemKind::Preferences => Self::Note,
+            ItemKind::Note
+            | ItemKind::GeneratorHistory
+            | ItemKind::Preferences
+            | ItemKind::AgentLabels => Self::Note,
             ItemKind::ApiKey => Self::ApiKey,
         }
     }
@@ -199,6 +202,8 @@ pub struct ProjectInfo {
     pub vault: String,
     /// Name.
     pub name: String,
+    /// Linked Git repositories in normalized `host/owner/repo` form (ADR 0032).
+    pub repos: Vec<String>,
 }
 
 impl From<ProjectSummary> for ProjectInfo {
@@ -208,6 +213,7 @@ impl From<ProjectSummary> for ProjectInfo {
             vault_id: p.vault_id.to_string(),
             vault: p.vault,
             name: p.name,
+            repos: p.repos,
         }
     }
 }

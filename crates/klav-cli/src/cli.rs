@@ -823,6 +823,9 @@ pub(crate) enum AgentCommand {
         #[command(flatten)]
         json: JsonFlag,
     },
+    /// Set or clear your own E2E-encrypted label or machine/host note for an
+    /// agent (person side, ADR 0047).
+    Label(AgentLabelArgs),
     /// Pause every agent, or one, now (person side, ADR 0033 §7): the
     /// server refuses all they ask until you resume. No Touch ID: pausing
     /// must cost nothing. With `klavd` running, `--all` works locked.
@@ -845,6 +848,23 @@ pub(crate) enum AgentCommand {
         #[command(flatten)]
         json: JsonFlag,
     },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AgentLabelArgs {
+    /// Agent name or ID.
+    pub(crate) agent: String,
+    /// Friendly alias in your own words (e.g. "Proxmox proxy").
+    #[arg(long)]
+    pub(crate) label: Option<String>,
+    /// Machine, server or sandbox host (e.g. "pve-home").
+    #[arg(long)]
+    pub(crate) host: Option<String>,
+    /// Remove the label and host for this agent.
+    #[arg(long, conflicts_with_all = ["label", "host"])]
+    pub(crate) clear: bool,
+    #[command(flatten)]
+    pub(crate) json: JsonFlag,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -1594,6 +1614,40 @@ pub(crate) enum ProjectCommand {
         vault: Option<String>,
         /// Name.
         name: String,
+    },
+    /// Link a Git repository to a project so Klav suggests its items in this
+    /// repo (ADR 0032 §2). Reads `git remote get-url origin` unless `--repo`
+    /// is given.
+    Link {
+        /// Project (`Project` or `Vault/Project`).
+        project: String,
+        /// Vault name or ID (overrides `Vault/` if omitted from `project`).
+        #[arg(long)]
+        vault: Option<String>,
+        /// Explicit repository URL or `host/owner/repo` instead of detecting from Git.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Git remote to read when `--repo` is omitted.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// Unlink a Git repository from a project (ADR 0032 §2).
+    Unlink {
+        /// Project (`Project` or `Vault/Project`).
+        project: String,
+        /// Vault name or ID (overrides `Vault/` if omitted from `project`).
+        #[arg(long)]
+        vault: Option<String>,
+        /// Explicit repository URL or `host/owner/repo` instead of detecting from Git.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Git remote to read when `--repo` is omitted.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        #[command(flatten)]
+        json: JsonFlag,
     },
 }
 

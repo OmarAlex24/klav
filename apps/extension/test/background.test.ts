@@ -470,6 +470,62 @@ describe("a login waiting to be saved", () => {
     expect(fetched().map((c) => c.item)).toEqual(["a"]);
   });
 
+  it("remembers a step-1 username for step 2 on the same site and allows editing username on create", async () => {
+    tabUrl.set(26, "https://accounts.example.com/step1");
+    await send({ type: "username_seen", username: "omar@example.com" }, content(26));
+    tabUrl.set(26, "https://accounts.example.com/step2");
+    await submitted(26, "", "MARKER-step2");
+    const saveId = await pending(26);
+    daemon = (r) => {
+      if (r.op === "status") return unlocked;
+      if (r.op === "suggest") return { logins: [], cards: [], identities: [] };
+      if (r.op === "projects") return [{ id: "pr", vault_id: "v", vault: "Personal", name: "General" }];
+      if (r.op === "list") return [];
+      if (r.op === "create") return { id: "new1", title: r.item.title };
+      return null;
+    };
+    const state = await value<{ username: string; title?: string }>({ type: "save_load", saveId }, page("save.html", `#${String(saveId)}`));
+    expect(state.username).toBe("omar@example.com");
+    expect(state.title).toBe("accounts.example.com");
+    await value(
+      { type: "save_do", saveId, action: "create", title: "Example", username: "edited@example.com", project: "Personal\u0000General" },
+      page("save.html", `#${String(saveId)}`),
+    );
+    const created = calls.find((c) => c.op === "create") as { item: { fields: { name: string; value: string }[] } } | undefined;
+    expect(created?.item.fields.find((f) => f.name === "username")?.value).toBe("edited@example.com");
+  });
+
+  it("suggests an available title when the default host title already exists and allows updating siteLogins", async () => {
+    tabUrl.set(27, "https://site.example/login");
+    await submitted(27, "otra", "MARKER-otra");
+    const saveId = await pending(27);
+    daemon = (r) => {
+      if (r.op === "status") return unlocked;
+      if (r.op === "suggest")
+        return {
+          logins: [{ id: "a", kind: "login", title: "site.example", username: "ana", location: "Personal / General" }],
+          cards: [],
+          identities: [],
+        };
+      if (r.op === "autofill") return { id: r.item, kind: "login", title: "site.example", fields: [{ name: "password", kind: "password", value: "old" }] };
+      if (r.op === "projects") return [{ id: "pr", vault_id: "v", vault: "Personal", name: "General" }];
+      if (r.op === "list")
+        return [{ id: "a", vault: "Personal", project: "General", title: "site.example", trashed: false }];
+      if (r.op === "edit") return { id: r.query, title: "site.example" };
+      return null;
+    };
+    const state = await value<{ title?: string; siteLogins?: { id: string }[]; takenTitles?: Record<string, string[]> }>(
+      { type: "save_load", saveId },
+      page("save.html", `#${String(saveId)}`),
+    );
+    expect(state.title).toBe("site.example (otra)");
+    expect(state.siteLogins?.map((l) => l.id)).toEqual(["a"]);
+    expect(state.takenTitles?.["Personal\u0000General"]).toContain("site.example");
+    // Updating a site login from create mode works cleanly.
+    await value({ type: "save_do", saveId, action: "update", item: "a" }, page("save.html", `#${String(saveId)}`));
+    expect(calls.filter((c) => c.op === "edit").map((c) => (c as { query: string }).query)).toEqual(["a"]);
+  });
+
   it("with a username, compares only that username's logins, as before", async () => {
     tabUrl.set(23, "https://site.example/login");
     await submitted(23, "ana", "MARKER-bea");

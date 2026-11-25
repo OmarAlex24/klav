@@ -76,10 +76,15 @@ function placeOf(login: Suggestion): string {
   return login.location;
 }
 
-function showUpdate(state: SaveState, updates: Suggestion[]): void {
+function showUpdate(state: SaveState, updates: Suggestion[], onBack?: () => void): void {
   const message = h("div", { class: "notice-slot" });
   const go = h("button", { class: "btn btn-primary", type: "submit" }, t("update"));
   const [only] = updates;
+  const optionLabel = (u: Suggestion): string => {
+    const showUser = Boolean(u.username && u.username !== state.username);
+    const detail = [showUser ? u.username : undefined, placeOf(u)].filter(Boolean).join(" · ");
+    return detail ? `${u.title} · ${detail}` : u.title;
+  };
   // Several logins of the site with this username: the person picks which one.
   const which =
     updates.length > 1
@@ -87,16 +92,22 @@ function showUpdate(state: SaveState, updates: Suggestion[]): void {
           "select",
           { class: "input", name: "item", required: true },
           h("option", { value: "" }, t("save_update_pick")),
-          ...updates.map((u) => h("option", { value: u.id }, `${u.title} · ${placeOf(u)}`)),
+          ...updates.map((u) => h("option", { value: u.id }, optionLabel(u))),
         )
       : null;
+  const backBtn = onBack ? h("button", { class: "btn-link", type: "button", onclick: onBack }, t("save_create_instead")) : null;
+  const onlyDetail =
+    only && !which
+      ? [only.username && only.username !== state.username ? only.username : undefined, placeOf(only)].filter(Boolean).join(" · ")
+      : "";
   const form = h(
     "form",
     { class: "save-form" },
-    only && !which ? h("p", { class: "row-sub" }, placeOf(only)) : null,
+    onlyDetail ? h("p", { class: "row-sub" }, onlyDetail) : null,
     which ? h("label", { class: "save-field" }, h("span", { class: "field-label" }, t("save_update_which")), which) : null,
     message,
     h("div", { class: "save-actions" }, go, later()),
+    backBtn ? h("div", { class: "save-alt" }, backBtn) : null,
   );
   form.addEventListener("submit", (event) => {
     if (!decided(event, message)) return;
@@ -116,6 +127,24 @@ function showUpdate(state: SaveState, updates: Suggestion[]): void {
   });
   const title = only && !which ? only.title : state.host;
   render(question(h("span", {}, ...tNodes("update_question", h("strong", {}, title))), state, title), form);
+}
+
+/** Picks a free title in the selected project: `base`, `base (user)`, then `base (2)…`. */
+function nextFreeTitle(base: string, username: string, taken: Iterable<string>): string {
+  const used = new Set<string>();
+  for (const item of taken) used.add(item.trim().toLowerCase());
+  const cleanBase = base.trim() || base;
+  if (!used.has(cleanBase.toLowerCase())) return cleanBase;
+  const user = username.trim();
+  if (user) {
+    const withUser = `${cleanBase} (${user})`;
+    if (!used.has(withUser.toLowerCase())) return withUser;
+  }
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${cleanBase} (${String(n)})`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return cleanBase;
 }
 
 /**
@@ -148,37 +177,136 @@ function showAddSite(state: SaveState, item: Suggestion): void {
 
 function showCreate(state: SaveState): void {
   const message = h("div", { class: "notice-slot" });
-  const title = h("input", { class: "input", name: "title", value: state.title ?? state.host, required: true });
   const projects = state.projects ?? [];
   const where = h(
     "select",
     { class: "input", name: "project" },
     ...projects.map((p) => h("option", { value: `${p.vault}\u0000${p.name}` }, `${p.vault} / ${p.name}`)),
   );
+  const takenFor = (projectKey: string): string[] => (projectKey ? (state.takenTitles?.[projectKey] ?? []) : []);
+  const username = h("input", {
+    class: "input",
+    name: "username",
+    value: state.username,
+    placeholder: t("save_username_placeholder"),
+    autocomplete: "username",
+  });
+  const title = h("input", { class: "input", name: "title", value: state.title ?? state.host, required: true });
+  let titleEdited = false;
+
+  const head = question(t("save_question"), state, state.title ?? state.host);
+  const headSub = head.querySelector(".row-sub");
+
+  const syncSuggestion = (): void => {
+    const user = username.value.trim();
+    if (headSub) headSub.textContent = `${user || t("no_username")} · ${state.host}`;
+    if (!titleEdited) {
+      title.value = nextFreeTitle(state.host, user, takenFor(where.value));
+    }
+  };
+  username.addEventListener("input", syncSuggestion);
+  where.addEventListener("change", () => {
+    if (!titleEdited) {
+      title.value = nextFreeTitle(state.host, username.value.trim(), takenFor(where.value));
+    }
+  });
+  title.addEventListener("input", () => {
+    titleEdited = true;
+  });
+
+  const siteLogins = state.siteLogins ?? [];
+  const openUpdate = (targets: Suggestion[] = siteLogins): void => {
+    showUpdate({ ...state, username: username.value.trim() }, targets, () => {
+      showCreate({ ...state, username: username.value.trim() });
+    });
+  };
+
   const go = h("button", { class: "btn btn-primary", type: "submit" }, t("save"));
+  const updateAlt =
+    siteLogins.length > 0
+      ? h(
+          "button",
+          {
+            class: "btn-link",
+            type: "button",
+            onclick: () => {
+              openUpdate();
+            },
+          },
+          siteLogins.length === 1 && siteLogins[0] ? t("save_update_one_instead", siteLogins[0].title) : t("save_update_existing"),
+        )
+      : null;
+
+  const usernameField = h("label", { class: "save-field" }, h("span", { class: "field-label" }, t("field_username")), username);
+  const titleField = h("label", { class: "save-field" }, h("span", { class: "field-label" }, t("title")), title);
   const form = h(
     "form",
     { class: "save-form" },
-    h("label", { class: "save-field" }, h("span", { class: "field-label" }, t("title")), title),
+    // When no username was detected (e.g. 2-step login), put the username field first so it is easy to fill in.
+    ...(state.username === "" ? [usernameField, titleField] : [titleField, usernameField]),
     projects.length > 1 ? h("label", { class: "save-field" }, h("span", { class: "field-label" }, t("where")), where) : null,
     message,
     h("div", { class: "save-actions" }, go, later()),
+    updateAlt ? h("div", { class: "save-alt" }, updateAlt) : null,
   );
+
   form.addEventListener("submit", (event) => {
     if (!decided(event, message)) return;
     go.disabled = true;
-    ask<ItemSummary>({ type: "save_do", saveId, action: "create", title: title.value, ...(where.value ? { project: where.value } : {}) }).then(
+    ask<ItemSummary>({
+      type: "save_do",
+      saveId,
+      action: "create",
+      title: title.value,
+      username: username.value.trim(),
+      ...(where.value ? { project: where.value } : {}),
+    }).then(
       (item) => {
         saved(item.title);
       },
       (e: unknown) => {
-        message.replaceChildren(problem(e));
+        const isTaken = /already exists/.test(errorOf(e).message);
+        if (isTaken) {
+          const taken = [...takenFor(where.value), title.value.trim()];
+          const suggestion = nextFreeTitle(state.host, username.value.trim(), taken);
+          const matching = siteLogins.find((l) => l.title.toLowerCase() === title.value.trim().toLowerCase());
+          const useSuggested = h(
+            "button",
+            {
+              class: "btn-link",
+              type: "button",
+              onclick: () => {
+                title.value = suggestion;
+                titleEdited = true;
+                message.replaceChildren();
+                page.resize();
+              },
+            },
+            t("save_use_title", suggestion),
+          );
+          const updateMatching = matching
+            ? h(
+                "button",
+                {
+                  class: "btn-link",
+                  type: "button",
+                  onclick: () => {
+                    openUpdate([matching]);
+                  },
+                },
+                t("save_update_one_instead", matching.title),
+              )
+            : null;
+          message.replaceChildren(problem(e), h("div", { class: "save-recovery" }, useSuggested, updateMatching));
+        } else {
+          message.replaceChildren(problem(e));
+        }
         go.disabled = false;
         page.resize();
       },
     );
   });
-  render(question(t("save_question"), state, state.title ?? state.host), form);
+  render(head, form);
 }
 
 async function load(): Promise<void> {

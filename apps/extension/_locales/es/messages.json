@@ -503,6 +503,21 @@
   "no_username": {
     "message": "sin usuario"
   },
+  "save_username_placeholder": {
+    "message": "Correo o usuario"
+  },
+  "save_update_existing": {
+    "message": "Actualizar un login existente…"
+  },
+  "save_update_one_instead": {
+    "message": "Actualizar «$1» en su lugar"
+  },
+  "save_create_instead": {
+    "message": "Guardar como login nuevo"
+  },
+  "save_use_title": {
+    "message": "Usar «$1»"
+  },
   "saved": {
     "message": "Guardado en Klav: $1"
   },

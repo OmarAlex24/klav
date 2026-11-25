@@ -17,6 +17,8 @@ protocol RequestsModel: ObservableObject {
     func denySecretRequest(_ card: SecretRequestItem) async throws
     func approve(_ agent: AgentItem, projects: [String], expiresInDays: UInt32?) async throws
     func deny(_ agent: AgentItem) async throws
+    /// Saves or clears a person-owned label and/or machine host (ADR 0047).
+    func setAgentLabel(id: String, label: String?, host: String?) async throws
     /// The projects an agent can be given.
     func agentProjects() async throws -> [ProjectInfo]
     /// The pairing words of an agent this account approved: the grant it
@@ -142,6 +144,9 @@ struct RegistrationCard<Model: RequestsModel>: View {
     /// Another agent of the account has this name (ADR 0033 E2.2): said
     /// on the card, so a second registration does not pass as the first.
     var warning: String? = nil
+    /// Whether this Mac launched the registration and its `klav` printed the
+    /// same pairing words (ADR 0033 §3.1, P5). Nil: compare by eye.
+    var matched: Bool? = nil
     var review: () -> Void
 
     @State private var busy = false
@@ -158,6 +163,17 @@ struct RegistrationCard<Model: RequestsModel>: View {
             Text(verbatim: "ID " + AgentText.idPrefix(agent.id))
                 .font(.mono(12))
                 .foregroundStyle(Palette.gris)
+            if matched == true {
+                HStack(spacing: 6) {
+                    IconView(icon: .check, size: 12)
+                    Text("Started by this Mac · key verified")
+                        .font(.ui(12, .medium, relativeTo: .caption))
+                }
+                .foregroundStyle(Palette.cobalto)
+            } else if matched == false {
+                Notice(text: String(localized: "These aren’t the words this Mac’s klav printed when it registered the agent. Don’t approve it: deny it and connect again."))
+                    .padding(.top, 2)
+            }
             if let note = agent.note, !note.isEmpty {
                 // The agent wrote it (T136): one line, without controls.
                 Text("\("“\(AgentText.line(note, max: 200))”") (according to the agent)")
@@ -169,18 +185,33 @@ struct RegistrationCard<Model: RequestsModel>: View {
             Expires(at: agent.expiresAt)
             if let problem { Notice(text: problem).padding(.top, 4) }
             HStack(spacing: 8) {
-                Button("Compare words", action: review)
-                    .buttonStyle(PrimaryButtonStyle(compact: true))
-                Button {
-                    busy = true
-                    Task {
-                        do { try await model.deny(agent) } catch { problem = describeRequest(error) }
-                        busy = false
+                if matched == false {
+                    Button {
+                        busy = true
+                        Task {
+                            do { try await model.deny(agent) } catch { problem = describeRequest(error) }
+                            busy = false
+                        }
+                    } label: {
+                        Text("Deny")
                     }
-                } label: {
-                    Text("Deny")
+                    .buttonStyle(SecondaryButtonStyle(compact: true, danger: true))
+                    Button(AgentApproval.cardAction(matched: matched), action: review)
+                        .buttonStyle(SecondaryButtonStyle(compact: true))
+                } else {
+                    Button(AgentApproval.cardAction(matched: matched), action: review)
+                        .buttonStyle(PrimaryButtonStyle(compact: true))
+                    Button {
+                        busy = true
+                        Task {
+                            do { try await model.deny(agent) } catch { problem = describeRequest(error) }
+                            busy = false
+                        }
+                    } label: {
+                        Text("Deny")
+                    }
+                    .buttonStyle(SecondaryButtonStyle(compact: true))
                 }
-                .buttonStyle(SecondaryButtonStyle(compact: true))
             }
             .padding(.top, 6)
         }
@@ -188,18 +219,54 @@ struct RegistrationCard<Model: RequestsModel>: View {
     }
 }
 
-/// When «They match: approve» can be pressed: not while it works, with a
-/// project chosen, and never when this Mac launched the registration and
-/// the words are not the ones its `klav` printed (ADR 0033 §3.1, P5).
+/// When approving can be pressed: not while it works, with a project chosen,
+/// and never when this Mac launched the registration and the words are not
+/// the ones its `klav` printed (ADR 0033 §3.1, P5). Also holds the copy that
+/// separates local-Mac registrations (already verified by this Mac) from
+/// remote or terminal registrations (compared by eye).
 enum AgentApproval {
     static func allowed(busy: Bool, chosen: Int, matched: Bool?) -> Bool {
         !busy && chosen > 0 && matched != false
+    }
+
+    static func cardAction(matched: Bool?) -> String {
+        switch matched {
+        case true: return String(localized: "Choose projects & approve")
+        case false: return String(localized: "Inspect words")
+        case nil: return String(localized: "Compare words")
+        }
+    }
+
+    static func reviewSubtitle(matched: Bool?) -> String {
+        switch matched {
+        case true: return String(localized: "This Mac started this registration and verified its key. Choose which projects to share.")
+        case false: return String(localized: "This Mac registered the agent and compared the words for you.")
+        case nil: return String(localized: "Compare these words with the ones in your terminal.")
+        }
+    }
+
+    static func approveLabel(matched: Bool?) -> String {
+        matched == true ? String(localized: "Approve") : String(localized: "They match: approve")
+    }
+
+    static func denyLabel(matched: Bool?) -> String {
+        matched == nil ? String(localized: "They don’t match") : String(localized: "Deny")
+    }
+
+    /// The 6-word grid starts expanded only when the person needs to compare
+    /// by eye (`nil`) or inspect a mismatch (`false`). For a local Mac match
+    /// (`true`) it starts collapsed behind a disclosure.
+    static func wordsExpandedByDefault(matched: Bool?) -> Bool {
+        matched != true
     }
 }
 
 /// Approving an agent, as in the mockup: the six words numbered in a 2 × 3
 /// grid (the order matters when comparing them), the projects it gets and
-/// for how long (ADR 0018 §6). The policy is the CLI's default.
+/// for how long (ADR 0018 §6). The policy is the CLI's default. When this Mac
+/// launched the registration and verified the words (`matched == true`), the
+/// words are tucked behind a disclosure and the flow focuses on choosing
+/// projects and approving.
 struct AgentReviewView<Model: RequestsModel>: View {
     @EnvironmentObject private var model: Model
     @Environment(\.dismiss) private var dismiss
@@ -229,6 +296,10 @@ struct AgentReviewView<Model: RequestsModel>: View {
     @State private var loaded = false
     @State private var chosen: Set<String> = []
     @State private var expiry: Expiry = .never
+    @State private var showWords = false
+    /// Optional machine/host label stored E2E-encrypted in the vault (ADR 0047).
+    /// On macOS, pre-filled with this Mac's name when `matched == true` (Q3).
+    @State private var hostText = ""
     @State private var busy = false
     @State private var problem: String?
 
@@ -247,10 +318,10 @@ struct AgentReviewView<Model: RequestsModel>: View {
                     .font(.mono(12))
                     .foregroundStyle(Palette.gris)
                     .padding(.top, 4)
-                Text(matched == nil ? String(localized: "Compare these words with the ones in your terminal.")
-                                    : String(localized: "This Mac registered the agent and compared the words for you."))
+                Text(verbatim: AgentApproval.reviewSubtitle(matched: matched))
                     .font(.ui(14, relativeTo: .subheadline))
                     .foregroundStyle(Palette.gris)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 6)
                 if let note = agent.note, !note.isEmpty {
                     Text("\("“\(AgentText.line(note, max: 200))”") (according to the agent)")
@@ -261,22 +332,47 @@ struct AgentReviewView<Model: RequestsModel>: View {
                 }
                 if let warning { Notice(text: warning).padding(.top, 14) }
 
-                words.padding(.top, 22)
                 if matched == true {
                     HStack(spacing: 8) {
                         IconView(icon: .check, size: 14)
-                        Text("They match (this Mac launched the registration)")
+                        Text("Key verified by this Mac")
                             .font(.ui(13, .medium, relativeTo: .footnote))
+                        Spacer(minLength: 8)
+                        Button(showWords ? String(localized: "Hide verification words") : String(localized: "Show verification words")) {
+                            showWords.toggle()
+                        }
+                        .buttonStyle(LinkButtonStyle())
                     }
                     .foregroundStyle(Palette.cobalto)
-                    .padding(.top, 10)
-                } else if matched == false {
-                    Notice(text: String(localized: "These aren’t the words this Mac’s klav printed when it registered the agent. Don’t approve it: deny it and connect again."))
-                        .padding(.top, 10)
+                    .padding(.top, 16)
+                    if showWords {
+                        words.padding(.top, 12)
+                    }
+                } else {
+                    words.padding(.top, 22)
+                    if matched == false {
+                        Notice(text: String(localized: "These aren’t the words this Mac’s klav printed when it registered the agent. Don’t approve it: deny it and connect again."))
+                            .padding(.top, 10)
+                    }
                 }
 
                 FieldLabel("You give it access to").padding(.top, 24).padding(.bottom, 10)
                 projectChips
+
+                FieldLabel("Machine or host (optional)").padding(.top, 20).padding(.bottom, 8)
+                TextField(String(localized: "e.g. Work MacBook, pve-home"), text: $hostText)
+                    .textFieldStyle(.plain)
+                    .font(.ui(14, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.tinta)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Palette.papel)
+                    .overlay(Rectangle().strokeBorder(Palette.linea, lineWidth: 1))
+                Text("Saved end-to-end encrypted in your vault so you can tell which computer or server this agent runs on.")
+                    .font(.ui(12, relativeTo: .caption))
+                    .foregroundStyle(Palette.gris)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
 
                 FieldLabel("For how long").padding(.top, 20).padding(.bottom, 10)
                 Flow(spacing: 8) {
@@ -299,11 +395,11 @@ struct AgentReviewView<Model: RequestsModel>: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 10) {
                 Button(action: approve) {
-                    Text(busy ? model.waitingForPresence : String(localized: "They match: approve"))
+                    Text(busy ? model.waitingForPresence : AgentApproval.approveLabel(matched: matched))
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(!AgentApproval.allowed(busy: busy, chosen: chosen.count, matched: matched))
-                Button("They don’t match", action: deny)
+                Button(AgentApproval.denyLabel(matched: matched), action: deny)
                     .buttonStyle(SecondaryButtonStyle(danger: true))
                     .disabled(busy)
                     .accessibilityHint("Denies the agent")
@@ -366,7 +462,7 @@ struct AgentReviewView<Model: RequestsModel>: View {
         } else {
             Flow(spacing: 8) {
                 ForEach(projects, id: \.id) { project in
-                    Chip(text: project.vault + " / " + project.name, on: chosen.contains(project.id)) {
+                    Chip(text: project.displayWithRepo, on: chosen.contains(project.id)) {
                         if chosen.contains(project.id) { chosen.remove(project.id) } else { chosen.insert(project.id) }
                     }
                 }
@@ -375,6 +471,13 @@ struct AgentReviewView<Model: RequestsModel>: View {
     }
 
     private func loadProjects() async {
+        #if os(macOS)
+        if matched == true && hostText.isEmpty,
+           let localName = Host.current().localizedName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !localName.isEmpty {
+            hostText = localName
+        }
+        #endif
         do {
             let list = try await model.agentProjects()
             projects = list.sorted { ($0.vault, $0.name) < ($1.vault, $1.name) }
@@ -388,9 +491,14 @@ struct AgentReviewView<Model: RequestsModel>: View {
         busy = true
         problem = nil
         let ids = projects.filter { chosen.contains($0.id) }.map(\.id)
+        let host = hostText.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             do {
                 try await model.approve(agent, projects: ids, expiresInDays: expiry.days)
+                if !host.isEmpty {
+                    // Best-effort: never roll back an approved grant if saving the label fails.
+                    try? await model.setAgentLabel(id: agent.id, label: nil, host: host)
+                }
                 dismiss()
             } catch {
                 problem = describeRequest(error)
@@ -904,10 +1012,21 @@ struct SecretRequestCard<Model: RequestsModel>: View {
                 initialized = true
                 title = card.title ?? ""
                 if let list = try? await model.agentProjects() {
-                    projects = list
-                    if let wantedProject = card.projectId, list.contains(where: { $0.id == wantedProject }) {
+                    // Prefer projects shared with the agent and linked to a repository
+                    // so new API keys land in the repo's project instead of Personal / General.
+                    let sorted = list.sorted { a, b in
+                        let aShared = card.agentProjects.contains { $0.vaultId == a.vaultId && $0.projectId == a.id }
+                        let bShared = card.agentProjects.contains { $0.vaultId == b.vaultId && $0.projectId == b.id }
+                        if aShared != bShared { return aShared }
+                        let aRepo = !a.repos.isEmpty
+                        let bRepo = !b.repos.isEmpty
+                        if aRepo != bRepo { return aRepo }
+                        return (a.vault, a.name) < (b.vault, b.name)
+                    }
+                    projects = sorted
+                    if let wantedProject = card.projectId, sorted.contains(where: { $0.id == wantedProject }) {
                         selectedProjectId = wantedProject
-                    } else if let first = list.first {
+                    } else if let first = sorted.first {
                         selectedProjectId = first.id
                     }
                 }
@@ -921,7 +1040,7 @@ struct SecretRequestCard<Model: RequestsModel>: View {
 
     private func projectLabel(_ project: ProjectInfo) -> String {
         let shared = card.agentProjects.contains { $0.vaultId == project.vaultId && $0.projectId == project.id }
-        let name = "\(project.vault) / \(project.name)"
+        let name = project.displayWithRepo
         return shared
             ? String(localized: "\(name) (shared with \(card.agent))")
             : String(localized: "\(name) (not shared with \(card.agent))")

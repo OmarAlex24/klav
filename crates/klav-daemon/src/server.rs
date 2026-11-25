@@ -2276,6 +2276,8 @@ fn person_write(request: &Request) -> bool {
         request,
         Request::CreateVault { .. }
             | Request::CreateProject { .. }
+            | Request::SetProjectRepos { .. }
+            | Request::SetAgentLabel { .. }
             | Request::Create { .. }
             | Request::Edit { .. }
             | Request::Trash { .. }
@@ -2330,6 +2332,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::Suggest { .. }
         | Request::PasskeyCandidates { .. }
         | Request::Agents
+        | Request::AgentLabels
         | Request::Approvals { .. }
         | Request::Tasks { .. }
         | Request::TaskLog { .. }
@@ -2423,7 +2426,9 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::AgentRotatePending { .. }
         | Request::ResolvePending { .. }
         | Request::ReusedOffer { .. }
-        | Request::OfferTask { .. } => true,
+        | Request::OfferTask { .. }
+        | Request::SetAgentLabel { .. }
+        | Request::SetProjectRepos { .. } => true,
     }
 }
 
@@ -4046,6 +4051,19 @@ async fn dispatch(
             u.create_project(vault, &name).await.map_err(e)?;
             ok(serde_json::json!({}), warnings)
         }
+        Request::SetProjectRepos {
+            vault,
+            project,
+            repos,
+        } => {
+            let (vault, project) = u.destination(vault.as_deref(), Some(&project)).map_err(e)?;
+            ok(
+                u.set_project_repos(vault, project, repos)
+                    .await
+                    .map_err(e)?,
+                warnings,
+            )
+        }
         Request::List { filter } => ok(u.list_items(&filter).map_err(e)?, warnings),
         Request::View { query, reveal, .. } => {
             ok(u.view_item(&query, reveal).map_err(e)?, warnings)
@@ -4202,6 +4220,16 @@ async fn dispatch(
             ok(serde_json::json!({}), warnings)
         }
         Request::Agents => ok(u.agents().await.map_err(e)?, warnings),
+        Request::AgentLabels => ok(u.agent_labels().map_err(e)?, warnings),
+        Request::SetAgentLabel { agent, label, host } => {
+            let entry = klav_core::model::agent_labels::AgentLabel {
+                label,
+                host,
+                role_hint: None,
+            };
+            let entry = (!entry.is_empty()).then_some(entry);
+            ok(u.set_agent_label(agent, entry).await.map_err(e)?, warnings)
+        }
         Request::ApproveAgent {
             agent,
             grant,

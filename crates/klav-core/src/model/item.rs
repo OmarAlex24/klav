@@ -10,6 +10,7 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+use super::agent_labels::AgentLabels;
 use super::history::GeneratedEntry;
 use super::passkey::{Passkey, PasskeySummary, RawPasskey};
 use super::preferences::Preferences;
@@ -93,13 +94,19 @@ pub enum ItemKind {
     /// The account's preferences (ADR 0032 §7, ADR 0036 §3). Lives only in
     /// the system project; never listed, never in a grant.
     Preferences,
+    /// Person-owned labels and machine notes for agents (ADR 0047 §1). Lives
+    /// only in the system project; never listed, never in a grant.
+    AgentLabels,
 }
 
 impl ItemKind {
     /// Whether items of this kind belong to Klav itself and are never shown
     /// in lists or created by hand.
     pub fn is_system(self) -> bool {
-        matches!(self, ItemKind::GeneratorHistory | ItemKind::Preferences)
+        matches!(
+            self,
+            ItemKind::GeneratorHistory | ItemKind::Preferences | ItemKind::AgentLabels
+        )
     }
 }
 
@@ -452,6 +459,8 @@ pub struct Item {
     generated: Vec<GeneratedEntry>,
     /// What a `preferences` item holds.
     preferences: Option<Preferences>,
+    /// What an `agent_labels` item holds (ADR 0047).
+    agent_labels: Option<AgentLabels>,
     /// The login's passkey, its key sealed with the vault key (ADR 0020).
     passkey: Option<Passkey>,
 }
@@ -492,7 +501,10 @@ pub fn template(kind: ItemKind) -> &'static [(&'static str, &'static str, FieldK
         ],
         ItemKind::File => &[],
         ItemKind::Totp => &[("totp", "One-time password", F::Totp)],
-        ItemKind::Note | ItemKind::GeneratorHistory | ItemKind::Preferences => &[],
+        ItemKind::Note
+        | ItemKind::GeneratorHistory
+        | ItemKind::Preferences
+        | ItemKind::AgentLabels => &[],
         ItemKind::ApiKey => &[
             ("api_key", "API key", F::Concealed),
             ("key_id", "Key ID", F::Text),
@@ -542,6 +554,8 @@ struct RawDetails {
     generated: Vec<RawGenerated>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preferences: Option<Preferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_labels: Option<AgentLabels>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     passkey: Option<RawPasskey>,
 }
@@ -602,6 +616,7 @@ impl Item {
             password_record: None,
             generated: Vec::new(),
             preferences: None,
+            agent_labels: None,
             passkey: None,
         })
     }
@@ -799,6 +814,29 @@ impl Item {
         Ok(())
     }
 
+    /// What an `agent_labels` item holds (`None` in any other item, and in an
+    /// `agent_labels` item that holds nothing yet).
+    pub fn agent_labels(&self) -> Option<&AgentLabels> {
+        self.agent_labels.as_ref()
+    }
+
+    /// Replaces what an `agent_labels` item holds. Any other kind refuses.
+    pub fn set_agent_labels(
+        &mut self,
+        agent_labels: Option<AgentLabels>,
+    ) -> Result<(), ModelError> {
+        if self.kind != ItemKind::AgentLabels && agent_labels.is_some() {
+            return Err(ModelError::InvalidText(
+                "agent labels outside an agent_labels item",
+            ));
+        }
+        if let Some(labels) = &agent_labels {
+            labels.validate()?;
+        }
+        self.agent_labels = agent_labels;
+        Ok(())
+    }
+
     /// The login's passkey, if any.
     pub fn passkey(&self) -> Option<&Passkey> {
         self.passkey.as_ref()
@@ -882,6 +920,7 @@ impl Item {
                 })
                 .collect(),
             preferences: self.preferences.clone(),
+            agent_labels: self.agent_labels.clone(),
             passkey: self.passkey.as_ref().map(Passkey::to_raw),
         };
         let details = Zeroizing::new(serde_json::to_vec(&details).expect("details serialize"));
@@ -950,6 +989,7 @@ impl Item {
                 .collect(),
         )?;
         item.set_preferences(details.preferences.clone())?;
+        item.set_agent_labels(details.agent_labels.clone())?;
         if let Some(raw) = &details.passkey {
             if overview.kind != ItemKind::Login {
                 return Err(ModelError::InvalidText("passkey outside a login"));
@@ -1322,6 +1362,35 @@ mod tests {
         assert!(Item::decode_sections(item.id(), &o, &serde_json::to_vec(&bad).unwrap()).is_err());
         bad["preferences"] = serde_json::json!({"proxy": {"mode": "none"}, "other": 1});
         assert!(Item::decode_sections(item.id(), &o, &serde_json::to_vec(&bad).unwrap()).is_err());
+    }
+
+    #[test]
+    fn agent_labels_items() {
+        use crate::ids::AgentId;
+        use crate::model::agent_labels::{AGENT_LABELS_TITLE, AgentLabel, AgentLabels};
+
+        assert!(ItemKind::AgentLabels.is_system());
+        let agent = AgentId::generate();
+        let mut labels = AgentLabels::default();
+        labels
+            .set(
+                agent,
+                Some(AgentLabel {
+                    label: Some("Proxmox proxy".into()),
+                    host: Some("pve-home".into()),
+                    role_hint: None,
+                }),
+            )
+            .unwrap();
+        let mut item = Item::new(ItemKind::AgentLabels, AGENT_LABELS_TITLE).unwrap();
+        item.set_agent_labels(Some(labels.clone())).unwrap();
+        let (o, d) = item.encode_sections();
+        let json: serde_json::Value = serde_json::from_slice(&d).unwrap();
+        assert_eq!(json["kind"], "agent_labels");
+        let back = Item::decode_sections(item.id(), &o, &d).unwrap();
+        assert_eq!(back.agent_labels(), Some(&labels));
+        let mut login = Item::new(ItemKind::Login, "x").unwrap();
+        assert!(login.set_agent_labels(Some(labels)).is_err());
     }
 
     #[test]

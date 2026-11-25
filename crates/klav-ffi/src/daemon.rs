@@ -659,6 +659,21 @@ impl DaemonEngine {
         )?))
     }
 
+    /// Replaces the normalized Git repositories linked to a project (ADR 0032).
+    pub fn set_project_repos(
+        &self,
+        vault_id: String,
+        project_id: String,
+        repos: Vec<String>,
+    ) -> KlavResult<ProjectInfo> {
+        let updated: ProjectSummary = self.call(Request::SetProjectRepos {
+            vault: Some(vault_id),
+            project: project_id,
+            repos,
+        })?;
+        Ok(updated.into())
+    }
+
     /// Items matching `query`, by title.
     pub fn items(&self, query: ItemQuery) -> KlavResult<Vec<ItemInfo>> {
         Ok(item_infos(self.call::<Vec<ItemSummary>>(
@@ -1276,11 +1291,30 @@ impl DaemonEngine {
         self.revoke_sandboxes(proxy_id, None)
     }
 
-    /// The account's agents with their last use and their pause, for
-    /// Development › Agents: pending registrations first, then newest.
+    /// The account's agents with their last use, verified role, person-owned
+    /// labels (ADR 0047) and pause, for Development › Agents: pending
+    /// registrations first, then newest.
     pub fn dev_agents(&self) -> KlavResult<Vec<DevAgentInfo>> {
         let list: Vec<AgentView> = self.call(Request::Agents)?;
-        Ok(dev_agents(list))
+        // Older `klavd` instances do not know `agent_labels` yet: fall back to
+        // empty labels instead of breaking the Agents list.
+        let labels: klav_core::model::agent_labels::AgentLabels =
+            self.call(Request::AgentLabels).unwrap_or_default();
+        Ok(dev_agents(list, &labels))
+    }
+
+    /// Sets or clears the person-owned label and/or machine host for an agent
+    /// (ADR 0047). Stored E2E-encrypted in the personal vault's system project.
+    pub fn set_agent_label(
+        &self,
+        id: String,
+        label: Option<String>,
+        host: Option<String>,
+    ) -> KlavResult<()> {
+        let agent = agent_id(&id)?;
+        let _: klav_core::model::agent_labels::AgentLabels =
+            self.call(Request::SetAgentLabel { agent, label, host })?;
+        Ok(())
     }
 
     /// «Pause agents» (ADR 0033 §7): every agent without `agent_id`, until

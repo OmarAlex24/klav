@@ -181,11 +181,11 @@ struct ItemEditorSheet: View {
     private var projectPicker: some View {
         Menu {
             ForEach(projects, id: \.id) { project in
-                Button(project.vault + " / " + project.name) { projectId = project.id }
+                Button(project.displayWithRepo) { projectId = project.id }
             }
         } label: {
             HStack {
-                Text(projects.first { $0.id == projectId }.map { "\($0.vault) / \($0.name)" } ?? String(localized: "Choose a project"))
+                Text(projects.first { $0.id == projectId }?.displayWithRepo ?? String(localized: "Choose a project"))
                     .font(.ui(14)).foregroundStyle(Palette.tinta)
                 Spacer()
                 Text(verbatim: "▾").font(.ui(10)).foregroundStyle(Palette.gris).accessibilityHidden(true)

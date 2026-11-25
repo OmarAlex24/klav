@@ -429,6 +429,15 @@ Columna **Fase**: número de fase del roadmap en que se implementa la mitigació
 | T238 | Un agente comprometido o insistente inunda a la persona con tarjetas de solicitud de secreto (fatiga, T27) | Tope de 5 solicitudes pendientes por agente, caducidad de 1 hora, límites del servidor y corte inmediato al pausar o revocar al agente | aceptado, pendiente de implementar (ADR 0046) |
 | T239 | Un agente propone un `proxy_proposal` demasiado amplio (por ejemplo `DELETE` permitido o un proveedor que aloja al propio proxy, T151) esperando que la persona pulse Guardar sin mirar | El interruptor de `proxy grant` viene desmarcado por defecto, muestra la misma vista previa y avisos que `klav proxy grant` (tope de 4 métodos, aviso T151) y exige presencia (Touch ID, Face ID o contraseña maestra); nunca amplía emisores (Q3) | aceptado, pendiente de implementar (ADR 0046) |
 
+### 5.24 Origen de agentes y etiquetas propias de la persona (aceptado, ADR 0047)
+
+> **Aceptado el 2026-11-24 (ADR [0047](decisiones/0047-agent-origin-and-labels.md)).** Omar aprobó Q1a (`ItemKind::AgentLabels` en el proyecto de sistema de la bóveda personal), Q2a (capa 1 sin cambios de servidor ahora y capa 2 con reporte HPKE `0x26` después) y Q3a (prerrellenar el nombre del Mac cuando la app inició el registro). Las IDs siguen a T239.
+
+| ID | Amenaza | Mitigación | Fase |
+|---|---|---|---|
+| T240 | Un agente comprometido reporta un `hostname` falso (por ejemplo el del Mac de la persona) para evitar ser revocado, o escribe un elemento `agent_labels` suplantando las etiquetas de la persona | Las etiquetas de la persona viven en el proyecto de sistema (`ItemKind::AgentLabels`), que nunca entra en ningún grant, y `klav-client` ignora cualquier elemento `agent_labels` escrito por un agente (`author_agent_id.is_some()`). Los reportes de origen (`0x26`) siempre se muestran marcados «reportado por el agente» y nunca pisan «En este Mac» ni la etiqueta de la persona | capa 1 construida; capa 2 pendiente (ADR 0047) |
+| T241 | Enviar el nombre del equipo en claro en `POST /v1/agents/register` filtra al servidor la topología interna de máquinas y servidores | El registro no envía ningún `hostname`; las etiquetas de la persona van cifradas E2E dentro de la bóveda (`ItemKind::AgentLabels`), y el reporte opcional tras la aprobación va cifrado con HPKE (`0x26`) a la identidad X25519 de la cuenta | capa 1 construida; capa 2 pendiente (ADR 0047) |
+
 ## 6. Fuera de alcance (explícito)
 
 - **Malware con privilegios de root o administrador** en el dispositivo del usuario o en la máquina del agente mientras está desbloqueado: puede leer memoria, teclado y pantalla. Klav solo reduce la ventana (bloqueo rápido, `zeroize`, `mlock`).

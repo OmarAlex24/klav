@@ -523,6 +523,21 @@
   "no_username": {
     "message": "no username"
   },
+  "save_username_placeholder": {
+    "message": "Email or username"
+  },
+  "save_update_existing": {
+    "message": "Update an existing login instead…"
+  },
+  "save_update_one_instead": {
+    "message": "Update “$1” instead"
+  },
+  "save_create_instead": {
+    "message": "Save as a new login instead"
+  },
+  "save_use_title": {
+    "message": "Use “$1”"
+  },
   "saved": {
     "message": "Saved to Klav: $1"
   },

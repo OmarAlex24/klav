@@ -399,6 +399,9 @@ pub struct ProjectSummary {
     pub vault: String,
     /// Name.
     pub name: String,
+    /// Linked Git repositories in normalized `host/owner/repo` form (ADR 0032 §2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<String>,
 }
 
 /// A change to an item's password record that is not a field edit (the
@@ -1331,6 +1334,7 @@ impl Unlocked {
                     vault_id: p.vault,
                     vault: self.vaults.get(&p.vault)?.meta.name().to_owned(),
                     name: p.meta.name().to_owned(),
+                    repos: p.meta.repos().to_vec(),
                 })
             })
             .collect();
@@ -1435,6 +1439,108 @@ impl Unlocked {
         self.post_project(vault, body).await?;
         self.sync().await?;
         Ok(id)
+    }
+
+    /// Replaces the normalized Git repositories linked to `project` (ADR 0032 §2).
+    pub async fn set_project_repos(
+        &mut self,
+        vault: VaultId,
+        project: ProjectId,
+        repos: Vec<String>,
+    ) -> ClientResult<ProjectSummary> {
+        if is_system_project(vault, project) {
+            return Err(ClientError::Invalid(
+                "cannot link repositories to Klav's system project".into(),
+            ));
+        }
+        let mut attempt = 0;
+        loop {
+            match self
+                .write_project_repos(vault, project, repos.clone())
+                .await
+            {
+                Err(ClientError::Conflict(_)) if attempt == 0 => {
+                    self.sync().await?;
+                    attempt += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn write_project_repos(
+        &mut self,
+        vault: VaultId,
+        project: ProjectId,
+        repos: Vec<String>,
+    ) -> ClientResult<ProjectSummary> {
+        let vault_entry = self
+            .vaults
+            .get(&vault)
+            .ok_or_else(|| ClientError::NotFound(format!("vault {vault}")))?;
+        let owner = vault_entry.owner;
+        let vault_name = vault_entry.meta.name().to_owned();
+        let entry = self
+            .projects
+            .get(&project)
+            .filter(|p| p.vault == vault)
+            .ok_or_else(|| ClientError::NotFound(format!("project {project}")))?;
+        let updated_meta =
+            Meta::new(entry.meta.name(), entry.meta.description())?.with_repos(repos)?;
+        if updated_meta.repos() == entry.meta.repos() {
+            return Ok(ProjectSummary {
+                id: project,
+                vault_id: vault,
+                vault: vault_name,
+                name: entry.meta.name().to_owned(),
+                repos: entry.meta.repos().to_vec(),
+            });
+        }
+        let pctx = ProjectContext {
+            account: owner,
+            vault,
+            project,
+        };
+        let wrapped_key = self
+            .cache
+            .vaults
+            .get(&vault)
+            .and_then(|c| c.projects.get(&project))
+            .and_then(|p| p.wrapped_key.clone())
+            .unwrap_or_else(|| {
+                Blob::new(klav_core::crypto::wrap::wrap_project_key(
+                    &vault_entry.key,
+                    &pctx,
+                    &entry.key,
+                ))
+            });
+        let new_version = entry.version + 1;
+        let sealed_meta = Blob::new(seal_project_meta(
+            &entry.key,
+            &pctx,
+            new_version,
+            &updated_meta,
+        ));
+        let body = klav_proto::vault::UpdateProject {
+            version: new_version,
+            wrapped_key,
+            meta: sealed_meta,
+        };
+        let _: klav_proto::vault::Project = self
+            .send_json(
+                Method::PUT,
+                &format!("/v1/vaults/{vault}/projects/{project}"),
+                &body,
+            )
+            .await?;
+        self.sync().await?;
+        Ok(ProjectSummary {
+            id: project,
+            vault_id: vault,
+            vault: vault_name,
+            name: updated_meta.name().to_owned(),
+            repos: updated_meta.repos().to_vec(),
+        })
     }
 
     // -------------------------------------------------------------- items --
