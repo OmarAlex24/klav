@@ -383,6 +383,23 @@ pub(crate) struct ProxyGrant {
 }
 
 impl Unlocked {
+    /// Turns the account's MCP gateway switch on (ADR 0049 §9): the server
+    /// then takes the gateway's claims and `local_client`, and
+    /// `GET /v1/agent/me` advertises it to the proxy. Nothing turns it off.
+    /// Only the request: the sheet that first asks the person to update
+    /// every device is the client's (ADR 0049, layer 5). An older server
+    /// answers `404`.
+    pub async fn turn_mcp_gateway_on(
+        &mut self,
+    ) -> ClientResult<klav_proto::agent::McpGatewaySwitch> {
+        self.send_json(
+            reqwest::Method::POST,
+            "/v1/account/mcp-gateway",
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     /// The account's proxy setting, its agent and what it holds.
     pub async fn proxy_status(&mut self) -> ClientResult<ProxyStatus> {
         self.sync().await?;

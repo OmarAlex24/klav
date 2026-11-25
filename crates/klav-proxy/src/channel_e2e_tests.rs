@@ -1130,7 +1130,7 @@ async fn a_theft_logged_behind_a_lost_answer_is_listed_as_unconfirmed() {
 
 /// A raw TLS connection to the channel with a fresh key, to send bytes as
 /// slowly as an attacker would.
-struct Raw {
+pub(crate) struct Raw {
     io: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
 }
 
@@ -1141,7 +1141,7 @@ impl Raw {
     }
 
     /// The key of `config`.
-    async fn with(config: &Arc<rustls::ClientConfig>, addr: SocketAddr) -> Self {
+    pub(crate) async fn with(config: &Arc<rustls::ClientConfig>, addr: SocketAddr) -> Self {
         let tcp = tokio::net::TcpStream::connect(addr).await.expect("tcp");
         let io = tokio_rustls::TlsConnector::from(Arc::clone(config))
             .connect(
@@ -1153,7 +1153,7 @@ impl Raw {
         Self { io }
     }
 
-    async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+    pub(crate) async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         use tokio::io::AsyncWriteExt;
         self.io.write_all(bytes).await?;
         self.io.flush().await
@@ -1172,7 +1172,10 @@ impl Raw {
         self.whole(wait).await.map(|(_, head, _)| head)
     }
 
-    async fn whole(&mut self, wait: std::time::Duration) -> Option<(u16, String, String)> {
+    pub(crate) async fn whole(
+        &mut self,
+        wait: std::time::Duration,
+    ) -> Option<(u16, String, String)> {
         use tokio::io::AsyncReadExt;
         let read = async {
             let mut got = Vec::new();
@@ -1248,14 +1251,14 @@ fn dechunk(mut rest: &[u8]) -> Option<String> {
 }
 
 /// A fresh channel key pinned to `pin`, for several connections.
-fn key(pin: [u8; 32]) -> Arc<rustls::ClientConfig> {
+pub(crate) fn key(pin: [u8; 32]) -> Arc<rustls::ClientConfig> {
     Arc::new(
         klav_forward::channel::client_config(TlsSigner::channel_key(), pin).expect("client config"),
     )
 }
 
 /// A claim request, as raw HTTP.
-fn claim_request(package: &SandboxPackage) -> Vec<u8> {
+pub(crate) fn claim_request(package: &SandboxPackage) -> Vec<u8> {
     let body = serde_json::to_vec(&serde_json::json!({
         "sandbox_id": package.sandbox_id,
         "secret": Blob::new(package.secret.expose().to_vec()).to_text(),

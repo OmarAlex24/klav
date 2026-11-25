@@ -42,6 +42,15 @@ pub struct ProxyCall<'a> {
     /// 0036 E3.3): the server refuses it unless the sandbox and its issuer
     /// are live (`403 sandbox_revoked`).
     pub sandbox: Option<klav_core::ids::SandboxId>,
+    /// An MCP `tools/call` (ADR 0049 §5.4): the tool's name, in the tool
+    /// grammar, evaluated by the policy and sent as `claims.mcp_tool`.
+    pub mcp_tool: Option<&'a str>,
+    /// The argument digest's text form, sent as `claims.mcp_args` with
+    /// `mcp_tool` (both or neither).
+    pub mcp_args: Option<&'a str>,
+    /// The local client the call comes from (ADR 0049 §3.2), sent as
+    /// `local_client` only while the account's `mcp_gateway` switch is on.
+    pub local_client: Option<&'a str>,
 }
 
 /// What the server answered.
@@ -93,7 +102,7 @@ impl Session {
                 method: Some(call.method.to_owned()),
                 path: Some(call.path.to_owned()),
                 now: now_secs(),
-                mcp_tool: None,
+                mcp_tool: call.mcp_tool.map(str::to_owned),
             },
         )
     }
@@ -110,11 +119,15 @@ impl Session {
     pub async fn proxy_access(&self, call: &ProxyCall<'_>, seen: u64) -> ClientResult<ProxyAccess> {
         crate::text::check_declared("reason", call.reason)?;
         let decision = self.evaluate_proxy(call, call.tags);
-        let denied = || {
-            ClientError::Denied(format!(
+        let denied = || match call.mcp_tool {
+            Some(tool) => ClientError::Denied(format!(
+                "the policy does not allow the tool {tool} on {}",
+                call.host
+            )),
+            None => ClientError::Denied(format!(
                 "the policy does not allow {} {} on {}",
                 call.method, call.path, call.host
-            ))
+            )),
         };
         let granted_key = self
             .grant
@@ -132,14 +145,14 @@ impl Session {
                 domain: Some(call.host.to_owned()),
                 method: Some(call.method.to_owned()),
                 path: Some(call.path.to_owned()),
-                mcp_tool: None,
-                mcp_args: None,
+                mcp_tool: call.mcp_tool.map(str::to_owned),
+                mcp_args: call.mcp_args.map(str::to_owned),
             },
             approval_id: None,
             task_id: None,
             include_attachments: false,
             sandbox: call.sandbox,
-            local_client: None,
+            local_client: call.local_client.map(str::to_owned),
         };
         let bytes =
             serde_json::to_vec(&body).map_err(|e| ClientError::Invalid(format!("request: {e}")))?;
@@ -287,12 +300,158 @@ impl Session {
             })
             && request.claims.domain.as_deref() == Some(call.host)
             && request.claims.method.as_deref() == Some(call.method)
-            && request.claims.path.as_deref() == Some(call.path);
+            && request.claims.path.as_deref() == Some(call.path)
+            && mcp_fits(call, &request, info.lease_until.unwrap_or(0) > 0);
         if !fits {
             return Err(ClientError::Security(format!(
                 "the server let a proxied call through with approval {id}, which is for another request"
             )));
         }
         Ok(())
+    }
+}
+
+/// Whether an approval's MCP fields fit `call` (ADR 0049 §5.4, T261): the
+/// same tool always; the same argument digest, unless the person signed a
+/// lease (`lease_until` is under the account's signature, checked before
+/// this); and, when the approval names its caller, this call's caller,
+/// which a call from a local client must have. A call without a tool fits
+/// only an approval without one.
+fn mcp_fits(
+    call: &ProxyCall<'_>,
+    request: &klav_proto::agent::ApprovalRequest,
+    leased: bool,
+) -> bool {
+    let claims = &request.claims;
+    if claims.mcp_tool.as_deref() != call.mcp_tool {
+        return false;
+    }
+    if claims.mcp_args.as_deref() != call.mcp_args
+        && !(leased && call.mcp_tool.is_some() && claims.mcp_args.is_some())
+    {
+        return false;
+    }
+    match &request.caller {
+        Some(caller) => {
+            caller.sandbox_id == call.sandbox && caller.local_client.as_deref() == call.local_client
+        }
+        None => call.local_client.is_none(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klav_core::ids::{AgentId, ProjectId, SandboxId, VaultId};
+    use klav_proto::agent::{ApprovalCaller, ApprovalRequest};
+
+    fn approval(
+        tool: Option<&str>,
+        args: Option<&str>,
+        caller: Option<ApprovalCaller>,
+    ) -> ApprovalRequest {
+        ApprovalRequest {
+            v: 1,
+            approval_id: ApprovalId::generate(),
+            agent_id: AgentId::generate(),
+            agent_name: "klav-proxy".into(),
+            permission: Permission::Proxy,
+            vault_id: VaultId::generate(),
+            project_id: ProjectId::generate(),
+            item_id: None,
+            reason: "credential proxy call".into(),
+            claims: Claims {
+                mcp_tool: tool.map(str::to_owned),
+                mcp_args: args.map(str::to_owned),
+                ..Claims::default()
+            },
+            grant_version: 1,
+            requested_at: 0,
+            caller,
+        }
+    }
+
+    fn call<'a>(
+        tool: Option<&'a str>,
+        args: Option<&'a str>,
+        sandbox: Option<SandboxId>,
+        local: Option<&'a str>,
+    ) -> ProxyCall<'a> {
+        ProxyCall {
+            item: ItemId::generate(),
+            host: "api.example.com",
+            method: "POST",
+            path: "/mcp",
+            tags: &[],
+            reason: "credential proxy call",
+            sandbox,
+            mcp_tool: tool,
+            mcp_args: args,
+            local_client: local,
+        }
+    }
+
+    /// ADR 0049 §5.4 (T261): what the proxy accepts as the approval behind
+    /// a server's "allowed" for an MCP call.
+    #[test]
+    fn an_approval_fits_only_its_tool_its_arguments_unless_leased_and_its_caller() {
+        let local = |name: &str| {
+            Some(ApprovalCaller {
+                sandbox_id: None,
+                local_client: Some(name.into()),
+            })
+        };
+        let sandbox = SandboxId::generate();
+        let in_sandbox = Some(ApprovalCaller {
+            sandbox_id: Some(sandbox),
+            local_client: None,
+        });
+        let a = approval(Some("delete_x"), Some("A"), local("claude-code"));
+        let mine = |tool, args| call(tool, args, None, Some("claude-code"));
+        // The same tool, arguments and caller.
+        assert!(mcp_fits(&mine(Some("delete_x"), Some("A")), &a, false));
+        // Another tool, leased or not.
+        assert!(!mcp_fits(&mine(Some("delete_y"), Some("A")), &a, false));
+        assert!(!mcp_fits(&mine(Some("delete_y"), Some("A")), &a, true));
+        // Other arguments: only under a signed lease.
+        assert!(!mcp_fits(&mine(Some("delete_x"), Some("B")), &a, false));
+        assert!(mcp_fits(&mine(Some("delete_x"), Some("B")), &a, true));
+        // Another caller, leased or not.
+        let other = call(Some("delete_x"), Some("A"), None, Some("cursor"));
+        assert!(!mcp_fits(&other, &a, true));
+        let from_sandbox = call(Some("delete_x"), Some("A"), Some(sandbox), None);
+        assert!(!mcp_fits(&from_sandbox, &a, true));
+        // A local client's call needs an approval that names it.
+        let unnamed = approval(Some("delete_x"), Some("A"), None);
+        assert!(!mcp_fits(
+            &mine(Some("delete_x"), Some("A")),
+            &unnamed,
+            true
+        ));
+        // A sandbox's call fits its own sandbox, and one without a caller
+        // (the switch was off when it was asked).
+        let for_sandbox = approval(Some("delete_x"), Some("A"), in_sandbox);
+        assert!(mcp_fits(&from_sandbox, &for_sandbox, false));
+        assert!(!mcp_fits(
+            &call(
+                Some("delete_x"),
+                Some("A"),
+                Some(SandboxId::generate()),
+                None
+            ),
+            &for_sandbox,
+            false
+        ));
+        assert!(mcp_fits(&from_sandbox, &unnamed, false));
+        // A tool's approval never backs a call without a tool, and the
+        // other way round.
+        assert!(!mcp_fits(&call(None, None, None, None), &unnamed, true));
+        let plain = approval(None, None, None);
+        assert!(mcp_fits(&call(None, None, None, None), &plain, false));
+        assert!(!mcp_fits(
+            &call(Some("delete_x"), Some("A"), None, None),
+            &plain,
+            true
+        ));
     }
 }

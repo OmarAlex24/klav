@@ -682,6 +682,17 @@ impl Bound {
             ..
         } = self;
         let stop = stop.boxed().shared();
+        // Whether the account's MCP gateway is on (ADR 0049 §9), before the
+        // first call to an MCP profile rather than 30 s later. Off until
+        // the server says it is on.
+        if state.profiles().all().iter().any(|p| p.mcp.is_some())
+            && let Err(e) = state.refresh_gone_issuers().await
+        {
+            tracing::warn!(
+                kind = crate::proxy::redacted_kind(&e),
+                "could not ask the server whether the MCP gateway is on; tool calls wait for the next refresh"
+            );
+        }
         let refresher = {
             let state = Arc::clone(&state);
             tokio::spawn(async move {

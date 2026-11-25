@@ -21,6 +21,7 @@ mod cuts;
 pub mod errors;
 pub mod heartbeat;
 pub mod listener;
+pub mod mcp;
 pub mod memory;
 pub mod net;
 pub mod paths;
@@ -39,6 +40,8 @@ mod forward_e2e_tests;
 mod local_calls_e2e_tests;
 #[cfg(test)]
 mod locked_e2e_tests;
+#[cfg(test)]
+mod mcp_e2e_tests;
 #[cfg(test)]
 mod sandbox_e2e_tests;
 

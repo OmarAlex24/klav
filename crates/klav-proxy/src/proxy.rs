@@ -221,6 +221,13 @@ pub struct ProxyState {
     /// the server, and is counted (a server that refuses every epoch).
     #[cfg(test)]
     always_conflict: Mutex<Option<usize>>,
+    /// The MCP gateway's sessions, pending requests and tool definitions
+    /// (ADR 0049 §5.2), in memory only.
+    mcp: Arc<crate::mcp::McpState>,
+    /// Whether the server's last `GET /v1/agent/me` advertised the
+    /// account's `mcp_gateway` switch (ADR 0049 §9). Off until it does:
+    /// then MCP profiles serve in "no tool claims" mode.
+    mcp_gateway: std::sync::atomic::AtomicBool,
 }
 
 impl ProxyState {
@@ -264,7 +271,62 @@ impl ProxyState {
             paused: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             always_conflict: Mutex::new(None),
+            mcp: Arc::new(crate::mcp::McpState::default()),
+            mcp_gateway: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The MCP gateway's tables.
+    pub(crate) fn mcp(&self) -> &Arc<crate::mcp::McpState> {
+        &self.mcp
+    }
+
+    /// Whether the account's `mcp_gateway` switch was on at the last
+    /// refresh (ADR 0049 §9).
+    pub(crate) fn mcp_gateway(&self) -> bool {
+        self.mcp_gateway.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The session, read.
+    pub(crate) async fn session(&self) -> tokio::sync::RwLockReadGuard<'_, Session> {
+        self.session.read().await
+    }
+
+    /// The tags of `item` as last delivered (empty before the first call).
+    pub(crate) fn seen_tags(&self, item: ItemId) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&item)
+            .map(|s| s.tags.clone())
+            .unwrap_or_default()
+    }
+
+    /// The wait for each piece of a request body, and for the whole of it.
+    pub(crate) fn body_waits(&self) -> (Duration, Duration) {
+        (
+            Duration::from_millis(
+                self.request_body_idle_ms
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            self.request_timeout,
+        )
+    }
+
+    /// The profile's rate and, for a sandbox, its own (ADR 0036 §8): both
+    /// checked before either is charged, so a sandbox over its own rate
+    /// never spends the profile's, which other callers share.
+    pub(crate) fn check_rates(
+        &self,
+        profile: &Profile,
+        sandbox: Option<klav_core::ids::SandboxId>,
+    ) -> Result<(), ProxyError> {
+        let sandbox_rate = sandbox.map(|id| (format!("sandbox:{id}"), SANDBOX_RATE_PER_MINUTE));
+        let mut rates = vec![(profile.name.clone(), profile.rate_per_minute)];
+        rates.extend(sandbox_rate);
+        self.limits
+            .check_all(&rates, Instant::now())
+            .map_err(|retry_after| ProxyError::RateLimited { retry_after })
     }
 
     /// Whether the server's last answer said the person paused this proxy.
@@ -293,6 +355,15 @@ impl ProxyState {
     /// The calls in flight.
     pub(crate) fn cuts(&self) -> &crate::cuts::Cuts {
         &self.cuts
+    }
+
+    /// Registers a call in flight, to cut when its sandbox ends or the
+    /// person pauses the agents.
+    pub(crate) fn register_cut(
+        &self,
+        sandbox: Option<klav_core::ids::SandboxId>,
+    ) -> crate::cuts::CutHandle {
+        self.cuts.register(sandbox)
     }
 
     /// Shortens [`STREAM_MAX`] and [`STREAM_IDLE`] (tests).
@@ -673,7 +744,7 @@ impl ProxyState {
 
     /// The slots a request holds until its answer ends: one of all, and
     /// for a sandbox one of its own. `None` when either is full.
-    fn take_slots(&self, sandbox: Option<klav_core::ids::SandboxId>) -> Option<Slots> {
+    pub(crate) fn take_slots(&self, sandbox: Option<klav_core::ids::SandboxId>) -> Option<Slots> {
         let own = match sandbox {
             Some(id) => {
                 let mut shares = self
@@ -770,13 +841,21 @@ impl ProxyState {
         .unwrap_or(NotAllowed::ServerDenied)
     }
 
-    /// Which issuers the server no longer counts (ADR 0036 E3.3): asked
-    /// only while the grant names some, under the session's read lock.
-    /// On an error the last list stays.
+    /// Which issuers the server no longer counts (ADR 0036 E3.3), and
+    /// whether the account's `mcp_gateway` switch is on (ADR 0049 §9):
+    /// asked only while the grant names issuers or MCP profiles, under the
+    /// session's read lock. On an error the last answers stay.
     pub(crate) async fn refresh_gone_issuers(&self) -> Result<(), ClientError> {
         let session = self.session.read().await;
-        let gone = if session.grant().payload.issuers.is_empty() {
-            Vec::new()
+        let issuers = !session.grant().payload.issuers.is_empty();
+        let mcp = session
+            .grant()
+            .payload
+            .profiles
+            .iter()
+            .any(|p| p.mcp.is_some());
+        let (gone, gateway) = if !issuers && !mcp {
+            (Vec::new(), false)
         } else {
             let res = session
                 .agent()
@@ -788,10 +867,15 @@ impl ProxyState {
                     "the server answered for another agent".into(),
                 ));
             }
-            me.gone_issuers
+            (
+                if issuers { me.gone_issuers } else { Vec::new() },
+                me.mcp_gateway == Some(true),
+            )
         };
         drop(session);
         *self.gone_issuers.lock().unwrap_or_else(|e| e.into_inner()) = gone;
+        self.mcp_gateway
+            .store(gateway, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -824,7 +908,7 @@ pub(crate) enum Caller {
 }
 
 impl Caller {
-    fn sandbox(&self) -> Option<klav_core::ids::SandboxId> {
+    pub(crate) fn sandbox(&self) -> Option<klav_core::ids::SandboxId> {
         match self {
             Self::Local => None,
             Self::Sandbox { bound, .. } => Some(bound.sandbox_id),
@@ -863,7 +947,7 @@ pub(crate) async fn serve_call(state: &ProxyState, req: Request, caller: Caller)
 /// The profile name and the upstream path of a local path:
 /// `/railway/graphql/v2` is `railway` and `/graphql/v2`; `/railway` alone
 /// is `/`.
-fn split_profile(raw: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_profile(raw: &str) -> Option<(&str, &str)> {
     let rest = raw.strip_prefix('/')?;
     match rest.find('/') {
         Some(i) => Some((&rest[..i], &rest[i..])),
@@ -890,11 +974,23 @@ fn approval_key(
     path: &str,
     query: Option<&str>,
     sandbox: Option<klav_core::ids::SandboxId>,
+    mcp: Option<McpClaims<'_>>,
 ) -> String {
+    let mcp = mcp.map(|m| (m.tool, m.args, m.local_client));
     format!(
-        "{}\n{}\n{}\n{}\n{:?}\n{:?}",
-        profile.item, profile.upstream.host, method, path, query, sandbox
+        "{}\n{}\n{}\n{}\n{:?}\n{:?}\n{:?}",
+        profile.item, profile.upstream.host, method, path, query, sandbox, mcp
     )
+}
+
+/// What an MCP message adds to its access (ADR 0049 §5.4, §3.2): the tool
+/// and its argument digest for a `tools/call`, and the local client while
+/// the account's switch is on.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct McpClaims<'a> {
+    pub(crate) tool: Option<&'a str>,
+    pub(crate) args: Option<&'a str>,
+    pub(crate) local_client: Option<&'a str>,
 }
 
 /// Whether a request comes from a web page or names another host: it
@@ -1134,6 +1230,9 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     {
         return Err(ProxyError::NotAllowed(NotAllowed::UnknownProfile));
     }
+    if profile.mcp.is_some() {
+        return crate::mcp::forward(state, parts, body, caller, profile).await;
+    }
     let method = parts.method.as_str().to_owned();
     if !judgeable_method(&method) {
         return Err(ProxyError::NotAllowed(NotAllowed::Policy));
@@ -1183,22 +1282,71 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     let body = read_body(body, state.max_body, idle, state.request_timeout)
         .await
         .ok_or(ProxyError::NotAllowed(NotAllowed::Malformed))?;
-    // The profile's rate and, for a sandbox, its own (ADR 0036 §8): both
-    // checked before either is charged, so a sandbox over its own rate
-    // never spends the profile's, which other callers share.
-    let sandbox_rate = caller
-        .sandbox()
-        .map(|id| (format!("sandbox:{id}"), SANDBOX_RATE_PER_MINUTE));
-    let mut rates = vec![(profile.name.clone(), profile.rate_per_minute)];
-    rates.extend(sandbox_rate);
-    state
-        .limits
-        .check_all(&rates, Instant::now())
-        .map_err(|retry_after| ProxyError::RateLimited { retry_after })?;
+    state.check_rates(&profile, caller.sandbox())?;
+    let sent = send_upstream(
+        state,
+        &profile,
+        &caller,
+        Outgoing {
+            method: &method,
+            path,
+            query,
+            url,
+            headers: forwarded_headers(&parts.headers, &profile.header),
+            body,
+            mcp: None,
+        },
+        permit,
+        cut,
+    )
+    .await?;
+    respond(sent, caller.sandbox().is_some(), None)
+}
 
+/// A request ready for the upstream, once its checks passed.
+pub(crate) struct Outgoing<'a> {
+    pub(crate) method: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) query: Option<&'a str>,
+    pub(crate) url: reqwest::Url,
+    /// The caller's headers that may go ([`forwarded_headers`]), and any
+    /// the profile adds; the credential and `Accept-Encoding` are set here.
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Bytes,
+    pub(crate) mcp: Option<McpClaims<'a>>,
+}
+
+/// The upstream's answer, with what its body needs.
+pub(crate) struct Sent {
+    pub(crate) res: reqwest::Response,
+    redactor: Redactor,
+    tally: Tally,
+    held: Held,
+}
+
+/// The server asked for the item (never cached), the sandbox checked
+/// again, the credential put in the profile's header, and the request
+/// sent; the answer's headers are back.
+pub(crate) async fn send_upstream(
+    state: &ProxyState,
+    profile: &Profile,
+    caller: &Caller,
+    out: Outgoing<'_>,
+    permit: Slots,
+    cut: crate::cuts::CutHandle,
+) -> Result<Sent, ProxyError> {
+    let Outgoing {
+        method,
+        path,
+        query,
+        url,
+        mut headers,
+        body,
+        mcp,
+    } = out;
     // A refusal comes back narrowed to the path or the method by
     // [`refused`], which logs the same decision it returns.
-    let item = match access(state, &profile, &method, path, query, caller.sandbox()).await {
+    let item = match access(state, profile, method, path, query, caller.sandbox(), mcp).await {
         Ok(item) => item,
         Err(e) => {
             state.cut_for(caller.sandbox(), &e).await;
@@ -1214,7 +1362,7 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     // review of #304/#306).
     // Its end, as a deadline no answer outlives.
     let mut expiry = None;
-    if let Caller::Sandbox { bound, key } = &caller {
+    if let Caller::Sandbox { bound, key } = caller {
         let found = crate::claims::bound(state, key)
             .await
             .map_err(|e| match e {
@@ -1243,7 +1391,6 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     let redactor = Redactor::whole_values([secret.as_str()]);
     drop(secret);
 
-    let mut headers = forwarded_headers(&parts.headers, &profile.header);
     headers.insert(
         header::ACCEPT_ENCODING,
         HeaderValue::from_static("identity"),
@@ -1287,7 +1434,12 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
         stream_max,
         stream_idle,
     };
-    respond(res, redactor, tally, held, caller.sandbox().is_some())
+    Ok(Sent {
+        res,
+        redactor,
+        tally,
+        held,
+    })
 }
 
 /// What a call in flight answers when it is cut before its answer starts.
@@ -1332,7 +1484,7 @@ pub(crate) struct BodyLimits {
 
 /// Whether the answer is a stream: `Content-Type: text/event-stream`, with
 /// or without parameters.
-fn is_event_stream(headers: &HeaderMap) -> bool {
+pub(crate) fn is_event_stream(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -1362,7 +1514,12 @@ impl Slots {
 /// The caller's body, at most `max` bytes, each piece within `idle` and the
 /// whole within `total`; `None` otherwise. A caller that stops in the
 /// middle of a body never holds its slots for long.
-async fn read_body(body: Body, max: usize, idle: Duration, total: Duration) -> Option<Bytes> {
+pub(crate) async fn read_body(
+    body: Body,
+    max: usize,
+    idle: Duration,
+    total: Duration,
+) -> Option<Bytes> {
     use futures_util::StreamExt;
     let read = async {
         let mut stream = body.into_data_stream();
@@ -1394,8 +1551,9 @@ async fn access(
     path: &str,
     query: Option<&str>,
     sandbox: Option<klav_core::ids::SandboxId>,
+    mcp: Option<McpClaims<'_>>,
 ) -> Result<Box<klav_core::model::Item>, ProxyError> {
-    let key = approval_key(profile, method, path, query, sandbox);
+    let key = approval_key(profile, method, path, query, sandbox, mcp);
     let waiting = state
         .pending
         .lock()
@@ -1455,7 +1613,12 @@ async fn access(
             // before the server is asked: read under the same guard, for
             // the log.
             let in_grant = session.grant().items.contains_key(&profile.item);
-            let call = profile.call(method, path, &seen.tags, sandbox);
+            let mut call = profile.call(method, path, &seen.tags, sandbox);
+            if let Some(m) = mcp {
+                call.mcp_tool = m.tool;
+                call.mcp_args = m.args;
+                call.local_client = m.local_client;
+            }
             (session.proxy_access(&call, seen.version).await, in_grant)
         };
         match got {
@@ -1681,7 +1844,7 @@ fn log_refused(
 /// The caller's headers that may go upstream: none of
 /// [`DROPPED_REQUEST_HEADERS`], none named in `Connection`, none of the
 /// proxy's or Klav's own, and not the profile's header.
-fn forwarded_headers(from: &HeaderMap, profile_header: &HeaderName) -> HeaderMap {
+pub(crate) fn forwarded_headers(from: &HeaderMap, profile_header: &HeaderName) -> HeaderMap {
     let named: Vec<String> = from
         .get_all(header::CONNECTION)
         .iter()
@@ -1779,17 +1942,40 @@ fn transfer_encoded(headers: &HeaderMap) -> bool {
     codings > 1
 }
 
+/// What reads an answer's body after the redactor, for an MCP profile
+/// (ADR 0049 §5.2): it may hold, drop or rewrite what the redactor emits,
+/// and `Err` cuts the answer (never a clean end). It only ever sees
+/// redacted bytes, so it cannot undo a redaction.
+pub(crate) trait BodyTransform: Send + 'static {
+    /// What to emit for the next redacted bytes.
+    fn push(&mut self, bytes: &[u8]) -> Result<Vec<u8>, ()>;
+    /// What to emit at the end of the body.
+    fn finish(&mut self) -> Result<Vec<u8>, ()>;
+}
+
+/// How an MCP profile's answer is read: given its status and headers, the
+/// transform for its body ([`crate::mcp`]), or an error that replaces it.
+pub(crate) type McpAnswer = Box<
+    dyn FnOnce(reqwest::StatusCode, &HeaderMap) -> Result<Box<dyn BodyTransform>, ProxyError>
+        + Send,
+>;
+
 /// The provider's answer, checked and redacted. A `304` passes with its
 /// headers and no body; any other redirect is blocked. A stream
 /// (`text/event-stream`) gets the stream's limits and goes out line by
-/// line.
-fn respond(
-    res: reqwest::Response,
-    redactor: Redactor,
-    mut tally: Tally,
-    held: Held,
+/// line. An MCP profile's answer never carries `WWW-Authenticate`, for any
+/// caller (ADR 0049 §2.4, T265), and its body goes through `mcp`.
+pub(crate) fn respond(
+    sent: Sent,
     for_sandbox: bool,
+    mcp: Option<McpAnswer>,
 ) -> Result<Response, ProxyError> {
+    let Sent {
+        res,
+        redactor,
+        mut tally,
+        held,
+    } = sent;
     let status = res.status();
     if status.is_redirection() && status != reqwest::StatusCode::NOT_MODIFIED {
         return Err(ProxyError::UpstreamBlocked(Blocked::Redirect));
@@ -1802,6 +1988,7 @@ fn respond(
     if encoded || transfer_encoded(res.headers()) {
         return Err(ProxyError::UpstreamBlocked(Blocked::Encoded));
     }
+    let is_mcp = mcp.is_some();
     let mut headers = HeaderMap::new();
     for (name, value) in res.headers() {
         let n = name.as_str();
@@ -1812,6 +1999,8 @@ fn respond(
             // without the proxy and after the sandbox ends: a sandbox gets
             // actions, not values.
             || (for_sandbox && SANDBOX_DROPPED_RESPONSE_HEADERS.contains(&n))
+            // No MCP client starts its own sign-in with the provider.
+            || (is_mcp && n == "www-authenticate")
         {
             continue;
         }
@@ -1826,6 +2015,10 @@ fn respond(
         };
         headers.append(name.clone(), value);
     }
+    let transform = match mcp {
+        Some(read) => Some(read(status, &headers)?),
+        None => None,
+    };
     let body = if status == reqwest::StatusCode::NOT_MODIFIED {
         drop((res, redactor, held));
         // Counted and logged apart, never on the way of the answer.
@@ -1856,7 +2049,7 @@ fn respond(
             deadline,
             cut: Some(held.cut),
         };
-        redacted_body(res, redactor, tally, held.permit, limits)
+        redacted_body(res, redactor, tally, held.permit, limits, transform)
     };
     let mut out = Response::new(body);
     *out.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -1882,6 +2075,7 @@ fn redacted_body(
     tally: Tally,
     permit: Slots,
     limits: BodyLimits,
+    mut transform: Option<Box<dyn BodyTransform>>,
 ) -> Body {
     let BodyLimits {
         idle,
@@ -1917,13 +2111,29 @@ fn redacted_body(
             let piece = match got {
                 None => Err(None),
                 Some(Ok(Ok(Some(chunk)))) => match redactor.push(&chunk) {
-                    Ok(out) => Ok(Bytes::from(out)),
+                    Ok(out) => match transform.as_mut() {
+                        None => Ok(Bytes::from(out)),
+                        Some(t) => t.push(&out).map(Bytes::from).map_err(|()| Some(cut())),
+                    },
                     Err(_) => Err(Some(cut())),
                 },
                 Some(Ok(Ok(None))) => {
-                    let (last, replaced, partial) = redactor.finish_all();
+                    let (mut last, replaced, partial) = redactor.finish_all();
                     tally.count += replaced as u64;
                     tally.partial += partial as u64;
+                    if let Some(t) = transform.as_mut() {
+                        // What the transform holds, then its end: a body it
+                        // cannot read to the end is cut, never ended.
+                        // The channel then closes without its last piece.
+                        let Ok(mut held) = t.push(&last) else {
+                            return;
+                        };
+                        let Ok(end) = t.finish() else {
+                            return;
+                        };
+                        held.extend_from_slice(&end);
+                        last = held;
+                    }
                     let sent = tokio::select! {
                         biased;
                         _ = cut_or_never(&mut cut_handle) => false,
@@ -2365,7 +2575,7 @@ pub(crate) mod tests {
             partial: 0,
             counts: Arc::new(crate::counts::Counts::in_memory()),
         };
-        redacted_body(res, redactor, tally, Slots::single(), limits)
+        redacted_body(res, redactor, tally, Slots::single(), limits, None)
     }
 
     /// A provider's answer fed piece by piece through the sender, as a
@@ -2642,17 +2852,18 @@ pub(crate) mod tests {
                 port: 443,
             },
             rate_per_minute: 60,
+            mcp: None,
         };
         // A sandbox never reuses another's (or this machine's) approval.
         let one = klav_core::ids::SandboxId::generate();
         let two = klav_core::ids::SandboxId::generate();
         let keys = [
-            approval_key(&profile, "DELETE", "/v1/items/1", None, None),
-            approval_key(&profile, "DELETE", "/v1/items/1", Some(""), None),
-            approval_key(&profile, "DELETE", "/v1/items/1", Some("a=1"), None),
-            approval_key(&profile, "DELETE", "/v1/items/1", Some("a=2"), None),
-            approval_key(&profile, "DELETE", "/v1/items/1", None, Some(one)),
-            approval_key(&profile, "DELETE", "/v1/items/1", None, Some(two)),
+            approval_key(&profile, "DELETE", "/v1/items/1", None, None, None),
+            approval_key(&profile, "DELETE", "/v1/items/1", Some(""), None, None),
+            approval_key(&profile, "DELETE", "/v1/items/1", Some("a=1"), None, None),
+            approval_key(&profile, "DELETE", "/v1/items/1", Some("a=2"), None, None),
+            approval_key(&profile, "DELETE", "/v1/items/1", None, Some(one), None),
+            approval_key(&profile, "DELETE", "/v1/items/1", None, Some(two), None),
         ];
         for (i, a) in keys.iter().enumerate() {
             for b in &keys[i + 1..] {
