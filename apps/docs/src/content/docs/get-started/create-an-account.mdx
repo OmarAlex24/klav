@@ -60,7 +60,7 @@ Without `--server`, `klav signup` uses klav.dev and says so on its first line: `
 
 A server can accept new accounts in one of three ways: open to anyone, by invitation only, or closed. Klav's apps ask the server which one before they ask for your master password. On an open server, nothing changes. On a closed one, they stop and say so. On a server that takes accounts by invitation, you need an invite code from whoever runs it.
 
-An invite code works only for the email address it was made for, and only once (or, for a group code, a set number of times). Klav checks it before it asks for your master password or makes your Secret Key, so a wrong code never leaves a half-made account or an emergency kit behind.
+An invite code is usually made for one email address and works once. A batch code isn't tied to an email and works a set number of times, for a few days. Klav checks the code before it asks for your master password or makes your Secret Key, so a wrong code costs you nothing. In the rare case that a batch code's last use is taken while you are signing up, the sign-up fails with the same message. If you used the CLI, it has already written the emergency kit by then and says so: delete that kit, since it belongs to no account.
 
 **Mac app:** below your email, the sheet shows "Invite code". Paste the code and choose "Continue". When the code is valid for that email, the master password fields and "Create the account" appear. When it isn't, the sheet says "This invite code isn't valid for this email." and asks for nothing else. "Request an invite" opens klav.dev.
 
@@ -84,11 +84,11 @@ KLAV_INVITE=KLAV-… klav signup --server https://klav.example.com --email you@e
 This invite code isn't valid for you@example.com. Check the code, or request one at https://klav.dev.
 ```
 
-The message is the same whatever the reason: a wrong code, another email, or a code that was revoked, has expired or has been used up.
+The message is the same whatever the reason: a wrong code, a code made for another email, or a code that was revoked, has expired or has been used up.
 
 ## When an account reaches its limits
 
-A server can limit how much each account keeps: how many vaults and items, how much encrypted vault data, and how much space attachments take. Items in the trash count until they are emptied from it. When a change would go over a limit, Klav shows the server's message as it is (which limit, how much is used and the maximum) and saves nothing. Reading, moving to the trash and deleting are never refused.
+A server can set quotas on how much each account keeps: how many vaults and items, how much encrypted vault data, and how much space attachments take. Items in the trash count until they are emptied from it. When a change would go over a limit, Klav shows the server's message as it is (which limit, how much is used and the maximum) and saves nothing. Reading, moving to the trash and deleting are never refused.
 
 ## The emergency kit
 
