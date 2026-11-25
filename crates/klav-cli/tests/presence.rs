@@ -178,6 +178,13 @@ impl Terminal {
         stdin.flush().expect("flush");
     }
 
+    /// Writes `bytes` to the terminal as they are, as a paste does.
+    fn paste(&mut self, bytes: &str) {
+        let stdin = self.child.stdin.as_mut().expect("stdin");
+        stdin.write_all(bytes.as_bytes()).expect("paste");
+        stdin.flush().expect("flush");
+    }
+
     /// The exit codes the shell printed (`KLAV-EXIT n`), once `n` of them
     /// have.
     #[track_caller]
@@ -655,6 +662,48 @@ fn with_the_gate_on_values_ask_for_the_master_password_on_the_terminal() {
     assert!(!text.contains("ZZZZ"), "some of it was echoed:\n{text}");
     assert!(!text.contains(VALUE), "{text}");
     drop(pasted);
+
+    // A paste of several lines (Omar's decision M of 2026-11-19): the
+    // question takes its first line, and none of the rest reaches the
+    // shell, whether it was queued when Enter arrived or arrives a moment
+    // later, as a terminal emulator writes a long paste in pieces. The
+    // shell then reads its terminal for a second: it must find nothing.
+    // Before the fix, only an over-long line flushed, and only what was
+    // queued at Enter: here the shell got the later lines. Each case runs
+    // once with the correct password first (the value is handed out) and
+    // once with an over-long first line (refused).
+    for (what, first, ok) in [
+        ("password", format!("{PASSWORD}\n"), true),
+        ("over-long", format!("{}\n", "Z".repeat(1500)), false),
+    ] {
+        let mut several = Terminal::open(
+            &device,
+            root.path(),
+            &format!(
+                r#"{}; stty -icanon -echo min 0 time 10; echo "LEFT $(head -c 100000 | wc -c | tr -d ' ') LEFT-END""#,
+                klav_line(&format!("item get {REFERENCE} --reveal"))
+            ),
+        );
+        several.wait_for(&format!("Master password for {EMAIL}: "), 1);
+        several.paste(&format!("{first}echo PASTED-TWO\necho PASTED-THREE\n"));
+        std::thread::sleep(Duration::from_millis(60));
+        several.paste("echo PASTED-FOUR\n");
+        assert_eq!(
+            several.exits(1),
+            vec![if ok { 0 } else { 1 }],
+            "{what}: {}",
+            several.text()
+        );
+        several.wait_for("LEFT-END", 1);
+        let text = several.text();
+        assert_eq!(text.contains(VALUE), ok, "{what}: {text}");
+        assert!(
+            text.contains("LEFT 0 LEFT-END"),
+            "{what}: the shell got some of the paste:\n{text}"
+        );
+        assert!(!text.contains("PASTED"), "{what}: echoed or run:\n{text}");
+        drop(several);
+    }
     drop(klavd);
 }
 
