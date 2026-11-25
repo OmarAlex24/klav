@@ -2174,7 +2174,7 @@ klav proxy grant ELEMENTO --profile NOMBRE --upstream https://HOST[:PUERTO] \
     --header CABECERA [--prefix "Bearer "] [--field CAMPO] \
     --method MÉTODO… --path-prefix PREFIJO… [--ask] [--ask-method MÉTODO]… \
     [--rate POR_MINUTO] [--words "…"] [--every-device-is-updated] [--json]
-klav proxy grant ELEMENTO --preset northflank [cualquier opción de arriba] \
+klav proxy grant ELEMENTO --preset northflank|maple [cualquier opción de arriba] \
     [--words "…"] [--every-device-is-updated] [--json]
 klav proxy revoke ELEMENTO [--json]
 klav proxy issuer add AGENTE --profile PERFIL… --url tls://HOST:PUERTO \
@@ -2315,9 +2315,28 @@ klav proxy sandboxes revoke ID | --all [--wait] [--json]
       servidor más viejos ven lo mismo. Deja pasar sin aprobación el
       `GET /v1/login` de la línea `northflank login` de `klav sandbox
       start`.
-    - `--preset railway` y `--preset maple` se rechazan sin conceder nada:
-      necesitan los modos (b) y (c), que el proxy todavía no tiene. Un
-      nombre desconocido se rechaza con la lista de los que hay.
+  - **`--preset maple`** (la puerta MCP, ADR 0036 §7, nota del
+    2026-11-19, paso M4) rellena el perfil `maple` con la llave de API de
+    Maple en `Authorization: Bearer`, `https://api.maple.dev` y solo las
+    rutas bajo `/mcp`; `POST`, `GET` y `DELETE` pasan y ninguno pide
+    aprobación, con el ritmo por defecto. Cualquier otra ruta se rechaza,
+    también la de descubrir OAuth (`/.well-known/…`). `--upstream
+    https://api.eu.maple.dev` cambia al host europeo y deja la nota
+    completa. Toda llamada MCP es el mismo `POST` a `/mcp`, así que el
+    proxy no puede preguntar por herramienta: **el límite son los permisos
+    de la llave**, y la nota pide una llave restringida de solo lectura que
+    venza en 90 días como mucho. Con opciones que cambian lo que se firma,
+    la nota es la misma línea que en `northflank`, más la frase de las
+    herramientas mientras el perfil deje pasar un `POST` o pida aprobación
+    para él. El perfil sale con los mismos bytes que `--profile maple
+    --upstream https://api.maple.dev --header authorization --prefix
+    "Bearer " --method POST,GET,DELETE --path-prefix /mcp`. El cliente MCP
+    del sandbox apunta a `http://127.0.0.1:<puerto>/maple/mcp` (las líneas
+    de `klav sandbox start`, abajo), y el proxy trata sus respuestas
+    `text/event-stream` como *streams* ([api.md](api.md) §8.7).
+  - `--preset railway` se rechaza sin conceder nada: necesita el modo (b),
+    que el proxy todavía no tiene. Un nombre desconocido se rechaza con la
+    lista de los que hay.
   - Sin `--field`, el valor es el secreto principal: la contraseña de un
     login o la clave de una API key. Cualquier otro tipo necesita
     `--field`, y se rechaza antes de Touch ID.
@@ -2691,6 +2710,29 @@ klav sandbox stop ID | --all [--json]
       probablemente fallan a través del proxy (ADR
       [0036](decisiones/0036-sandboxes-de-agentes.md) §5, decisión del
       2026-11-16).
+    - Solo si el sandbox lleva el perfil `maple` (la puerta MCP, ADR 0036
+      §7, nota del 2026-11-19, decisión 6), dos líneas que escriben la
+      entrada MCP con la CLI de cada cliente, solo donde está instalado
+      (sin él, la línea no hace nada y sale con `0`):
+      ```sh
+      if command -v claude >/dev/null 2>&1; then claude mcp remove --scope user maple >/dev/null 2>&1 || true; claude mcp add --transport http --scope user maple "$KLAV_FORWARD_MAPLE_URL/mcp" --header "Authorization: Bearer klav-placeholder"; fi
+      if command -v codex >/dev/null 2>&1; then codex mcp add maple --url "$KLAV_FORWARD_MAPLE_URL/mcp"; fi
+      ```
+      La URL es la que puso la línea `eval`, más `/mcp`:
+      `http://127.0.0.1:<puerto>/maple/mcp`. Claude Code la guarda en su
+      configuración de usuario, con un *bearer* de mentira que el proxy
+      quita antes de poner el real (para que un `401` o un `403` del proxy
+      no parezca un inicio de sesión). Como `claude mcp add` rechaza una
+      entrada que ya existe, la línea quita antes la que se llame `maple`:
+      correrla otra vez deja la misma. `codex mcp add` reemplaza la de su
+      mismo nombre, y su CLI toma un *bearer* solo de una variable de
+      entorno (`--bearer-token-env-var`), no de una cabecera fija, así que
+      la entrada de Codex va **sin** el valor de mentira (ADR 0036 §7, nota
+      del 2026-11-25). Comprobadas, dos veces seguidas y con `sh -e`, con
+      Claude Code 2.1.331 y Codex 0.166.0. Otro cliente MCP usa la misma
+      URL. El perfil tiene que dejar pasar `POST /mcp` sin aprobación;
+      `next` lo recuerda. `klav-forward` no edita la configuración de
+      ningún cliente.
 
     Las líneas necesitan un `klav-forward` de esta versión de Klav o
     posterior, el primero con `down --if-other-package`. Con uno anterior,
@@ -2703,7 +2745,8 @@ klav sandbox stop ID | --all [--json]
     reclama termina por inactividad una hora después de empezar, o antes si
     su `--ttl` es menor.
   - `--json` da `{sandbox_id, label, profiles, expires_at, setup, next}`,
-    con esas líneas en `setup`: tres, o cuatro con el perfil `northflank`.
+    con esas líneas en `setup`: tres, más una con el perfil `northflank` y
+    dos con el perfil `maple`.
 - **`ls`** lista solo los sandboxes vivos de este emisor, preguntando al
   proxy: ID, etiqueta, perfiles, vencimiento y si ya se reclamó.
 - **`stop`** termina enseguida uno de los suyos, o todos con `--all`

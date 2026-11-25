@@ -10,11 +10,12 @@ use klav_client::proxy_admin::{MAX_GRANT_METHODS, ProxyCredentialSpec, credentia
 use klav_core::ids::ItemId;
 use klav_core::policy::Effect;
 
-use super::sandbox::NORTHFLANK_PROFILE;
+use super::sandbox::{MAPLE_MCP_PATH, MAPLE_PROFILE, NORTHFLANK_PROFILE};
 use crate::cli::ProxyGrantArgs;
 use crate::error::{CliResult, usage};
 
-/// A provider's profile for mode (a), the base URL.
+/// A provider's profile: for mode (a), the base URL, or for the MCP gate
+/// (mode (c), which is a mode (a) profile with the proxy's stream limits).
 #[derive(Debug)]
 pub(crate) struct Preset {
     /// Its name on the command line.
@@ -23,6 +24,9 @@ pub(crate) struct Preset {
     pub(crate) profile: &'static str,
     /// Where calls go.
     pub(crate) upstream: &'static str,
+    /// Other hosts of the same provider that `--upstream` may name with
+    /// the preset still unchanged (its full note still holds).
+    pub(crate) other_upstreams: &'static [&'static str],
     /// The header the value goes in.
     pub(crate) header: &'static str,
     /// Text before the value.
@@ -35,6 +39,18 @@ pub(crate) struct Preset {
     pub(crate) path_prefixes: &'static [&'static str],
     /// What the person reads about it before the confirmation.
     pub(crate) note: &'static str,
+    /// What the note says of a profile the flags changed.
+    pub(crate) caveat: Caveat,
+}
+
+/// The sentence the note keeps when the flags changed the preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Caveat {
+    /// Northflank: role and token changes are not told apart by path.
+    RoleAndTokenChanges,
+    /// An MCP server: every tool is the same `POST`, so the key's own
+    /// permissions are the limit.
+    McpToolsByKey,
 }
 
 /// Northflank (ADR 0036 §7, with Omar's decision of 2026-11-16): its API
@@ -52,31 +68,49 @@ pub(crate) const NORTHFLANK: Preset = Preset {
     ask_methods: &["DELETE"],
     path_prefixes: &["/"],
     note: "The northflank preset: your API token goes in `Authorization: Bearer` to every path of api.northflank.com. GET, POST and PATCH go through; each DELETE asks you first; PUT and every other method are refused. Nothing in it guards role or token changes by path: a POST or PATCH that changes a role or a token goes through like any other call. A flag you add replaces that part of the preset, and the profile below is what you sign.",
+    other_upstreams: &[],
+    caveat: Caveat::RoleAndTokenChanges,
+};
+
+/// Maple's MCP server (ADR 0036 §7, the MCP gate, with Omar's decisions of
+/// 2026-11-19): its API key in `Authorization: Bearer` to the paths under
+/// `/mcp` of `api.maple.dev` (`--upstream https://api.eu.maple.dev` for
+/// the EU host). `POST`, `GET` and `DELETE` go through and none asks:
+/// every MCP call is the same `POST` to `/mcp`, so the proxy cannot ask per
+/// tool, and the key's own permissions are the limit. Any other path, such
+/// as OAuth discovery, is refused. The rate is the default.
+pub(crate) const MAPLE: Preset = Preset {
+    name: "maple",
+    profile: MAPLE_PROFILE,
+    upstream: "https://api.maple.dev",
+    header: "authorization",
+    prefix: "Bearer ",
+    methods: &["POST", "GET", "DELETE"],
+    ask_methods: &[],
+    path_prefixes: &[MAPLE_MCP_PATH],
+    note: "The maple preset: your Maple API key goes in `Authorization: Bearer` to the paths under /mcp of api.maple.dev (or of api.eu.maple.dev with `--upstream https://api.eu.maple.dev`); every other path, OAuth discovery included, is refused. POST, GET and DELETE go through and none asks you first: every MCP call is the same POST to /mcp, so the proxy cannot tell a tool that writes from one that reads, and the key's own permissions are the limit. Use a restricted, read-only key that expires within 90 days. A flag you add replaces that part of the preset, and the profile below is what you sign.",
+    other_upstreams: &["https://api.eu.maple.dev"],
+    caveat: Caveat::McpToolsByKey,
 };
 
 /// The presets `--preset` takes.
-const PRESETS: &[&Preset] = &[&NORTHFLANK];
+const PRESETS: &[&Preset] = &[&NORTHFLANK, &MAPLE];
 
 /// Presets of ADR 0036 §7 whose mode the proxy does not have yet: no
 /// partial profile for them.
-const NOT_YET: &[(&str, &str)] = &[
-    (
-        "railway",
-        "mode (b), `HTTPS_PROXY` with a CA of the sandbox, which Klav's credential proxy does not have yet",
-    ),
-    (
-        "maple",
-        "mode (c), the MCP gateway, which Klav's credential proxy does not have yet",
-    ),
-];
+const NOT_YET: &[(&str, &str)] = &[(
+    "railway",
+    "mode (b), `HTTPS_PROXY` with a CA of the sandbox, which Klav's credential proxy does not have yet",
+)];
 
 impl Preset {
-    /// The spec the preset makes on its own, with no flag on top.
-    fn own_spec(&self) -> ProxyCredentialSpec {
+    /// The spec the preset makes on its own, with no flag on top but
+    /// `--upstream`: calls go to `upstream`.
+    fn own_spec_at(&self, upstream: &str) -> ProxyCredentialSpec {
         let list = |l: &[&str]| l.iter().map(|m| (*m).to_owned()).collect();
         ProxyCredentialSpec {
             profile: self.profile.to_owned(),
-            upstream: self.upstream.to_owned(),
+            upstream: upstream.to_owned(),
             header: self.header.to_owned(),
             prefix: self.prefix.to_owned(),
             field: None,
@@ -91,10 +125,12 @@ impl Preset {
 
 /// What the person reads before the profile, derived from the spec that
 /// is signed, never from which flags were typed: the preset's full note
-/// only when `spec` signs exactly what the preset alone signs; otherwise
-/// one line saying the flags changed it, plus the sentence on role and
-/// token changes whenever the profile lets `POST` or `PATCH` through or
-/// asks for them.
+/// only when `spec` signs exactly what the preset alone signs (at its host
+/// or one of its other hosts); otherwise one line saying the flags changed
+/// it, plus the preset's caveat whenever it still applies: for
+/// `northflank`, the sentence on role and token changes whenever the
+/// profile lets `POST` or `PATCH` through or asks for them; for `maple`,
+/// the one on tools whenever it lets `POST` through or asks for it.
 fn note_for(preset: &Preset, spec: &ProxyCredentialSpec) -> String {
     // Any item will do: both sides get the same one.
     let item = ItemId::from_bytes([0; 16]);
@@ -102,9 +138,13 @@ fn note_for(preset: &Preset, spec: &ProxyCredentialSpec) -> String {
         // The grant refuses this spec right after; say nothing about it.
         return changed_line(preset);
     };
-    if credential_profile(item, &preset.own_spec())
-        .is_ok_and(|(own_profile, own_rules)| own_profile == profile && own_rules == rules)
-    {
+    let unchanged = std::iter::once(preset.upstream)
+        .chain(preset.other_upstreams.iter().copied())
+        .any(|upstream| {
+            credential_profile(item, &preset.own_spec_at(upstream))
+                .is_ok_and(|(own_profile, own_rules)| own_profile == profile && own_rules == rules)
+        });
+    if unchanged {
         return preset.note.to_owned();
     }
     let reaches = |method: &str| {
@@ -113,6 +153,15 @@ fn note_for(preset: &Preset, spec: &ProxyCredentialSpec) -> String {
                 && r.scope.methods.iter().any(|m| m.as_str() == method)
         })
     };
+    if preset.caveat == Caveat::McpToolsByKey {
+        if !reaches("POST") {
+            return changed_line(preset);
+        }
+        return format!(
+            "{} Every MCP call is the same POST: the proxy cannot tell a tool that writes from one that reads, and the key's own permissions are the limit.",
+            changed_line(preset)
+        );
+    }
     let changes = match (reaches("POST"), reaches("PATCH")) {
         (true, true) => "POST or PATCH",
         (true, false) => "POST",
@@ -142,12 +191,12 @@ fn preset(name: &str) -> CliResult<&'static Preset> {
     }
     if let Some((_, mode)) = NOT_YET.iter().find(|(n, _)| *n == wanted) {
         return Err(usage(format!(
-            "the {wanted} preset needs {mode}: nothing was granted. Mode (a), a base URL, is the only one so far"
+            "the {wanted} preset needs {mode}: nothing was granted. Mode (a), a base URL, and the MCP gate are the ones so far"
         )));
     }
     let names: Vec<&str> = PRESETS.iter().map(|p| p.name).collect();
     Err(usage(format!(
-        "there is no preset {:?}: the presets are {} (railway and maple come with the proxy's later modes)",
+        "there is no preset {:?}: the presets are {} (railway comes with the proxy's mode (b))",
         name,
         names.join(", ")
     )))
@@ -385,8 +434,8 @@ mod tests {
         );
     }
 
-    /// Railway and Maple need modes the proxy lacks; an unknown name lists
-    /// the presets. Neither makes a profile.
+    /// Railway needs a mode the proxy lacks; an unknown name lists the
+    /// presets. Neither makes a profile.
     #[test]
     fn presets_without_their_mode_and_unknown_ones_are_refused() {
         let m = refused(&["--preset", "railway"]);
@@ -394,14 +443,10 @@ mod tests {
             m.contains("mode (b)") && m.contains("does not have yet"),
             "{m}"
         );
-        let m = refused(&["--preset", "maple"]);
-        assert!(
-            m.contains("mode (c)") && m.contains("does not have yet"),
-            "{m}"
-        );
+        assert!(!m.contains("maple"), "{m}");
         let m = refused(&["--preset", "heroku"]);
         assert!(m.contains(r#"no preset "heroku""#), "{m}");
-        assert!(m.contains("the presets are northflank"), "{m}");
+        assert!(m.contains("the presets are northflank, maple"), "{m}");
         // Without a preset, the three flags stay required.
         let argv = [
             "klav",
@@ -414,6 +459,157 @@ mod tests {
             "https://h",
         ];
         assert!(Cli::try_parse_from(argv).is_err());
+    }
+
+    /// The explicit flags the maple preset stands for.
+    const MAPLE_FLAGS: &[&str] = &[
+        "--profile",
+        "maple",
+        "--upstream",
+        "https://api.maple.dev",
+        "--header",
+        "authorization",
+        "--prefix",
+        "Bearer ",
+        "--method",
+        "POST,GET,DELETE",
+        "--path-prefix",
+        "/mcp",
+    ];
+
+    /// Safe with older clients, as for northflank: the maple preset signs
+    /// the bytes its explicit flags sign, at either host, with no field or
+    /// format a released `klav`, `klavd`, proxy or server lacks.
+    #[test]
+    fn the_maple_preset_signs_the_bytes_its_explicit_flags_sign() {
+        let item = ItemId::generate();
+        assert_eq!(
+            signed(&spec(&["--preset", "maple"]), item),
+            signed(&spec(MAPLE_FLAGS), item)
+        );
+        let eu = ["--upstream", "https://api.eu.maple.dev"];
+        let mut eu_flags = MAPLE_FLAGS.to_vec();
+        eu_flags[3] = eu[1];
+        let mut preset_eu = vec!["--preset", "maple"];
+        preset_eu.extend_from_slice(&eu);
+        assert_eq!(
+            signed(&spec(&preset_eu), item),
+            signed(&spec(&eu_flags), item)
+        );
+        let s = spec(&["--preset", "maple"]);
+        assert_eq!(s.profile, MAPLE_PROFILE);
+        assert_eq!(s.rate_per_minute, None, "the default rate");
+        assert!(s.ask_methods.is_empty() && !s.ask);
+    }
+
+    /// What the maple profile lets through, as the policy decides it: the
+    /// three methods under `/mcp` without asking, nothing else, and no
+    /// other path (OAuth discovery, `/mcpx`).
+    #[test]
+    fn the_maple_preset_lets_only_the_mcp_path_through() {
+        for upstream in [None, Some("https://api.eu.maple.dev")] {
+            let item = ItemId::generate();
+            let mut flags = vec!["--preset", "maple"];
+            if let Some(u) = upstream {
+                flags.extend_from_slice(&["--upstream", u]);
+            }
+            let (profile, rules) =
+                klav_client::proxy_admin::credential_profile(item, &spec(&flags)).expect("valid");
+            let (host, _) = profile.upstream_host().expect("host");
+            assert_eq!(
+                host,
+                upstream.map_or("api.maple.dev", |_| "api.eu.maple.dev")
+            );
+            let policy = Policy {
+                rules,
+                expires_at: None,
+            };
+            let decide = |method: &str, path: &str| {
+                evaluate(
+                    &policy,
+                    &Request {
+                        permission: Permission::Proxy,
+                        vault: Target {
+                            id: VaultId::generate(),
+                            name: String::new(),
+                        },
+                        project: Target {
+                            id: ProjectId::generate(),
+                            name: String::new(),
+                        },
+                        tags: Vec::new(),
+                        domain: Some(host.clone()),
+                        item: Some(item),
+                        method: Some(method.to_owned()),
+                        path: Some(path.to_owned()),
+                        now: 1,
+                    },
+                )
+                .effect
+            };
+            for method in ["POST", "GET", "DELETE"] {
+                assert_eq!(decide(method, MAPLE_MCP_PATH), Effect::Allow, "{method}");
+                assert_eq!(decide(method, "/mcp/session"), Effect::Allow, "{method}");
+            }
+            for method in ["PUT", "PATCH"] {
+                assert_eq!(decide(method, MAPLE_MCP_PATH), Effect::Deny, "{method}");
+            }
+            for path in [
+                "/",
+                "/.well-known/oauth-protected-resource",
+                "/mcpx",
+                "/v1/mcp",
+            ] {
+                assert_eq!(decide("GET", path), Effect::Deny, "{path}");
+                assert_eq!(decide("POST", path), Effect::Deny, "{path}");
+            }
+        }
+    }
+
+    /// The maple note: full when unchanged (also at the EU host), and one
+    /// line plus the tools caveat when the flags change it.
+    #[test]
+    fn the_maple_note_follows_the_profile_signed() {
+        let full = note(&["--preset", "maple"]);
+        assert_eq!(full, MAPLE.note);
+        assert!(
+            full.contains("read-only key that expires within 90 days"),
+            "{full}"
+        );
+        assert!(
+            full.contains("OAuth discovery included, is refused"),
+            "{full}"
+        );
+        assert_eq!(
+            note(&[
+                "--preset",
+                "maple",
+                "--upstream",
+                "https://api.eu.maple.dev"
+            ]),
+            MAPLE.note
+        );
+        let mut restated = vec!["--preset", "maple"];
+        restated.extend_from_slice(MAPLE_FLAGS);
+        assert_eq!(note(&restated), MAPLE.note);
+        let n = note(&["--preset", "maple", "--path-prefix", "/"]);
+        assert!(
+            n.starts_with("The maple preset, changed by your flags")
+                && n.contains("the key's own permissions are the limit"),
+            "{n}"
+        );
+        assert!(!n.contains("role"), "{n}");
+        let n = note(&["--preset", "maple", "--method", "GET"]);
+        assert_eq!(
+            n,
+            "The maple preset, changed by your flags: the profile below is what you sign."
+        );
+        // Another host is a change, said as one.
+        let n = note(&["--preset", "maple", "--upstream", "https://mcp.example.com"]);
+        assert!(
+            n.starts_with("The maple preset, changed by your flags"),
+            "{n}"
+        );
     }
 
     /// The note printed for these flags.

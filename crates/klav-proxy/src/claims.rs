@@ -609,6 +609,8 @@ async fn end(state: &ProxyState, sandbox: SandboxId, reason: SandboxEnd) -> bool
         store.last_seen.remove(&sandbox);
         tracing::info!(sandbox = %sandbox, reason = reason.as_str(), "sandbox ended");
     }
+    // Its calls in flight end with it (ADR 0036 §7, note of 2026-11-19).
+    state.cuts().cut_sandboxes(&[sandbox]);
     flush(state).await;
     true
 }

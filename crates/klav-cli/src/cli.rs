@@ -1308,9 +1308,12 @@ pub(crate) struct ProxyGrantArgs {
     /// Start from a provider's profile: `northflank` (GET, POST and PATCH
     /// on api.northflank.com; DELETE asks you; PUT is refused; nothing in
     /// it guards role or token changes by path, so a POST or PATCH that
-    /// changes a role or a token goes through like any other call). Each
-    /// flag you also give replaces that part of it. `railway` and `maple`
-    /// need modes the proxy does not have yet.
+    /// changes a role or a token goes through like any other call), or
+    /// `maple` (the MCP gate: POST, GET and DELETE under /mcp of
+    /// api.maple.dev, none asking; `--upstream https://api.eu.maple.dev`
+    /// for the EU host; the key's own permissions are the limit, so use a
+    /// read-only one). Each flag you also give replaces that part of it.
+    /// `railway` needs a mode the proxy does not have yet.
     #[arg(long, value_name = "NAME")]
     pub(crate) preset: Option<String>,
     /// Profile name: the first segment of the proxy's local URL

@@ -208,7 +208,8 @@ pub(crate) const MAX_ENDED_KEYS: usize = 1024;
 
 impl StoreFile {
     /// Notes why `sandbox` ended, for each channel key on record for it:
-    /// called where it ends, while its keys are still on record.
+    /// called where it ends, while its keys are still on record. Each such
+    /// place also cuts its calls in flight (`ProxyState::cuts`).
     pub(crate) fn note_end(&mut self, sandbox: SandboxId, reason: SandboxEnd) {
         let keys: Vec<[u8; 32]> = self
             .channels
@@ -972,8 +973,10 @@ pub async fn stop(
             return Err(IssuerError::StopNotSaved);
         }
         store.note_end(id, SandboxEnd::Stop);
-        // Ended here at once; the server hears of it now or later.
+        // Ended here at once, with its calls in flight; the server hears
+        // of it now or later.
         drop(store);
+        state.cuts().cut_sandboxes(&[id]);
         flush(&state).await;
         let logged = !sandboxes
             .store
@@ -1169,6 +1172,10 @@ pub(crate) async fn end_due(state: &ProxyState, revoked: &HashMap<SandboxId, i64
         store.last_seen.remove(&o.sandbox_id);
         tracing::info!(sandbox = %o.sandbox_id, reason = o.reason.as_str(), "sandbox ended");
     }
+    // Its calls in flight end with it, a stream above all (ADR 0036 §7,
+    // note of 2026-11-19).
+    let ids: Vec<SandboxId> = ended.iter().map(|o| o.sandbox_id).collect();
+    state.cuts().cut_sandboxes(&ids);
     store.outbox.extend(ended);
     if count > 0
         && let Err(e) = sandboxes.save(&store)

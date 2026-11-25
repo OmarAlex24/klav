@@ -211,7 +211,7 @@ Terms from ADR [0036](decisiones/0036-sandboxes-de-agentes.md) and its amendment
 | preferencias de la cuenta | account preferences | ADR 0032 §7; system item `kind = preferences`, spec §7.3 |
 | ajuste del proxy | proxy setting | ADR 0036 §3; `preferences.proxy`, `klav proxy use` |
 | modo (a) / URL base | mode (a) / base URL | ADR 0036 §7. A tool calls `http://127.0.0.1:8790/<profile>/<path>`; mode (b) is `HTTPS_PROXY` |
-| puerta MCP / modo (c) | MCP gate / mode (c) | ADR 0036 §7, note of 2026-11-19. An MCP client in a sandbox reaches a remote MCP server through the proxy, which adds the bearer key: a profile on mode (a)'s routing (`http://127.0.0.1:<port>/maple/mcp`) with its own limits for `text/event-stream` answers. Not built yet |
+| puerta MCP / modo (c) | MCP gate / mode (c) | ADR 0036 §7, note of 2026-11-19. An MCP client in a sandbox reaches a remote MCP server through the proxy, which adds the bearer key: a profile on mode (a)'s routing (`http://127.0.0.1:<port>/maple/mcp`) with its own limits for `text/event-stream` answers. Built (steps M2–M4); the by-hand test in a real sandbox (M5) is pending |
 | secreto principal | main secret | Spec §13.4. What a profile without `field` injects: `password` (login), `api_key` (API key) |
 | redacción (del proxy) | redaction | ADR 0036 §8. The whole injected value replaced in the provider's answer, never a piece of it (E9, T149) |
 | emisión por fin de línea | line-end flush | ADR 0036 §7, note of 2026-11-19; `StreamRedactor::by_lines` in `klav-sdk`. The stream redactor emits each chunk up to its last CR or LF instead of holding back its tail; falls back to the default rule when a value holds a line end |

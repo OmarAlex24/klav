@@ -72,12 +72,45 @@ pub(crate) const NORTHFLANK_LOGIN_CHECK: (&str, &str) = ("GET", "/v1/login");
 /// start.
 pub(crate) const NORTHFLANK_SETUP: &str = "northflank login -n klav -t klav-placeholder --override --host \"$KLAV_FORWARD_NORTHFLANK_URL\"";
 
+/// The profile whose sandboxes get [`MAPLE_SETUP`]: the one the `maple`
+/// preset of `klav proxy grant` makes (ADR 0036 §7, the MCP gate).
+pub(crate) const MAPLE_PROFILE: &str = "maple";
+
+/// The path of Maple's MCP server at the provider: the `maple` preset lets
+/// only it (and what is under it) through, and the client's entry points
+/// at `$KLAV_FORWARD_MAPLE_URL` plus it, `http://127.0.0.1:<port>/maple/mcp`.
+pub(crate) const MAPLE_MCP_PATH: &str = "/mcp";
+
+/// For a sandbox with the `maple` profile, after [`SETUP`] (ADR 0036 §7,
+/// note of 2026-11-19, decision 6): the MCP entry, written by each
+/// client's own CLI where it is installed, never by `klav-forward`.
+/// - Claude Code (`claude mcp add`, user scope, so every project in the
+///   sandbox has it) gets the placeholder bearer, which the proxy drops
+///   and replaces with the real one, so that it never takes an answer for
+///   a sign-in request. It refuses an entry that exists, so the line
+///   removes one named `maple` first: run again, it gives the same entry.
+/// - Codex (`codex mcp add --url`) replaces an entry of the same name. Its
+///   CLI takes a bearer only from an environment variable
+///   (`--bearer-token-env-var`), not a fixed header, so its entry has no
+///   placeholder.
+///
+/// Each line exits 0 when its client is not installed. Checked with
+/// Claude Code 2.1.331 and Codex 0.166.0 (2026-11-25).
+pub(crate) const MAPLE_SETUP: [&str; 2] = [
+    "if command -v claude >/dev/null 2>&1; then claude mcp remove --scope user maple >/dev/null 2>&1 || true; claude mcp add --transport http --scope user maple \"$KLAV_FORWARD_MAPLE_URL/mcp\" --header \"Authorization: Bearer klav-placeholder\"; fi",
+    "if command -v codex >/dev/null 2>&1; then codex mcp add maple --url \"$KLAV_FORWARD_MAPLE_URL/mcp\"; fi",
+];
+
 /// The setup lines for a sandbox with `profiles`: [`SETUP`], then
-/// [`NORTHFLANK_SETUP`] only when `northflank` is among them.
+/// [`NORTHFLANK_SETUP`] only when `northflank` is among them, and
+/// [`MAPLE_SETUP`] only when `maple` is.
 fn setup_lines(profiles: &[String]) -> Vec<String> {
     let mut lines: Vec<String> = SETUP.iter().map(|l| (*l).to_owned()).collect();
     if profiles.iter().any(|p| p == NORTHFLANK_PROFILE) {
         lines.push(NORTHFLANK_SETUP.to_owned());
+    }
+    if profiles.iter().any(|p| p == MAPLE_PROFILE) {
+        lines.extend(MAPLE_SETUP.iter().map(|l| (*l).to_owned()));
     }
     lines
 }
@@ -92,6 +125,11 @@ fn start_next(id: SandboxId, profiles: &[String]) -> String {
         let (method, path) = NORTHFLANK_LOGIN_CHECK;
         next.push_str(&format!(
             " The `northflank login` line needs the `northflank` profile to allow `{method} {path}` without an approval step."
+        ));
+    }
+    if profiles.iter().any(|p| p == MAPLE_PROFILE) {
+        next.push_str(&format!(
+            " The `maple` lines point Claude Code and Codex, where installed, at Maple's MCP server through the proxy (`$KLAV_FORWARD_MAPLE_URL{MAPLE_MCP_PATH}`); another MCP client takes that URL too. They need the `maple` profile to allow `POST {MAPLE_MCP_PATH}` without an approval step."
         ));
     }
     next
@@ -747,8 +785,24 @@ mod tests {
     #[test]
     fn the_northflank_line_comes_only_with_its_profile() {
         let plain: Vec<String> = SETUP.iter().map(|l| (*l).to_owned()).collect();
-        for without in [&[][..], &["railway"], &["northflank-eu"], &["Northflank"]] {
-            assert_eq!(setup_lines(&profiles(without)), plain, "{without:?}");
+        for without in [
+            &[][..],
+            &["railway"],
+            &["northflank-eu"],
+            &["Northflank"],
+            &["maple"],
+        ] {
+            assert_eq!(
+                setup_lines(&profiles(without))[..3],
+                plain[..],
+                "{without:?}"
+            );
+            assert!(
+                !setup_lines(&profiles(without))
+                    .iter()
+                    .any(|l| l.contains("northflank login")),
+                "{without:?}"
+            );
             let next = start_next(SandboxId::generate(), &profiles(without));
             assert!(!next.contains("northflank"), "{next}");
         }
@@ -770,12 +824,58 @@ mod tests {
         }
     }
 
+    /// The two `maple` lines come after the others, only with the `maple`
+    /// profile, point at the variable the `eval` line sets plus the MCP
+    /// path, and never fail the script where a client is missing.
+    #[test]
+    fn the_maple_lines_come_only_with_its_profile() {
+        let plain: Vec<String> = SETUP.iter().map(|l| (*l).to_owned()).collect();
+        for without in [&[][..], &["northflank"], &["maple-eu"], &["Maple"]] {
+            let lines = setup_lines(&profiles(without));
+            assert!(!lines.iter().any(|l| l.contains("mcp add")), "{without:?}");
+            let next = start_next(SandboxId::generate(), &profiles(without));
+            assert!(!next.contains("maple"), "{next}");
+        }
+        let lines = setup_lines(&profiles(&["maple"]));
+        assert_eq!(lines[..3], plain[..]);
+        assert_eq!(lines[3..], MAPLE_SETUP[..]);
+        assert_eq!(
+            lines[3],
+            "if command -v claude >/dev/null 2>&1; then claude mcp remove --scope user maple >/dev/null 2>&1 || true; claude mcp add --transport http --scope user maple \"$KLAV_FORWARD_MAPLE_URL/mcp\" --header \"Authorization: Bearer klav-placeholder\"; fi"
+        );
+        assert_eq!(
+            lines[4],
+            "if command -v codex >/dev/null 2>&1; then codex mcp add maple --url \"$KLAV_FORWARD_MAPLE_URL/mcp\"; fi"
+        );
+        for line in &lines[3..] {
+            assert!(
+                line.starts_with("if command -v ") && line.ends_with("; fi"),
+                "{line}"
+            );
+            assert!(line.contains(&format!("\"$KLAV_FORWARD_MAPLE_URL{MAPLE_MCP_PATH}\"")));
+            assert!(
+                !line.contains("127.0.0.1") && !line.contains(":8790"),
+                "{line}"
+            );
+        }
+        // Both profiles: northflank's line, then maple's.
+        let both = setup_lines(&profiles(&["maple", "northflank"]));
+        assert_eq!(both.len(), 6);
+        assert!(both[3].starts_with("northflank login"));
+        assert_eq!(both[4..], MAPLE_SETUP[..]);
+        let next = start_next(SandboxId::generate(), &profiles(&["maple"]));
+        assert!(
+            next.contains("POST /mcp") && next.contains("$KLAV_FORWARD_MAPLE_URL/mcp"),
+            "{next}"
+        );
+    }
+
     /// No setup line carries a secret: the only token is the fixed
     /// placeholder, the package's variable is never named, and nothing in
     /// them depends on the sandbox, its package or the environment.
     #[test]
     fn the_setup_lines_never_hold_a_secret() {
-        let lines = setup_lines(&profiles(&["railway", "northflank"]));
+        let lines = setup_lines(&profiles(&["railway", "northflank", "maple"]));
         for line in &lines {
             assert!(!line.contains(PACKAGE_ENV), "{line}");
             assert!(!line.contains("ksb1_"), "{line}");
@@ -786,8 +886,17 @@ mod tests {
             .map(|rest| rest.split(' ').next().unwrap_or(""))
             .collect();
         assert_eq!(tokens, ["klav-placeholder"]);
+        let bearers: Vec<&str> = lines
+            .iter()
+            .flat_map(|l| l.split("Bearer ").skip(1))
+            .map(|rest| rest.split(['"', ' ']).next().unwrap_or(""))
+            .collect();
+        assert_eq!(bearers, ["klav-placeholder"]);
         // The same for every sandbox: built from constants and the
         // profile names alone.
-        assert_eq!(lines, setup_lines(&profiles(&["railway", "northflank"])));
+        assert_eq!(
+            lines,
+            setup_lines(&profiles(&["railway", "northflank", "maple"]))
+        );
     }
 }

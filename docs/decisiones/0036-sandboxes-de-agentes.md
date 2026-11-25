@@ -434,6 +434,18 @@ Omar dijo que le gusta el resto: el reenviador, la credencial del sandbox que no
 > 4. **M4, `klav-cli`:** `--preset maple` y las líneas de *setup* del perfil `maple`.
 > 5. **M5:** una prueba a mano en un sandbox real, que mide el ritmo y los huecos y marca la casilla del modo (c) en el roadmap.
 
+> **Nota del 2026-11-25 (pasos M3 y M4 construidos).** M2 ya estaba en el código desde la publicación del repositorio (v0.9.0): `StreamRedactor::by_lines` y sus pruebas en `klav-sdk`. Este trabajo construyó M3 y M4; M5 sigue abierto. Lo que se aparta de la nota del 2026-11-19 o la precisa:
+> - **Qué se corta.** Toda llamada en curso, no solo un *stream*, se corta cuando termina su sandbox o la persona pausa los agentes: la espera de las cabeceras del proveedor responde `401 klav_sandbox_revoked` o `423 klav_agents_paused`, y un cuerpo a medias termina en un error. Una pausa corta también las llamadas en curso de los programas de la máquina del proxy. Cada llamada se registra antes de pedir el elemento al servidor, así que no se pierde un fin que llegue después.
+> - **Cuándo se entera el proxy.** Al momento, de los fines que decide él (`stop`, robo, `released`); en su barrido, cada 30 s, del TTL, la inactividad, el emisor quitado y las revocaciones de la persona; al refrescar su grant, cada 30 s, de una pausa de todos los agentes; y cuando el servidor rechaza otra llamada de un sandbox, de su revocación (`sandbox_revoked`) o de la pausa de su emisor (`agents_paused`, que corta los *streams* de todos los sandboxes de ese emisor). Una pausa de un solo emisor sin llamadas nuevas no se nota hasta que su sandbox llame. Además, ninguna respuesta pasa del `expires_at` de su sandbox.
+> - **Un cliente que se va** suelta su respuesta y sus huecos en cuanto el proxy nota que se fue: por el canal, que acepta el semicierre, cuando falla la siguiente escritura (el siguiente trozo del proveedor), o al límite de inactividad si el proveedor calla.
+> - **Las líneas de *setup*** (decisión 6), con la sintaxis comprobada con Claude Code 2.1.331 y Codex 0.166.0, corridas dos veces con `sh -e`:
+>   ```sh
+>   if command -v claude >/dev/null 2>&1; then claude mcp remove --scope user maple >/dev/null 2>&1 || true; claude mcp add --transport http --scope user maple "$KLAV_FORWARD_MAPLE_URL/mcp" --header "Authorization: Bearer klav-placeholder"; fi
+>   if command -v codex >/dev/null 2>&1; then codex mcp add maple --url "$KLAV_FORWARD_MAPLE_URL/mcp"; fi
+>   ```
+>   `claude mcp add` rechaza una entrada que ya existe, así que la línea quita antes la llamada `maple`, también una que la persona hubiera puesto a mano en el sandbox.
+> - **Codex va sin el valor de mentira.** La nota del 2026-11-19 dice que la entrada del cliente lleva `Authorization: Bearer klav-placeholder`. `codex mcp add` solo toma un *bearer* de una variable de entorno (`--bearer-token-env-var`), no una cabecera fija, y escribir su `config.toml` a mano iría contra la decisión 6. La entrada de Codex queda sin él. **Lo decide Omar:** dejarlo así, si M5 muestra que Codex no toma un `401` o un `403` del proxy por un inicio de sesión, o pedir otra forma.
+
 ### 8. Política: qué puede hacer cada sandbox
 - **Listas de permitidos por perfil:** hosts, métodos y prefijos de ruta, firmados en el grant. El emisor elige perfiles y puede acortar el TTL, no ampliar nada.
 - **`ask` para lo peligroso:** `DELETE` y lo que marque el perfil (§9).
