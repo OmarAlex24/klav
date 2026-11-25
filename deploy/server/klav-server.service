@@ -1,0 +1,79 @@
+# klav-server as a hardened systemd service (docs/self-hosting.md §1,
+# "Without Docker"; ADR 0048 §5.2). It ships in klav-server-linux-x86_64.tar.gz
+# next to klav-server and server.toml.example:
+#
+#   sudo install -m 0755 klav-server /usr/local/bin/klav-server
+#   sudo install -d -m 0755 /etc/klav
+#   sudo install -m 0644 server.toml.example /etc/klav/server.toml
+#   sudo install -m 0644 klav-server.service /etc/systemd/system/klav-server.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now klav-server
+#
+# The server runs as a user systemd allocates for it while it runs
+# (DynamicUser), named klav, that owns only /var/lib/klav. /etc/klav/server.toml
+# must be readable by that user, so it is 0644 and holds no secret. Secrets
+# (a Postgres password in KLAV_DATABASE_URL, KLAV_APNS_KEY) go in
+# /etc/klav/server.env, mode 0600 and owned by root: systemd reads it before
+# it starts the server as klav.
+#
+# Run every `klav-server invite …` through the same user, so that SQLite's
+# files in /var/lib/klav keep their owner (docs/self-hosting.md §1):
+#
+#   sudo systemd-run --pipe --wait --quiet \
+#     -p DynamicUser=yes -p User=klav -p StateDirectory=klav \
+#     /usr/local/bin/klav-server invite create --config /etc/klav/server.toml \
+#       --email you@example.com
+
+[Unit]
+Description=Klav server (klav-server)
+Documentation=https://docs.klav.dev/self-hosting/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/klav-server --config /etc/klav/server.toml
+EnvironmentFile=-/etc/klav/server.env
+Restart=on-failure
+RestartSec=5s
+
+# Its own user and its own data directory: /var/lib/klav, 0700.
+DynamicUser=yes
+User=klav
+StateDirectory=klav
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/klav
+UMask=0077
+
+# Nothing else on the machine is writable or visible to it.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+
+# No capabilities: it listens on 8080, not on a port below 1024.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# TCP for clients, Postgres and Apple's push service; Unix sockets for a
+# local Postgres and the system resolver.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

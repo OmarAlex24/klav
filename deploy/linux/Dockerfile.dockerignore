@@ -1,9 +1,11 @@
 # Build context for deploy/linux/Dockerfile (BuildKit reads this file instead
-# of the root .dockerignore): the workspace manifests, crates/ and
-# skill/, nothing else.
+# of the root .dockerignore): the workspace manifests, crates/, skill/ and
+# the server tarball's two files in deploy/server/, nothing else.
 *
 !Cargo.toml
 !Cargo.lock
 !crates/
 !skill/
+!deploy/server/klav-server.service
+!deploy/server/server.toml.example
 crates/**/target/

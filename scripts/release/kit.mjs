@@ -21,6 +21,9 @@
 //                       (optional). Without it the release has no Firefox file:
 //                       the unsigned zip is never published
 //   --linux FILE        klav-linux-x86_64.tar.gz, from the CI build (optional)
+//   --server-linux FILE klav-server-linux-x86_64.tar.gz, from the same CI build
+//                       (optional): klav-server, its systemd unit and example
+//                       configuration
 //   --out DIR           default target/release-kit/<tag>
 // It then prints the command that signs the appcast for this tag. Signing
 // is the owner's step; this script never signs, notarizes, tags or uploads.
@@ -70,7 +73,9 @@ const XCCONFIG = join(ROOT, "apps", "ios", "Config", "Base.xcconfig");
 /**
  * The release's files, by the names apps/web/server.mjs redirects to
  * (`/download/...` and `/releases/mac/appcast.xml`). Renaming one breaks
- * every link to it: change both together.
+ * every link to it: change both together. `server_linux` has no route on the
+ * site: Homebrew and the self-hosting docs name it by the tag's GitHub URL
+ * (ADR 0048 §5.2), so renaming it breaks those instead.
  */
 export const ASSETS = {
   dmg: "Klav.dmg",
@@ -78,15 +83,20 @@ export const ASSETS = {
   chromium: "klav-extension-chromium.zip",
   firefox: "klav-extension-firefox.xpi",
   linux: "klav-linux-x86_64.tar.gz",
+  server_linux: "klav-server-linux-x86_64.tar.gz",
   info: "RELEASE.txt",
   sums: "SHA256SUMS",
 };
 /** What the Linux tarball holds, under klav-linux-x86_64/. */
 export const LINUX_BINARIES = ["klav", "klavd", "klav-native-host"];
+/** What the server tarball holds, under klav-server-linux-x86_64/. */
+export const SERVER_LINUX_FILES = ["klav-server", "klav-server.service", "server.toml.example"];
+/** Of those, the ones that must be executable. */
+const SERVER_LINUX_BINARIES = ["klav-server"];
 
 /** The flags each command takes. Anything else, or a flag given twice, fails. */
 export const FLAGS = {
-  assemble: ["tag", "chromium", "dmg", "extension", "firefox-xpi", "linux", "out"],
+  assemble: ["tag", "chromium", "dmg", "extension", "firefox-xpi", "linux", "server-linux", "out"],
   seal: ["tag", "out"],
   firefox: ["tag", "xpi", "extension", "out"],
 };
@@ -393,25 +403,19 @@ export function assemble(opts, log = console.log, ctx = {}) {
     if (chromium === "store" && "key" in manifest) fail(`${basename(chromiumZip)} carries a key; the store build has none`);
   }
 
-  // Linux, from CI: the binaries at the top of one folder, executable.
-  let linux = null;
-  if (opts.linux) {
-    linux = resolve(opts.linux);
-    if (!existsSync(linux)) fail(`no file at ${linux}`);
-    const files = listTarGz(readFileSync(linux));
-    for (const bin of LINUX_BINARIES) {
-      const entry = files.get(`klav-linux-x86_64/${bin}`);
-      if (!entry) fail(`${basename(linux)} has no klav-linux-x86_64/${bin} (as a regular file)`);
-      if (!(entry.mode & 0o100)) fail(`klav-linux-x86_64/${bin} is not executable`);
-    }
-  }
+  // Linux, from CI: the files at the top of one folder, the binaries executable.
+  const linux = opts.linux ? checkTarball(opts.linux, "klav-linux-x86_64", LINUX_BINARIES, LINUX_BINARIES) : null;
+  const serverLinux = opts["server-linux"]
+    ? checkTarball(opts["server-linux"], "klav-server-linux-x86_64", SERVER_LINUX_FILES, SERVER_LINUX_BINARIES)
+    : null;
 
   // Everything is checked: only now is anything in `out` removed.
-  prepareOut(out, [dmg, xpi, linux, extDir, firefoxZip, chromiumZip]);
+  prepareOut(out, [dmg, xpi, linux, serverLinux, extDir, firefoxZip, chromiumZip]);
   copyFileSync(dmg, join(out, ASSETS.dmg));
   if (xpi) copyFileSync(xpi, join(out, ASSETS.firefox));
   if (chromiumZip) copyFileSync(chromiumZip, join(out, ASSETS.chromium));
   if (linux) copyFileSync(linux, join(out, ASSETS.linux));
+  if (serverLinux) copyFileSync(serverLinux, join(out, ASSETS.server_linux));
 
   const info = [
     `Klav ${tag}`,
@@ -423,6 +427,7 @@ export function assemble(opts, log = console.log, ctx = {}) {
       ? `  chromium: ${ASSETS.chromium} (from ${basename(chromiumZip)}, ${chromium === "dev" ? "development key: needs install-host --dev" : "no key: ID from the folder it's loaded from"})`
       : "  chromium: none",
     `linux: ${linux ? `${ASSETS.linux} (${LINUX_BINARIES.join(", ")})` : "none"}`,
+    `server-linux: ${serverLinux ? `${ASSETS.server_linux} (${SERVER_LINUX_FILES.join(", ")})` : "none"}`,
     "",
   ].join("\n");
   writeFileSync(join(out, ASSETS.info), info);
@@ -437,6 +442,22 @@ export function assemble(opts, log = console.log, ctx = {}) {
   );
   log(`Then: node scripts/release/kit.mjs seal --tag ${q(tag)}${opts.out ? ` --out ${q(out)}` : ""}`);
   return { out };
+}
+
+/**
+ * A CI tarball: each of `files` under `folder/`, as a regular file, and each
+ * of `binaries` executable. Returns its resolved path.
+ */
+function checkTarball(path, folder, files, binaries) {
+  const file = resolve(path);
+  if (!existsSync(file)) fail(`no file at ${file}`);
+  const entries = listTarGz(readFileSync(file));
+  for (const name of files) {
+    const entry = entries.get(`${folder}/${name}`);
+    if (!entry) fail(`${basename(file)} has no ${folder}/${name} (as a regular file)`);
+    if (binaries.includes(name) && !(entry.mode & 0o100)) fail(`${folder}/${name} is not executable`);
+  }
+  return file;
 }
 
 function firefoxLine(xpi, firefoxZip) {

@@ -3,11 +3,14 @@ name: Linux release build
 # The Linux binaries of a release (docs/releasing.md §6). Run by hand only,
 # from the Actions tab or `gh workflow run release-linux.yml -f sha=<SHA>`:
 # never on a push or a pull request, because each run is a paid Boat machine
-# (ADR 0034). It publishes nothing. It leaves two artifacts on the run, kept
+# (ADR 0034). It publishes nothing. It leaves three artifacts on the run, kept
 # a while:
 #   - klav-linux-x86_64 (7 days): the public tarball (klav, klavd,
 #     klav-native-host) and its SHA-256, for
 #     `scripts/release/kit.mjs assemble --linux`;
+#   - klav-server-linux-x86_64 (7 days): klav-server with its systemd unit
+#     and example configuration (ADR 0048 §5.2), and its SHA-256, for
+#     `scripts/release/kit.mjs assemble --server-linux`;
 #   - klav-sandbox-linux-x86_64 (1 day): klav-forward and klav-proxy (a
 #     tarball with a folder `sandbox/`), for testing agent sandboxes; not
 #     part of a release. Once the repository is public, any signed-in GitHub
@@ -35,9 +38,9 @@ jobs:
   build:
     name: linux release build
     runs-on: ${{ vars.CI_RUNS_ON || 'ubuntu-latest' }}
-    # A fat-LTO release build of five binaries: the first run (2026-11-16)
-    # took 2 min 46 s in all, about 145 s of it the build (docs/releasing.md
-    # §6). Boat bills every second; this bounds a hung run.
+    # A fat-LTO release build of six binaries: the first run (2026-11-16),
+    # with five, took 2 min 46 s in all, about 145 s of it the build
+    # (docs/releasing.md §6). Boat bills every second; this bounds a hung run.
     timeout-minutes: 60
     permissions:
       contents: read # check out the commit
@@ -100,16 +103,24 @@ jobs:
             exit 1
           fi
           echo "klav --version: $version"
-          # The sandbox binaries carry the same build identity.
-          for bin in klav-forward klav-proxy; do
+          # The server and the sandbox binaries carry the same build identity.
+          for bin in klav-server-linux-x86_64/klav-server sandbox/klav-forward sandbox/klav-proxy; do
             status=0
-            version=$("$RUNNER_TEMP/out/sandbox/$bin" --version 2>&1) || status=$?
+            version=$("$RUNNER_TEMP/out/$bin" --version 2>&1) || status=$?
             if [[ $status -ne 0 || $version != *"${SHA:0:12}"* ]]; then
               echo "::error::$bin --version should contain ${SHA:0:12}, but it printed (exit $status): $version"
               exit 1
             fi
             echo "$bin --version: $version"
           done
+          # The floor is glibc 2.36 (Debian 12): no binary may need a newer
+          # glibc symbol than that (docs/releasing.md §6).
+          while read -r bin glibc; do
+            if [[ $glibc != GLIBC_* ]] || [[ $(printf '%s\n' "${glibc#GLIBC_}" 2.36 | sort -V | tail -1) != 2.36 ]]; then
+              echo "::error::$bin needs ${glibc:-no glibc symbol}; the floor is GLIBC_2.36"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/out/glibc.txt"
 
       - name: Package
         env:
@@ -120,15 +131,22 @@ jobs:
           for bin in klav klavd klav-native-host; do
             test -x "$out/klav-linux-x86_64/$bin"
           done
+          test -x "$out/klav-server-linux-x86_64/klav-server"
+          for file in klav-server.service server.toml.example; do
+            test -f "$out/klav-server-linux-x86_64/$file"
+          done
           for bin in klav-forward klav-proxy; do
             test -x "$out/sandbox/$bin"
           done
-          mkdir -p "$RUNNER_TEMP/public" "$RUNNER_TEMP/sandbox"
+          mkdir -p "$RUNNER_TEMP/public" "$RUNNER_TEMP/server" "$RUNNER_TEMP/sandbox"
           # ustar headers, as scripts/release/kit.mjs reads them; root-owned
           # and in name order, so the archive doesn't carry the runner's user.
           tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
             -C "$out" -czf "$RUNNER_TEMP/public/klav-linux-x86_64.tar.gz" klav-linux-x86_64
           (cd "$RUNNER_TEMP/public" && sha256sum klav-linux-x86_64.tar.gz > klav-linux-x86_64.tar.gz.sha256)
+          tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
+            -C "$out" -czf "$RUNNER_TEMP/server/klav-server-linux-x86_64.tar.gz" klav-server-linux-x86_64
+          (cd "$RUNNER_TEMP/server" && sha256sum klav-server-linux-x86_64.tar.gz > klav-server-linux-x86_64.tar.gz.sha256)
           # A tarball here too: an artifact's zip drops the executable bit.
           tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
             -C "$out" -czf "$RUNNER_TEMP/sandbox/klav-sandbox-linux-x86_64.tar.gz" sandbox
@@ -141,6 +159,12 @@ jobs:
             echo
             echo '```'
             cat "$RUNNER_TEMP/public/klav-linux-x86_64.tar.gz.sha256"
+            echo '```'
+            echo
+            echo "**klav-server-linux-x86_64** (klav-server, its systemd unit and example configuration):"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/server/klav-server-linux-x86_64.tar.gz.sha256"
             echo '```'
             echo
             echo "Newest glibc symbol each binary needs (the floor is 2.36):"
@@ -157,6 +181,14 @@ jobs:
         with:
           name: klav-linux-x86_64
           path: ${{ runner.temp }}/public/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload the server tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: klav-server-linux-x86_64
+          path: ${{ runner.temp }}/server/
           retention-days: 7
           if-no-files-found: error
 
