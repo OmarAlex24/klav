@@ -991,8 +991,15 @@ final class AppModel: ObservableObject {
 
     /// Deny, approve once (`leaseMinutes` 0) or approve for a while.
     func decide(_ approval: ApprovalItem, approve: Bool, leaseMinutes: UInt32 = 0) async throws {
+        // A security card is never decided (ADR 0049 §5.4); klav-client
+        // refuses it too, but Face ID never asks for it.
+        guard !approval.security else { throw RequestError.securityCard }
         guard let service else { return }
-        if approve, !(await confirmPresence(String(localized: "Approve \(approval.agent)’s request"))) {
+        // An MCP tool call's reason is fixed text, profile and tool (T140).
+        let reason = McpWords.isToolCall(approval)
+            ? McpWords.presenceReason(approval, lease: leaseMinutes > 0)
+            : String(localized: "Approve \(approval.agent)’s request")
+        if approve, !(await confirmPresence(reason)) {
             throw RequestError.notConfirmed
         }
         let id = approval.id
@@ -1041,6 +1048,7 @@ final class AppModel: ObservableObject {
     /// «Add to the task» (after Face ID): the next revision of the running
     /// task, same end, and this request approved once.
     func addToTask(_ approval: ApprovalItem) async throws {
+        guard !approval.security else { throw RequestError.securityCard }
         guard let service, let task = approval.task else { return }
         guard await confirmPresence(String(localized: "Add to \(approval.agent)’s task")) else {
             throw RequestError.notConfirmed

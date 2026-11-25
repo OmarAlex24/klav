@@ -300,6 +300,17 @@
         }
       }
     },
+    "%@ wants to call %@": {
+      "comment": "MCP approval card: the local client or sandbox, then «profile · tool»",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ quiere llamar a %@"
+          }
+        }
+      }
+    },
     "%@ wants to join": {
       "extractionState": "manual",
       "localizations": {
@@ -1182,6 +1193,17 @@
         }
       }
     },
+    "%lld servers": {
+      "comment": "Development › MCP servers header; 2 or more",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld servidores"
+          }
+        }
+      }
+    },
     "%lld waiting for you": {
       "comment": "Mac: requests waiting; plural",
       "localizations": {
@@ -1313,6 +1335,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "1 emisor"
+          }
+        }
+      }
+    },
+    "1 server": {
+      "comment": "Development › MCP servers header",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 servidor"
           }
         }
       }
@@ -1464,6 +1497,49 @@
           "stringUnit": {
             "state": "translated",
             "value": "una terminal"
+          }
+        }
+      }
+    },
+    "according to the proxy": {
+      "comment": "Activity: the mark of an MCP row (T136)",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "según el proxy"
+          }
+        }
+      }
+    },
+    "Add a remote MCP server that takes an API key, with the tools it may call:": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añade un servidor MCP remoto que acepte una API key, con las herramientas que puede llamar:"
+          }
+        }
+      }
+    },
+    "Allow %@ with any arguments for 15 minutes": {
+      "comment": "Face ID / Touch ID reason for an MCP lease: «profile · tool»",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permitir %@ con cualquier argumento durante 15 minutos"
+          }
+        }
+      }
+    },
+    "An MCP client wants to call %@": {
+      "comment": "MCP approval card when the proxy named no caller",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un cliente MCP quiere llamar a %@"
           }
         }
       }
@@ -2296,12 +2372,45 @@
         }
       }
     },
+    "Approve 15 min: this tool with any arguments, from this caller, for 15 minutes.": {
+      "comment": "MCP approval card (ADR 0049 T261)",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aprobar 15 min: esta herramienta con cualquier argumento, desde el mismo cliente, durante 15 minutos."
+          }
+        }
+      }
+    },
     "Approve once": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Aprobar una vez"
+          }
+        }
+      }
+    },
+    "Approve once: only this call, with these exact arguments. A retry with other arguments asks you again.": {
+      "comment": "MCP approval card (ADR 0049 T261)",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aprobar una vez: solo esta llamada, con estos mismos argumentos. Si vuelve a intentarlo con otros, te pregunta de nuevo."
+          }
+        }
+      }
+    },
+    "Approve one call of %@": {
+      "comment": "Face ID / Touch ID reason for one MCP tool call: «profile · tool»",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aprobar una llamada a %@"
           }
         }
       }
@@ -2362,6 +2471,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Aprobado. %@ ya puede seguir."
+          }
+        }
+      }
+    },
+    "Arguments aren’t shown yet. Klav checks only that they’re the ones you approve.": {
+      "comment": "MCP approval card, until sealed arguments exist",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los argumentos aún no se muestran. Klav solo comprueba que sean los que apruebas."
           }
         }
       }
@@ -2572,6 +2692,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ráfaga"
+          }
+        }
+      }
+    },
+    "called %@": {
+      "comment": "Activity: «claude-code called maple · query_logs»",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "llamó a %@"
           }
         }
       }
@@ -3667,6 +3798,28 @@
         }
       }
     },
+    "connected to %@": {
+      "comment": "Activity: an MCP session row, «connected to maple»",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "se conectó a %@"
+          }
+        }
+      }
+    },
+    "connected to %@ (%lld times)": {
+      "comment": "Activity: folded MCP session rows; always 2 or more",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "se conectó a %@ (%lld veces)"
+          }
+        }
+      }
+    },
     "Connected, according to the proxy": {
       "localizations": {
         "es": {
@@ -3873,6 +4026,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Copiar la referencia para agentes"
+          }
+        }
+      }
+    },
+    "Copy the URL of %@": {
+      "comment": "VoiceOver label: an MCP profile's name",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copiar la URL de %@"
           }
         }
       }
@@ -4288,6 +4452,16 @@
         }
       }
     },
+    "Devices don’t report their Klav version, so Klav can’t check this for you. The gateway can’t be turned off.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los dispositivos no informan qué versión de Klav tienen, así que Klav no puede comprobarlo por ti. El gateway no se puede apagar."
+          }
+        }
+      }
+    },
     "Digits": {
       "localizations": {
         "es": {
@@ -4661,6 +4835,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Todos los agentes están en pausa."
+          }
+        }
+      }
+    },
+    "Every other tool is denied and hidden from the list.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cualquier otra herramienta queda denegada y oculta de la lista."
           }
         }
       }
@@ -5050,6 +5234,17 @@
         }
       }
     },
+    "For %@ (according to the proxy)": {
+      "comment": "A proxied request's caller: a local client, or «sandbox 0193aaaa»",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Para %@ (según el proxy)"
+          }
+        }
+      }
+    },
     "For 5 minutes": {
       "localizations": {
         "es": {
@@ -5203,6 +5398,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Según la bitácora verificada, hasta el evento n.º %lld."
+          }
+        }
+      }
+    },
+    "Gateway off": {
+      "comment": "Development › MCP servers header",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway apagado"
           }
         }
       }
@@ -6784,6 +6990,16 @@
         }
       }
     },
+    "Klav is updated on every device, and klav-proxy too": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klav está actualizado en todos mis dispositivos, y klav-proxy también"
+          }
+        }
+      }
+    },
     "Klav isn’t set up on this Mac yet.": {
       "localizations": {
         "es": {
@@ -7622,6 +7838,38 @@
         }
       }
     },
+    "MCP servers": {
+      "comment": "Development › MCP servers (ADR 0049)",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Servidores MCP"
+          }
+        }
+      }
+    },
+    "MCP servers go through your own credential proxy, and this account has none yet. Set one up with klav proxy use own, then add a server:": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los servidores MCP pasan por tu propio proxy de credenciales, y esta cuenta aún no tiene uno. Configúralo con klav proxy use own y después añade un servidor:"
+          }
+        }
+      }
+    },
+    "MCP tool call": {
+      "comment": "Header of an MCP approval card",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Llamada a una herramienta MCP"
+          }
+        }
+      }
+    },
     "MCP · %@": {
       "localizations": {
         "es": {
@@ -7648,6 +7896,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Repite la contraseña maestra"
+          }
+        }
+      }
+    },
+    "mcp.lane.allowed": {
+      "comment": "MCP tool rules: patterns that go through (feminine plural: herramientas)",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allowed"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permitidas"
+          }
+        }
+      }
+    },
+    "mcp.lane.ask": {
+      "comment": "MCP tool rules: patterns that ask the person first",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Asks you"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Te preguntan"
+          }
+        }
+      }
+    },
+    "mcp.lane.denied": {
+      "comment": "MCP tool rules: patterns refused (feminine plural: herramientas)",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Denied"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Denegadas"
+          }
+        }
+      }
+    },
+    "mcp.lane.none": {
+      "comment": "MCP tool rules: an empty lane (feminine: herramienta)",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguna"
           }
         }
       }
@@ -7844,6 +8160,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Más nueva que este Klav"
+          }
+        }
+      }
+    },
+    "No MCP servers yet": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todavía no hay servidores MCP"
           }
         }
       }
@@ -8280,6 +8606,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ninguna sin cambiar en más de un año."
+          }
+        }
+      }
+    },
+    "None yet. Connect one with klav client connect claude-code --mcp %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguno todavía. Conecta uno con klav client connect claude-code --mcp %@"
           }
         }
       }
@@ -8740,6 +9076,16 @@
         }
       }
     },
+    "Once it’s on, approvals and Activity name the MCP tool of each call. Klav apps, CLIs and klav-proxy older than the gateway can’t read that: their requests list fails and log verification reports tampering, and an older proxy stops serving until it’s updated.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una vez activado, las aprobaciones y Actividad nombran la herramienta MCP de cada llamada. Las apps, CLIs y klav-proxy anteriores al gateway no saben leerlo: su lista de solicitudes falla, la verificación del registro reporta manipulación y un proxy antiguo deja de funcionar hasta que lo actualices."
+          }
+        }
+      }
+    },
     "One confirmation covers what it reads until Klav locks.": {
       "localizations": {
         "es": {
@@ -9157,6 +9503,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Abrir tu bóveda de Klav"
+          }
+        }
+      }
+    },
+    "opened an MCP session": {
+      "comment": "Activity: an MCP session row whose profile this device can't name",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "abrió una sesión MCP"
+          }
+        }
+      }
+    },
+    "opened an MCP session (%lld times)": {
+      "comment": "Activity: folded MCP session rows; always 2 or more",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "abrió una sesión MCP (%lld veces)"
           }
         }
       }
@@ -10955,6 +11323,17 @@
         }
       }
     },
+    "sandbox %@": {
+      "comment": "An MCP caller that is a sandbox, by the start of its ID (ADR 0049)",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sandbox %@"
+          }
+        }
+      }
+    },
     "SSH key": {
       "comment": "Kind of item\nKind of item, short, before the vault",
       "localizations": {
@@ -12505,6 +12884,38 @@
         }
       }
     },
+    "The caller is your proxy’s word, and the tool the MCP server’s.": {
+      "comment": "MCP approval card",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quién llama lo dice tu proxy, y la herramienta, el servidor MCP."
+          }
+        }
+      }
+    },
+    "The MCP gateway is off for this account": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El gateway MCP está apagado en esta cuenta"
+          }
+        }
+      }
+    },
+    "The MCP gateway is on.": {
+      "comment": "Toast",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El gateway MCP está activado."
+          }
+        }
+      }
+    },
     "The QR codes hold your one-time code secrets: delete their photos too, and the recently deleted ones.": {
       "localizations": {
         "es": {
@@ -13203,6 +13614,17 @@
         }
       }
     },
+    "The tool is the MCP server’s word, through your proxy.": {
+      "comment": "MCP approval card",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El nombre de la herramienta lo da el servidor MCP, a través de tu proxy."
+          }
+        }
+      }
+    },
     "The two passwords don’t match.": {
       "localizations": {
         "es": {
@@ -13377,6 +13799,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Este Klav trae la versión %@. Klav pone al día sus propias copias cuando arranca la app; una copia que editaste se queda como está hasta que decidas."
+          }
+        }
+      }
+    },
+    "This Klav server is older than the MCP gateway. Update the server to use MCP servers through your proxy.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este servidor de Klav es anterior al gateway MCP. Actualízalo para usar servidores MCP con tu proxy."
           }
         }
       }
@@ -13799,6 +14231,17 @@
         }
       }
     },
+    "This request names an MCP tool or a caller in a form Klav never accepts. Your server should have refused it, so there’s nothing to approve here. Check your server, and tell Klav if it keeps happening.": {
+      "comment": "Security card of an approval (ADR 0049 T260): fixed text, nothing the server sent",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta solicitud nombra una herramienta MCP o a quien llama de una forma que Klav nunca acepta. Tu servidor debió rechazarla, así que aquí no hay nada que aprobar. Revisa tu servidor y avísanos si vuelve a pasar."
+          }
+        }
+      }
+    },
     "This server can’t delete accounts from the app. Ask whoever runs it.": {
       "localizations": {
         "es": {
@@ -14022,6 +14465,27 @@
         }
       }
     },
+    "Turn on the MCP gateway for your account": {
+      "comment": "Master password sheet reason",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activar el gateway MCP de tu cuenta"
+          }
+        }
+      }
+    },
+    "Turn on the MCP gateway?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Activar el gateway MCP?"
+          }
+        }
+      }
+    },
     "Turn on “Development extension” below to connect until Klav is in the Chrome Web Store": {
       "localizations": {
         "es": {
@@ -14042,12 +14506,33 @@
         }
       }
     },
+    "Turn on…": {
+      "comment": "Opens the sheet that turns the MCP gateway on",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activar…"
+          }
+        }
+      }
+    },
     "Turning it off asks for Face ID or the iPhone’s passcode.": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Para desactivarlo, el iPhone pide Face ID o su código."
+          }
+        }
+      }
+    },
+    "Turning it on lets your proxy say which tool each call uses, so your rules can allow, ask about or deny each tool, and Activity shows who called it. It stays on.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Al activarlo, tu proxy indica qué herramienta usa cada llamada: así tus reglas pueden permitir, preguntar o denegar cada una, y Actividad muestra quién la llamó. No se puede volver a apagar."
           }
         }
       }
@@ -14784,6 +15269,17 @@
         }
       }
     },
+    "Wants to call %@": {
+      "comment": "Notification and menu bar line of an MCP approval: «profile · tool»",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quiere llamar a %@"
+          }
+        }
+      }
+    },
     "Wants to change %@": {
       "localizations": {
         "es": {
@@ -15201,6 +15697,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Escribiendo…"
+          }
+        }
+      }
+    },
+    "Your proxy forwards only the tools these rules allow, asks you for the ones marked so, and hides the rest from each client’s tool list. To change the rules, run klav proxy grant again; to add a client, klav client connect.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu proxy solo deja pasar las herramientas que estas reglas permiten, te pregunta por las que lo piden y oculta el resto de la lista de cada cliente. Para cambiar las reglas, vuelve a correr klav proxy grant; para añadir un cliente, klav client connect."
           }
         }
       }

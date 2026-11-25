@@ -111,6 +111,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::ProxyIssuerAdd { .. }
         | Request::ProxyIssuerRemove { .. }
         | Request::LocalClientChange { .. }
+        | Request::McpGatewayOn { .. }
         | Request::ResumeAgents { .. }
         | Request::CancelAccountDeletion { .. }
         | Request::ConfirmPresence { .. } => Gate::AlreadyAsks,
@@ -182,6 +183,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::ProxyGrantPreview { .. }
         | Request::ProxyIssuerPreview { .. }
         | Request::LocalClientPreview { .. }
+        | Request::McpGateway
         | Request::PauseAgents { .. }
         | Request::AuditLog { .. }
         | Request::VerifyAudit

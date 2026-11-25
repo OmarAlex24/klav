@@ -41,8 +41,85 @@ struct ApprovalCard<Model: RequestsModel>: View {
     @State private var problem: String?
 
     var body: some View {
-        let target = RequestWords.target(approval.target)
+        if approval.security {
+            securityCard
+        } else if McpWords.isToolCall(approval) {
+            mcpCard
+        } else {
+            standardCard
+        }
+    }
+
+    /// A request whose MCP fields break their grammars (ADR 0049 §5.4,
+    /// T260): the fixed text and whose key it came through, nothing of what
+    /// the server sent, and nothing to decide.
+    private var securityCard: some View {
         AgentCard(highlighted: highlighted) {
+            AgentMark(text: "Security problem")
+                .accessibilityAddTraits(.isHeader)
+            AgentKey<Model>(agentId: approval.agentId)
+            Notice(text: McpWords.securityText)
+                .padding(.top, 4)
+            Expires(at: approval.expiresAt)
+        }
+    }
+
+    /// An MCP tool call through the credential proxy (ADR 0049 §5.4): the
+    /// caller, the profile and the tool, and what each approval covers.
+    private var mcpCard: some View {
+        let caller = McpWords.caller(approval)
+        return AgentCard(highlighted: highlighted) {
+            AgentMark(text: "MCP tool call")
+                .accessibilityAddTraits(.isHeader)
+            AgentKey<Model>(agentId: approval.agentId)
+            if let task = approval.task {
+                Text("Outside the task “\(task.task)”")
+                    .font(.ui(13, .medium, relativeTo: .footnote))
+                    .foregroundStyle(Palette.tinta)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            sentence(McpWords.wants(hasCaller: caller != nil), bold: [caller ?? "", McpWords.target(approval)])
+                .foregroundStyle(Palette.tinta)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(caller == nil ? String(localized: "The tool is the MCP server’s word, through your proxy.")
+                               : String(localized: "The caller is your proxy’s word, and the tool the MCP server’s."))
+                .font(.ui(12, relativeTo: .caption))
+                .foregroundStyle(Palette.gris)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(McpWords.argumentsNote)
+                .font(.ui(13, relativeTo: .footnote))
+                .foregroundStyle(Palette.tinta)
+                .fixedSize(horizontal: false, vertical: true)
+            Expires(at: approval.expiresAt)
+            if let problem { Notice(text: problem).padding(.top, 4) }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(McpWords.onceNote)
+                if approval.task == nil { Text(McpWords.leaseNote) }
+            }
+            .font(.ui(12, relativeTo: .caption))
+            .foregroundStyle(Palette.gris)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 4)
+            Flow(spacing: 8) {
+                Button(busy ? model.waitingForPresence : String(localized: "Approve once")) { decide(approve: true, lease: 0) }
+                    .buttonStyle(PrimaryButtonStyle(compact: true))
+                    .accessibilityHint(McpWords.onceNote)
+                if McpWords.actions(approval) == .onceAndLease {
+                    Button("Approve 15 min") { decide(approve: true, lease: 15) }
+                        .buttonStyle(SecondaryButtonStyle(compact: true))
+                        .accessibilityHint(McpWords.leaseNote)
+                }
+                Button("Deny") { decide(approve: false, lease: 0) }
+                    .buttonStyle(SecondaryButtonStyle(compact: true))
+            }
+            .padding(.top, 6)
+        }
+        .disabled(busy)
+    }
+
+    private var standardCard: some View {
+        let target = RequestWords.target(approval.target)
+        return AgentCard(highlighted: highlighted) {
             AgentMark(text: "\(approval.agent) is waiting for your permission")
                 .accessibilityAddTraits(.isHeader)
             AgentKey<Model>(agentId: approval.agentId)
@@ -59,6 +136,14 @@ struct ApprovalCard<Model: RequestsModel>: View {
                 Text(place)
                     .font(.ui(13, relativeTo: .footnote))
                     .foregroundStyle(Palette.gris)
+            }
+            if let caller = McpWords.caller(approval) {
+                // A proxied call names its caller under the person's
+                // signature (ADR 0049 §5.4): the proxy's word.
+                Text(verbatim: McpWords.callerLine(caller))
+                    .font(.ui(13, relativeTo: .footnote))
+                    .foregroundStyle(Palette.tinta)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let domain = approval.domain {
                 // The agent names the site; nothing checked it.

@@ -287,7 +287,8 @@ struct MenuBarView: View {
                         .font(.ui(13, .medium))
                         .foregroundStyle(Palette.cobalto)
                     if let first = model.approvals.first {
-                        Text(verbatim: "\(first.agent) · \(RequestWords.wants(first.permission, RequestWords.target(first.target).title))")
+                        Text(verbatim: McpWords.summary(first).map { "\($0.who) · \($0.what)" }
+                             ?? "\(first.agent) · \(RequestWords.wants(first.permission, RequestWords.target(first.target).title))")
                             .font(.ui(12))
                             .foregroundStyle(Palette.gris)
                             .lineLimit(1)

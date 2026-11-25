@@ -255,6 +255,20 @@ pub(crate) enum Prompt<'a> {
         permission: Permission,
         target: Option<&'a str>,
     },
+    /// Approve a call of an MCP tool through the credential proxy (ADR
+    /// 0049 §5.4, T260): fixed text, the profile the person signed and the
+    /// tool, which its grammar keeps to `A-Z a-z 0-9 _ - .`. Never the
+    /// agent's name or words, the caller, the arguments or a description.
+    /// `profile` is `None` when this device can't name it; `lease`: the
+    /// tool with any arguments for a while, not this one call.
+    McpTool {
+        profile: Option<&'a str>,
+        tool: &'a str,
+        lease: bool,
+    },
+    /// Turn the account's MCP gateway on (ADR 0049 §9). Nothing turns it
+    /// off.
+    McpGatewayOn,
     /// Approve an agent or replace its grant, with its projects as
     /// `vault/project`.
     Grant {
@@ -816,6 +830,22 @@ impl Prompt<'_> {
                 },
                 names(agents, lang)
             ),
+            (
+                Prompt::McpTool {
+                    profile,
+                    tool,
+                    lease,
+                },
+                _,
+            ) => mcp_tool(lang, profile, tool, lease),
+            (Prompt::McpGatewayOn, Lang::En) => {
+                "turn on the MCP gateway for your account, which Klav apps older than it can’t read"
+                    .to_owned()
+            }
+            (Prompt::McpGatewayOn, Lang::Es) => {
+                "activar el gateway MCP en tu cuenta, que las apps de Klav anteriores a él no saben leer"
+                    .to_owned()
+            }
             (Prompt::DeleteAccount, Lang::En) => {
                 "confirm it’s you to delete your account".to_owned()
             }
@@ -1027,6 +1057,40 @@ fn presence_window(from: crate::uv::Window, to: crate::uv::Window, lang: Lang) -
 
 /// "let “claude-code” fill “GitHub”". `agent` and `target` are already
 /// cleaned and quoted.
+/// An MCP tool call's prompt (ADR 0049 §5.4): «approve one call of
+/// “delete_service” on “maple”, with these exact arguments». The tool and
+/// the profile passed their grammars; `name` still cleans and quotes them.
+fn mcp_tool(lang: Lang, profile: Option<&str>, tool: &str, lease: bool) -> String {
+    let tool = name(tool, lang);
+    let on = profile.map(|p| name(p, lang));
+    match (lang, lease, on) {
+        (Lang::En, false, Some(on)) => {
+            format!("approve one call of {tool} on {on}, with these exact arguments")
+        }
+        (Lang::En, false, None) => {
+            format!("approve one call of the MCP tool {tool}, with these exact arguments")
+        }
+        (Lang::En, true, Some(on)) => {
+            format!("let MCP calls of {tool} on {on} through, with any arguments, for a while")
+        }
+        (Lang::En, true, None) => {
+            format!("let calls of the MCP tool {tool} through, with any arguments, for a while")
+        }
+        (Lang::Es, false, Some(on)) => {
+            format!("aprobar una llamada a {tool} de {on}, con estos mismos argumentos")
+        }
+        (Lang::Es, false, None) => {
+            format!("aprobar una llamada a la herramienta MCP {tool}, con estos mismos argumentos")
+        }
+        (Lang::Es, true, Some(on)) => format!(
+            "dejar pasar durante un rato las llamadas MCP a {tool} de {on}, con cualquier argumento"
+        ),
+        (Lang::Es, true, None) => format!(
+            "dejar pasar durante un rato las llamadas a la herramienta MCP {tool}, con cualquier argumento"
+        ),
+    }
+}
+
 fn request(lang: Lang, agent: &str, permission: Permission, target: Option<String>) -> String {
     let target = target.unwrap_or_else(|| {
         match lang {
@@ -1826,6 +1890,53 @@ mod tests {
         assert_eq!(
             unknown.reason(Lang::Es, None),
             "dejar que «bot» rellene un elemento"
+        );
+    }
+
+    /// ADR 0049 §5.4 (T260): an MCP tool call's prompt is fixed text, the
+    /// profile and the tool; never the agent's name, and what "once" and a
+    /// lease bind.
+    #[test]
+    fn an_mcp_tool_call_names_only_the_profile_and_the_tool() {
+        let once = Prompt::McpTool {
+            profile: Some("maple"),
+            tool: "delete_service",
+            lease: false,
+        };
+        assert_eq!(
+            once.reason(Lang::En, None),
+            "approve one call of “delete_service” on “maple”, with these exact arguments"
+        );
+        assert_eq!(
+            once.reason(Lang::Es, None),
+            "aprobar una llamada a «delete_service» de «maple», con estos mismos argumentos"
+        );
+        let lease = Prompt::McpTool {
+            profile: Some("maple"),
+            tool: "delete_service",
+            lease: true,
+        };
+        assert_eq!(
+            lease.reason(Lang::En, None),
+            "let MCP calls of “delete_service” on “maple” through, with any arguments, for a while"
+        );
+        assert_eq!(
+            lease.reason(Lang::Es, None),
+            "dejar pasar durante un rato las llamadas MCP a «delete_service» de «maple», con cualquier argumento"
+        );
+        let unknown = Prompt::McpTool {
+            profile: None,
+            tool: "query_logs",
+            lease: false,
+        };
+        assert_eq!(
+            unknown.reason(Lang::En, None),
+            "approve one call of the MCP tool “query_logs”, with these exact arguments"
+        );
+        assert!(
+            Prompt::McpGatewayOn
+                .reason(Lang::Es, None)
+                .starts_with("activar el gateway MCP")
         );
     }
 

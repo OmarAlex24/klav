@@ -17,6 +17,9 @@ enum Section: Hashable {
     /// Development › Sandboxes (ADR 0036 E4): the proxy on top, then the
     /// sandboxes it serves.
     case sandboxes
+    /// Development › MCP servers (ADR 0049 §3, §9): the proxy's MCP
+    /// profiles, their tool rules and local clients, and the switch.
+    case mcpServers
     case activity
     case clients
     case health
@@ -100,6 +103,8 @@ enum PromptHost: Equatable {
     case editor
     case settings
     case deleteCopy
+    /// «Turn on the MCP gateway?» (ADR 0049 §9).
+    case mcpGatewaySheet
 }
 
 /// Resumes a value's caller once, whether the password window answers or
@@ -207,6 +212,8 @@ final class MacModel: ObservableObject, RequestsModel {
     #endif
     /// «Revoke all» open in Development › Sandboxes.
     @Published var revokingAllSandboxes = false
+    /// «Turn on the MCP gateway?» is open (ADR 0049 §9).
+    @Published var turningOnMcpGateway = false
     /// The proxy a «Revoke again» on a «Revoke all» names; nil: the list's.
     @Published var revokeAllFor: String?
     /// «Got it» on a theft signal, by sandbox ID, in memory only (Omar,
@@ -445,6 +452,7 @@ final class MacModel: ObservableObject, RequestsModel {
         if passwordPrompt != nil { passwordPrompt = nil }
         if changingGrant != nil { changingGrant = nil }
         if revokingAllSandboxes { revokingAllSandboxes = false }
+        if turningOnMcpGateway { turningOnMcpGateway = false }
         revokeAllFor = nil
         if let request = revoking {
             // Not revoked yet: «Revoke…» opens again after unlocking (P12).
@@ -776,6 +784,9 @@ final class MacModel: ObservableObject, RequestsModel {
 
     /// Deny, approve once (`leaseMinutes` 0) or approve for a while.
     func decide(_ approval: ApprovalItem, approve: Bool, leaseMinutes: UInt32) async throws {
+        // A security card is never decided (ADR 0049 §5.4): klavd refuses
+        // it before Touch ID, and the app never asks.
+        guard !approval.security else { throw RequestError.securityCard }
         let id = approval.id, agent = approval.agent, digest = approval.requestDigest
         let gone: @MainActor () -> Void = { [weak self] in
             self?.approvals.removeAll { $0.id == id }
@@ -787,7 +798,12 @@ final class MacModel: ObservableObject, RequestsModel {
             changed()
             return
         }
-        try await withPresence(String(localized: "Approve \(agent)’s request")) { engine, password in
+        // The password sheet's reason, like klavd's Touch ID prompt: for an
+        // MCP tool call, fixed text, profile and tool only (T140).
+        let reason = McpWords.isToolCall(approval)
+            ? McpWords.presenceReason(approval, lease: leaseMinutes > 0)
+            : String(localized: "Approve \(agent)’s request")
+        try await withPresence(reason) { engine, password in
             try engine.decideApprovalWithPassword(id: id, approve: true, leaseMinutes: leaseMinutes,
                                                   requestDigest: digest, password: password)
         } done: { gone() }
@@ -797,6 +813,7 @@ final class MacModel: ObservableObject, RequestsModel {
     /// end, and this request approved once.
     func addToTask(_ approval: ApprovalItem) async throws {
         guard let task = approval.task else { return }
+        guard !approval.security else { throw RequestError.securityCard }
         let id = approval.id, title = task.task, digest = approval.requestDigest
         try await withPresence(String(localized: "Add to \(approval.agent)’s task")) { engine, password in
             _ = try engine.addToTaskWithPassword(approvalId: id, requestDigest: digest, password: password)
@@ -1041,6 +1058,10 @@ final class MacModel: ObservableObject, RequestsModel {
         requestsLoaded = true
         var fresh: [(String, String, String)] = []
         for a in approvals where !seenRequests.contains(a.id) {
+            if let mcp = McpWords.summary(a) {
+                fresh.append((a.id, mcp.who, mcp.what))
+                continue
+            }
             let target = RequestWords.target(a.target).title
             fresh.append((a.id, a.agent, RequestWords.wants(a.permission, target)))
         }

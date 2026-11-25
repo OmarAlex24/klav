@@ -25,6 +25,8 @@ enum RequestError: Error {
     case notConfirmed
     /// A task card with every box cleared.
     case nothingChecked
+    /// A security card (ADR 0049 §5.4, T260): nothing on it is decided.
+    case securityCard
 }
 
 /// What an agent wants to do, as the extension's popup says it.
@@ -77,6 +79,7 @@ extension RequestError {
         switch self {
         case .notConfirmed: return String(localized: "It wasn’t confirmed that it’s you. Nothing was approved.")
         case .nothingChecked: return String(localized: "Check at least one permission, or deny the task")
+        case .securityCard: return McpWords.securityText
         }
     }
 }
@@ -362,6 +365,13 @@ extension ActivityWords {
         }
         let name = Text(verbatim: actor(e)).font(.ui(size, .medium)).foregroundColor(Palette.cobalto)
         let what = Text(verbatim: " " + did(e)).font(.ui(size)).foregroundColor(Palette.tinta)
+        // An MCP call (ADR 0049 §6): the caller and the tool are the
+        // proxy's word, marked as such (T136).
+        if e.action == "agent.access", McpWords.isMcp(e) {
+            let mark = Text(verbatim: " (" + McpWords.accordingToProxy + ")")
+                .font(.ui(size - 2)).foregroundColor(Palette.gris)
+            return name + id + what + mark
+        }
         return name + id + what
     }
 }

@@ -478,6 +478,19 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<SecretText>,
     },
+    /// The account's MCP gateway switch (ADR 0049 §9): `true` or `false`,
+    /// or `null` from a server older than the gateway.
+    McpGateway,
+    /// Turns the account's MCP gateway switch on (ADR 0049 §9). Refused
+    /// unless `every_device_updated` acknowledges what devices and proxies
+    /// older than the gateway lose; asks for presence unless it is already
+    /// on. Nothing turns it off. Answer: `true`.
+    McpGatewayOn {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        every_device_updated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<SecretText>,
+    },
     /// Takes `item` away from the account's proxy and changes its key
     /// (ADR 0036 §18). Asks for presence.
     ProxyRevoke {

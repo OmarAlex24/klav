@@ -60,6 +60,11 @@ protocol MacEngine: VaultEngine {
     func sandboxListChecked(allProxies: Bool) throws -> SandboxListCheckedInfo
     func revokeSandbox(proxyId: String, sandboxId: String) throws -> SandboxRevokeInfo
     func revokeAllSandboxes(proxyId: String) throws -> SandboxRevokeInfo
+    // The MCP gateway (ADR 0049 §3, §9): Development › MCP servers, and
+    // the account's switch, turned on after «update every device first»
+    // with Touch ID in klavd or the master password.
+    func mcpServers() throws -> McpServersInfo
+    func turnMcpGatewayOnWithPassword(everyDeviceUpdated: Bool, password: String?) throws -> Bool
 
     // Deleting the account (ADR 0037): Touch ID through klavd where it is
     // set up, the master password in this process. Canceling asks what

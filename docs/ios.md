@@ -546,6 +546,23 @@ iPhone's camera, Safari (long-pressing a QR code) and
   The options are "Approve once", "Approve 15 min" and "Deny". Approving
   asks for Face ID, or the iPhone's passcode if there is no Face ID. Denying asks for
   nothing.
+- **MCP tool calls** ([ADR 0049](decisiones/0049-mcp-gateway.md) §5.4, layer 6): a
+  call through the credential proxy that its rules mark `ask` shows as "MCP tool
+  call": "claude-code wants to call maple · delete_service", with the caller (the
+  local client, or the sandbox by the start of its ID) as the proxy's word and the
+  tool as the MCP server's. The card says the arguments aren't shown yet, and what
+  each button covers: "Approve once" is this call with these exact arguments (a
+  retry with other arguments asks again); "Approve 15 min" is the tool with any
+  arguments from the same caller (T261). Face ID's reason is fixed text, the
+  profile and the tool ("Approve one call of maple · delete_service"), never the
+  agent's name or words (T140). The profile comes from the proxy's grant as this
+  iPhone verified it, and only for the proxy's own requests. Any other request
+  that comes through the proxy names its caller too: "For claude-code (according
+  to the proxy)".
+- **The security card** (T260): a request whose MCP tool or caller breaks its
+  grammar shows "Security problem" with fixed text and no buttons; nothing the
+  server sent reaches the card, and neither the app nor `klav-client` decides it
+  or asks for Face ID.
 - **Tasks** ([ADR 0021](decisiones/0021-solicitudes-de-tarea.md)): an agent asks for several
   items and permissions for a job, and the person approves them with a single
   card, "*agent* asks for a task". It carries the task's name and the reason
@@ -939,6 +956,14 @@ Codex and Cursor don't run on an iPhone.
     the item and where it lives, the reason in quotes, trimmed and marked
     "according to the agent" (T136), the time, the result, the alerts and "Not
     verified yet" after the last head this iPhone signed.
+  - An MCP call through the proxy (ADR 0049 §6, layer 6) names its caller and
+    tool in place of "used it (proxy)": "claude-code called maple · query_logs
+    (according to the proxy)". Session messages (`initialize`, `tools/list`)
+    read "connected to maple", and consecutive ones of the same caller and
+    profile fold into one line, "connected to maple (3 times)". The same in
+    "Who used it". `LogEntryInfo` carries `mcp_tool`, `mcp_profile`,
+    `local_client`, `sandbox_id`, `mcp_session` and `folded`; tests in
+    `KlavTests/McpCardTests.swift` and `crates/klav-ffi/tests/mcp_gateway.rs`.
 - **"Who used it",** on each item's page: the 5 most recent uses
   by agents, with the reason "according to the agent", how it happened ("Allowed by
   your policy", "Approved once", "Inside the task “…”", "Denied") and

@@ -87,6 +87,7 @@ struct MainWindow: View {
         case .requests: RequestsPane()
         case .agents: AgentsPane()
         case .sandboxes: SandboxesPane()
+        case .mcpServers: McpServersPane()
         case .activity: ActivityPane()
         case .clients: ClientsPane()
         case .health: HealthPane()
@@ -207,6 +208,7 @@ private struct Sidebar: View {
                         Row(icon: .robot, title: "Agents", shortcut: "⌘3", paused: model.everyonePaused != nil,
                             section: .agents)
                         Row(icon: .cube, title: "Sandboxes", shortcut: "⌘7", section: .sandboxes)
+                        Row(icon: .braces, title: "MCP servers", shortcut: "⌘8", section: .mcpServers)
                         Row(icon: .list, title: "Activity", shortcut: "⌘5", section: .activity)
                         Row(icon: .plug, title: "Clients", shortcut: "⌘6", section: .clients)
                         Group(title: "Passwords")

@@ -195,6 +195,30 @@ pub struct LocalClientView {
     /// The MCP profiles it may use.
     pub profiles: Vec<String>,
 }
+/// The MCP profiles of the account's proxy, by item, from its verified
+/// grant (ADR 0049 §5.4, §6): what names a tool call's profile on the
+/// approval card, in Activity and in the Touch ID prompt. Only for
+/// `agent`, the agent that asked or logged: the proxy's profiles name
+/// nothing another agent did.
+pub fn mcp_profile_names(
+    status: &ProxyStatus,
+    agent: Option<AgentId>,
+) -> std::collections::HashMap<ItemId, String> {
+    if agent.is_none() || status.agent_id != agent {
+        return std::collections::HashMap::new();
+    }
+    status
+        .credentials
+        .iter()
+        .filter_map(|c| {
+            c.profile
+                .as_ref()
+                .filter(|p| p.mcp.is_some())
+                .map(|p| (c.item_id, p.name.clone()))
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyCredentialView {
     /// Item.
@@ -474,6 +498,17 @@ impl Unlocked {
     /// older server, which answers `404`, has no gateway: refused with a
     /// message that says so.
     pub async fn mcp_gateway_switch(&mut self) -> ClientResult<bool> {
+        self.mcp_gateway_state().await?.ok_or_else(|| {
+            ClientError::Invalid(
+                "this Klav server is older than the MCP gateway (ADR 0049): update the server before granting an MCP profile".into(),
+            )
+        })
+    }
+
+    /// The account's MCP gateway switch (ADR 0049 §9): `None` from a
+    /// server older than the gateway (it answers `404`), which the apps say
+    /// in their own words.
+    pub async fn mcp_gateway_state(&mut self) -> ClientResult<Option<bool>> {
         let res = self
             .authed(
                 reqwest::Method::GET,
@@ -484,11 +519,9 @@ impl Unlocked {
         match res {
             Ok(res) => {
                 let switch: klav_proto::agent::McpGatewaySwitch = crate::api::json(res).await?;
-                Ok(switch.mcp_gateway)
+                Ok(Some(switch.mcp_gateway))
             }
-            Err(ClientError::Api { status: 404, .. }) => Err(ClientError::Invalid(
-                "this Klav server is older than the MCP gateway (ADR 0049): update the server before granting an MCP profile".into(),
-            )),
+            Err(ClientError::Api { status: 404, .. }) => Ok(None),
             Err(e) => Err(e),
         }
     }
