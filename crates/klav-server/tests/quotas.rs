@@ -187,11 +187,18 @@ async fn items_count_the_trash_and_free_up_when_purged() {
 async fn items_created_at_once_cannot_pass_the_quota() {
     let server = TestServer::start_with(|c| c.limits.max_items_per_account = 3).await;
     let ana = session(&server, "ana@example.com").await;
-    let vault = server.create_vault(&ana).await;
-    let project = server.create_project(&ana, &vault).await;
-    let statuses: Vec<StatusCode> = join_all(
-        (0..8).map(|_| async { try_create_item(&server, &ana, &vault, &project, 8).await.0 }),
-    )
+    // Two vaults, so the vaults' own locks don't serialize the writes: only
+    // the owner's account lock keeps them from passing the quota together.
+    let first = server.create_vault(&ana).await;
+    let second = server.create_vault(&ana).await;
+    let targets = [
+        (server.create_project(&ana, &first).await, &first),
+        (server.create_project(&ana, &second).await, &second),
+    ];
+    let statuses: Vec<StatusCode> = join_all((0..8).map(|i| {
+        let (project, vault) = &targets[i % 2];
+        async { try_create_item(&server, &ana, vault, project, 8).await.0 }
+    }))
     .await
     .into_iter()
     .map(|r| r.status())
