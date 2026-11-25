@@ -10,14 +10,17 @@ use axum::routing::post;
 use axum::{Extension, Json, Router};
 use klav_core::crypto::encoding::Kind;
 use klav_core::crypto::identity::{PUBLIC_IDENTITY_LEN, PublicIdentity};
+use klav_core::crypto::invite::{self, InviteCode};
 use klav_core::crypto::kdf::{self, KdfParams};
 use klav_core::crypto::{aead, opaque};
 use klav_core::ids::{AccountId, DeviceId};
 use klav_proto::Blob;
+use klav_proto::RegistrationMode;
 use klav_proto::auth::{
-    AccountKeyset, DeviceInfo, LoginFinishRequest, LoginFinishResponse, LoginStartRequest,
-    LoginStartResponse, PreloginRequest, PreloginResponse, RefreshRequest, RegisterFinishRequest,
-    RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse, SessionTokens,
+    AccountKeyset, DeviceInfo, InviteCheckRequest, LoginFinishRequest, LoginFinishResponse,
+    LoginStartRequest, LoginStartResponse, PreloginRequest, PreloginResponse, RefreshRequest,
+    RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
+    SessionTokens,
 };
 use sqlx::Row;
 
@@ -35,6 +38,7 @@ const SEALED_IDENTITY_LEN: usize = aead::OVERHEAD + 64;
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/auth/prelogin", post(prelogin))
+        .route("/v1/auth/invite/check", post(invite_check))
         .route("/v1/auth/register/start", post(register_start))
         .route("/v1/auth/register/finish", post(register_finish))
         .route("/v1/auth/login/start", post(login_start))
@@ -107,11 +111,102 @@ async fn prelogin(
     Ok(Json(PreloginResponse { kdf_params }))
 }
 
-fn registration_open(state: &AppState) -> ApiResult<()> {
-    if state.config().allow_registration {
-        Ok(())
+/// The registration mode, or `403` when nobody can sign up.
+fn registration_gate(state: &AppState) -> ApiResult<RegistrationMode> {
+    match state.config().registration_mode() {
+        mode @ (RegistrationMode::Open | RegistrationMode::Invite) => Ok(mode),
+        RegistrationMode::Closed | RegistrationMode::Unknown => Err(ApiError::Forbidden),
+    }
+}
+
+/// The per-IP bucket of invite attempts (ADR 0048 §1.3).
+fn invite_bucket(state: &AppState, ip: ClientIp) -> (String, Quota) {
+    let rl = &state.config().rate_limit;
+    (
+        format!("invite-ip:{}", ip.key()),
+        Quota {
+            per_minute: rl.invite_ip_per_minute,
+            burst: rl.invite_ip_burst,
+        },
+    )
+}
+
+/// Takes a token from the invite bucket (`429` when empty).
+fn charge_invite(state: &AppState, ip: ClientIp) -> ApiResult<()> {
+    let (key, quota) = invite_bucket(state, ip);
+    state.limiter().enforce(&key, quota)
+}
+
+/// `429` if the invite bucket is empty, without taking a token: sign-ups
+/// pay only for their invite failures, but none is tried with the bucket
+/// empty.
+fn peek_invite(state: &AppState, ip: ClientIp) -> ApiResult<()> {
+    let (key, quota) = invite_bucket(state, ip);
+    state
+        .limiter()
+        .peek(&key, quota)
+        .map_err(|retry_after_secs| ApiError::TooManyRequests { retry_after_secs })
+}
+
+/// One refused invite: a `warn` line with the client's IP key, never the
+/// code or the email (an alert can be set on it), and `403 invite_invalid`.
+fn refuse_invite(ip: ClientIp, route: &'static str) -> ApiError {
+    tracing::warn!(client_ip = %ip.key(), route, "invite refused");
+    ApiError::invite_invalid()
+}
+
+/// [`refuse_invite`] for a sign-up step: the failure also costs a token.
+fn refuse_signup_invite(state: &AppState, ip: ClientIp, route: &'static str) -> ApiError {
+    let (key, quota) = invite_bucket(state, ip);
+    // The refusal stands even if the bucket just emptied.
+    let _ = state.limiter().check(&key, quota);
+    refuse_invite(ip, route)
+}
+
+/// Whether the invite with `digest` can be used by `email` now: it exists,
+/// is not revoked or expired, has uses left and is not bound to another
+/// email. Never reads `accounts` (ADR 0048 §1.3, T244).
+async fn invite_usable(state: &AppState, digest: &[u8], email: &str) -> ApiResult<bool> {
+    let found: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM registration_invites WHERE code_hash = $1 AND revoked_at IS NULL \
+         AND (expires_at IS NULL OR expires_at > $2) AND used_count < max_uses \
+         AND (bound_email IS NULL OR bound_email = $3)",
+    )
+    .bind(digest.to_vec())
+    .bind(now_ms())
+    .bind(email)
+    .fetch_optional(&state.db().pool)
+    .await?;
+    Ok(found.is_some())
+}
+
+/// The digest of a sign-up's invite, if it has one that decodes.
+fn invite_digest(invite: Option<&InviteCode>) -> Option<[u8; invite::DIGEST_LEN]> {
+    invite.and_then(|code| code.digest().ok())
+}
+
+/// `POST /v1/auth/invite/check`: `204` if the invite can be used by the
+/// email now, `403 invite_invalid` otherwise, and `404` on a server that is
+/// not in `invite` mode. Every call costs a token of the invite bucket.
+async fn invite_check(
+    State(state): State<AppState>,
+    Extension(ip): Extension<ClientIp>,
+    ApiJson(req): ApiJson<InviteCheckRequest>,
+) -> ApiResult<StatusCode> {
+    if state.config().registration_mode() != RegistrationMode::Invite {
+        return Err(ApiError::NotFound);
+    }
+    limit_ip(&state, ip)?;
+    charge_invite(&state, ip)?;
+    let email = validate::email(&req.email)?;
+    let usable = match invite_digest(Some(&req.invite)) {
+        Some(digest) => invite_usable(&state, &digest, &email).await?,
+        None => false,
+    };
+    if usable {
+        Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(ApiError::Forbidden)
+        Err(refuse_invite(ip, "invite/check"))
     }
 }
 
@@ -121,9 +216,21 @@ async fn register_start(
     ApiJson(req): ApiJson<RegisterStartRequest>,
 ) -> ApiResult<Json<RegisterStartResponse>> {
     limit_ip(&state, ip)?;
-    registration_open(&state)?;
+    let mode = registration_gate(&state)?;
     let email = validate::email(&req.email)?;
     limit_email(&state, &email, ip)?;
+    // In `invite` mode, the same check as `invite/check`, before any OPAQUE
+    // work. An invite sent to an `open` server is ignored.
+    if mode == RegistrationMode::Invite {
+        peek_invite(&state, ip)?;
+        let usable = match invite_digest(req.invite.as_ref()) {
+            Some(digest) => invite_usable(&state, &digest, &email).await?,
+            None => false,
+        };
+        if !usable {
+            return Err(refuse_signup_invite(&state, ip, "register/start"));
+        }
+    }
     let response = opaque::server_registration_response(
         &state.keys().opaque,
         req.registration_request.as_bytes(),
@@ -141,9 +248,18 @@ async fn register_finish(
     ApiJson(req): ApiJson<RegisterFinishRequest>,
 ) -> ApiResult<(StatusCode, Json<RegisterFinishResponse>)> {
     limit_ip(&state, ip)?;
-    registration_open(&state)?;
+    let mode = registration_gate(&state)?;
     let email = validate::email(&req.email)?;
     limit_email(&state, &email, ip)?;
+    let invite = if mode == RegistrationMode::Invite {
+        peek_invite(&state, ip)?;
+        match invite_digest(req.invite.as_ref()) {
+            Some(digest) => Some(digest),
+            None => return Err(refuse_signup_invite(&state, ip, "register/finish")),
+        }
+    } else {
+        None
+    };
 
     validate::exact(
         &req.kdf_params,
@@ -195,31 +311,101 @@ async fn register_finish(
         .map_err(|_| ApiError::bad_request("invalid registration_upload"))?;
 
     let now = now_ms();
-    let inserted = sqlx::query(
-        "INSERT INTO accounts (id, email, opaque_record, kdf_params, public_identity, \
-         sealed_identity, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(req.account_id.to_string())
-    .bind(&email)
-    .bind(record)
-    .bind(req.kdf_params.into_bytes())
-    .bind(req.public_identity.into_bytes())
-    .bind(req.sealed_identity.into_bytes())
-    .bind(now)
-    .bind(now)
-    .execute(&state.db().pool)
-    .await?;
-    if inserted.rows_affected() == 0 {
-        return Err(ApiError::conflict("account already exists"));
+    let account = NewAccount {
+        id: req.account_id,
+        email,
+        record,
+        kdf_params: req.kdf_params.into_bytes(),
+        public_identity: req.public_identity.into_bytes(),
+        sealed_identity: req.sealed_identity.into_bytes(),
+        now,
+    };
+    match invite {
+        None => {
+            if !insert_account(&state.db().pool, account).await? {
+                return Err(ApiError::conflict("account already exists"));
+            }
+            tracing::info!(account = %req.account_id, "account registered");
+        }
+        Some(digest) => {
+            // One transaction, the write first, so SQLite never upgrades a
+            // read lock (ADR 0048 §1.3): spend a use of the invite, create
+            // the account, record which account used it. A conflict rolls
+            // the use back; two finishes for the last use cannot both
+            // commit.
+            let mut tx = state.db().pool.begin().await?;
+            let invite_id: Option<String> = sqlx::query_scalar(
+                "UPDATE registration_invites SET used_count = used_count + 1 \
+                 WHERE code_hash = $1 AND revoked_at IS NULL \
+                 AND (expires_at IS NULL OR expires_at > $2) AND used_count < max_uses \
+                 AND (bound_email IS NULL OR bound_email = $3) RETURNING id",
+            )
+            .bind(digest.to_vec())
+            .bind(now)
+            .bind(&account.email)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(invite_id) = invite_id else {
+                drop(tx);
+                return Err(refuse_signup_invite(&state, ip, "register/finish"));
+            };
+            if !insert_account(&mut *tx, account).await? {
+                drop(tx);
+                return Err(ApiError::conflict("account already exists"));
+            }
+            sqlx::query(
+                "INSERT INTO registration_invite_uses (invite_id, account_id, used_at) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(&invite_id)
+            .bind(req.account_id.to_string())
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            tracing::info!(account = %req.account_id, invite = %invite_id, "account registered");
+        }
     }
-    tracing::info!(account = %req.account_id, "account registered");
     Ok((
         StatusCode::CREATED,
         Json(RegisterFinishResponse {
             account_id: req.account_id,
         }),
     ))
+}
+
+/// A new account's row, already validated.
+struct NewAccount {
+    id: AccountId,
+    email: String,
+    record: Vec<u8>,
+    kdf_params: Vec<u8>,
+    public_identity: Vec<u8>,
+    sealed_identity: Vec<u8>,
+    now: i64,
+}
+
+/// Inserts the account; `false` if its email or ID already exists.
+async fn insert_account<'e, E>(exec: E, a: NewAccount) -> ApiResult<bool>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    let inserted = sqlx::query(
+        "INSERT INTO accounts (id, email, opaque_record, kdf_params, public_identity, \
+         sealed_identity, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(a.id.to_string())
+    .bind(a.email)
+    .bind(a.record)
+    .bind(a.kdf_params)
+    .bind(a.public_identity)
+    .bind(a.sealed_identity)
+    .bind(a.now)
+    .bind(a.now)
+    .execute(exec)
+    .await?;
+    Ok(inserted.rows_affected() == 1)
 }
 
 async fn login_start(

@@ -135,6 +135,7 @@ pub async fn signup_with(
             Some(&RegisterStartRequest {
                 email: email.clone(),
                 registration_request: Blob::new(request),
+                invite: None,
             }),
         )
         .await?;
@@ -158,6 +159,7 @@ pub async fn signup_with(
                 kdf_params: Blob::new(params.encode()),
                 public_identity: Blob::new(identity.public().encode().to_vec()),
                 sealed_identity: Blob::new(sealed),
+                invite: None,
             }),
         )
         .await?;

@@ -65,6 +65,23 @@ impl ApiError {
         }
     }
 
+    /// `403 invite_invalid`: one answer for every reason an invite cannot
+    /// be used, which never says whether the email has an account (ADR 0048
+    /// §1.3).
+    pub(crate) fn invite_invalid() -> Self {
+        Self::Coded(
+            StatusCode::FORBIDDEN,
+            ErrorCode::InviteInvalid,
+            "This invite code isn't valid for this email".into(),
+        )
+    }
+
+    /// `403 quota_exceeded` with a message naming the limit, the use and the
+    /// maximum (ADR 0048 §3.2).
+    pub(crate) fn quota_exceeded(message: String) -> Self {
+        Self::Coded(StatusCode::FORBIDDEN, ErrorCode::QuotaExceeded, message)
+    }
+
     pub(crate) fn stale(current_version: i64) -> Self {
         Self::Conflict {
             message: "stale version: fetch the latest version and retry".into(),

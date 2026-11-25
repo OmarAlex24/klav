@@ -287,7 +287,11 @@ mod tests {
             assert_eq!(InviteCode::new(bad).digest(), Err(InvalidInvite), "{bad}");
         }
         assert!(InviteCode::new(ones).digest().is_ok());
-        assert!(InviteCode::new("x".repeat(MAX_INPUT_LEN + 1)).digest().is_err());
+        assert!(
+            InviteCode::new("x".repeat(MAX_INPUT_LEN + 1))
+                .digest()
+                .is_err()
+        );
     }
 
     #[test]

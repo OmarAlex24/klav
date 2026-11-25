@@ -109,6 +109,29 @@ impl VaultWrite {
         Self::bump(tx, vault_id, now_ms()).await
     }
 
+    /// [`Self::begin`] for a write that may grow the vault owner's account
+    /// (ADR 0048 §3.2): the owner's account row is locked first, as every
+    /// write that logs in its own transaction takes it, then the vault's.
+    /// Returns the owner, whose quotas the write is checked against.
+    pub(crate) async fn begin_owner(
+        state: &AppState,
+        vault_id: VaultId,
+    ) -> ApiResult<(Self, String)> {
+        let mut tx = state.db().pool.begin().await?;
+        let locked = sqlx::query(
+            "UPDATE accounts SET updated_at = updated_at WHERE id = \
+             (SELECT owner_account_id FROM vaults WHERE id = $1 AND deleted_at IS NULL)",
+        )
+        .bind(vault_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        if locked.rows_affected() == 0 {
+            return Err(ApiError::NotFound);
+        }
+        let owner = crate::quota::owner_of(&mut tx, &vault_id.to_string()).await?;
+        Ok((Self::bump(tx, vault_id, now_ms()).await?, owner))
+    }
+
     /// [`Self::begin`] for an agent's write on `account`'s vault: the
     /// account's row is locked first, as for the person, and the agent must
     /// still be active under that lock ([`crate::agentauth::still_active`],

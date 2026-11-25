@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use klav_proto::RegistrationMode;
 use secrecy::SecretString;
 use serde::{Deserialize, Deserializer};
 use thiserror::Error;
@@ -83,6 +84,21 @@ pub struct Limits {
     /// Declared bytes of unfinished uploads allowed at once in the vaults
     /// of one account (uploads idle for a day are removed).
     pub max_pending_upload_bytes: u64,
+    /// Declared bytes of every attachment in the vaults an account owns
+    /// that is not purged: finished, pending and those of trashed items
+    /// (ADR 0048 §3.1). `0` means unlimited.
+    pub max_account_attachment_bytes: u64,
+    /// Encrypted bytes in the vaults an account owns, attachments aside:
+    /// `overview`, `details` and `wrapped_key` of every item that is not
+    /// purged and of its kept versions, plus the `meta` of every vault and
+    /// project. `0` means unlimited.
+    pub max_account_vault_bytes: u64,
+    /// Items that are not purged (trashed ones count) in the vaults an
+    /// account owns. `0` means unlimited.
+    pub max_items_per_account: u64,
+    /// Vaults an account owns, deleted ones too until they are purged.
+    /// `0` means unlimited.
+    pub max_vaults_per_account: u64,
 }
 
 impl Default for Limits {
@@ -96,6 +112,12 @@ impl Default for Limits {
             max_attachment_bytes: 100 * 1024 * 1024,
             max_attachment_chunk_bytes: 8 * 1024 * 1024,
             max_pending_upload_bytes: 1024 * 1024 * 1024,
+            // Generous but finite (ADR 0048 §3.1): a server left open by
+            // mistake gets a ceiling nobody with a normal vault reaches.
+            max_account_attachment_bytes: 10 * 1024 * 1024 * 1024,
+            max_account_vault_bytes: 1024 * 1024 * 1024,
+            max_items_per_account: 100_000,
+            max_vaults_per_account: 1_000,
         }
     }
 }
@@ -141,6 +163,12 @@ pub struct RateLimitConfig {
     pub account_per_minute: u32,
     /// Burst of authenticated requests per account.
     pub account_burst: u32,
+    /// Invite attempts per client IP: every `invite/check`, and every
+    /// invite failure in `register/start` and `register/finish` (ADR 0048
+    /// §1.3). On top of the `auth_*` limits.
+    pub invite_ip_per_minute: u32,
+    /// Burst of invite attempts per client IP.
+    pub invite_ip_burst: u32,
 }
 
 impl Default for RateLimitConfig {
@@ -154,6 +182,8 @@ impl Default for RateLimitConfig {
             auth_email_burst: 5,
             account_per_minute: 1200,
             account_burst: 300,
+            invite_ip_per_minute: 1,
+            invite_ip_burst: 10,
         }
     }
 }
@@ -236,8 +266,15 @@ pub struct Config {
     /// replacing whatever the client sent. Off by default: no header is
     /// trusted. Excludes `trust_forwarded_for`.
     pub trusted_ip_header: Option<String>,
-    /// Accept new accounts. Turn off once your own accounts exist.
-    pub allow_registration: bool,
+    /// The old switch for new accounts: `true` is `open` and `false` is
+    /// `closed`. Set with `registration_mode`, the two must agree, and
+    /// `false` agrees with `invite` too (ADR 0048 §1.1). Read the
+    /// effective mode with [`Config::registration_mode`].
+    pub allow_registration: Option<bool>,
+    /// How new accounts are taken: `open`, `invite` or `closed` (ADR 0048
+    /// §1.1). Unset, it follows `allow_registration`, and with neither
+    /// set it is `open`.
+    pub registration_mode: Option<RegistrationMode>,
     /// Session lifetimes.
     pub sessions: SessionConfig,
     /// Trash and purge.
@@ -268,7 +305,8 @@ impl Default for Config {
             data_dir: PathBuf::from("data"),
             trust_forwarded_for: false,
             trusted_ip_header: None,
-            allow_registration: true,
+            allow_registration: None,
+            registration_mode: None,
             sessions: SessionConfig::default(),
             retention: RetentionConfig::default(),
             log: LogConfig::default(),
@@ -329,7 +367,36 @@ impl Config {
                     self.trusted_ip_header = Some(value).filter(|v| !v.trim().is_empty());
                 }
                 "KLAV_ALLOW_REGISTRATION" => {
-                    self.allow_registration = parse_bool(&value, "KLAV_ALLOW_REGISTRATION")?
+                    self.allow_registration = Some(parse_bool(&value, "KLAV_ALLOW_REGISTRATION")?)
+                }
+                "KLAV_REGISTRATION_MODE" => {
+                    // Empty means "unset", so a template can leave it blank.
+                    self.registration_mode = match value.trim() {
+                        "" => None,
+                        "open" => Some(RegistrationMode::Open),
+                        "invite" => Some(RegistrationMode::Invite),
+                        "closed" => Some(RegistrationMode::Closed),
+                        _ => {
+                            return Err(ConfigError::Env {
+                                name: "KLAV_REGISTRATION_MODE",
+                            });
+                        }
+                    }
+                }
+                "KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES" => {
+                    self.limits.max_account_attachment_bytes =
+                        parse(&value, "KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES")?
+                }
+                "KLAV_MAX_ACCOUNT_VAULT_BYTES" => {
+                    self.limits.max_account_vault_bytes =
+                        parse(&value, "KLAV_MAX_ACCOUNT_VAULT_BYTES")?
+                }
+                "KLAV_MAX_ITEMS_PER_ACCOUNT" => {
+                    self.limits.max_items_per_account = parse(&value, "KLAV_MAX_ITEMS_PER_ACCOUNT")?
+                }
+                "KLAV_MAX_VAULTS_PER_ACCOUNT" => {
+                    self.limits.max_vaults_per_account =
+                        parse(&value, "KLAV_MAX_VAULTS_PER_ACCOUNT")?
                 }
                 "KLAV_LOG_FORMAT" => {
                     self.log.format = match value.as_str() {
@@ -390,7 +457,36 @@ impl Config {
         Ok(())
     }
 
+    /// The registration mode in effect (ADR 0048 §1.1): `registration_mode`
+    /// if set, else `allow_registration` (`true` is `open`, `false` is
+    /// `closed`), else `open`. [`Config::load`] has already refused a pair
+    /// that disagrees.
+    pub fn registration_mode(&self) -> RegistrationMode {
+        match (self.registration_mode, self.allow_registration) {
+            (Some(RegistrationMode::Unknown), _) => RegistrationMode::Closed,
+            (Some(mode), _) => mode,
+            (None, Some(false)) => RegistrationMode::Closed,
+            (None, _) => RegistrationMode::Open,
+        }
+    }
+
     fn validate(&mut self) -> Result<(), ConfigError> {
+        match (self.registration_mode, self.allow_registration) {
+            (Some(RegistrationMode::Unknown), _) => {
+                return Err(ConfigError::Invalid(
+                    "registration_mode (KLAV_REGISTRATION_MODE) must be open, invite or closed",
+                ));
+            }
+            (Some(RegistrationMode::Open), Some(false))
+            | (Some(RegistrationMode::Invite | RegistrationMode::Closed), Some(true)) => {
+                return Err(ConfigError::Invalid(
+                    "registration_mode (KLAV_REGISTRATION_MODE) and allow_registration \
+                     (KLAV_ALLOW_REGISTRATION) disagree: allow_registration = true goes only \
+                     with registration_mode = open, and false with closed or invite",
+                ));
+            }
+            _ => {}
+        }
         if let Some(name) = &self.trusted_ip_header {
             let name = name.trim().to_ascii_lowercase();
             if axum::http::HeaderName::from_bytes(name.as_bytes()).is_err() {
@@ -424,6 +520,14 @@ impl Config {
                 "limits.max_pending_upload_bytes must be at least max_attachment_bytes",
             ));
         }
+        if l.max_account_attachment_bytes != 0
+            && l.max_account_attachment_bytes < l.max_attachment_bytes
+        {
+            return Err(ConfigError::Invalid(
+                "limits.max_account_attachment_bytes (KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES) must be 0 \
+                 (unlimited) or at least max_attachment_bytes",
+            ));
+        }
         if self.retention.purge_interval_secs == 0 {
             return Err(ConfigError::Invalid(
                 "retention.purge_interval_secs must be positive",
@@ -439,6 +543,8 @@ impl Config {
             r.auth_email_burst,
             r.account_per_minute,
             r.account_burst,
+            r.invite_ip_per_minute,
+            r.invite_ip_burst,
         ]
         .contains(&0)
         {
@@ -479,6 +585,7 @@ impl std::fmt::Debug for Config {
             .field("trust_forwarded_for", &self.trust_forwarded_for)
             .field("trusted_ip_header", &self.trusted_ip_header)
             .field("allow_registration", &self.allow_registration)
+            .field("registration_mode", &self.registration_mode)
             .field("sessions", &self.sessions)
             .field("retention", &self.retention)
             .field("log", &self.log)
@@ -565,7 +672,7 @@ mod tests {
         assert_eq!(config.log.format, LogFormat::Pretty);
         assert_eq!(config.database_url, "postgres://db/klav");
         assert!(config.trust_forwarded_for);
-        assert!(!config.allow_registration);
+        assert_eq!(config.registration_mode(), RegistrationMode::Closed);
     }
 
     #[test]
@@ -707,6 +814,111 @@ mod tests {
         assert!(Config::from_toml("insecure_accept_weak_kdf = true").is_err());
         let config = Config::load(None, env(&[("KLAV_INSECURE_ACCEPT_WEAK_KDF", "true")])).unwrap();
         assert!(!config.insecure_accept_weak_kdf);
+    }
+
+    #[test]
+    fn registration_mode_and_allow_registration_must_agree() {
+        use RegistrationMode::{Closed, Invite, Open};
+        let mode =
+            |pairs: &[(&str, &str)]| Config::load(None, env(pairs)).map(|c| c.registration_mode());
+        // The bare binary stays open, as before this setting existed.
+        assert_eq!(mode(&[]).unwrap(), Open);
+        // Today's production variable alone keeps its meaning.
+        assert_eq!(
+            mode(&[("KLAV_ALLOW_REGISTRATION", "false")]).unwrap(),
+            Closed
+        );
+        assert_eq!(mode(&[("KLAV_ALLOW_REGISTRATION", "true")]).unwrap(), Open);
+        // The mode alone.
+        for (text, want) in [("open", Open), ("invite", Invite), ("closed", Closed)] {
+            assert_eq!(mode(&[("KLAV_REGISTRATION_MODE", text)]).unwrap(), want);
+        }
+        assert_eq!(mode(&[("KLAV_REGISTRATION_MODE", " ")]).unwrap(), Open);
+        assert!(mode(&[("KLAV_REGISTRATION_MODE", "Invite")]).is_err());
+        assert!(mode(&[("KLAV_REGISTRATION_MODE", "waitlist")]).is_err());
+        // Both: true only with open; false with closed and with invite.
+        let both = |allow: &str, m: &str| {
+            mode(&[
+                ("KLAV_ALLOW_REGISTRATION", allow),
+                ("KLAV_REGISTRATION_MODE", m),
+            ])
+        };
+        assert_eq!(both("true", "open").unwrap(), Open);
+        assert_eq!(both("false", "closed").unwrap(), Closed);
+        assert_eq!(both("false", "invite").unwrap(), Invite);
+        for (allow, m) in [("true", "invite"), ("true", "closed"), ("false", "open")] {
+            let err = both(allow, m).unwrap_err().to_string();
+            assert!(
+                err.contains("KLAV_REGISTRATION_MODE") && err.contains("KLAV_ALLOW_REGISTRATION"),
+                "{allow} + {m}: {err}"
+            );
+        }
+        // The same rules across the file and the environment (the
+        // environment wins key by key, then the pair is checked).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("klav.toml");
+        std::fs::write(
+            &path,
+            "allow_registration = false\nregistration_mode = \"invite\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Config::load(Some(&path), env(&[]))
+                .unwrap()
+                .registration_mode(),
+            Invite
+        );
+        assert!(Config::load(Some(&path), env(&[("KLAV_ALLOW_REGISTRATION", "true")])).is_err());
+        assert_eq!(
+            Config::load(Some(&path), env(&[("KLAV_REGISTRATION_MODE", "closed")]))
+                .unwrap()
+                .registration_mode(),
+            Closed
+        );
+        std::fs::write(&path, "registration_mode = \"maybe\"\n").unwrap();
+        assert!(Config::load(Some(&path), env(&[])).is_err());
+    }
+
+    #[test]
+    fn quotas_come_from_the_file_or_the_environment() {
+        let d = Config::default().limits;
+        assert_eq!(d.max_account_attachment_bytes, 10 << 30);
+        assert_eq!(d.max_account_vault_bytes, 1 << 30);
+        assert_eq!(d.max_items_per_account, 100_000);
+        assert_eq!(d.max_vaults_per_account, 1_000);
+        let config = Config::load(
+            None,
+            env(&[
+                ("KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES", "262144000"),
+                ("KLAV_MAX_ACCOUNT_VAULT_BYTES", "67108864"),
+                ("KLAV_MAX_ITEMS_PER_ACCOUNT", "5000"),
+                ("KLAV_MAX_VAULTS_PER_ACCOUNT", "0"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(config.limits.max_account_attachment_bytes, 250 << 20);
+        assert_eq!(config.limits.max_account_vault_bytes, 64 << 20);
+        assert_eq!(config.limits.max_items_per_account, 5_000);
+        assert_eq!(config.limits.max_vaults_per_account, 0);
+        // 0 is unlimited; otherwise one allowed attachment must fit.
+        assert!(Config::load(None, env(&[("KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES", "0")])).is_ok());
+        let err = Config::load(
+            None,
+            env(&[("KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES", "1048576")]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("max_attachment_bytes"), "{err}");
+        assert!(Config::load(None, env(&[("KLAV_MAX_ITEMS_PER_ACCOUNT", "-1")])).is_err());
+        let file = Config::from_toml("[limits]\nmax_vaults_per_account = 20\n").unwrap();
+        assert_eq!(file.limits.max_vaults_per_account, 20);
+        // The invite bucket has defaults and must be positive.
+        let r = Config::default().rate_limit;
+        assert_eq!((r.invite_ip_per_minute, r.invite_ip_burst), (1, 10));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("klav.toml");
+        std::fs::write(&path, "[rate_limit]\ninvite_ip_burst = 0\n").unwrap();
+        assert!(Config::load(Some(&path), env(&[])).is_err());
     }
 
     #[test]

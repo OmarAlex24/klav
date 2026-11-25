@@ -6,11 +6,12 @@
 //! can't: every build of one version says the same number, and every
 //! build before 0.9.0 said `0.0.0`.
 //!
-//! `klav-cli`, `klav-proxy` and `klav-forward` run this same file
-//! (`build = "../klav-daemon/build.rs"`), for `klav-proxy --version` and
-//! `klav-forward --version` too. Only the binaries read what it writes
-//! (`OUT_DIR/build_identity.rs`), so no library crate reads the commit;
-//! `klav-server` doesn't depend on any of these packages and never runs it.
+//! `klav-cli`, `klav-proxy`, `klav-forward` and `klav-server` run this same
+//! file (`build = "../klav-daemon/build.rs"`), for `klav-proxy --version`,
+//! `klav-forward --version` and `klav-server --version` too (the Linux
+//! release checks the server's, ADR 0048 §5.2). Only the binaries read what
+//! it writes (`OUT_DIR/build_identity.rs`), so no library crate reads the
+//! commit: `GET /v1/health` still says only the version number.
 //!
 //! **The marker.** The binary carries one line, `klav-build-identity: `
 //! followed by exactly what `--version` prints after the program's name and
@@ -235,8 +236,8 @@ fn source(version: &str, identity: Option<&Identity>) -> String {
         .replace("@PREFIX@", &MARKER_PREFIX.len().to_string())
 }
 
-/// `OUT_DIR/build_identity.rs`, which `klav`, `klavd`, `klav-proxy` and
-/// `klav-forward` include.
+/// `OUT_DIR/build_identity.rs`, which `klav`, `klavd`, `klav-proxy`,
+/// `klav-forward` and `klav-server` include.
 const TEMPLATE: &str = r#"/// The commit this binary was built from (`build.rs`).
 pub(crate) const COMMIT: Option<&str> = @COMMIT@;
 /// That commit's committer time, in Unix seconds.

@@ -3,7 +3,8 @@
 //! ```text
 //! klav-server [--config <path>]               serve
 //! klav-server healthcheck [--config <path>]   exit 0 if GET /v1/health answers 200
-//! klav-server --version
+//! klav-server invite create|ls|revoke …       manage registration invites (ADR 0048 §1.4)
+//! klav-server --version                       version, commit and its time
 //! ```
 //!
 //! The config path can also come from `KLAV_CONFIG`; every setting can be
@@ -14,14 +15,22 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use klav_server::{Config, Server, telemetry};
+use klav_server::{Config, Server, invites, telemetry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const USAGE: &str = "usage: klav-server [healthcheck] [--config <path>] | --version";
+/// The commit this binary was built from (`klav-daemon/build.rs`): only
+/// `--version` reads it.
+#[allow(dead_code)]
+mod build {
+    include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
+}
+
+const USAGE: &str = "usage: klav-server [healthcheck | invite …] [--config <path>] | --version";
 
 enum Command {
     Serve,
     Healthcheck,
+    Invite(invites::Command),
     Version,
 }
 
@@ -29,15 +38,21 @@ fn parse_args() -> Result<(Command, Option<PathBuf>), String> {
     let mut args = std::env::args().skip(1);
     let mut path = std::env::var_os("KLAV_CONFIG").map(PathBuf::from);
     let mut command = Command::Serve;
+    let mut invite: Option<Vec<String>> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" | "-c" => {
                 path = Some(PathBuf::from(args.next().ok_or("--config needs a path")?));
             }
+            _ if invite.is_some() => invite.get_or_insert_default().push(arg),
             "--version" | "-V" => command = Command::Version,
             "healthcheck" => command = Command::Healthcheck,
+            "invite" => invite = Some(Vec::new()),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
+    }
+    if let Some(rest) = invite {
+        command = Command::Invite(invites::parse(&rest)?);
     }
     Ok((command, path))
 }
@@ -109,7 +124,7 @@ async fn main() -> ExitCode {
         }
     };
     if let Command::Version = command {
-        say(false, &format!("klav-server {}", klav_server::VERSION));
+        say(false, &format!("klav-server {}", build::version()));
         return ExitCode::SUCCESS;
     }
     let config = match Config::load(path.as_deref(), std::env::vars()) {
@@ -119,13 +134,33 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Command::Healthcheck = command {
-        return if healthcheck(&config).await {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        };
-    }
+    let command = match command {
+        Command::Healthcheck => {
+            return if healthcheck(&config).await {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+        }
+        // No telemetry: the code goes to stdout only, and nothing is
+        // logged (ADR 0048 §1.4, T251).
+        Command::Invite(invite) => {
+            return match invites::run(&config, invite).await {
+                Ok(out) => {
+                    say(false, out.trim_end());
+                    ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    say(true, &format!("klav-server: {message}"));
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        other => other,
+    };
+    let Command::Serve = command else {
+        return ExitCode::FAILURE;
+    };
     telemetry::init(&config.log);
 
     let listen = config.listen;

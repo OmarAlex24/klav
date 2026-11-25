@@ -206,6 +206,19 @@ async fn create(
             "too many unfinished uploads ({limit} bytes at most): finish or wait for them"
         )));
     }
+    // The account's attachment quota (ADR 0048 §3.2), at the declaration:
+    // the size is fixed here and chunks can't exceed it, so `complete`
+    // needs no check.
+    crate::quota::check(
+        &mut tx,
+        &state.config().limits,
+        &owner,
+        crate::quota::Delta {
+            attachment_bytes: size,
+            ..Default::default()
+        },
+    )
+    .await?;
     let now = now_ms();
     let inserted = sqlx::query(
         "INSERT INTO attachments (id, vault_id, item_id, size, received, wrapped_key, revision, \

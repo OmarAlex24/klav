@@ -100,6 +100,7 @@ impl TestServer {
                 &RegisterStartRequest {
                     email: email.into(),
                     registration_request: Blob::new(request),
+                    invite: None,
                 },
             )
             .await;
@@ -116,6 +117,7 @@ impl TestServer {
                     kdf_params: Blob::new(declared.as_ref().unwrap_or(&params).encode()),
                     public_identity: Blob::new(identity.public().encode().to_vec()),
                     sealed_identity: Blob::new(sealed),
+                    invite: None,
                 },
             )
             .await;

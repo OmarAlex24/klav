@@ -7,6 +7,9 @@ rust-version.workspace = true
 license = "AGPL-3.0-only"
 repository.workspace = true
 publish.workspace = true
+# The build's identity for `--version` (ADR 0048 §5.2), the same script as
+# klav's and klavd's.
+build = "../klav-daemon/build.rs"
 
 [dependencies]
 klav-core.workspace = true

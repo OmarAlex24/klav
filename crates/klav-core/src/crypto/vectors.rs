@@ -3191,7 +3191,10 @@ fn invite_spellings(code: &str) -> Vec<String> {
     vec![
         code.to_lowercase(),
         bare.clone(),
-        format!("klav {}", code[super::invite::PREFIX.len()..].replace('-', " ")),
+        format!(
+            "klav {}",
+            code[super::invite::PREFIX.len()..].replace('-', " ")
+        ),
         format!("KLAV-{aliased}"),
     ]
 }
