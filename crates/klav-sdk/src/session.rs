@@ -1396,7 +1396,10 @@ pub(crate) async fn forbidden(res: reqwest::Response) -> ClientError {
         Err(ClientError::Paused(paused)) => return ClientError::Paused(paused),
         // The person asked to delete the account (ADR 0037 §3): exit 8.
         Err(ClientError::AccountDeleting(at)) => return ClientError::AccountDeleting(at),
-        Err(ClientError::Api { message, .. }) => message,
+        // Over a quota (ADR 0048 §3.2): still a refusal to an agent (exit
+        // code and MCP answer unchanged), with the server's words on which
+        // limit.
+        Err(ClientError::QuotaExceeded(message) | ClientError::Api { message, .. }) => message,
         _ => "forbidden".to_owned(),
     };
     ClientError::Denied(format!(

@@ -32,6 +32,7 @@ async fn generated_passwords_reach_every_device_and_can_be_deleted() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -153,6 +154,7 @@ async fn an_edit_keeps_the_previous_password() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -210,6 +212,7 @@ async fn retention_reaches_every_generator_history_item() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

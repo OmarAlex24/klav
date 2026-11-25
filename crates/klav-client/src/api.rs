@@ -303,6 +303,20 @@ pub async fn error(res: Response) -> ClientError {
     {
         return ClientError::AccountDeleting(b.delete_at);
     }
+    // An invite that cannot be used (ADR 0048 §1.3), by its code and not
+    // its status: a `429` or `404` from the same route is not one.
+    if let Some(b) = body.as_ref()
+        && b.error == ErrorCode::InviteInvalid
+    {
+        return ClientError::InviteInvalid;
+    }
+    // Over a quota (ADR 0048 §3.2): the server's message says which, as
+    // it came.
+    if let Some(b) = body.as_ref()
+        && b.error == ErrorCode::QuotaExceeded
+    {
+        return ClientError::QuotaExceeded(b.message.clone());
+    }
     // A wrong master password to delete the account (ADR 0037 §1): never a
     // `401`, which would read as the end of the session.
     if let Some(b) = body.as_ref()
@@ -374,6 +388,60 @@ mod tests {
         // Within the limit: read whole.
         let url = serve("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n".into(), 10).await;
         assert_eq!(read_limited(get(&url).await, 1024).await.unwrap().len(), 10);
+    }
+
+    /// An error answer with `body`.
+    async fn answer(status: &str, body: &str) -> Response {
+        let head = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        get(&serve(head, 0).await).await
+    }
+
+    #[tokio::test]
+    async fn invite_and_quota_errors_are_read_by_their_code() {
+        let invalid = answer(
+            "403 Forbidden",
+            r#"{"error":"invite_invalid","message":"This invite code isn't valid for this email"}"#,
+        )
+        .await;
+        assert!(matches!(error(invalid).await, ClientError::InviteInvalid));
+
+        let msg = "Attachments for this account are limited to 250 MiB (248.3 MiB used). Delete some, or empty the trash.";
+        let quota = answer(
+            "403 Forbidden",
+            &format!(r#"{{"error":"quota_exceeded","message":"{msg}"}}"#),
+        )
+        .await;
+        let e = error(quota).await;
+        assert!(
+            matches!(&e, ClientError::QuotaExceeded(m) if m == msg),
+            "{e:?}"
+        );
+        // Shown as it came, with nothing around it.
+        assert_eq!(e.to_string(), msg);
+
+        // The status alone says nothing: a plain 403 or a 429 from the
+        // same route is not an invalid invite.
+        let forbidden = answer(
+            "403 Forbidden",
+            r#"{"error":"forbidden","message":"forbidden"}"#,
+        )
+        .await;
+        assert!(matches!(
+            error(forbidden).await,
+            ClientError::Api { status: 403, .. }
+        ));
+        let limited = answer(
+            "429 Too Many Requests",
+            r#"{"error":"too_many_requests","message":"slow down"}"#,
+        )
+        .await;
+        assert!(matches!(
+            error(limited).await,
+            ClientError::Api { status: 429, .. }
+        ));
     }
 
     /// What a [`Closer`] does with each request it reads.

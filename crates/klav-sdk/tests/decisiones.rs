@@ -60,6 +60,7 @@ async fn account(server: &ServerProcess, dir: &tempfile::TempDir) -> Unlocked {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -976,4 +977,47 @@ async fn the_agent_fills_the_login_it_created_and_nobody_touched() {
         confirmed,
         ["https://accounts.signup.example", "https://signup.example"]
     );
+}
+
+/// An agent's write over a quota (ADR 0048 §3.2) stays a refusal, as any
+/// other `403` to an agent (the same exit code and MCP answer), and carries
+/// the server's words on which limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_over_a_quota_is_refused_with_the_servers_words() {
+    let server = ServerProcess::start_config("[limits]\nmax_items_per_account = 1\n");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ana = account(&server, &dir).await;
+    let policy = Policy {
+        rules: vec![Rule::new(Permission::Create, Effect::Allow)],
+        expires_at: None,
+    };
+    let bot = agent(&server, &dir, &mut ana, policy).await;
+    let mut session = Session::open(bot).await.expect("session");
+    let vault = ana.find_vault("Personal").expect("vault");
+    let project = ana.find_project(vault, "General").expect("project");
+    let new = |title: &str| klav_client::ops::NewItem {
+        kind: ItemKind::Login,
+        title: title.into(),
+        vault: None,
+        project: None,
+        fields: Vec::new(),
+        urls: Vec::new(),
+        tags: Vec::new(),
+        notes: None,
+        allow_duplicate: false,
+    };
+    session
+        .create_item(project, &new("First"), "store it", Duration::ZERO)
+        .await
+        .expect("one item fits");
+    match session
+        .create_item(project, &new("Second"), "store it", Duration::ZERO)
+        .await
+    {
+        Err(ClientError::Denied(message)) => assert!(
+            message.contains("This account is limited to 1 items"),
+            "{message}"
+        ),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }

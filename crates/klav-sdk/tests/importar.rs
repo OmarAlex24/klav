@@ -40,6 +40,7 @@ async fn an_import_never_confirms_an_agents_site() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

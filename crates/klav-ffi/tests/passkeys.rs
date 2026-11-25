@@ -109,6 +109,7 @@ fn the_extension_registers_offline_and_the_app_uploads_it() {
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         ))
         .unwrap();
@@ -282,6 +283,7 @@ fn replacing_a_queued_passkey_offline_keeps_one_upload() {
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         ))
         .unwrap();

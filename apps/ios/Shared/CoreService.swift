@@ -61,6 +61,10 @@ extension KlavError {
             // Formatted here: the AutoFill extension has no Shared/App.
             let day = Date(timeIntervalSince1970: TimeInterval(deleteAt) / 1000).formatted(.dateTime.month(.wide).day())
             return String(localized: "The server scheduled the deletion for \(day), but this iPhone couldn’t save it. It shows after the next sync.")
+        // ADR 0048 §2, §3.2: the invite, in the person's language; a
+        // quota, in the server's words (which limit, used, maximum).
+        case .InviteInvalid: return String(localized: "This invite code isn’t valid for this email.")
+        case .QuotaExceeded(let message): return message
         case .Invalid(let message): return message
         }
     }

@@ -9,6 +9,12 @@ import AppKit
 ///   -KlavSection requests|agents|sandboxes|activity|clients|health|vault
 ///   -KlavItem <id>                the item open in the vault
 ///   -KlavSheet uninstall|signIn|signUp   a sheet open in the window
+///   -KlavSampleRegistration invite|closed   how the sample's server takes
+///                                 accounts in «Create your account» (ADR 0048);
+///                                 its only good invite is KLAV-SAMPLE
+///   -KlavSampleInvite <code>      that code typed in the «Invite code» field,
+///                                 and the e-mail ana@example.com
+///   -KlavSampleInviteChecked YES  «Continue» pressed on it
 ///   -KlavSheet connect-<client>   the summary of «Connect» in Clients
 ///   -KlavAdvanced YES             «Advanced options» open in «Set up this Mac»
 ///   -KlavSetupAgents YES          the window stays on «Set up this Mac» for
@@ -123,6 +129,12 @@ enum Snapshot {
     static var accountSheet: AccountSheet.Mode? {
         UserDefaults.standard.string(forKey: "KlavSheet").flatMap(AccountSheet.Mode.init(rawValue:))
     }
+
+    /// `-KlavSampleInvite <code>`: typed in «Invite code» (with `-KlavSheet
+    /// signUp` on an invite server); with `-KlavSampleInviteChecked YES`,
+    /// «Continue» runs on its own, so the next step or the refusal shows.
+    static var sampleInvite: String? { UserDefaults.standard.string(forKey: "KlavSampleInvite") }
+    static var sampleInviteChecked: Bool { UserDefaults.standard.bool(forKey: "KlavSampleInviteChecked") }
 
     /// `-KlavSheet trash`: the item view asks once it has the item.
     @MainActor static func takeTrashSheet() -> Bool {

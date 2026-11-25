@@ -27,6 +27,7 @@ async fn account(server: &ServerProcess, home: &Home) -> klav_client::Unlocked {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: klav_proto::auth::DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

@@ -99,6 +99,7 @@ async fn the_report_finds_reused_weak_and_old_passwords_without_values() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

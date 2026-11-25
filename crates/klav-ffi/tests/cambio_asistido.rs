@@ -81,6 +81,7 @@ fn laptop(rt: &tokio::runtime::Runtime, server: &str, dir: &std::path::Path) -> 
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         )
         .await

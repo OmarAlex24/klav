@@ -98,6 +98,54 @@ impl ServerProcess {
         Self::start_with(900, "[retention]\npurge_interval_secs = 1\n")
     }
 
+    /// A server in `invite` mode (ADR 0048 §1.1), as production runs it:
+    /// `allow_registration = false` next to it.
+    pub fn start_invite() -> Self {
+        Self::start_config("registration_mode = \"invite\"\nallow_registration = false\n")
+    }
+
+    /// A server with `top` before its sections (top-level keys, or whole
+    /// sections such as `[limits]`).
+    pub fn start_config(top: &str) -> Self {
+        Self::start_with(900, top)
+    }
+
+    /// `klav-server invite create <args>` against this server's database
+    /// (ADR 0048 §1.4): returns the code and the invite's ID. The code is a
+    /// test value: never printed.
+    pub fn create_invite(&self, args: &[&str]) -> (String, String) {
+        let out = self.invite_command(&[&["create"], args].concat());
+        let field = |name: &str| {
+            out.lines()
+                .find_map(|l| l.strip_prefix(name))
+                .map(|v| v.trim().to_owned())
+                .expect("invite create prints the field")
+        };
+        (field("code:"), field("id:"))
+    }
+
+    /// `klav-server invite revoke <id>`.
+    pub fn revoke_invite(&self, id: &str) {
+        self.invite_command(&["revoke", id]);
+    }
+
+    fn invite_command(&self, args: &[&str]) -> String {
+        let out = std::process::Command::new(server_binary())
+            .arg("invite")
+            .args(args)
+            .arg("--config")
+            .arg(self.dir.path().join("server.toml"))
+            .output()
+            .expect("run klav-server invite");
+        assert!(
+            out.status.success(),
+            "klav-server invite {} failed: {}",
+            args.first().copied().unwrap_or_default(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf-8")
+    }
+
     fn start_with(access_ttl_secs: u64, top_level: &str) -> Self {
         let dir = server_dir();
         let config = format!(
@@ -107,7 +155,7 @@ impl ServerProcess {
              {top_level}\
              [log]\nformat = \"json\"\nfilter = \"warn,klav_server=info\"\n\
              [sessions]\naccess_ttl_secs = {access_ttl_secs}\n\
-             [rate_limit]\nauth_ip_burst = 10000\nauth_email_burst = 10000\nip_burst = 100000\naccount_burst = 100000\n",
+             [rate_limit]\nauth_ip_burst = 10000\nauth_email_burst = 10000\nip_burst = 100000\naccount_burst = 100000\ninvite_ip_burst = 10000\n",
             db = dir.path().join("klav.db").display(),
             data = dir.path().join("data").display(),
         );

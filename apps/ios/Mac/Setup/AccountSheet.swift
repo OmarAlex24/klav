@@ -7,8 +7,14 @@ import SwiftUI
 /// only one that keeps the vault open.
 protocol AccountMaker: Sendable {
     func signIn(server: String, email: String, password: String, secretKey: String, deviceName: String) throws
-    /// Returns the emergency kit as text (it holds the Secret Key).
-    func signUp(server: String, email: String, password: String, deviceName: String) throws -> String
+    /// Returns the emergency kit as text (it holds the Secret Key). `invite`
+    /// goes only to a server in `invite` mode (ADR 0048 §2).
+    func signUp(server: String, email: String, password: String, deviceName: String, invite: String?) throws -> String
+    /// How `server` takes new accounts (ADR 0048 §1.2). Blocks.
+    func mode(of server: String) throws -> RegistrationMode
+    /// Throws `KlavError.InviteInvalid` unless `invite` can be used by
+    /// `email` on `server` now. Blocks.
+    func check(invite: String, email: String, server: String) throws
 }
 
 /// `KlavCore` on this Mac's `KLAV_HOME`, without a keystore: Touch ID is
@@ -23,10 +29,19 @@ struct LiveAccounts: AccountMaker {
                             deviceName: deviceName, keystore: nil)
     }
 
-    func signUp(server: String, email: String, password: String, deviceName: String) throws -> String {
+    func signUp(server: String, email: String, password: String, deviceName: String, invite: String?) throws -> String {
         let core = try KlavCore(homeDir: homeDir)
         defer { core.lock() }
-        return try core.signUp(server: server, email: email, password: password, deviceName: deviceName)
+        return try core.signUp(server: server, email: email, password: password, deviceName: deviceName,
+                               invite: invite)
+    }
+
+    func mode(of server: String) throws -> RegistrationMode {
+        try registrationMode(server: server)
+    }
+
+    func check(invite: String, email: String, server: String) throws {
+        try checkInvite(server: server, email: email, invite: invite)
     }
 }
 
@@ -40,7 +55,10 @@ struct AccountSheet: View {
     @EnvironmentObject private var model: MacModel
     @Environment(\.dismiss) private var dismiss
 
-    enum Field: Hashable { case server, email, password, confirm, secretKey, device }
+    enum Field: Hashable { case server, email, invite, password, confirm, secretKey, device }
+
+    /// Where a person without a code asks for one (ADR 0048 §4).
+    static let requestInvite = URL(string: "https://klav.dev/#beta")!
 
     @State private var server = ""
     @State private var ownServer = defaultServer() == nil
@@ -51,6 +69,16 @@ struct AccountSheet: View {
     @State private var deviceName = AccountSheet.thisMac
     @State private var busy = false
     @State private var problem: String?
+    /// How the chosen server takes accounts (sign-up only): `nil` until it
+    /// answers, or when it can't be asked, and then the server decides.
+    @State private var registration: RegistrationMode?
+    /// The server whose mode is being asked for.
+    @State private var askingMode: String?
+    @State private var invite = ""
+    /// The invite passed «Continue» for the server, e-mail and code on
+    /// screen; any change to them asks again.
+    @State private var inviteChecked = false
+    @State private var inviteProblem: String?
     /// The new account's kit: shown once, printed or saved as a PDF where
     /// the person chooses, dropped when the sheet closes.
     @State private var kit: String?
@@ -70,12 +98,28 @@ struct AccountSheet: View {
         return try? serverFromInput(text: typed)
     }
 
+    /// A sign-up on a server that takes accounts by invite (ADR 0048 §2).
+    private var needsInvite: Bool { mode == .signUp && registration == .invite }
+
+    /// The master password is asked once the server said how it takes
+    /// accounts and, on an invite server, once the invite passed: the form
+    /// only grows, it never swaps fields under the person.
+    private var asksPassword: Bool {
+        mode == .signIn || (askingMode == nil && (!needsInvite || inviteChecked))
+    }
+
+    private var trimmedInvite: String { invite.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     private var ready: Bool {
         guard chosenServer != nil, email.contains("@"), !password.isEmpty, !busy else { return false }
         switch mode {
         case .signIn: return !secretKey.isEmpty
-        case .signUp: return password == confirm
+        case .signUp: return password == confirm && askingMode == nil && asksPassword
         }
+    }
+
+    private var readyToCheck: Bool {
+        chosenServer != nil && email.contains("@") && !trimmedInvite.isEmpty && !busy && askingMode == nil
     }
 
     var body: some View {
@@ -93,7 +137,7 @@ struct AccountSheet: View {
         // its unlock, or unlocked before the kit is kept.
         .onAppear { model.accountSheetOpen = true }
         .onDisappear {
-            kit = nil; password = ""; confirm = ""; secretKey = ""
+            kit = nil; password = ""; confirm = ""; secretKey = ""; invite = ""
             model.accountSheetOpen = false
         }
     }
@@ -122,6 +166,8 @@ struct AccountSheet: View {
                         .focused($focus, equals: .email)
                     .inputBox(focused: focus == .email)
             }
+            if needsInvite { inviteField }
+            if asksPassword {
             labelled("Master password") {
                 SecureField("", text: $password)
                     .textContentType(mode == .signUp ? .newPassword : .password)
@@ -129,7 +175,8 @@ struct AccountSheet: View {
                         .focused($focus, equals: .password)
                     .inputBox(focused: focus == .password)
             }
-            if mode == .signUp {
+            }
+            if mode == .signUp && asksPassword {
                 labelled("Master password again") {
                     SecureField("", text: $confirm)
                         .textContentType(.newPassword)
@@ -140,7 +187,7 @@ struct AccountSheet: View {
                 if !confirm.isEmpty, confirm != password {
                     Text("The two passwords don’t match.").font(.ui(12.5)).foregroundStyle(Palette.rojo)
                 }
-            } else {
+            } else if mode == .signIn {
                 labelled("Secret Key") {
                     SecureField("", text: $secretKey, prompt: placeholder(String("K1-XXXX-XXXX-…"), font: .mono(13)))
                         .textFieldStyle(.plain)
@@ -163,16 +210,113 @@ struct AccountSheet: View {
                 Button("Cancel") { dismiss() }
                     .buttonStyle(SecondaryButtonStyle(compact: true, block: false))
                     .keyboardShortcut(.cancelAction)
-                Button(busy ? (mode == .signIn ? "Signing in…" : "Creating…")
-                       : (mode == .signIn ? "Sign in" : "Create the account")) { Task { await submit() } }
-                    .buttonStyle(PrimaryButtonStyle(compact: true))
-                    .fixedSize()
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!ready)
+                if asksPassword {
+                    Button(busy ? (mode == .signIn ? "Signing in…" : "Creating…")
+                           : (mode == .signIn ? "Sign in" : "Create the account")) { Task { await submit() } }
+                        .buttonStyle(PrimaryButtonStyle(compact: true))
+                        .fixedSize()
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!ready)
+                } else {
+                    Button(busy ? "Checking…" : "Continue") { Task { await checkInvite() } }
+                        .buttonStyle(PrimaryButtonStyle(compact: true))
+                        .fixedSize()
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!readyToCheck)
+                }
             }
         }
         .padding(24)
         .onAppear { focus = ownServer ? .server : .email }
+        // The «Invite code» field follows the chosen server, also «Use my
+        // own server» as it is typed (ADR 0048 §2).
+        .task(id: mode == .signUp ? chosenServer : nil) { await readMode() }
+        .onChange(of: email) { forgetInviteCheck() }
+        .onChange(of: invite) { forgetInviteCheck() }
+        .onChange(of: chosenServer) { forgetInviteCheck() }
+    }
+
+    /// The «Invite code» field, under the e-mail. A refused code says so
+    /// under it, with where to request one.
+    private var inviteField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            labelled("Invite code") {
+                TextField("", text: $invite, prompt: placeholder(String("KLAV-XXXXX-XXXXX-…"), font: .mono(13)))
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+                    .focused($focus, equals: .invite)
+                    .inputBox(focused: focus == .invite, font: .mono(13))
+                    .onSubmit { if readyToCheck && !inviteChecked { Task { await checkInvite() } } }
+            }
+            if let inviteProblem {
+                Text(inviteProblem).font(.ui(12.5)).foregroundStyle(Palette.rojo)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Not once the code passed: the password step needs the room.
+            if !inviteChecked {
+                Button("Request an invite") { NSWorkspace.shared.open(Self.requestInvite) }
+                    .buttonStyle(LinkButtonStyle())
+            }
+        }
+    }
+
+    /// Asks the chosen server how it takes accounts, a moment after the
+    /// last keystroke. An answer for a server no longer chosen is dropped.
+    private func readMode() async {
+        guard mode == .signUp, let server = chosenServer else {
+            registration = nil
+            askingMode = nil
+            return
+        }
+        askingMode = server
+        // Typing «Use my own server» changes the server on every key; the
+        // default server is asked at once.
+        if ownServer {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+        }
+        let answer = await model.registrationMode(server: server)
+        guard !Task.isCancelled, chosenServer == server else { return }
+        registration = answer
+        askingMode = nil
+        if answer == .invite, focus == .password || focus == .confirm { focus = .invite }
+        #if DEBUG
+        if Engines.sample, answer == .invite, let code = Snapshot.sampleInvite, invite.isEmpty {
+            email = "ana@example.com"
+            invite = code
+            if Snapshot.sampleInviteChecked {
+                // After the `onChange`s of the two fields above.
+                try? await Task.sleep(for: .milliseconds(50))
+                await checkInvite()
+            }
+        }
+        #endif
+    }
+
+    private func forgetInviteCheck() {
+        inviteChecked = false
+        inviteProblem = nil
+    }
+
+    /// «Continue»: the invite is checked before the master password is
+    /// asked, so a bad code never costs a kit (ADR 0048 §2).
+    private func checkInvite() async {
+        guard readyToCheck, let server = chosenServer else { return }
+        busy = true
+        problem = nil
+        inviteProblem = nil
+        let email = email.trimmingCharacters(in: .whitespaces)
+        do {
+            try await model.checkInvite(server: server, email: email, invite: trimmedInvite)
+            inviteChecked = true
+            focus = .password
+        } catch KlavError.InviteInvalid {
+            inviteProblem = KlavError.InviteInvalid.macMessage
+            focus = .invite
+        } catch {
+            problem = describe(error)
+        }
+        busy = false
     }
 
     private func labelled<Content: View>(_ label: LocalizedStringKey, @ViewBuilder content: () -> Content) -> some View {
@@ -191,11 +335,17 @@ struct AccountSheet: View {
         do {
             let kit = try await model.makeAccount(signUp: mode == .signUp, server: server, email: email,
                                                   password: password, secretKey: secretKey,
-                                                  deviceName: device.isEmpty ? "Mac" : device)
+                                                  deviceName: device.isEmpty ? "Mac" : device,
+                                                  invite: needsInvite ? trimmedInvite : nil)
             self.password = ""
             self.confirm = ""
             self.secretKey = ""
             if let kit { self.kit = kit } else { dismiss() }
+        } catch KlavError.InviteInvalid {
+            // Spent meanwhile (the last seat of a code): back under its field.
+            inviteChecked = false
+            inviteProblem = KlavError.InviteInvalid.macMessage
+            focus = .invite
         } catch {
             problem = describe(error)
         }

@@ -291,13 +291,14 @@ final class MacModel: ObservableObject, RequestsModel {
     /// phase, which may go `.signedOut` → `.locked` → `.unlocked` when the
     /// poll lands between signing in and `klavd`'s unlock.
     func makeAccount(signUp: Bool, server: String, email: String, password: String, secretKey: String,
-                     deviceName: String, stepDecided: Bool? = nil) async throws -> String? {
+                     deviceName: String, invite: String? = nil, stepDecided: Bool? = nil) async throws -> String? {
         let stepDecided = stepDecided ?? AgentsStep.decided
         let accounts = accounts, engine = engine
         let kit = try await Task.detached(priority: .userInitiated) { () -> String? in
             var kit: String?
             if signUp {
-                kit = try accounts.signUp(server: server, email: email, password: password, deviceName: deviceName)
+                kit = try accounts.signUp(server: server, email: email, password: password, deviceName: deviceName,
+                                          invite: invite)
             } else {
                 try accounts.signIn(server: server, email: email, password: password, secretKey: secretKey,
                                     deviceName: deviceName)
@@ -310,6 +311,21 @@ final class MacModel: ObservableObject, RequestsModel {
         if !stepDecided { agentsStepPending = true }
         refresh()
         return kit
+    }
+
+    /// How `server` takes new accounts (ADR 0048 §1.2), off the main
+    /// thread; `nil` when it can't be asked (the sign-up then decides).
+    func registrationMode(server: String) async -> RegistrationMode? {
+        let accounts = accounts
+        return try? await Task.detached(priority: .userInitiated) { try accounts.mode(of: server) }.value
+    }
+
+    /// Checks an invite before the master password (ADR 0048 §2).
+    func checkInvite(server: String, email: String, invite: String) async throws {
+        let accounts = accounts
+        try await Task.detached(priority: .userInitiated) {
+            try accounts.check(invite: invite, email: email, server: server)
+        }.value
     }
 
     init(engine: MacEngine, accounts: AccountMaker) {

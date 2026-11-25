@@ -2,6 +2,7 @@
 
 use klav_core::crypto::CryptoError;
 use klav_core::crypto::identity::{IdentityKeyPair, PublicIdentity, open_identity, seal_identity};
+use klav_core::crypto::invite::InviteCode;
 use klav_core::crypto::kdf::{
     AccountKeys, KdfParams, MasterPassword, derive_account_keys, derive_kek,
 };
@@ -26,6 +27,7 @@ use crate::api::{self, Api};
 use crate::deletion::DeletionMarker;
 use crate::error::{ClientError, ClientResult};
 use crate::home::{Home, write_private};
+use crate::server::Registration;
 use crate::session::Unlocked;
 use crate::state::{AccountFile, Cache, Tokens};
 use crate::url::ServerUrl;
@@ -42,6 +44,10 @@ pub struct SignupRequest {
     pub device_name: String,
     /// Kind of this device.
     pub device_kind: DeviceKind,
+    /// Invite code, for a server in `invite` mode (ADR 0048 §2). Checked
+    /// before the emergency kit and the key derivation, and sent only to a
+    /// server that said `invite`: on any other it is dropped.
+    pub invite: Option<InviteCode>,
 }
 
 /// Input of [`login`].
@@ -100,17 +106,30 @@ pub async fn signup_with(
     let api = Api::new(server.clone())?;
     let email = normalise_email(&req.email);
 
-    // Check whether the server advertises closed registration before delivering
-    // the kit or deriving Argon2id keys (ADR 0028 §3). Servers without
-    // `registration_open` fall through and let `/v1/auth/register/start` decide.
-    if matches!(
-        crate::server::registration_open(server.as_str()).await,
-        Ok(Some(false))
-    ) {
-        return Err(ClientError::Invalid(
-            crate::server::registration_closed_message(server.as_str()),
-        ));
-    }
+    // How the server takes accounts, before the kit is delivered or any key
+    // is derived (ADR 0028 §3, ADR 0048 §2). A server that says nothing
+    // (older than ADR 0028) lets `register/start` decide. A health check
+    // that fails stops here: going on could write a kit for an account the
+    // server then refuses.
+    let invite = match crate::server::registration_mode(server.as_str()).await? {
+        Registration::Closed => {
+            return Err(ClientError::Invalid(
+                crate::server::registration_closed_message(server.as_str()),
+            ));
+        }
+        Registration::Invite => {
+            let invite = req.invite.ok_or_else(|| {
+                ClientError::Invalid(crate::server::invite_required_message(server.as_str()))
+            })?;
+            // The fast failure: a bad invite never costs a kit or 256 MiB
+            // of Argon2id.
+            crate::server::check_invite(server.as_str(), &email, &invite).await?;
+            Some(invite)
+        }
+        // Never sent to a server that did not ask for it: an older one
+        // refuses unknown fields.
+        Registration::Open | Registration::Unknown => None,
+    };
 
     let account_id = AccountId::generate();
     let kit = EmergencyKit::new(
@@ -135,14 +154,12 @@ pub async fn signup_with(
             Some(&RegisterStartRequest {
                 email: email.clone(),
                 registration_request: Blob::new(request),
-                invite: None,
+                invite: invite.clone(),
             }),
         )
         .await?;
-    if start_res.status() == StatusCode::FORBIDDEN {
-        return Err(ClientError::Invalid(
-            crate::server::registration_closed_message(server.as_str()),
-        ));
+    if !start_res.status().is_success() {
+        return Err(refused(start_res, server.as_str(), &email).await);
     }
     let start: RegisterStartResponse = api::json(start_res).await?;
     let upload =
@@ -159,19 +176,12 @@ pub async fn signup_with(
                 kdf_params: Blob::new(params.encode()),
                 public_identity: Blob::new(identity.public().encode().to_vec()),
                 sealed_identity: Blob::new(sealed),
-                invite: None,
+                invite,
             }),
         )
         .await?;
-    if res.status() == StatusCode::FORBIDDEN {
-        return Err(ClientError::Invalid(
-            crate::server::registration_closed_message(server.as_str()),
-        ));
-    }
-    if res.status() == StatusCode::CONFLICT {
-        return Err(ClientError::Invalid(format!(
-            "an account with {email} already exists on this server"
-        )));
+    if !res.status().is_success() {
+        return Err(refused(res, server.as_str(), &email).await);
     }
     let _: RegisterFinishResponse = api::json(res).await?;
 
@@ -195,6 +205,22 @@ pub async fn signup_with(
         ));
     }
     Ok((unlocked, kit))
+}
+
+/// A refused `register/start` or `register/finish`, by its error code
+/// first: an invite that stopped working meanwhile (the last seat of a
+/// batch code, raced) or a quota keep their own errors; any other `403` is
+/// a registration that is not open, and a `409` an existing account.
+async fn refused(res: reqwest::Response, server: &str, email: &str) -> ClientError {
+    match api::error(res).await {
+        ClientError::Api { status: 403, .. } => {
+            ClientError::Invalid(crate::server::registration_closed_message(server))
+        }
+        ClientError::Api { status: 409, .. } => ClientError::Invalid(format!(
+            "an account with {email} already exists on this server"
+        )),
+        other => other,
+    }
 }
 
 /// Logs this device in to an existing account and syncs it.

@@ -64,6 +64,7 @@ async fn create_sign_in_and_a_second_device() {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

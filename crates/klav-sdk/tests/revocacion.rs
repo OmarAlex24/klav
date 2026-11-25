@@ -58,6 +58,7 @@ async fn account(server: &ServerProcess, dir: &tempfile::TempDir) -> (Unlocked, 
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

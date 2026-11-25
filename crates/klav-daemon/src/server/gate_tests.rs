@@ -186,6 +186,7 @@ async fn account(server: &ServerProcess, home: &Home, email: &str, password: &st
             password: MasterPassword::new(password),
             device_name: "laptop".into(),
             device_kind: klav_proto::auth::DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

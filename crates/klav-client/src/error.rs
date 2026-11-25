@@ -121,6 +121,17 @@ pub enum ClientError {
     /// Someone else changed the item first.
     #[error("the item changed on the server (now at version {0}); sync and retry")]
     Conflict(u64),
+    /// The server is in `invite` mode and this invite code cannot be used
+    /// by this email now (`403 invite_invalid`, ADR 0048 §1.3): unknown,
+    /// revoked, expired, used up or bound to another email. One answer for
+    /// every reason. Never carries the code.
+    #[error("This invite code isn't valid for this email.")]
+    InviteInvalid,
+    /// The write would take the account over one of its quotas
+    /// (`403 quota_exceeded`, ADR 0048 §3.2). The server's message, as it
+    /// came: which limit, how much is used and the maximum.
+    #[error("{0}")]
+    QuotaExceeded(String),
     /// A pause or a resume older than the scope's latest decision, decided
     /// at this time (Unix ms, ADR 0033 §7.6). Sign again after it to keep
     /// the decision.

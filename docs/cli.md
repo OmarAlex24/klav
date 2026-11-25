@@ -114,6 +114,7 @@ klav signup --email ana@example.com --emergency-kit ~/Desktop/klav-kit.txt
 klav login  --email ana@example.com \
   --emergency-kit ~/Desktop/klav-kit.txt      # en otro dispositivo
 klav signup --server https://klav.example.com --email ana@example.com …  # servidor propio
+klav signup --email ana@example.com --invite KLAV-XXXXX-…   # servidor por invitación (mejor sin --invite: lo pregunta)
 klav status            # sin contraseña: cuenta, servidor, dispositivo, daemon
 klav sync              # trae los cambios del servidor
 klav sync --reset-cache [--yes]   # olvida la copia local y las marcas y descarga todo
@@ -162,14 +163,47 @@ klav logout [--yes] [--discard-unsent]       # cerrar sesión y borrar la copia 
   - Con `KLAV_NO_DEFAULT_SERVER=1` no hay servidor por defecto: sin `--server`,
     el comando falla. Lo fijan los arneses de prueba, para que ninguna prueba
     llegue a producción.
-- **Registro cerrado:** antes de pedir la contraseña, `signup` pregunta a
-  `GET /v1/health` si el servidor acepta cuentas nuevas. Si no
-  (`registration_open: false`), dice «Registration on klav.dev is not open yet.
-  You can host your own server: https://docs.klav.dev/self-hosting/» (con el
-  nombre del servidor: `klav.dev` para el de por defecto, el *host* de la URL
-  para otro; `klav_client::server::registration_closed_message`) y no crea
-  nada. Hoy el registro en
-  klav.dev está cerrado; `login` funciona.
+- **Cómo acepta cuentas el servidor** ([ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §2):
+  antes de pedir la contraseña, `signup` lee `GET /v1/health`
+  (`klav_client::server::registration_mode`). Primero `registration_mode`
+  (`open`, `invite` o `closed`); si no viene (un servidor anterior), usa
+  `registration_open`, como antes. Un modo que esta versión no conoce cuenta
+  como `closed`. Si `/v1/health` no responde, `signup` se detiene ahí: no
+  escribe un kit para una cuenta que quizá no exista.
+  - **`closed`** (o `registration_open: false`): dice «Registration on
+    klav.dev is not open yet. You can host your own server:
+    https://docs.klav.dev/self-hosting/» (con el nombre del servidor:
+    `klav.dev` para el de por defecto, el *host* de la URL para otro;
+    `klav_client::server::registration_closed_message`) y no crea nada.
+  - **`invite`**: hace falta un código de invitación. Se da con
+    `--invite CODE` o `KLAV_INVITE`; sin ninguno de los dos, `signup` lo pide
+    después del correo y antes de la contraseña: «Invite code:», **visible**
+    al escribirlo (es de un solo uso y va ligado a un correo, no es un secreto
+    de larga vida; así se puede pegar y revisar). Sin terminal no lo lee de
+    stdin, donde va la contraseña (`--password-stdin`): falla con un error de
+    uso que dice que se dé con `--invite` o `KLAV_INVITE`.
+    - El código se comprueba con `POST /v1/auth/invite/check` **antes** de la
+      contraseña, del kit y de Argon2id. Si no sirve, dice «This invite code
+      isn't valid for <correo>. Check the code, or request one at
+      https://klav.dev.» y sale con error, sin kit, sin `account.json` y sin
+      derivar nada. La respuesta es la misma por cualquier motivo (no existe,
+      revocado, vencido, agotado o de otro correo).
+    - `signup` lo vuelve a comprobar justo antes del kit y lo manda en
+      `register/start` y `register/finish`. Si el último uso de un código de
+      grupo se gasta entre medias, el registro falla con el mismo mensaje
+      (y el aviso de borrar el kit, que ya se escribió).
+    - `--invite` queda en el historial de la *shell* y en `ps` hasta que se
+      usa; `KLAV_INVITE` o la pregunta lo evitan. Un código usado o vencido ya
+      no sirve de nada. `--help` nombra `KLAV_INVITE` pero nunca muestra su
+      valor, y `klav` nunca imprime el código.
+  - **`open`** o un servidor que no dice nada: no hace falta código, y si se
+    da uno no se manda (un servidor anterior rechaza campos que no conoce).
+  - Hoy klav.dev está cerrado; `login` funciona en cualquier modo.
+- **Cuotas** (ADR 0048 §3): si el servidor limita lo que guarda cada cuenta y
+  una escritura lo pasaría (`403 quota_exceeded`), `klav` muestra el mensaje
+  del servidor tal cual, que dice qué límite, cuánto se usa y el máximo
+  (`ClientError::QuotaExceeded`), por ejemplo «This account is limited to 20
+  vaults (20 used; …)». Borrar, mover a la papelera y leer nunca se niegan.
 - **Mudanza automática:** al desbloquear (CLI y `klavd`), si `account.json`
   tiene una URL de la tabla, el cliente pide `GET /v1/account` a la nueva con
   el token de acceso. Solo si responde con la misma cuenta y la misma

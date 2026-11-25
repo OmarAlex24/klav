@@ -104,6 +104,7 @@ async fn an_attachment_uploads_to_a_server_without_item_version() {
             password: MasterPassword::new("correct horse battery staple"),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

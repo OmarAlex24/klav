@@ -30,6 +30,7 @@ async fn agent_labels_sync_and_stay_in_system_project() {
             password: MasterPassword::new(PASSWORD),
             device_name: "mac".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

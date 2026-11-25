@@ -67,6 +67,7 @@ fn the_phone_shows_confirms_and_removes_sites_an_agent_added() {
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         )
         .await

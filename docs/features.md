@@ -92,7 +92,7 @@ Bitwarden (JSON without a password, with passkeys; CSV), 1Password (`.1pux`; CSV
 
 ### Your account, devices and servers
 
-- **Create an account** on a device: CLI `klav signup` and the Mac app's "Set up this Mac". **Sign in:** CLI `klav login`, the Mac app and the iOS app. The server is `api.klav.dev` by default; "Use my own server" points to yours. [cli.md §3](cli.md#3-cuenta-y-dispositivos)
+- **Create an account** on a device: CLI `klav signup` and the Mac app's "Set up this Mac". **Sign in:** CLI `klav login`, the Mac app and the iOS app. The server is `api.klav.dev` by default; "Use my own server" points to yours. On a server in invite mode, both ask for an invite code (`--invite`, `KLAV_INVITE` or a prompt in the CLI; "Invite code" in the Mac app) and check it before the password. When a server's per-account quota would be exceeded, they show its message. [cli.md §3](cli.md#3-cuenta-y-dispositivos)
 - **Emergency kit** with the Secret Key: shown when you create the account, and again with `klav account kit`, or "Print the emergency kit" on iOS.
 - **Unlock:** Touch ID on a Mac through `klavd`, Face ID on the iPhone, or the master password. `klavd` locks after a time without use (15 minutes by default) and when the computer sleeps. Unlocking in the Mac app also unlocks the extension and the CLI. [klavd.md §6](klavd.md#6-touch-id-macos)
 - **Move to another server URL:** `klav account set-server`, and "Use another server" in iOS Settings.

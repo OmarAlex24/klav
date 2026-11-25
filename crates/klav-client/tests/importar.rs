@@ -25,6 +25,7 @@ async fn imports_merge_and_keep_every_password() {
             password: MasterPassword::new("correct horse battery staple"),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

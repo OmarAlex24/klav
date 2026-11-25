@@ -124,6 +124,7 @@ async fn the_deletion_survives_a_restart_and_cancelling_asks_for_presence() {
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: klav_proto::auth::DeviceKind::Cli,
+                invite: None,
             },
         )
         .await

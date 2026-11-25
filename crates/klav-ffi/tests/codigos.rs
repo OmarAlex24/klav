@@ -42,6 +42,7 @@ fn laptop(server: &str, dir: &std::path::Path) -> String {
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         )
         .await
@@ -428,6 +429,7 @@ fn saving_a_code_confirms_the_sites_an_agent_added() {
                 password: MasterPassword::new(PASSWORD),
                 device_name: "laptop".into(),
                 device_kind: DeviceKind::Cli,
+                invite: None,
             },
         )
         .await

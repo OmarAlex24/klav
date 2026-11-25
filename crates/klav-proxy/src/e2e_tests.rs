@@ -352,6 +352,7 @@ async fn mode_a_end_to_end() {
             password: MasterPassword::new("correct horse battery staple"),
             device_name: "laptop".into(),
             device_kind: klav_proto::auth::DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

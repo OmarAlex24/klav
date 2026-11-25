@@ -28,6 +28,7 @@ async fn sign_up(server: &str, home: &Home, email: &str) -> Unlocked {
             password: MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
             device_kind: DeviceKind::Cli,
+            invite: None,
         },
     )
     .await
@@ -192,6 +193,7 @@ async fn registration_open_is_known_before_any_password() {
             password: klav_core::crypto::kdf::MasterPassword::new("correct-horse-battery"),
             device_name: "Mac".into(),
             device_kind: klav_proto::auth::DeviceKind::Macos,
+            invite: None,
         },
         |_| {
             delivered = true;

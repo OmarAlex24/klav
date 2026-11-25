@@ -3,7 +3,9 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
-use klav_client::{LoginRequest, SignupRequest, kit, login, server, signup_with};
+use klav_client::server::Registration;
+use klav_client::{ClientError, LoginRequest, SignupRequest, kit, login, server, signup_with};
+use klav_core::crypto::invite::InviteCode;
 use klav_core::crypto::kdf::MasterPassword;
 use klav_core::crypto::secret_key::{EmergencyKit, SecretKey};
 use klav_proto::auth::DeviceKind;
@@ -80,13 +82,30 @@ pub(crate) async fn signup_cmd(ctx: &mut Ctx, args: SignupArgs) -> CliResult<()>
     // Decide where the kit goes before creating anything.
     check_kit_target(args.emergency_kit.as_deref())?;
     let server = choose_server(args.server)?;
-    // A closed registration is said before the password is asked (ADR
-    // 0028 §3). A server that does not say lets the sign-up decide.
-    if server::registration_open(&server).await? == Some(false) {
-        return Err(CliError::Other(server::registration_closed_message(
-            &server,
-        )));
-    }
+    let email = args.email;
+    // How the server takes accounts, said before the password is asked
+    // (ADR 0028 §3, ADR 0048 §2). A server that does not say lets the
+    // sign-up decide.
+    let invite = match server::registration_mode(&server).await? {
+        Registration::Closed => {
+            return Err(CliError::Other(server::registration_closed_message(
+                &server,
+            )));
+        }
+        Registration::Invite => {
+            let invite = match args.invite {
+                Some(invite) => invite,
+                None => ask_invite(ctx, &server)?,
+            };
+            // Checked now, so a bad code never costs the password, the kit
+            // or the key derivation.
+            server::check_invite(&server, &email, &invite)
+                .await
+                .map_err(|e| invite_error(e, &email))?;
+            Some(invite)
+        }
+        Registration::Open | Registration::Unknown => None,
+    };
     let password = ctx.input.new_password()?;
     output::info("Deriving keys (Argon2id, 256 MiB)…");
     // The kit is written (or shown) before the account is registered: a
@@ -98,10 +117,11 @@ pub(crate) async fn signup_cmd(ctx: &mut Ctx, args: SignupArgs) -> CliResult<()>
         &ctx.home,
         SignupRequest {
             server,
-            email: args.email,
+            email: email.clone(),
             password: MasterPassword::new(password.as_str()),
             device_name: args.device_name.unwrap_or_else(hostname),
             device_kind: DeviceKind::Cli,
+            invite,
         },
         |emergency| {
             match &kit_path {
@@ -127,7 +147,7 @@ pub(crate) async fn signup_cmd(ctx: &mut Ctx, args: SignupArgs) -> CliResult<()>
                     path.display()
                 ));
             }
-            return Err(e.into());
+            return Err(invite_error(e, &email));
         }
     };
     for w in unlocked.warnings() {
@@ -150,6 +170,31 @@ pub(crate) async fn signup_cmd(ctx: &mut Ctx, args: SignupArgs) -> CliResult<()>
     }
     output::info(&format!("Local state: {}", ctx.home.dir().display()));
     Ok(())
+}
+
+/// The invite code, typed visibly after the e-mail and before the password
+/// (ADR 0048 §2). Without a terminal it is never read from stdin, where the
+/// master password goes: the error says to use `--invite` or `KLAV_INVITE`.
+fn ask_invite(ctx: &mut Ctx, server: &str) -> CliResult<InviteCode> {
+    let missing = format!(
+        "{} Without a terminal, give it with --invite CODE or KLAV_INVITE.",
+        server::invite_required_message(server)
+    );
+    let typed = ctx.input.prompt_visible("Invite code: ", &missing)?;
+    Ok(InviteCode::new(typed.as_str()))
+}
+
+/// An invite that cannot be used, in the words of ADR 0048 §2; any other
+/// error as it is.
+fn invite_error(e: ClientError, email: &str) -> CliError {
+    match e {
+        ClientError::InviteInvalid => CliError::Other(format!(
+            "This invite code isn't valid for {}. Check the code, or request one at {}.",
+            email.trim(),
+            server::INVITE_REQUEST_URL
+        )),
+        other => other.into(),
+    }
 }
 
 /// Finds `Secret Key: K1-…` in an emergency kit file.

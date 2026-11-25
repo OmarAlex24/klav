@@ -409,6 +409,7 @@ async fn account(server: &common::ServerProcess, dir: &Path) -> klav_client::Unl
             password: klav_core::crypto::kdf::MasterPassword::new("correct horse battery staple"),
             device_name: "laptop".into(),
             device_kind: klav_proto::auth::DeviceKind::Cli,
+            invite: None,
         },
     )
     .await

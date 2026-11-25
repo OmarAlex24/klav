@@ -484,7 +484,7 @@ Omar lo aceptó el 2026-11-23 con las cinco opciones recomendadas (Q1–Q5): un 
 Omar lo aceptó el 2026-11-25 con la opción (a) en Q1–Q7: `klav-server` gana `registration_mode` (`open`, `invite`, `closed`) y códigos de invitación de un solo uso o de grupo, las cuentas tienen cuatro cuotas, la lista de espera se vuelve la cola de invitaciones y el servidor se instala sin Docker. No cambia la fase en curso.
 - [x] ADR 0048 aceptado el 2026-11-25 con las respuestas de Omar a Q1–Q7; modelo de amenazas §5.25 (T242–T253 y riesgos 98–100)
 - [x] Capa 1 (servidor): `klav-core::crypto::invite` (especificación §4.7 y `docs/vectores/invite.json`), tipos de `klav-proto`, `registration_mode`, migración 0021, `POST /v1/auth/invite/check` y la invitación en `register/*`, `klav-server invite create|ls|revoke`, las cuatro cuotas con el candado de la cuenta (también en `create_vault`), el límite de invitaciones por IP y la identidad de compilación en `klav-server --version`; pruebas en SQLite y Postgres
-- [ ] Capa 2 (clientes): `klav-client`, `klav signup` (`--invite`, `KLAV_INVITE`), `klav-ffi` y la app de Mac
+- [x] Capa 2 (clientes): `klav-client`, `klav signup` (`--invite`, `KLAV_INVITE`), `klav-ffi` y la app de Mac
 - [ ] Capa 3 (sitio): la lista de espera como cola de invitaciones y el texto de la beta en inglés y español
 - [ ] Capa 4 (distribución): `klav-server` en la compilación de Linux y el kit, la unidad de systemd, `docker-compose.yml` con la imagen fijada, README, `self-hosting.md`/`apps/docs` y las fórmulas de Homebrew
 
