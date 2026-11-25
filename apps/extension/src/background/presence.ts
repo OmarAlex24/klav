@@ -16,6 +16,7 @@
  * native connection, and klavd keeps only its last ask there. Without the
  * gate klavd sends neither, so nothing here runs.
  */
+import { t } from "../shared/i18n";
 import { DaemonError, type PresenceAsk, type Request } from "../shared/protocol";
 import type { NativeBridge } from "./native";
 
@@ -57,8 +58,17 @@ export function isPresenceId(id: string): boolean {
   return id.startsWith(PREFIX);
 }
 
-export function declined(message = "the person declined in the browser"): DaemonError {
+const DECLINED = "the person declined in the browser";
+const NO_FRAME = "Klav could not show its frame in this tab";
+const LATE = "the person did not answer in the browser in time";
+
+export function declined(message = DECLINED): DaemonError {
   return new DaemonError("denied", message);
+}
+
+/** A refusal this module made (the person, the frame or the clock), not klavd's. */
+function isDecline(e: DaemonError): boolean {
+  return e.message === DECLINED || e.message === NO_FRAME || e.message === LATE;
 }
 
 /**
@@ -94,10 +104,10 @@ export function askInTab<T>(tabId: number, ask: PresenceAsk, attempt: (password:
       open.set(id, entry);
       timers.push(
         setTimeout(() => {
-          if (!entry.loaded) entry.settle(declined("Klav could not show its frame in this tab"));
+          if (!entry.loaded) entry.settle(declined(NO_FRAME));
         }, LOAD_MS),
         setTimeout(() => {
-          entry.settle(declined("the person did not answer in the browser in time"));
+          entry.settle(declined(LATE));
         }, ANSWER_MS),
       );
       void showFrame(tabId, id);
@@ -187,7 +197,7 @@ export function onPresenceEvent(bridge: NativeBridge, event: Record<string, unkn
 }
 
 /** Requests that hand a value out and may get `presence_required` from the gate. */
-type Gated = Extract<Request, { op: "autofill" }>;
+type Gated = Extract<Request, { op: "autofill" | "view" }>;
 
 /**
  * `request` for a fill into `tabId`: with the gate on and no window open,
@@ -200,6 +210,12 @@ export async function callInTab<T>(bridge: NativeBridge, tabId: number, request:
     return await bridge.call<T>(request);
   } catch (e) {
     if (!(e instanceof DaemonError) || e.code !== "presence_required" || !e.presence) throw e;
-    return askInTab(tabId, e.presence, (password) => bridge.call<T>({ ...request, password }));
+    return askInTab(tabId, e.presence, (password) => bridge.call<T>({ ...request, password })).catch((declinedOrNot: unknown) => {
+      // The person's own fill: why nothing was filled, in their language.
+      if (declinedOrNot instanceof DaemonError && declinedOrNot.code === "denied" && isDecline(declinedOrNot)) {
+        throw new DaemonError("denied", t(declinedOrNot.message === NO_FRAME ? "presence_no_frame" : "presence_declined"));
+      }
+      throw declinedOrNot;
+    });
   }
 }

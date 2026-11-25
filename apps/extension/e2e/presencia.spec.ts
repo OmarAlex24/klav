@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Agent, type Browser, frameOf, KLAV_BIN, launch, PASSWORD, registerAgent, type Stack, startStack, waitArmed } from "./harness";
+import { type Agent, type Browser, clickIn, frameOf, KLAV_BIN, launch, openMenu, PASSWORD, registerAgent, type Stack, startStack, unlockForm, waitArmed } from "./harness";
 import { McpClient } from "./mcp";
 import { type Site, startSite } from "./site";
 
@@ -206,5 +206,48 @@ test("with two browsers attached, values go only when exactly one is in front, t
     await front(true);
   }
   expect(client.seen.join("\n")).not.toContain(SECRET);
+  await page.close();
+});
+
+test("the person's own fill asks once in Klav's frame, and a password unlock opens what it says", async () => {
+  const page = await loginPage();
+  const fillFromMenu = async (): Promise<void> => {
+    // A fresh page each time: after a fill the field's menu stays closed.
+    await page.reload();
+    const menu = await openMenu(page, page.locator("#username"));
+    const choice = menu.getByRole("button", { name: /Sitio local/ });
+    await expect(choice).toBeVisible();
+    await waitArmed(page);
+    await clickIn(choice);
+  };
+
+  // No window for this browser yet (the CLI's unlock opened none for it):
+  // the fill asks in Klav's frame, never in the page.
+  await fillFromMenu();
+  const frame = await frameOf(page, "/passkey.html");
+  await expect(frame.getByText("Klav wants to let this browser use your vault for 5 minutes.")).toBeVisible();
+  await waitArmed(page);
+  await frame.getByLabel("Master password, to confirm").fill(PASSWORD);
+  await frame.getByRole("button", { name: "Confirm" }).click();
+  await expect(page.locator("#password")).toHaveValue(SECRET);
+
+  // Within the window: no question.
+  await fillFromMenu();
+  await expect(page.locator("#password")).toHaveValue(SECRET);
+  expect(page.frames().some((f) => f.url().includes("/passkey.html"))).toBe(false);
+
+  // Locked, the menu's unlock says what the password also opens, and opens
+  // it (`shown`): the next fill asks nothing.
+  stack.klav(["lock"]);
+  await page.reload();
+  const menu = await openMenu(page, page.locator("#username"));
+  await expect(menu.getByText("Unlocking also lets this browser use your vault for 5 minutes.")).toBeVisible();
+  await unlockForm(menu);
+  const choice = menu.getByRole("button", { name: /Sitio local/ });
+  await expect(choice).toBeVisible();
+  await waitArmed(page);
+  await clickIn(choice);
+  await expect(page.locator("#password")).toHaveValue(SECRET);
+  expect(page.frames().some((f) => f.url().includes("/passkey.html"))).toBe(false);
   await page.close();
 });

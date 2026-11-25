@@ -228,8 +228,8 @@ async function offerAddSite(tabId: number, url: string, login: Suggestion): Prom
  * confirmed it in the palette with that frame's host in view. Only the
  * username and password; never the one-time code's seed.
  */
-async function valuesElsewhere(item: string): Promise<AutofillValues> {
-  const view = await bridge.call<ItemView>({ op: "view", query: item, reveal: true });
+async function valuesElsewhere(tabId: number, item: string): Promise<AutofillValues> {
+  const view = await callInTab<ItemView>(bridge, tabId, { op: "view", query: item, reveal: true });
   try {
     if (view.kind !== "login") throw new DaemonError("denied", "only logins need a confirmation");
     const fields: FillValue[] = [];
@@ -287,7 +287,7 @@ async function fillItem(
     if (!(await klavCore()).fillableHost(target.url)) {
       throw new DaemonError("denied", "Klav only fills into https pages (or http on this machine)");
     }
-    values = await valuesElsewhere(item);
+    values = await valuesElsewhere(target.tabId, item);
   }
   if (options.part !== "totp" && matching) rememberLogin(target.tabId, values);
   const hasTotp = values.kind === "login" && values.fields.some((f) => f.kind === "totp");

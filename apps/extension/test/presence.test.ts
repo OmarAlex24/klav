@@ -261,6 +261,17 @@ describe("the background's question", () => {
     ]);
   });
 
+  it("tells the person, in their language, why their own fill filled nothing", async () => {
+    const { bridge } = fakeBridge(() =>
+      Promise.reject(new DaemonError("presence_required", "presence", { key: "parent", window: "5m", value: { kind: "fill", title: "GitHub" } })),
+    );
+    useLocale("es");
+    const filled = callInTab(bridge, 4, { op: "autofill", item: "A", url: "https://github.com/login" });
+    await settled();
+    presenceClosed(shown[0]?.id ?? "");
+    await expect(filled).rejects.toMatchObject({ code: "denied", message: "Dijiste que no: no se rellenó nada." });
+  });
+
   it("without the gate, fills with one call and shows nothing", async () => {
     const { bridge, calls } = fakeBridge(() => Promise.resolve({ kind: "login", fields: [] }));
     await callInTab(bridge, 4, { op: "autofill", item: "A", url: "https://github.com/login" });
