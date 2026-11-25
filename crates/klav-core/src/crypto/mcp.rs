@@ -176,6 +176,20 @@ pub fn mcp_args_digest(
     Sha256::digest(tuple.as_slice()).into()
 }
 
+/// Label of the proxy's in-memory digest of a tool's definition.
+pub const LABEL_TOOL_DEFINITION: &str = "klav/v1/proxy/tool-definition";
+
+/// `SHA-256(tuple("klav/v1/proxy/tool-definition", raw_element))`: what the
+/// proxy keeps in memory of each tool `tools/list` showed, to log when the
+/// definition behind a name changes (ADR 0049 §5.2, rug-pull detection).
+/// Local only: it never leaves the proxy, is never signed and is no wire
+/// format, so it has no vectors.
+pub fn tool_definition_digest(raw_element: &[u8]) -> [u8; DIGEST_LEN] {
+    let mut t = Tuple::new(LABEL_TOOL_DEFINITION);
+    t.push(raw_element);
+    Sha256::digest(t.into_bytes().as_slice()).into()
+}
+
 /// The text form of a digest: base64url without padding.
 pub fn digest_text(digest: &[u8; DIGEST_LEN]) -> String {
     BASE64URL_NOPAD.encode(digest)

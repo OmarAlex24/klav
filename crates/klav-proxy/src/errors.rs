@@ -51,6 +51,15 @@ pub enum ProxyError {
     /// A sandbox's call: the proxy ended the sandbox while the call waited
     /// for the server, and says why ([`ended_message`]).
     SandboxEnded(klav_proto::sandbox::SandboxEnd),
+    /// A call on the loopback listener to an MCP profile without a local
+    /// client token the proxy's grant has (ADR 0049 §3.2).
+    LocalClientUnknown,
+    /// An `MCP-Session-Id` the proxy did not see this caller open (ADR 0049
+    /// §5.2, T266): `404`, which makes an MCP client start a new session.
+    McpSessionUnknown,
+    /// A request to an MCP profile the proxy does not forward (ADR 0049
+    /// §5.1): why, in fixed words.
+    McpRefused(&'static str),
 }
 
 /// What the key of an ended sandbox is told: why it ended, in fixed words
@@ -121,6 +130,11 @@ pub enum NotAllowed {
     /// `--no-local-calls` (ADR 0042 §3): only sandboxes, through the
     /// channel, reach its profiles.
     LocalCallsOff,
+    /// An MCP profile forwards only `POST`, `GET` and `DELETE` on its
+    /// endpoint, without a query (ADR 0049 §2.1).
+    McpEndpointOnly,
+    /// The local client may not use this MCP profile (ADR 0049 §3.2).
+    LocalClientProfile,
     /// The server refused the call, and the proxy's own copy of the grant
     /// says why: its rules for this credential and host allow other paths,
     /// never this one. Which paths is not said.
@@ -147,6 +161,9 @@ pub enum Blocked {
     /// The body could not be checked to the end (a redacted stretch too
     /// long to hold, or the stream broke).
     Body,
+    /// An MCP server answered `401`: it wants an OAuth sign-in, which
+    /// Klav doesn't support yet (ADR 0049 §4).
+    OAuthOnly,
 }
 
 impl ProxyError {
@@ -163,6 +180,9 @@ impl ProxyError {
             Self::SandboxRevoked => "klav_sandbox_revoked",
             Self::SandboxExpired => "klav_sandbox_expired",
             Self::SandboxEnded(reason) => ended_code(*reason),
+            Self::LocalClientUnknown => "klav_local_client_unknown",
+            Self::McpSessionUnknown => "klav_mcp_session_unknown",
+            Self::McpRefused(_) => "klav_mcp_refused",
         }
     }
 
@@ -177,15 +197,21 @@ impl ProxyError {
             Self::ApprovalPending { .. } => StatusCode::CONFLICT,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::UpstreamBlocked(_) => StatusCode::BAD_GATEWAY,
-            Self::SandboxRevoked | Self::SandboxExpired | Self::SandboxEnded(_) => {
-                StatusCode::UNAUTHORIZED
-            }
+            Self::SandboxRevoked
+            | Self::SandboxExpired
+            | Self::SandboxEnded(_)
+            | Self::LocalClientUnknown => StatusCode::UNAUTHORIZED,
+            Self::McpSessionUnknown => StatusCode::NOT_FOUND,
+            Self::McpRefused(_) => StatusCode::BAD_REQUEST,
         }
     }
 
     pub(crate) fn message(&self) -> std::borrow::Cow<'static, str> {
         if let Self::SandboxEnded(reason) = self {
             return ended_message(*reason).into();
+        }
+        if let Self::McpRefused(why) = self {
+            return format!("Klav's credential proxy refused this MCP request: {why}.").into();
         }
         if let Self::PathRefused(why) = self {
             return format!(
@@ -233,6 +259,21 @@ impl ProxyError {
             Self::NotAllowed(NotAllowed::OutsideMethodOnPath) => {
                 "This call's method on this path is outside what the person allowed for this credential."
             }
+            Self::NotAllowed(NotAllowed::McpEndpointOnly) => {
+                "This MCP profile only forwards POST, GET and DELETE to its MCP endpoint, without a query."
+            }
+            Self::NotAllowed(NotAllowed::LocalClientProfile) => {
+                "This local client may not use this MCP profile: the person did not connect it to this server."
+            }
+            Self::LocalClientUnknown => {
+                "Klav's credential proxy needs this MCP client's own local client token (Authorization: Bearer klc1_…) to use an MCP profile, and this request has none it knows."
+            }
+            Self::McpSessionUnknown => {
+                "Klav's credential proxy does not know this MCP session for this caller: start a new session."
+            }
+            Self::UpstreamBlocked(Blocked::OAuthOnly) => {
+                "This MCP server needs an OAuth sign-in, which Klav doesn't support yet; use an API key if the vendor offers one."
+            }
             Self::NotAllowed(NotAllowed::Unverifiable) => {
                 "Klav's credential proxy could not verify the Klav server's answer, so it did not use the credential."
             }
@@ -260,12 +301,14 @@ impl ProxyError {
                 "This sandbox's access to Klav's credential proxy has ended: it was stopped, revoked, or its issuer was removed or paused."
             }
             Self::SandboxExpired => "This sandbox's time with Klav's credential proxy is over.",
-            Self::PathRefused(_) | Self::SandboxEnded(_) => unreachable!("handled above"),
+            Self::PathRefused(_) | Self::SandboxEnded(_) | Self::McpRefused(_) => {
+                unreachable!("handled above")
+            }
         };
         text.into()
     }
 
-    fn next(&self) -> &'static str {
+    pub(crate) fn next(&self) -> &'static str {
         match self {
             Self::ApprovalPending { .. } => {
                 "Tell the person what you asked for and that it waits for their approval on their phone or Mac. Retry the same request once they approve; do not change it to get around the approval."
@@ -278,6 +321,12 @@ impl ProxyError {
             }
             Self::SandboxRevoked | Self::SandboxExpired | Self::SandboxEnded(_) => {
                 "Tell the person this exact message and stop. Only the person or the agent that started the sandbox can start another one. Do not retry and do not look for the token elsewhere."
+            }
+            Self::LocalClientUnknown => {
+                "Tell the person to run `klav client connect` for this MCP client, which writes its token into the client's configuration. Do not look for the token elsewhere."
+            }
+            Self::McpSessionUnknown => {
+                "Start a new MCP session (initialize again) without the old MCP-Session-Id."
             }
             Self::ApprovalDenied | Self::NotAllowed(_) => {
                 "Tell the person this exact message and stop. Do not retry another way and do not look for the token elsewhere."

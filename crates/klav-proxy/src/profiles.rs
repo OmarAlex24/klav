@@ -50,6 +50,44 @@ pub struct Profile {
     pub upstream: Upstream,
     /// Most calls per minute.
     pub rate_per_minute: u32,
+    /// An MCP profile's endpoint and fixed headers (ADR 0049 §2.1): the
+    /// proxy forwards only that path and governs its JSON-RPC
+    /// ([`crate::mcp`]).
+    pub mcp: Option<McpEndpoint>,
+}
+
+/// What makes a [`Profile`] an MCP profile, ready to use.
+#[derive(Debug, Clone)]
+pub struct McpEndpoint {
+    /// The upstream's MCP endpoint path, canonical.
+    pub endpoint: String,
+    /// The fixed, non-secret headers the person signed, sent on every
+    /// request in place of any the caller sent with the same name.
+    pub headers: Vec<(HeaderName, HeaderValue)>,
+}
+
+impl McpEndpoint {
+    /// From the grant's `mcp`, or `None` when an endpoint or a header does
+    /// not parse (the grant was checked when it was opened; this fails
+    /// closed on anything a newer format could mean differently).
+    fn of(mcp: &klav_proto::agent::McpProfile) -> Option<Self> {
+        if !klav_core::policy::is_canonical_path(&mcp.endpoint)
+            || mcp.endpoint.len() > klav_proto::agent::MAX_MCP_ENDPOINT
+        {
+            return None;
+        }
+        let mut headers = Vec::new();
+        for h in &mcp.headers {
+            headers.push((
+                HeaderName::from_bytes(h.name.as_bytes()).ok()?,
+                HeaderValue::from_str(&h.value).ok()?,
+            ));
+        }
+        Some(Self {
+            endpoint: mcp.endpoint.clone(),
+            headers,
+        })
+    }
 }
 
 /// The profiles of the grant in force, by name.
@@ -64,16 +102,24 @@ impl Profiles {
     /// host name is left out (the grant was checked when it was opened; this
     /// fails closed on anything a newer format could mean differently).
     ///
-    /// An MCP profile (`v: 4`, ADR 0049 §2.1) is left out too until the
-    /// proxy reads, checks and filters its JSON-RPC (ADR 0049, layer 4):
-    /// served as a plain mode (a) profile, its session rule would let every
-    /// tool through, which the signed tool rules say it must not.
+    /// An MCP profile (`v: 4`, ADR 0049 §2.1) keeps its endpoint and
+    /// headers, and is served only through [`crate::mcp`], which reads,
+    /// checks and filters its JSON-RPC: one whose endpoint or headers do
+    /// not parse is left out, never served as a plain profile, whose
+    /// session rule would let every tool through.
     pub fn from_grant(grant: &OpenGrant) -> Self {
         let mut by_name = HashMap::new();
         for p in &grant.payload.profiles {
-            if p.mcp.is_some() || !grant.items.contains_key(&p.item_id) {
+            if !grant.items.contains_key(&p.item_id) {
                 continue;
             }
+            let mcp = match &p.mcp {
+                Some(m) => match McpEndpoint::of(m) {
+                    Some(m) => Some(m),
+                    None => continue,
+                },
+                None => None,
+            };
             let Some((host, port)) = p.upstream_host() else {
                 continue;
             };
@@ -93,6 +139,7 @@ impl Profiles {
                     prefix: p.prefix.clone(),
                     upstream: Upstream { host, port },
                     rate_per_minute: p.rate(),
+                    mcp,
                 },
             );
         }
@@ -144,6 +191,9 @@ impl Profile {
                 "credential proxy call"
             },
             sandbox,
+            mcp_tool: None,
+            mcp_args: None,
+            local_client: None,
         }
     }
 
@@ -309,6 +359,7 @@ mod tests {
                 port: 443,
             },
             rate_per_minute: 60,
+            mcp: None,
         }
     }
 
@@ -436,11 +487,11 @@ mod tests {
         );
     }
 
-    /// ADR 0049, layers 2–3 before layer 4: a grant may name MCP profiles,
-    /// and the proxy serves none of them yet, rather than serving one as a
-    /// plain profile whose session rule would let every tool through.
+    /// ADR 0049 layer 4: an MCP profile keeps its endpoint and headers,
+    /// and one whose endpoint does not parse is left out, never served as
+    /// a plain profile whose session rule would let every tool through.
     #[test]
-    fn mcp_profiles_are_not_served_until_the_proxy_governs_them() {
+    fn mcp_profiles_keep_their_endpoint_and_bad_ones_are_left_out() {
         use klav_core::crypto::context::ItemContext;
         use klav_core::crypto::keys::ItemKey;
         use klav_core::ids::{AccountId, AgentId, ProjectId, VaultId};
@@ -484,6 +535,17 @@ mod tests {
                         mcp,
                         Some(McpProfile {
                             endpoint: "/mcp".into(),
+                            headers: vec![klav_proto::agent::McpHeader {
+                                name: "x-toolsets".into(),
+                                value: "read".into(),
+                            }],
+                        }),
+                    ),
+                    profile(
+                        "broken",
+                        mcp,
+                        Some(McpProfile {
+                            endpoint: "/a/../mcp".into(),
                             headers: Vec::new(),
                         }),
                     ),
@@ -496,8 +558,14 @@ mod tests {
             items: HashMap::from([(plain, key(plain)), (mcp, key(mcp))]),
         };
         let profiles = Profiles::from_grant(&grant);
-        assert!(profiles.get("rest").is_some());
-        assert!(profiles.get("maple").is_none());
-        assert_eq!(profiles.len(), 1);
+        assert!(profiles.get("rest").is_some_and(|p| p.mcp.is_none()));
+        let maple = profiles
+            .get("maple")
+            .and_then(|p| p.mcp.as_ref())
+            .expect("mcp");
+        assert_eq!(maple.endpoint, "/mcp");
+        assert_eq!(maple.headers.len(), 1);
+        assert!(profiles.get("broken").is_none());
+        assert_eq!(profiles.len(), 2);
     }
 }
