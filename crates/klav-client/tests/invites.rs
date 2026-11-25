@@ -252,6 +252,10 @@ struct Older {
     http: reqwest::Client,
     no_open: bool,
     invites_seen: AtomicUsize,
+    /// Not an older server: health and `register/*` pass untouched, and
+    /// `invite/check` says yes to anything (an invite that stops working
+    /// between the check and the sign-up).
+    yes_to_checks: bool,
 }
 
 async fn forward(State(older): State<Arc<Older>>, req: Request) -> Response {
@@ -262,7 +266,13 @@ async fn forward(State(older): State<Arc<Older>>, req: Request) -> Response {
         .path_and_query()
         .map_or("/", |p| p.as_str())
         .to_owned();
-    if path.starts_with("/v1/auth/register/") && body.windows(8).any(|w| w == b"\"invite\"") {
+    if older.yes_to_checks && path == "/v1/auth/invite/check" {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if !older.yes_to_checks
+        && path.starts_with("/v1/auth/register/")
+        && body.windows(8).any(|w| w == b"\"invite\"")
+    {
         older.invites_seen.fetch_add(1, Ordering::SeqCst);
         return (
             StatusCode::BAD_REQUEST,
@@ -284,7 +294,7 @@ async fn forward(State(older): State<Arc<Older>>, req: Request) -> Response {
     let res = out.body(body).send().await.expect("forward");
     let status = res.status().as_u16();
     let mut bytes = res.bytes().await.expect("answer").to_vec();
-    if path == "/v1/health" {
+    if path == "/v1/health" && !older.yes_to_checks {
         let mut health: serde_json::Value = serde_json::from_slice(&bytes).expect("health");
         let map = health.as_object_mut().expect("object");
         map.remove("registration_mode");
@@ -301,11 +311,16 @@ async fn forward(State(older): State<Arc<Older>>, req: Request) -> Response {
 }
 
 async fn older(upstream: &str, no_open: bool) -> (String, Arc<Older>) {
+    forwarder(upstream, no_open, false).await
+}
+
+async fn forwarder(upstream: &str, no_open: bool, yes_to_checks: bool) -> (String, Arc<Older>) {
     let older = Arc::new(Older {
         upstream: upstream.trim_end_matches('/').to_owned(),
         http: reqwest::Client::new(),
         no_open,
         invites_seen: AtomicUsize::new(0),
+        yes_to_checks,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -370,4 +385,34 @@ async fn a_quota_says_which_limit_as_the_server_wrote_it() {
         }
         other => panic!("expected QuotaExceeded, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invite_refused_at_sign_up_is_not_a_closed_registration() {
+    // The check said yes, then `register/start` says `invite_invalid` (the
+    // last use of a batch code, taken meanwhile): the person hears about
+    // the invite, not "registration is not open yet".
+    let server = ServerProcess::start_invite();
+    let (url, _) = forwarder(&server.url, false, true).await;
+    let dir = tempfile::tempdir().unwrap();
+    let unknown = InviteCode::generate();
+    let (result, delivered) = sign_up(
+        dir.path(),
+        "raced",
+        request(&url, "ana@example.com", Some(unknown.expose())),
+    )
+    .await;
+    assert!(delivered, "the check passed, so the kit went out");
+    let e = result.err().expect("refused");
+    assert!(matches!(e, ClientError::InviteInvalid), "{e:?}");
+
+    // A server whose health doesn't answer stops the sign-up before the
+    // kit: going on could write one for an account it then refuses.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let e = refused_before_the_kit(
+        sign_up(dir.path(), "dead", request(&dead, "ana@example.com", None)).await,
+    );
+    assert!(matches!(e, ClientError::Network(_)), "{e:?}");
 }
