@@ -240,3 +240,31 @@ canvas.dither { display: block; width: 100%; height: 100%; image-rendering: pixe
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
 .gen-history-sure { flex-basis: 100%; }
+
+/* The presence gate's question over a page (ADR 0041 §3.2): the popup and
+   the field menu ask for the master password before a value comes out. */
+.presence-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(9 9 11 / 0.45);
+}
+.presence-box {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--papel);
+  color: var(--tinta);
+  border: 1px solid var(--linea);
+  box-shadow: var(--float-shadow);
+}
+.presence-box .section-title { padding: 0; font-size: 11px; color: var(--gris); }
+.presence-question { font-size: 14px; font-weight: 500; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.unlock-opens { color: var(--gris); font-size: 12px; }

@@ -18,7 +18,7 @@ import {
   type Suggestion,
   type Suggestions,
 } from "../shared/protocol";
-import { presence } from "./presence";
+import { gated, presence } from "./presence";
 import { watchApprovals } from "./approvals";
 import { clear, h } from "./dom";
 import { blocks, glyph, icon, iconButton, kindIcon, spaced } from "./kit";
@@ -32,6 +32,7 @@ import { mountHealth } from "./health";
 import { agentSites } from "./agentsites";
 import type { PasswordHistoryView } from "../shared/protocol";
 import type { TotpInfo } from "./newitem";
+import { unlockOpens } from "../shared/presence";
 
 localizePage();
 const app = document.getElementById("app") as HTMLElement;
@@ -139,7 +140,9 @@ function showLocked(status: DaemonStatus, problem?: DaemonError): void {
       required: true,
     });
     const submit = h("button", { class: "btn btn-primary", type: "submit" }, t("unlock"));
-    const form = h("form", { class: "unlock-form" }, input, submit);
+    // With the presence gate, what the password also opens (ADR 0041, own choice 34).
+    const opens = unlockOpens(status).line;
+    const form = h("form", { class: "unlock-form" }, input, submit, opens ? h("p", { class: "sub unlock-opens" }, opens) : null);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const password = input.value;
@@ -190,12 +193,16 @@ function showLocked(status: DaemonStatus, problem?: DaemonError): void {
 
 async function unlock(previous: DaemonStatus, repaint: Repaint, password?: string): Promise<void> {
   try {
-    const status = await daemon<DaemonStatus>(password === undefined ? { op: "unlock" } : { op: "unlock", password });
+    const { shown } = unlockOpens(previous);
+    const status = await daemon<DaemonStatus>(
+      password === undefined ? { op: "unlock" } : { op: "unlock", password, ...(shown ? { shown } : {}) },
+    );
     // The keyhole's light floods the field before the vault appears.
     await animate(400, (t) => {
       repaint(keyhole(t));
     });
     await showVault(status);
+    if (status.already_unlocked === true) toast(t("already_unlocked"));
   } catch (e) {
     showLocked(previous, errorOf(e));
   }
@@ -239,7 +246,7 @@ async function copy(value: string): Promise<void> {
 async function copyCode(id: string): Promise<void> {
   try {
     const shown = ticker.current(id);
-    const code = shown && shown.remaining > 1 ? shown.code : (await daemon<{ code: string }>({ op: "totp", query: id })).code;
+    const code = shown && shown.remaining > 1 ? shown.code : (await gated<{ code: string }>({ op: "totp", query: id })).code;
     await copy(code);
   } catch (e) {
     const error = errorOf(e);
@@ -860,7 +867,7 @@ function maskedValue(): { el: HTMLElement; show: (text: string) => Promise<void>
 async function showItem(id: string, context: VaultContext): Promise<void> {
   let view: ItemView;
   try {
-    view = await daemon<ItemView>({ op: "view", query: id, reveal: false });
+    view = await gated<ItemView>({ op: "view", query: id, reveal: false });
   } catch (e) {
     const error = errorOf(e);
     if (error.code === "locked") {
@@ -891,7 +898,7 @@ async function showItem(id: string, context: VaultContext): Promise<void> {
 
   /** The values of secret fields, fetched once and only when asked. */
   const secret = async (name: string): Promise<string | undefined> => {
-    revealed ??= await daemon<ItemView>({ op: "view", query: id, reveal: true });
+    revealed ??= await gated<ItemView>({ op: "view", query: id, reveal: true });
     return name === "\u0000notes" ? revealed.notes : revealed.fields.find((f) => f.name === name)?.value;
   };
 
@@ -923,7 +930,7 @@ async function showItem(id: string, context: VaultContext): Promise<void> {
     if (f.kind === "totp") {
       const code = liveCode(id, view.title, "l");
       stops.push(code.stop);
-      fieldRow(label, code.el, copyButton(label, async () => (await daemon<{ code: string }>({ op: "totp", query: id, field: f.name })).code));
+      fieldRow(label, code.el, copyButton(label, async () => (await gated<{ code: string }>({ op: "totp", query: id, field: f.name })).code));
       continue;
     }
     if (!f.secret) {
@@ -1045,7 +1052,7 @@ async function previousPasswords(id: string, section: HTMLElement, pendingSlot: 
     const when = p.unconfirmed ? t("previous_unconfirmed", range) : range;
     const value = maskedValue();
     let cached: string | undefined;
-    const get = async (): Promise<string> => (cached ??= await daemon<string>({ op: "previous_password", query: id, index: p.index }));
+    const get = async (): Promise<string> => (cached ??= await gated<string>({ op: "previous_password", query: id, index: p.index }));
     const toggle = h("button", { class: "btn btn-s", type: "button", "aria-label": t("previous_show", label, day(p.to_ms)) }, t("show"));
     toggle.addEventListener("click", () => {
       if (value.el.classList.contains("is-hidden")) {

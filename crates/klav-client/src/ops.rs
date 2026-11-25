@@ -519,6 +519,29 @@ impl Unlocked {
         Ok(view(self.item_summary(loc)?, &item, reveal))
     }
 
+    /// The items `references` name, in order, as [`Self::resolve_all`]
+    /// finds them, without reading any value: each reference parsed, its
+    /// item found and its field checked, with the same errors. `klavd`
+    /// binds a `resolve` to these, and their versions, before it asks for
+    /// presence (ADR 0041, Omar's decision K of 2026-11-19).
+    pub fn reference_items(&self, references: &[String]) -> ClientResult<Vec<ItemLocation>> {
+        references
+            .iter()
+            .map(|reference| {
+                let parsed = Reference::parse(reference.trim())?;
+                let resolved = parsed.resolve(self)?;
+                let loc = ItemLocation {
+                    vault: resolved.vault,
+                    project: resolved.project,
+                    item: resolved.item,
+                };
+                let item = self.open_item(loc)?;
+                resolve_field(&item, &resolved.field)?;
+                Ok(loc)
+            })
+            .collect()
+    }
+
     /// Resolves `klav://vault/project/item/field` references to their
     /// values (`run`, `inject`); `file` fields are downloaded.
     pub async fn resolve_all(&mut self, references: &[String]) -> ClientResult<Vec<ResolvedValue>> {

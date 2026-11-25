@@ -205,6 +205,11 @@ if [[ "$mode" == release ]]; then
       "$app/Contents/Helpers/$name"
   done
   echo "helpers: signed by $team"
+  # What keeps a program of the same user from attaching a debugger to the
+  # app or loading a library into it, and so from using its held connection
+  # to klavd (ADR 0041 §1.2, N10): on every Developer ID build.
+  "$root/scripts/macos/check-signature.sh" "$app" \
+    "$app/Contents/Helpers/klav" "$app/Contents/Helpers/klav-native-host" "$app/Contents/Helpers/klavd.app"
 fi
 
 app_bytes=$(size "$app")

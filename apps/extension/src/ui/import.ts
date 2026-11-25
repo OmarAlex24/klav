@@ -28,6 +28,7 @@ import { clear, h } from "./dom";
 import { glyph, icon, tile } from "./kit";
 import { siteTile } from "./siteicon";
 import { errorText, kindName } from "./strings";
+import { unlockOpens } from "../shared/presence";
 
 localizePage("imp_page_title");
 const app = document.getElementById("app") as HTMLElement;
@@ -217,11 +218,14 @@ function showLocked(status: DaemonStatus, problem?: DaemonError): void {
     required: true,
   });
   const submit = h("button", { class: "btn btn-primary", type: "submit" }, t("unlock"));
-  const form = h("form", { class: "imp-unlock" }, input, submit);
+  // With the presence gate, what the password also opens (ADR 0041, own choice 34).
+  const opens = unlockOpens(status).line;
+  const form = h("form", { class: "imp-unlock" }, input, submit, opens ? h("p", { class: "imp-rule unlock-opens" }, opens) : null);
   const unlock = async (password?: string): Promise<void> => {
     submit.disabled = true;
     try {
-      const now = await daemon<DaemonStatus>(password === undefined ? { op: "unlock" } : { op: "unlock", password });
+      const { shown } = unlockOpens(status);
+      const now = await daemon<DaemonStatus>(password === undefined ? { op: "unlock" } : { op: "unlock", password, ...(shown ? { shown } : {}) });
       if (now.unlocked) showSources();
       else showLocked(now);
     } catch (e) {

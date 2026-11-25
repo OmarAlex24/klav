@@ -116,7 +116,6 @@ async fn daemon(home: &Home) -> tokio::sync::oneshot::Sender<()> {
             touch_id: false,
             sync_after: klav_daemon::SYNC_AFTER,
             build: None,
-            presence_gate: false,
         },
         async {
             let _ = stopped.await;

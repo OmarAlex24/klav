@@ -380,7 +380,9 @@ private struct ItemRow: View {
                     .font(.ui(12)).foregroundStyle(Palette.gris).lineLimit(1)
             }
             Spacer(minLength: 6)
-            if (item.kind == .totp || item.kind == .login) && !noCode {
+            // With the presence gate on, a code may ask for Touch ID: rows
+            // fetch none on their own (ADR 0041), the item shows it on demand.
+            if (item.kind == .totp || item.kind == .login) && !noCode && model.info?.presenceGate != true {
                 LiveCode(id: item.id, title: item.title, style: .row,
                          fetch: fetchCode, onNone: { noCode = true })
                     .scaleEffect(0.82, anchor: .trailing)
@@ -476,7 +478,11 @@ struct ItemDetailView: View {
                 if detail.hasTotp {
                     if !shown.isEmpty { Rule() }
                     LiveCode(id: id, title: info.title, style: .detail, fetch: fetchCode,
-                             onCopy: { model.copy($0) })
+                             onError: { error in
+                                 if !(error is CancellationError) { problem = describe(error) }
+                             },
+                             onCopy: { model.copy($0) },
+                             onDemand: model.info?.presenceGate == true)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -659,8 +665,11 @@ struct ItemDetailView: View {
     }
 
     private var fetchCode: @Sendable (String) async throws -> TotpInfo {
-        let engine = model.engine
-        return { id in try await Task.detached { try engine.totp(id: id) }.value }
+        let model = model
+        return { id in
+            try await model.value({ try $0.totp(id: id) },
+                                  withPassword: { try $0.totpWithPassword(id: id, password: $1) })
+        }
     }
 
     private func previousLabel(_ entry: PreviousPasswordInfo) -> String {
@@ -691,7 +700,10 @@ struct ItemDetailView: View {
     private func value(_ name: String) async -> String? {
         let id = id
         do {
-            return try await model.run { try $0.fieldValue(id: id, field: name) }
+            return try await model.value({ try $0.fieldValue(id: id, field: name) },
+                                         withPassword: { try $0.fieldValueWithPassword(id: id, field: name, password: $1) })
+        } catch is CancellationError {
+            return nil
         } catch {
             problem = describe(error)
             return nil
@@ -723,7 +735,9 @@ struct ItemDetailView: View {
     private func showNotes() async {
         let id = id
         do {
-            notes = try await model.run { try $0.notes(id: id) } ?? ""
+            notes = try await model.value({ try $0.notes(id: id) },
+                                          withPassword: { try $0.notesWithPassword(id: id, password: $1) }) ?? ""
+        } catch is CancellationError {
         } catch {
             problem = describe(error)
         }
@@ -732,8 +746,11 @@ struct ItemDetailView: View {
     private func copyPrevious(_ entry: PreviousPasswordInfo) async {
         let id = id, index = entry.index
         do {
-            let value = try await model.run { try $0.previousPassword(id: id, index: index) }
+            let value = try await model.value(
+                { try $0.previousPassword(id: id, index: index) },
+                withPassword: { try $0.previousPasswordWithPassword(id: id, index: index, password: $1) })
             model.copy(value)
+        } catch is CancellationError {
         } catch {
             problem = describe(error)
         }

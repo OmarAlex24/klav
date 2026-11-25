@@ -49,11 +49,64 @@ export type ErrorCode =
   | "disconnected"
   | "timeout"
   // The page covers, hides or moves the frame where the choice was made (T62).
-  | "covered";
+  | "covered"
+  // The presence gate (ADR 0041, on since layer 6): the master password
+  // is needed (`presence` says what it grants), another check is running,
+  // or more than one browser is attached and not exactly one is in front.
+  | "presence_required"
+  | "presence_busy"
+  | "browser_ambiguous";
 
 export interface ErrorBody {
   code: ErrorCode;
   message: string;
+  /** With `presence_required`: what the password would grant. */
+  presence?: PresenceAsk;
+}
+
+/** Whose verification a window belongs to (ADR 0041 §1). */
+export type PresenceKey = "session" | "parent" | "connection" | "none";
+
+/**
+ * What klavd asks the master password for (`presence_required`, and the
+ * `presence` event for an agent's values): the frame words its question
+ * from it, never from `window` alone.
+ */
+export interface PresenceAsk {
+  key: PresenceKey;
+  window: PasskeyUv;
+  terminal?: string;
+  declared?: boolean;
+  /** What the password grants: a window lasting this; missing: only this one value. */
+  lasts?: "5m" | "until_lock";
+  /** The one value it hands out, when `lasts` is missing. */
+  value?: { kind: "show" | "previous" | "code" | "fill" | "generated" | "resolve"; title?: string; count?: number };
+  /** An agent's values for a browser connection (the `presence` event). */
+  browser?: BrowserAsk;
+}
+
+/** The event that made klavd ask for a browser connection (ADR 0041 §3.1). */
+export interface BrowserAsk {
+  event: "fill" | "password_change" | "passkey_sign_in";
+  /** The agent's name, cleaned by klavd. */
+  agent: string;
+  /** The item's title from the vault. */
+  title?: string;
+  /** The passkey's rpId from the vault (never the agent's claim, T140). */
+  site?: string;
+  /** How many browser connections are attached, when more than one. */
+  attached?: number;
+  /** `true`: worded for this connection (no window per browser). */
+  connection?: boolean;
+}
+
+/** With the gate on, what an `unlock` from this connection would open (`status`). */
+export interface StatusPresence {
+  elsewhere?: boolean;
+  key: PresenceKey;
+  terminal?: string;
+  declared?: boolean;
+  lasts?: "5m" | "until_lock";
 }
 
 export interface DaemonStatus {
@@ -77,6 +130,10 @@ export interface DaemonStatus {
   passkey_verified?: boolean;
   /** Browsers whose extension attached since klavd started (the Mac app, ADR 0027 §4). */
   browsers?: { browser: string; connected: boolean; at_ms: number }[];
+  /** An `unlock` with the gate on found klavd already unlocked by another key. */
+  already_unlocked?: boolean;
+  /** Only with the presence gate on (ADR 0041): what a password unlock opens. */
+  presence?: StatusPresence;
 }
 
 /** When a passkey use needs Touch ID or the master password again (ADR 0020 §8). */
@@ -638,25 +695,31 @@ export interface FulfillSecretResult {
 export type Request =
   | { op: "status" }
   /** `passkey_flow`: set only by the background, for Klav's passkey frame (ADR 0020 §8). */
-  | { op: "unlock"; password?: string; passkey_flow?: boolean }
+  /**
+   * `shown`: the window this unlock's own question said it opens (ADR 0041,
+   * own choice 34). It goes in the request envelope, not the request: the
+   * bridge moves it there.
+   */
+  | { op: "unlock"; password?: string; passkey_flow?: boolean; shown?: PasskeyUv }
   | { op: "lock" }
   | { op: "sync" }
   | { op: "vaults" }
   | { op: "projects"; vault?: string }
   | { op: "list"; filter: { vault?: string; project?: string; kind?: ItemKind; kinds?: ItemKind[]; codes?: boolean; tag?: string; query?: string; trash: boolean } }
-  | { op: "view"; query: string; reveal: boolean }
+  /** `password`: the presence gate's (ADR 0041), after a `presence_required`; ignored without the gate. */
+  | { op: "view"; query: string; reveal: boolean; password?: string }
   | { op: "suggest"; url: string }
   /** `chosen`: the person picked a login of the `parent` group (ADR 0025 §2). */
-  | { op: "autofill"; item: string; url: string; part?: "all" | "totp" | "pending"; chosen?: boolean }
-  | { op: "totp"; query: string; field?: string }
+  | { op: "autofill"; item: string; url: string; part?: "all" | "totp" | "pending"; chosen?: boolean; password?: string }
+  | { op: "totp"; query: string; field?: string; password?: string }
   | { op: "create"; item: NewItem }
   | { op: "edit"; query: string; patch: ItemPatch }
   | { op: "generator_record"; value: string; host?: string }
   | { op: "generator_history" }
-  | { op: "generated_value"; created_at: number }
+  | { op: "generated_value"; created_at: number; password?: string }
   | { op: "generator_delete"; which: { some: number[] } | "all" }
   | { op: "password_history"; query: string }
-  | { op: "previous_password"; query: string; index: number }
+  | { op: "previous_password"; query: string; index: number; password?: string }
   /** «Usar la nueva» (`accept`) or «Mantener la actual» on a pending password (ADR 0022 §5). */
   | { op: "resolve_pending"; query: string; accept: boolean }
   | { op: "import_add"; session?: string; name: string; from?: ImportSource; data: string; more?: boolean }
@@ -674,6 +737,8 @@ export type Request =
   | { op: "deny_secret_request"; request: string; digest: string }
   | { op: "extension_attach"; browser: string }
   | { op: "extension_reply"; event: number; ok?: unknown; error?: { code: string; message: string } }
+  /** The master password for klavd's `presence` event `event`, on this connection (ADR 0041 §3.2). */
+  | { op: "extension_presence"; event: number; password: string }
   /** The vault health report and its breach check setting (ADR 0022 §4). */
   | { op: "vault_health" }
   | { op: "health_settings"; breach_check?: boolean }
@@ -724,6 +789,8 @@ export class DaemonError extends Error {
   constructor(
     readonly code: ErrorCode,
     message: string,
+    /** With `presence_required`: what the password would grant. */
+    readonly presence?: PresenceAsk,
   ) {
     super(message);
     this.name = "DaemonError";

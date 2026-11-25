@@ -288,6 +288,13 @@ export async function loadSave(bridge: NativeBridge, saveId: string): Promise<Sa
       // away since `suggest`) is skipped. Anything about klavd itself
       // (locked, gone, timed out…) fails the bar as before.
       if (e instanceof DaemonError && ITEM_ERRORS.has(e.code)) continue;
+      // The presence gate (ADR 0041) and no window open: Klav can't tell
+      // whether it already has this password without asking the person,
+      // and a bar isn't worth a question. It offers nothing.
+      if (e instanceof DaemonError && e.code === "presence_required") {
+        forget(p.tabId);
+        return undefined;
+      }
       throw e;
     }
     const stored = values.fields.find((f) => f.kind === "password")?.value;

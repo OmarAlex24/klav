@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { type Browser, frameOf, KLAV_BIN, launch, PASSWORD, registerAgent, shoot, type Stack, startStack, unlockForm } from "./harness";
+import { type Browser, confirmPresence, frameOf, KLAV_BIN, launch, PASSWORD, registerAgent, shoot, type Stack, startStack, unlockForm, unlockInBrowser } from "./harness";
 import { McpClient } from "./mcp";
 import { type Site, startSite } from "./site";
 
@@ -56,7 +56,21 @@ test("an agent fills the open tab through the extension and never sees the passw
   await page.bringToFront();
   const mcp = mcpFor(agent);
   await mcp.initialize();
-  const result = await fillWhenAttached(mcp, { ref: "Sitio local", target: "extension", reason: "entrar para revisar la CI" });
+  // Locked, nothing reaches the page: the browser's presence (ADR 0041
+  // §3.1) needs the unlocked session.
+  stack.klav(["lock"]);
+  const locked = await fillWhenAttached(mcp, { ref: "Sitio local", target: "extension", reason: "entrar para revisar la CI" });
+  expect(locked.isError).toBe(true);
+  expect(locked.text).toContain("klavd is locked");
+  await expect(page.locator("#password")).toHaveValue("");
+  // Unlocked, the first fill through this browser asks in Klav's frame;
+  // until Klav locks, the next ones don't (the later tests rely on it).
+  await unlockInBrowser(stack, browser);
+  // The popup was a tab: the login page goes back in front.
+  await page.bringToFront();
+  const pending = fillWhenAttached(mcp, { ref: "Sitio local", target: "extension", reason: "entrar para revisar la CI" });
+  await confirmPresence(page);
+  const result = await pending;
   expect(result.isError, result.text).toBe(false);
   expect(result.text).toContain("password");
   await expect(page.locator("#username")).toHaveValue("ana");
@@ -106,7 +120,7 @@ test("a fill that needs approval is approved from the popup", async () => {
     .toBe(1);
   const popup = await browser.popup();
   const locked = popup.getByRole("heading", { name: "Klav is locked" });
-  await expect(locked.or(popup.getByText("Your vault"))).toBeVisible();
+  await expect(locked.or(popup.getByText("Your vault", { exact: true }))).toBeVisible();
   if (await locked.isVisible()) {
     await unlockForm(popup);
   }

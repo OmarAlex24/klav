@@ -12,7 +12,7 @@
  * The agent never gets the key nor the assertion.
  */
 import { expect, type Frame, type Page, test } from "@playwright/test";
-import { type Agent, type Browser, clickIn, frameOf, KLAV_BIN, launch, PASSWORD, registerAgent, settled, type Stack, startStack, unlockForm, waitArmed } from "./harness";
+import { type Agent, type Browser, clickIn, confirmPresence, frameOf, KLAV_BIN, launch, PASSWORD, registerAgent, settled, type Stack, startStack, unlockForm, waitArmed } from "./harness";
 import { McpClient, type ToolResult } from "./mcp";
 import { KLAV_AAGUID, type RelyingParty, startRelyingParty } from "./rp";
 
@@ -150,7 +150,7 @@ test("the person approves a task with passkey from the popup", async () => {
 
   const p = await browser.popup();
   const locked = p.getByRole("heading", { name: "Klav is locked" });
-  await expect(locked.or(p.getByText("Your vault"))).toBeVisible();
+  await expect(locked.or(p.getByText("Your vault", { exact: true }))).toBeVisible();
   if (await locked.isVisible()) {
     await unlockForm(p);
   }
@@ -166,7 +166,11 @@ test("the person approves a task with passkey from the popup", async () => {
 test("armed before the site asks: the next sign-in of the tab gets it, with no frame and the blue notice", async () => {
   const page = await open(rp.url("/passkeys"));
   const before = rp.signedIn.length;
-  const armed = answer(await signIn());
+  // The first time an agent acts in this browser, the person confirms in
+  // Klav's frame (ADR 0041 §3.1); that holds until Klav locks.
+  const signing = signIn();
+  await confirmPresence(page);
+  const armed = answer(await signing);
   expect(armed).toMatchObject({ used: false, armed: true, rp_id: "localhost", expires_in_s: 60 });
 
   await page.getByRole("button", { name: "Entrar con passkey" }).click();

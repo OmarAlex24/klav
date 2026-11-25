@@ -364,6 +364,20 @@ impl Unlocked {
             .ok_or_else(|| ClientError::NotFound("generator history entry".into()))
     }
 
+    /// A digest of the generator history entry generated at `created_at`,
+    /// its instant and its value, through `klav-core`'s SHA-256; never the
+    /// value. `klavd` binds a `generated_value` to it before it asks for
+    /// presence, and refuses the hand-out if the entry changed or went away
+    /// meanwhile (ADR 0041, Omar's decision K of 2026-11-19). Not found, as
+    /// [`Self::generated_value`], when no entry has that instant.
+    pub fn generated_digest(&self, created_at: i64) -> ClientResult<[u8; 32]> {
+        let value = self.generated_value(created_at)?;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(8 + value.expose().len()));
+        bytes.extend_from_slice(&created_at.to_be_bytes());
+        bytes.extend_from_slice(value.expose().as_bytes());
+        Ok(klav_core::crypto::agent::body_digest(&bytes))
+    }
+
     /// Deletes generator history entries: writes a new version without them
     /// and then purges the item's stored versions, which would still hold
     /// them. Returns how many went.

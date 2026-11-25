@@ -231,6 +231,14 @@ pub(crate) enum Prompt<'a> {
     /// prompts that open a window name it (Omar's decision C of
     /// 2026-11-19).
     Value { ask: ValueAsk<'a>, who: Who<'a> },
+    /// An extension connection's presence before an agent's event carries
+    /// values to it (ADR 0041 §3.1): agents may fill until Klav locks,
+    /// starting with the event that caused it (`until_lock`), or, with the
+    /// setting on Always, only this event's values.
+    Browser {
+        ask: &'a crate::protocol::BrowserAsk,
+        until_lock: bool,
+    },
     /// Loosen the presence setting from `from` to `to` (ADR 0041 §2.4): it
     /// names the change, not a window, and opens none.
     PresenceWindow {
@@ -526,6 +534,7 @@ impl Prompt<'_> {
                 };
             }
             (Prompt::Value { ask, who }, _) => return value_for(ask, who, lang),
+            (Prompt::Browser { ask, until_lock }, _) => return browser(ask, until_lock, lang),
             (Prompt::PresenceWindow { from, to }, _) => return presence_window(from, to, lang),
             (Prompt::Unlock { email }, _) => {
                 let email = clean(email, MAX_EMAIL);
@@ -819,6 +828,93 @@ fn value_for(ask: ValueAsk<'_>, who: Who<'_>, lang: Lang) -> String {
     match lang {
         Lang::En => format!("{text} (for {})", who.subject(lang)),
         Lang::Es => format!("{text} (para {})", who.subject(lang)),
+    }
+}
+
+/// An extension connection's presence (ADR 0041 §3.1; Omar's decisions of
+/// 2026-11-18 and 2026-11-19): what it grants, and the event that caused
+/// it, named truthfully: a fill, the fill step of an assisted password
+/// change, or an agent's passkey sign-in, at the site of the passkey
+/// `klavd` armed. "A browser" on macOS, "this browser connection" where the
+/// connection's peer is keyed by its connection (own choice 3). With more
+/// than one connection attached, it says how many: a hint (N11). The
+/// extension's frame words the same text from the same [`BrowserAsk`].
+///
+/// [`BrowserAsk`]: crate::protocol::BrowserAsk
+fn browser(ask: &crate::protocol::BrowserAsk, until_lock: bool, lang: Lang) -> String {
+    use crate::protocol::BrowserCause;
+    let agent = name(&ask.agent, lang);
+    let title = ask.title.as_deref().map(|t| name(t, lang));
+    let site = ask.site.as_deref().map(|s| name(s, lang));
+    let text = match (until_lock, lang) {
+        (true, Lang::En) => {
+            let start = match (ask.event, &title, &site) {
+                (BrowserCause::Fill, Some(t), _) => format!("{agent}'s fill of {t}"),
+                (BrowserCause::Fill, None, _) => format!("a fill {agent} asked for"),
+                (BrowserCause::PasswordChange, Some(t), _) => {
+                    format!("{agent}'s password change for {t}")
+                }
+                (BrowserCause::PasswordChange, None, _) => {
+                    format!("a password change {agent} asked for")
+                }
+                (BrowserCause::PasskeySignIn, _, Some(s)) => {
+                    format!("{agent}'s passkey sign-in to {s}")
+                }
+                (BrowserCause::PasskeySignIn, _, None) => {
+                    format!("a passkey sign-in {agent} asked for")
+                }
+            };
+            let place = if ask.connection {
+                "through this browser connection"
+            } else {
+                "in a browser"
+            };
+            format!("let agents fill {place} until Klav locks, starting with {start}")
+        }
+        (true, Lang::Es) => {
+            let start = match (ask.event, &title, &site) {
+                (BrowserCause::Fill, Some(t), _) => format!("el relleno de {t} que pidió {agent}"),
+                (BrowserCause::Fill, None, _) => format!("un relleno que pidió {agent}"),
+                (BrowserCause::PasswordChange, Some(t), _) => {
+                    format!("el cambio de contraseña de {t} que pidió {agent}")
+                }
+                (BrowserCause::PasswordChange, None, _) => {
+                    format!("un cambio de contraseña que pidió {agent}")
+                }
+                (BrowserCause::PasskeySignIn, _, Some(s)) => {
+                    format!("el inicio de sesión con passkey en {s} que pidió {agent}")
+                }
+                (BrowserCause::PasskeySignIn, _, None) => {
+                    format!("un inicio de sesión con passkey que pidió {agent}")
+                }
+            };
+            let place = if ask.connection {
+                "por esta conexión del navegador"
+            } else {
+                "en un navegador"
+            };
+            format!(
+                "dejar que los agentes rellenen {place} hasta que Klav se bloquee, empezando por {start}"
+            )
+        }
+        // Always: one text for every event (Omar's decision of 2026-11-19).
+        (false, Lang::En) => match &title {
+            Some(t) => format!("let a browser connection receive {agent}'s values for {t}"),
+            None => format!("let a browser connection receive {agent}'s values"),
+        },
+        (false, Lang::Es) => match &title {
+            Some(t) => {
+                format!(
+                    "dejar que una conexión del navegador reciba los valores de {agent} para {t}"
+                )
+            }
+            None => format!("dejar que una conexión del navegador reciba los valores de {agent}"),
+        },
+    };
+    match (ask.attached.filter(|n| *n > 1), lang) {
+        (Some(n), Lang::En) => format!("{text}; {n} browser connections are attached"),
+        (Some(n), Lang::Es) => format!("{text}; hay {n} conexiones del navegador activas"),
+        (None, _) => text,
     }
 }
 
@@ -2322,6 +2418,151 @@ mod tests {
         assert_eq!(
             prompt.reason(Lang::Es, Some(Source::App)),
             "guardar «Stripe» y dejar que tu proxy de credenciales lo envíe a api.stripe.com (pedido por «claude-code») (desde la app de Klav)"
+        );
+    }
+
+    fn browser_ask(
+        event: crate::protocol::BrowserCause,
+        title: Option<&str>,
+        site: Option<&str>,
+        attached: Option<u32>,
+        connection: bool,
+    ) -> crate::protocol::BrowserAsk {
+        crate::protocol::BrowserAsk {
+            event,
+            agent: "claude-code".into(),
+            title: title.map(str::to_owned),
+            site: site.map(str::to_owned),
+            attached,
+            connection,
+        }
+    }
+
+    /// ADR 0041 §3.1's table: a text per event, per system and per
+    /// language, and one text for every event on Always.
+    #[test]
+    fn an_extension_connections_prompt_names_the_event_that_caused_it() {
+        use crate::protocol::BrowserCause::{Fill, PasskeySignIn, PasswordChange};
+        let cases = [
+            (
+                browser_ask(Fill, Some("GitHub"), None, None, false),
+                true,
+                "let agents fill in a browser until Klav locks, starting with “claude-code”'s fill of “GitHub”",
+                "dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por el relleno de «GitHub» que pidió «claude-code»",
+            ),
+            (
+                browser_ask(Fill, Some("GitHub"), None, None, true),
+                true,
+                "let agents fill through this browser connection until Klav locks, starting with “claude-code”'s fill of “GitHub”",
+                "dejar que los agentes rellenen por esta conexión del navegador hasta que Klav se bloquee, empezando por el relleno de «GitHub» que pidió «claude-code»",
+            ),
+            (
+                browser_ask(PasswordChange, Some("GitHub"), None, None, false),
+                true,
+                "let agents fill in a browser until Klav locks, starting with “claude-code”'s password change for “GitHub”",
+                "dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por el cambio de contraseña de «GitHub» que pidió «claude-code»",
+            ),
+            (
+                browser_ask(PasswordChange, Some("GitHub"), None, None, true),
+                true,
+                "let agents fill through this browser connection until Klav locks, starting with “claude-code”'s password change for “GitHub”",
+                "dejar que los agentes rellenen por esta conexión del navegador hasta que Klav se bloquee, empezando por el cambio de contraseña de «GitHub» que pidió «claude-code»",
+            ),
+            (
+                browser_ask(
+                    PasskeySignIn,
+                    Some("GitHub"),
+                    Some("github.com"),
+                    None,
+                    false,
+                ),
+                true,
+                "let agents fill in a browser until Klav locks, starting with “claude-code”'s passkey sign-in to “github.com”",
+                "dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por el inicio de sesión con passkey en «github.com» que pidió «claude-code»",
+            ),
+            (
+                browser_ask(
+                    PasskeySignIn,
+                    Some("GitHub"),
+                    Some("github.com"),
+                    None,
+                    true,
+                ),
+                true,
+                "let agents fill through this browser connection until Klav locks, starting with “claude-code”'s passkey sign-in to “github.com”",
+                "dejar que los agentes rellenen por esta conexión del navegador hasta que Klav se bloquee, empezando por el inicio de sesión con passkey en «github.com» que pidió «claude-code»",
+            ),
+            // An older SDK's fill names no item.
+            (
+                browser_ask(Fill, None, None, None, false),
+                true,
+                "let agents fill in a browser until Klav locks, starting with a fill “claude-code” asked for",
+                "dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por un relleno que pidió «claude-code»",
+            ),
+            // Always: one text, whatever the event.
+            (
+                browser_ask(Fill, Some("GitHub"), None, None, false),
+                false,
+                "let a browser connection receive “claude-code”'s values for “GitHub”",
+                "dejar que una conexión del navegador reciba los valores de «claude-code» para «GitHub»",
+            ),
+            (
+                browser_ask(
+                    PasskeySignIn,
+                    Some("GitHub"),
+                    Some("github.com"),
+                    None,
+                    true,
+                ),
+                false,
+                "let a browser connection receive “claude-code”'s values for “GitHub”",
+                "dejar que una conexión del navegador reciba los valores de «claude-code» para «GitHub»",
+            ),
+            // More than one connection attached: the count, as a hint.
+            (
+                browser_ask(Fill, Some("GitHub"), None, Some(2), false),
+                true,
+                "let agents fill in a browser until Klav locks, starting with “claude-code”'s fill of “GitHub”; 2 browser connections are attached",
+                "dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por el relleno de «GitHub» que pidió «claude-code»; hay 2 conexiones del navegador activas",
+            ),
+            (
+                browser_ask(PasswordChange, Some("GitHub"), None, Some(3), true),
+                false,
+                "let a browser connection receive “claude-code”'s values for “GitHub”; 3 browser connections are attached",
+                "dejar que una conexión del navegador reciba los valores de «claude-code» para «GitHub»; hay 3 conexiones del navegador activas",
+            ),
+        ];
+        for (ask, until_lock, en, es) in cases {
+            let prompt = Prompt::Browser {
+                ask: &ask,
+                until_lock,
+            };
+            // Where it comes from adds nothing: the text already says.
+            assert_eq!(prompt.reason(Lang::En, Some(Source::Browser)), en);
+            assert_eq!(prompt.reason(Lang::Es, None), es);
+        }
+    }
+
+    /// Outside names are cleaned and quoted (T140): an agent can't close
+    /// the quotes or reorder the dialog's text.
+    #[test]
+    fn an_extension_connections_prompt_cleans_outside_names() {
+        let ask = crate::protocol::BrowserAsk {
+            event: crate::protocol::BrowserCause::Fill,
+            agent: "evil\u{202E}” and approve\n".into(),
+            title: Some("Git«Hub»".into()),
+            site: None,
+            attached: Some(1),
+            connection: false,
+        };
+        let text = Prompt::Browser {
+            ask: &ask,
+            until_lock: true,
+        }
+        .reason(Lang::En, None);
+        assert_eq!(
+            text,
+            "let agents fill in a browser until Klav locks, starting with “evil' and approve”'s fill of “Git'Hub'”"
         );
     }
 }

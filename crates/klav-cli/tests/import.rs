@@ -136,7 +136,7 @@ fn imports_merge_and_keep_every_password() {
         "{}",
         history.stdout
     );
-    let code = device.run(&["totp", "GitHub"], "").ok();
+    let code = device.in_terminal(None, &["totp", "GitHub"], "").ok();
     assert_eq!(code.stdout.trim().len(), 6, "GitHub got its code");
 
     // Browsers, and everything again: nothing new, nothing lost.
@@ -160,7 +160,8 @@ fn imports_merge_and_keep_every_password() {
     assert_eq!(out["result"]["created"], 2, "{}", again.stdout);
     assert_eq!(out["preview"]["totals"]["merged"], 0, "{}", again.stdout);
     let bank = device
-        .run(
+        .in_terminal(
+            None,
             &[
                 "item",
                 "get",

@@ -229,10 +229,17 @@ extension MacModel {
     /// Where the master-password prompt shows: over «Change permissions…»
     /// while it is open, otherwise over the window. Never both, never neither.
     func passwordPromptHere(inSheet: Bool) -> Binding<PasswordPrompt?> {
+        passwordPromptHere(inSheet ? .grantSheet : .window)
+    }
+
+    /// The prompt, for the window or sheet `host` only. A prompt with no
+    /// host of its own shows over «Change permissions…» while it is open,
+    /// otherwise over the window.
+    func passwordPromptHere(_ host: PromptHost) -> Binding<PasswordPrompt?> {
         Binding(
             get: { [weak self] in
-                guard let self, (self.changingGrant != nil) == inSheet else { return nil }
-                return self.passwordPrompt
+                guard let self, let prompt = self.passwordPrompt, self.where(prompt) == host else { return nil }
+                return prompt
             },
             set: { [weak self] value in
                 guard let self else { return }
@@ -241,10 +248,14 @@ extension MacModel {
                 // close comes after, from a place no longer shown.
                 if value == nil {
                     self.passwordPrompt = nil
-                } else if (self.changingGrant != nil) == inSheet {
+                } else if let value, self.where(value) == host {
                     self.passwordPrompt = value
                 }
             })
+    }
+
+    private func `where`(_ prompt: PasswordPrompt) -> PromptHost {
+        prompt.host ?? (changingGrant != nil ? .grantSheet : .window)
     }
 
     /// «Pause every agent now» from the lock screen: what went wrong, or

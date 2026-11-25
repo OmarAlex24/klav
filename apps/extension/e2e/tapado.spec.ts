@@ -2,7 +2,7 @@
 // lets clicks through (`pointer-events: none`) and a decoy, or that keeps
 // restyling Klav's host, gets nothing filled; Klav says the page covers it.
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, clickIn, launch, openMenu, startStack, type Stack, waitArmed } from "./harness";
+import { type Browser, clickIn, launch, openMenu, startStack, type Stack, waitArmed, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const SECRET = "MARKER-tapado";
@@ -19,7 +19,7 @@ test.beforeAll(async () => {
     { unlocked: true, stdin: `${SECRET}\n` },
   );
   browser = await launch(stack);
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
 });
 
 test.afterAll(async () => {

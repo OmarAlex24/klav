@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { launch, shoot, type Stack, startStack, unlockForm } from "./harness";
+import { launch, shoot, type Stack, startStack, unlockForm, unlockInBrowser } from "./harness";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
 let stack: Stack;
@@ -31,7 +31,7 @@ test("the popup unlocks through klavd with the master password and locks again",
   await expect(popup.getByRole("alert")).toHaveText("The master password isn’t correct.");
 
   await unlockForm(popup);
-  await expect(popup.getByText("Your vault")).toBeVisible();
+  await expect(popup.getByText("Your vault", { exact: true })).toBeVisible();
   await expect(popup.getByText("GitHub")).toBeVisible();
   await shoot(popup, shots, "popup-boveda");
   // The status the CLI sees is the same klavd.
@@ -44,8 +44,8 @@ test("the popup unlocks through klavd with the master password and locks again",
 });
 
 test("the open popup shows a change once klavd syncs it, without reopening", async () => {
-  stack.klav(["unlock"], { unlocked: true });
   const browser = await launch(stack);
+  await unlockInBrowser(stack, browser);
   const popup = await browser.popup();
   await expect(popup.getByText("GitHub")).toBeVisible();
   // Another process adds an item; klavd learns of it when it syncs, and

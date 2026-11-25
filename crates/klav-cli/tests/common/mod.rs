@@ -6,6 +6,7 @@
 pub mod browser;
 pub mod mcp;
 pub mod server;
+pub mod terminal;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -221,6 +222,47 @@ impl Device {
         let mut all = vec!["--password-stdin"];
         all.extend_from_slice(args);
         self.run(&all, &format!("{PASSWORD}\n{extra}"))
+    }
+}
+
+/// A test `klavd` for one home, stopped by its pid when the test ends,
+/// also when it fails. Its presence gate is on, as every `klavd`'s is since
+/// ADR 0041's layer 6; Touch ID is always off.
+pub struct Klavd(std::process::Child);
+
+impl Klavd {
+    pub fn start(device: &Device, root: &Path) -> Self {
+        let mut cmd = Command::new(built_binary("klavd"));
+        cmd.current_dir(root)
+            .env("KLAV_HOME", &device.home)
+            .env("PATH", path_without_installed_klav())
+            .env("KLAV_NO_DEFAULT_SERVER", "1")
+            .args(["--no-touch-id", "--idle-lock", "10m"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(
+                std::fs::File::create(root.join("klavd-test.log"))
+                    .map_or(Stdio::null(), Stdio::from),
+            );
+        let klavd = Klavd(cmd.spawn().expect("start klavd"));
+        let socket = device.home.join("klavd.sock");
+        assert!(
+            wait_until(30, || socket.exists()),
+            "klavd did not start: {}",
+            std::fs::read_to_string(root.join("klavd-test.log")).unwrap_or_default()
+        );
+        klavd
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.0.id()
+    }
+}
+
+impl Drop for Klavd {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 

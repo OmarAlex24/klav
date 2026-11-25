@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, launch, shoot, startStack, type Stack } from "./harness";
+import { type Browser, launch, shoot, startStack, type Stack, unlockInBrowser } from "./harness";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
 const samples = resolve(import.meta.dirname, "..", "..", "..", "examples", "import");
@@ -42,7 +42,7 @@ test.afterAll(async () => {
 
 test("imports Bitwarden and Google Authenticator, merging and keeping every password", async () => {
   browser = await launch(stack);
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
   // The popup opens the wizard in a tab: from an empty vault, and from the settings.
   const popup = await browser.popup();
   const opened = browser.context.waitForEvent("page");
@@ -108,7 +108,7 @@ test("imports Bitwarden and Google Authenticator, merging and keeping every pass
   await expect(page.getByText("delete their photos too", { exact: false })).toBeVisible();
   await shoot(page, shots, "importar-hecho", { fullPage: true });
   // GitHub has its code now.
-  expect(stack.klav(["totp", "GitHub"]).trim()).toMatch(/^\d{6}$/);
+  expect((await stack.klavInTerminal(["totp", "GitHub"])).trim()).toMatch(/^\d{6}$/);
 
   // A file Klav can't read says so, with its name.
   await page.getByRole("button", { name: "Import from somewhere else" }).click();

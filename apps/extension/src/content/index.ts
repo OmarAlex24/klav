@@ -94,6 +94,17 @@ async function openMenu(fromKeyboard: boolean, stopped?: StopReason): Promise<vo
   }
 }
 
+/**
+ * An event on another of Klav's hosts (`klav-ui`): the passkey bridge
+ * draws Klav's frame in its own, and the presence gate's master password
+ * goes there while a fill from this menu waits (ADR 0041 §3.2). Typing it
+ * must not close the menu, or the fill would find its form gone. At worst
+ * a page's own `klav-ui` keeps the menu open, which fills nothing.
+ */
+function inKlavFrame(event: Event): boolean {
+  return event.composedPath().some((n) => n instanceof Element && n.localName === "klav-ui");
+}
+
 function closeMenu(refocus: boolean): void {
   if (!active?.menuId) return;
   const id = active.menuId;
@@ -107,7 +118,7 @@ function closeMenu(refocus: boolean): void {
 document.addEventListener(
   "focusin",
   (event) => {
-    if (ui.owns(event)) return;
+    if (ui.owns(event) || inKlavFrame(event)) return;
     const target = event.composedPath()[0];
     const found = target instanceof Element ? lookUp(target) : undefined;
     if (found) {
@@ -132,7 +143,7 @@ document.addEventListener(
 document.addEventListener(
   "pointerdown",
   (event) => {
-    if (ui.owns(event) || !ui.menuOpen) return;
+    if (ui.owns(event) || inKlavFrame(event) || !ui.menuOpen) return;
     closeMenu(false);
   },
   true,

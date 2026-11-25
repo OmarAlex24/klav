@@ -11,7 +11,9 @@
 //! is built with: the iOS bindings do not have this object. The records it
 //! shares with `KlavCore` (the activity, the pauses) are in every build.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::Instant;
 
 use klav_client::Home;
 use klav_client::activity::ItemActivity;
@@ -45,6 +47,10 @@ use crate::health::{
     vault_health_info,
 };
 use crate::pause::{DevAgentInfo, PauseInfo, agent_id, dev_agents, optional_agent};
+use crate::presence::{
+    CHANGED_WHILE_CONFIRMING, HELD_WAIT, Held, HeldInfo, PASSWORD_CHECK_RUNNING, PresenceSetting,
+    UnlockOutcome, UnlockQuestionInfo,
+};
 use crate::sandboxes::{
     SandboxListCheckedInfo, SandboxListInfo, SandboxRevokeInfo, revoke_info, sandbox_list_info,
 };
@@ -131,6 +137,10 @@ pub struct DaemonInfo {
     /// That commit's committer time, in Unix seconds.
     #[uniffi(default = None)]
     pub commit_time: Option<u64>,
+    /// The presence gate is on in this `klavd` (ADR 0041; `status` carries
+    /// `presence`). False from an older `klavd` and with the gate off.
+    #[uniffi(default = false)]
+    pub presence_gate: bool,
 }
 
 /// A browser whose extension attached to `klavd`.
@@ -149,9 +159,65 @@ pub struct BrowserLink {
 pub struct DaemonEngine {
     home: Home,
     runtime: tokio::runtime::Runtime,
+    /// The one long connection (ADR 0041 §1.2): `hold`, then `unlock` and
+    /// the values, one call at a time. Everything else opens its own.
+    held: Mutex<Held>,
+    /// Open a new long connection, with `hold`, at its next use: Settings
+    /// moved the presence setting off Always, which dropped the old one's
+    /// declaration (the ADR's own choice 1).
+    reopen: AtomicBool,
 }
 
 impl DaemonEngine {
+    /// The long connection, waiting at most [`HELD_WAIT`] for another call
+    /// on it (a Touch ID dialog that is open, say): then the app is told
+    /// it is busy, rather than lining up behind it.
+    fn lock_held(&self) -> KlavResult<MutexGuard<'_, Held>> {
+        let deadline = Instant::now() + HELD_WAIT;
+        loop {
+            let mut held = match self.held.try_lock() {
+                Ok(held) => held,
+                // A call panicked holding it: what it held is unknown, so
+                // the connection goes.
+                Err(TryLockError::Poisoned(p)) => {
+                    let mut held = p.into_inner();
+                    held.drop_connection();
+                    self.held.clear_poison();
+                    held
+                }
+                Err(TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(KlavError::PresenceBusy {
+                            password_check: false,
+                            in_this_app: true,
+                            message: "Klav is already confirming something else in this app".into(),
+                        });
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
+            };
+            if self.reopen.swap(false, Ordering::AcqRel) {
+                held.drop_connection();
+            }
+            return Ok(held);
+        }
+    }
+
+    /// A request of the window (ADR 0041 §3) on the long connection: with
+    /// `password`, only as the answer to `klavd`'s ask on it.
+    fn held_value<R: DeserializeOwned>(
+        &self,
+        make: impl Fn(Option<SecretText>) -> Request + Sync,
+        password: Option<String>,
+    ) -> KlavResult<R> {
+        let mut held = self.lock_held()?;
+        let (answer, _warnings) = self
+            .runtime
+            .block_on(held.value::<R>(&self.home, &make, password))?;
+        Ok(answer)
+    }
+
     /// One request on a new connection. A connection is cheap (a Unix
     /// socket) and keeps a long call, such as an unlock waiting for Touch
     /// ID, from holding up the menu bar's status.
@@ -160,11 +226,12 @@ impl DaemonEngine {
             let mut client = DaemonClient::connect(&self.home)
                 .await
                 .ok_or_else(not_running)?;
+            let password = carries_password(&request);
             client
                 .call::<R>(request)
                 .await
                 .map(|(answer, _warnings)| answer)
-                .map_err(daemon_error)
+                .map_err(|e| sent_error(e, password))
         })
     }
 
@@ -176,10 +243,11 @@ impl DaemonEngine {
             let mut client = DaemonClient::connect(&self.home)
                 .await
                 .ok_or_else(not_running)?;
+            let password = carries_password(&request);
             match client.call::<R>(request).await {
                 Ok((answer, _warnings)) => Ok(Some(answer)),
                 Err(e) if older_klavd(&e) => Ok(None),
-                Err(e) => Err(daemon_error(e)),
+                Err(e) => Err(sent_error(e, password)),
             }
         })
     }
@@ -212,13 +280,43 @@ impl DaemonEngine {
         )
     }
 
-    /// The item's fields with their values (`view` with `reveal`).
-    fn revealed(&self, id: &str) -> KlavResult<ItemView> {
-        self.call(Request::View {
-            query: crate::item_id(id)?.to_string(),
-            reveal: true,
-            password: None,
-        })
+    /// The item's fields with their values (`view` with `reveal`), on the
+    /// long connection.
+    fn revealed(&self, id: &str, password: Option<String>) -> KlavResult<ItemView> {
+        let query = crate::item_id(id)?.to_string();
+        self.held_value(
+            |password| Request::View {
+                query: query.clone(),
+                reveal: true,
+                password,
+            },
+            password,
+        )
+    }
+
+    fn field_of(view: ItemView, field: &str) -> KlavResult<String> {
+        let found = view
+            .fields
+            .into_iter()
+            .find(|f| f.name == field)
+            .ok_or_else(|| KlavError::NotFound {
+                message: format!("field {field:?}"),
+            })?;
+        found
+            .value
+            .map(|v| v.expose().to_owned())
+            .ok_or_else(|| KlavError::invalid("this field has no text value"))
+    }
+
+    fn totp_info(code: TotpCode) -> TotpInfo {
+        // `klavd` does not send the period; almost every site uses 30 s,
+        // and a code with more time left than that is a 60 s one.
+        let period = if code.remaining > 30 { 60 } else { 30 };
+        TotpInfo {
+            code: code.code.expose().to_owned(),
+            remaining: code.remaining,
+            period,
+        }
     }
 }
 
@@ -236,6 +334,73 @@ impl DaemonEngine {
         let outcome: Option<klav_client::sandbox_revoke::RevokeOutcome> =
             self.call_new(Request::SandboxRevoke { proxy, scope })?;
         outcome.map(revoke_info).ok_or_else(update_klavd_sandboxes)
+    }
+}
+
+impl DaemonEngine {
+    fn totp_with(&self, id: String, password: Option<String>) -> KlavResult<TotpInfo> {
+        let query = crate::item_id(&id)?.to_string();
+        let code: TotpCode = self.held_value(
+            |password| Request::Totp {
+                query: query.clone(),
+                field: None,
+                password,
+            },
+            password,
+        )?;
+        Ok(Self::totp_info(code))
+    }
+
+    fn previous_with(
+        &self,
+        id: String,
+        index: u32,
+        password: Option<String>,
+    ) -> KlavResult<String> {
+        let query = crate::item_id(&id)?.to_string();
+        let index = usize::try_from(index).unwrap_or(usize::MAX);
+        let value: SecretText = self.held_value(
+            |password| Request::PreviousPassword {
+                query: query.clone(),
+                index,
+                password,
+            },
+            password,
+        )?;
+        Ok(value.expose().to_owned())
+    }
+
+    fn generated_with(&self, created_at: i64, password: Option<String>) -> KlavResult<String> {
+        let value: SecretText = self.held_value(
+            |password| Request::GeneratedValue {
+                created_at,
+                password,
+            },
+            password,
+        )?;
+        Ok(value.expose().to_owned())
+    }
+
+    /// The long connection's state (for the tests).
+    #[doc(hidden)]
+    pub fn held_connection(&self) -> HeldInfo {
+        match self.held.lock() {
+            Ok(held) => held.info(),
+            Err(p) => p.into_inner().info(),
+        }
+    }
+}
+
+/// `{ "window": … }` of `presence_window`.
+#[derive(Deserialize)]
+struct WindowReply {
+    window: klav_daemon::uv::Window,
+}
+
+/// `presence_window` from a `klavd` older than the gate.
+fn older_klavd_presence() -> KlavError {
+    KlavError::NotSupported {
+        message: "The klavd running is older than the presence setting. Update Klav.".into(),
     }
 }
 
@@ -261,14 +426,66 @@ fn update_klavd_sandboxes() -> KlavError {
     )
 }
 
-fn not_running() -> KlavError {
+pub(crate) fn not_running() -> KlavError {
     KlavError::DaemonUnavailable {
         message: "klavd is not running".into(),
     }
 }
 
+/// Whether `request` carries the master password: then a `presence_busy`
+/// means another password check is running, as the CLI says it from what
+/// it sent (klavd's one code covers a dialog, a password check and a
+/// setting change).
+pub(crate) fn carries_password(request: &Request) -> bool {
+    match request {
+        Request::Unlock { password, .. }
+        | Request::View { password, .. }
+        | Request::Totp { password, .. }
+        | Request::Resolve { password, .. }
+        | Request::Autofill { password, .. }
+        | Request::PasskeyGet { password, .. }
+        | Request::PasskeyCreate { password, .. }
+        | Request::ApproveAgent { password, .. }
+        | Request::DecideApproval { password, .. }
+        | Request::DecideTask { password, .. }
+        | Request::AddToTask { password, .. }
+        | Request::FulfillSecretRequest { password, .. }
+        | Request::GrantChangeApply { password, .. }
+        | Request::ProxyUse { password, .. }
+        | Request::ProxyGrant { password, .. }
+        | Request::ProxyRevoke { password, .. }
+        | Request::ProxyIssuerAdd { password, .. }
+        | Request::ProxyIssuerRemove { password, .. }
+        | Request::ResumeAgents { password, .. }
+        | Request::CancelAccountDeletion { password, .. }
+        | Request::GeneratedValue { password, .. }
+        | Request::PreviousPassword { password, .. }
+        | Request::OfferTask { password, .. }
+        | Request::PasskeyUv { password, .. }
+        | Request::PresenceWindow { password, .. } => password.is_some(),
+        _ => false,
+    }
+}
+
+/// [`daemon_error`] for a request that did (or didn't) carry the master
+/// password.
+pub(crate) fn sent_error(e: ErrorBody, password: bool) -> KlavError {
+    match daemon_error(e) {
+        KlavError::PresenceBusy {
+            in_this_app: false,
+            message,
+            ..
+        } if password => KlavError::PresenceBusy {
+            password_check: true,
+            in_this_app: false,
+            message,
+        },
+        other => other,
+    }
+}
+
 /// `klavd`'s error codes as the app's errors. Messages never hold secrets.
-fn daemon_error(e: ErrorBody) -> KlavError {
+pub(crate) fn daemon_error(e: ErrorBody) -> KlavError {
     // klavd's words can carry an agent's name («agent bot is revoked»):
     // one line, nothing hidden (T136).
     let message = crate::grants::report_text(&e.message);
@@ -281,6 +498,21 @@ fn daemon_error(e: ErrorBody) -> KlavError {
         ErrorCode::Rollback => KlavError::Rollback { message },
         ErrorCode::Security => KlavError::Security { message },
         ErrorCode::NotFound => KlavError::NotFound { message },
+        // With the gate off, another master password being checked is a
+        // `conflict` too (own choice 18): not an item that changed. And an
+        // item edited between the question and the hand-out is its own
+        // case (Omar's decision F). Told apart by klavd's words, pinned in
+        // the tests.
+        ErrorCode::Conflict if e.message.starts_with(PASSWORD_CHECK_RUNNING) => {
+            KlavError::PresenceBusy {
+                password_check: true,
+                in_this_app: false,
+                message,
+            }
+        }
+        ErrorCode::Conflict if e.message.starts_with(CHANGED_WHILE_CONFIRMING) => {
+            KlavError::ChangedWhileConfirming { message }
+        }
         ErrorCode::Conflict => KlavError::Conflict { version: 0 },
         // Only the browser's native host sends `ExtensionNotAllowed`; klavd never
         // does.
@@ -300,11 +532,22 @@ fn daemon_error(e: ErrorBody) -> KlavError {
         // The policy's «enter the password» comes in `status`
         // (`password_required`); here every refusal of Touch ID is one.
         ErrorCode::BiometryUnavailable => KlavError::BiometryUnavailable { message },
-        // The presence gate (ADR 0041), off until layer 6: the app learns to
-        // answer `presence_required` and `hold`'s `not_supported` in layer
-        // 5. Until then a refusal, without changing the Swift bindings.
-        ErrorCode::PresenceRequired | ErrorCode::PresenceBusy => KlavError::Denied { message },
-        ErrorCode::NotSupported => KlavError::Invalid { message },
+        // The presence gate (ADR 0041, layer 5).
+        ErrorCode::PresenceRequired => match e.presence {
+            Some(ask) => KlavError::PresenceRequired { ask: (*ask).into() },
+            None => KlavError::Denied { message },
+        },
+        // Said by what was sent ([`sent_error`]): a request without the
+        // password met another program's dialog.
+        ErrorCode::PresenceBusy => KlavError::PresenceBusy {
+            password_check: false,
+            in_this_app: false,
+            message,
+        },
+        ErrorCode::NotSupported => KlavError::NotSupported { message },
+        // Only an agent's browser request gets it (ADR 0041 §3.1), never
+        // the app's.
+        ErrorCode::BrowserAmbiguous => KlavError::Denied { message },
         // The client's own errors: the socket closed or never answered.
         ErrorCode::Internal if message.starts_with("klavd c") => {
             KlavError::DaemonUnavailable { message }
@@ -362,6 +605,8 @@ impl DaemonEngine {
         Ok(Arc::new(Self {
             home: Home::at(home_dir),
             runtime,
+            held: Mutex::new(Held::new()),
+            reopen: AtomicBool::new(false),
         }))
     }
 
@@ -418,6 +663,7 @@ impl DaemonEngine {
                 revocations_newer: s.revocations_newer,
                 commit: s.commit,
                 commit_time: s.commit_time,
+                presence_gate: s.presence.is_some(),
             },
             Err(_) => DaemonInfo {
                 running: false,
@@ -443,19 +689,94 @@ impl DaemonEngine {
                 revocations_newer: false,
                 commit: None,
                 commit_time: None,
+                presence_gate: false,
             },
         }
     }
 
-    /// Unlocks `klavd`: with Touch ID when `password` is absent (the
-    /// system prompt names `klavd`, riesgo residual 43), or with the master
-    /// password, which also enrols Touch ID (ADR 0013 §5).
-    pub fn unlock(&self, password: Option<String>) -> KlavResult<()> {
-        self.call::<serde::de::IgnoredAny>(Request::Unlock {
-            password: password.map(SecretText::new),
-            passkey_flow: false,
-        })?;
-        Ok(())
+    /// What the unlock's question may say (ADR 0041 §2.4): opens a new
+    /// long connection, declares `hold` on it, and reads `status` there, so
+    /// what it says is that connection's. Call it when the lock screen
+    /// shows, before the person types; the password then goes to
+    /// [`Self::unlock`] on that same connection, with `shown` set to what
+    /// the question said.
+    pub fn unlock_question(&self) -> KlavResult<UnlockQuestionInfo> {
+        let mut held = self.lock_held()?;
+        self.runtime.block_on(async {
+            held.open(&self.home).await?;
+            let client = held.connected(&self.home).await?;
+            let status: DaemonStatus = client
+                .call(Request::Status)
+                .await
+                .map(|(s, _)| s)
+                .map_err(daemon_error)?;
+            Ok(UnlockQuestionInfo::of(status.presence))
+        })
+    }
+
+    /// Unlocks `klavd` on the long connection: with Touch ID when
+    /// `password` is absent (the system prompt names `klavd`, riesgo
+    /// residual 43), or with the master password, which also enrols Touch
+    /// ID (ADR 0013 §5).
+    ///
+    /// With the presence gate on (ADR 0041 §1.2, §2.4): a Touch ID unlock
+    /// opens a new long connection and declares `hold` on it first, so the
+    /// unlock can hold it until Klav locks. A password unlock goes on the
+    /// connection [`Self::unlock_question`] opened, and sends `shown`: the
+    /// window the app's question said it opens (`None`: the question named
+    /// none, so it opens none). The app types the password into its own
+    /// window, so nothing says it was untyped (own choice 46).
+    pub fn unlock(
+        &self,
+        password: Option<String>,
+        shown: Option<PresenceSetting>,
+    ) -> KlavResult<UnlockOutcome> {
+        let password = password.map(zeroize::Zeroizing::new);
+        let mut held = self.lock_held()?;
+        self.runtime.block_on(async {
+            if password.is_none() || held.client.is_none() {
+                held.open(&self.home).await?;
+            }
+            let mut tries = 0;
+            loop {
+                tries += 1;
+                let client = held.connected(&self.home).await?;
+                let answer = async {
+                    // The envelope's fields only for a klavd that has them:
+                    // an older one refuses unknown fields.
+                    let status: DaemonStatus = client.call(Request::Status).await?.0;
+                    let gate = status.presence.is_some();
+                    let presence = klav_daemon::client::Presence {
+                        notify: false,
+                        shown: (gate && password.is_some())
+                            .then(|| shown.map_or(klav_daemon::uv::Window::Always, Into::into)),
+                        untyped: false,
+                    };
+                    client
+                        .call_presence::<DaemonStatus>(
+                            Request::Unlock {
+                                password: password.as_ref().map(|p| SecretText::new(p.as_str())),
+                                passkey_flow: false,
+                            },
+                            presence,
+                            &mut |_| {},
+                        )
+                        .await
+                }
+                .await;
+                match answer {
+                    Ok((status, warnings)) => {
+                        return Ok(UnlockOutcome::of(status.already_unlocked, warnings));
+                    }
+                    // klavd restarted under the app: once more, on a new
+                    // long connection.
+                    Err(e) if crate::presence::gone(&e) && tries == 1 => {
+                        held.open(&self.home).await?;
+                    }
+                    Err(e) => return Err(sent_error(e, password.is_some())),
+                }
+            }
+        })
     }
 
     /// Locks `klavd`: the CLI and the extension lock too.
@@ -465,10 +786,62 @@ impl DaemonEngine {
     }
 
     /// Stops `klavd` (after an update, ADR 0027 §4.1: the LaunchAgent then
-    /// starts the new one).
+    /// starts the new one). The long connection goes first.
     pub fn shutdown(&self) -> KlavResult<()> {
+        if let Ok(mut held) = self.lock_held() {
+            held.drop_connection();
+        }
         self.call::<serde::de::IgnoredAny>(Request::Shutdown)?;
         Ok(())
+    }
+
+    /// The presence setting (ADR 0041 §2.4), only from an unlocked `klavd`:
+    /// `Locked` while locked (Q-N2), `NotSupported` with the gate off or
+    /// from an older `klavd`.
+    pub fn presence_window(&self) -> KlavResult<PresenceSetting> {
+        let answer: Option<WindowReply> = self.call_new(Request::PresenceWindow {
+            window: None,
+            password: None,
+        })?;
+        answer
+            .map(|a| a.window.into())
+            .ok_or_else(older_klavd_presence)
+    }
+
+    /// Changes the presence setting. Tightening asks nothing; loosening
+    /// asks for Touch ID in `klavd`, or, where Touch ID can't confirm
+    /// (`BiometryUnavailable`), for `password`, and opens no window. A move
+    /// off Always opens a new long connection with `hold` (the ADR's own
+    /// choice 1): Always dropped the old one's declaration.
+    pub fn set_presence_window(
+        &self,
+        window: PresenceSetting,
+        password: Option<String>,
+    ) -> KlavResult<PresenceSetting> {
+        let before = self.presence_window()?;
+        let answer: Option<WindowReply> = self.call_new(Request::PresenceWindow {
+            window: Some(window.into()),
+            password: password.map(SecretText::new),
+        })?;
+        let now: PresenceSetting = answer
+            .map(|a| a.window.into())
+            .ok_or_else(older_klavd_presence)?;
+        if before == PresenceSetting::Always && now != PresenceSetting::Always {
+            self.reopen.store(true, Ordering::Release);
+            // Now if the long connection is free; otherwise at its next use.
+            if let Ok(mut held) = self.lock_held() {
+                let _ = self.runtime.block_on(held.open(&self.home));
+            }
+        }
+        Ok(now)
+    }
+
+    /// The app closed its master-password window without an answer: the
+    /// long connection takes other values again.
+    pub fn presence_cancel(&self) {
+        if let Ok(mut held) = self.lock_held() {
+            held.forget_ask();
+        }
     }
 
     /// Whether this account's server lets the person delete the account
@@ -603,6 +976,9 @@ impl DaemonEngine {
                 message: "generated passwords that never went up are only on this Mac: copy them, or delete this copy anyway".into(),
             });
         }
+        if let Ok(mut held) = self.lock_held() {
+            held.drop_connection();
+        }
         self.runtime.block_on(async {
             if let Some(mut client) = DaemonClient::connect(&self.home).await {
                 let _ = client
@@ -695,42 +1071,49 @@ impl DaemonEngine {
 
     /// One field's value (the person asked to reveal or copy it). `klavd`
     /// answers the whole item revealed; the other values are dropped (and
-    /// zeroized) here.
+    /// zeroized) here. With the presence gate on it may answer
+    /// `PresenceRequired`: then [`Self::field_value_with_password`].
     pub fn field_value(&self, id: String, field: String) -> KlavResult<String> {
-        let view = self.revealed(&id)?;
-        let found = view
-            .fields
-            .into_iter()
-            .find(|f| f.name == field)
-            .ok_or_else(|| KlavError::NotFound {
-                message: format!("field {field:?}"),
-            })?;
-        found
-            .value
-            .map(|v| v.expose().to_owned())
-            .ok_or_else(|| KlavError::invalid("this field has no text value"))
+        Self::field_of(self.revealed(&id, None)?, &field)
+    }
+
+    /// `field_value` with the master password, as the answer to its
+    /// `PresenceRequired`, on the connection that got it (own choice 32).
+    pub fn field_value_with_password(
+        &self,
+        id: String,
+        field: String,
+        password: String,
+    ) -> KlavResult<String> {
+        Self::field_of(self.revealed(&id, Some(password))?, &field)
     }
 
     /// The item's notes (the person asked to see them).
     pub fn notes(&self, id: String) -> KlavResult<Option<String>> {
-        Ok(self.revealed(&id)?.notes.map(|n| n.expose().to_owned()))
+        Ok(self
+            .revealed(&id, None)?
+            .notes
+            .map(|n| n.expose().to_owned()))
+    }
+
+    /// `notes` with the master password, as the answer to its
+    /// `PresenceRequired`.
+    pub fn notes_with_password(&self, id: String, password: String) -> KlavResult<Option<String>> {
+        Ok(self
+            .revealed(&id, Some(password))?
+            .notes
+            .map(|n| n.expose().to_owned()))
     }
 
     /// The current one-time password of an item.
     pub fn totp(&self, id: String) -> KlavResult<TotpInfo> {
-        let code: TotpCode = self.call(Request::Totp {
-            query: crate::item_id(&id)?.to_string(),
-            field: None,
-            password: None,
-        })?;
-        // `klavd` does not send the period; almost every site uses 30 s,
-        // and a code with more time left than that is a 60 s one.
-        let period = if code.remaining > 30 { 60 } else { 30 };
-        Ok(TotpInfo {
-            code: code.code.expose().to_owned(),
-            remaining: code.remaining,
-            period,
-        })
+        self.totp_with(id, None)
+    }
+
+    /// `totp` with the master password, as the answer to its
+    /// `PresenceRequired`.
+    pub fn totp_with_password(&self, id: String, password: String) -> KlavResult<TotpInfo> {
+        self.totp_with(id, Some(password))
     }
 
     /// Creates an item (a repeated title is refused).
@@ -768,12 +1151,18 @@ impl DaemonEngine {
 
     /// One previous password (the person asked to reveal or copy it).
     pub fn previous_password(&self, id: String, index: u32) -> KlavResult<String> {
-        let value: SecretText = self.call(Request::PreviousPassword {
-            query: crate::item_id(&id)?.to_string(),
-            index: usize::try_from(index).unwrap_or(usize::MAX),
-            password: None,
-        })?;
-        Ok(value.expose().to_owned())
+        self.previous_with(id, index, None)
+    }
+
+    /// `previous_password` with the master password, as the answer to its
+    /// `PresenceRequired`.
+    pub fn previous_password_with_password(
+        &self,
+        id: String,
+        index: u32,
+        password: String,
+    ) -> KlavResult<String> {
+        self.previous_with(id, index, Some(password))
     }
 
     /// «Use the new one» or «Keep the current one» (ADR 0022 §5).
@@ -802,11 +1191,17 @@ impl DaemonEngine {
 
     /// The value of one generator history entry.
     pub fn generated_value(&self, created_at: i64) -> KlavResult<String> {
-        let value: SecretText = self.call(Request::GeneratedValue {
-            created_at,
-            password: None,
-        })?;
-        Ok(value.expose().to_owned())
+        self.generated_with(created_at, None)
+    }
+
+    /// `generated_value` with the master password, as the answer to its
+    /// `PresenceRequired`.
+    pub fn generated_value_with_password(
+        &self,
+        created_at: i64,
+        password: String,
+    ) -> KlavResult<String> {
+        self.generated_with(created_at, Some(password))
     }
 
     /// Deletes the whole generator history.

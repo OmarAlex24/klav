@@ -601,7 +601,7 @@ final class AgentGrantsTests: XCTestCase {
         XCTAssertEqual(model.revokeAfterUnlock, "ag1")
         try await settle { model.phase == .locked }
 
-        try engine.unlock(password: nil)
+        _ = try engine.unlock(password: nil, shown: nil)
         model.refresh()
         try await settle { model.phase == .unlocked }
         XCTAssertEqual(model.revoking?.agentId, "ag1")
@@ -720,7 +720,7 @@ final class AgentGrantsTests: XCTestCase {
             XCTAssertNotEqual(model.revocationFlows["ag1"]?.stage, .done, "never «Done» while locked")
         }
 
-        try engine.unlock(password: nil)
+        _ = try engine.unlock(password: nil, shown: nil)
         try await follow(model) { model.revocationFlows["ag1"]?.stage == .done }
     }
 

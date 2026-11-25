@@ -30,9 +30,15 @@ struct LiveCode: View {
     var onError: (Error) -> Void = { _ in }
     /// Tapping the code (copy). Nil: not tappable.
     var onCopy: ((String) -> Void)?
+    /// Asked for only when tapped, and shown until it changes (the Mac app
+    /// with the presence gate on, ADR 0041: each fetch may ask for Touch ID,
+    /// so nothing fetches on its own).
+    var onDemand = false
 
     @State private var info: TotpInfo?
     @State private var validUntil = Date.distantPast
+    /// On demand: taps so far; each one fetches once.
+    @State private var asked = 0
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
@@ -55,7 +61,11 @@ struct LiveCode: View {
             // and the blocks are read once, in the label, never again as
             // the text inside.
             Group {
-                if let onCopy, let code = info?.code {
+                if onDemand && info == nil {
+                    Button { asked += 1 } label: { content.contentShape(Rectangle()) }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Shows the code")
+                } else if let onCopy, let code = info?.code {
                     Button { onCopy(code) } label: { content.contentShape(Rectangle()) }
                         .buttonStyle(.plain)
                         .accessibilityHint("Copies the code")
@@ -66,11 +76,38 @@ struct LiveCode: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel(label(left: left))
         }
-        .task(id: id) { await refresh() }
+        .task(id: "\(id)#\(asked)") {
+            if onDemand {
+                if asked > 0 { await showOnce() }
+            } else {
+                await refresh()
+            }
+        }
+    }
+
+    /// On demand: fetches the code once and shows it until it changes.
+    private func showOnce() async {
+        do {
+            let fresh = try await fetch(id)
+            info = fresh
+            validUntil = Date().addingTimeInterval(TimeInterval(fresh.remaining))
+            try await Task.sleep(for: .seconds(Double(max(fresh.remaining, 1))))
+            info = nil
+        } catch is CancellationError {
+            return
+        } catch KlavError.NotFound, KlavError.Invalid {
+            CodeMemo.none.insert(id)
+            onNone()
+        } catch {
+            onError(error)
+        }
     }
 
     private func label(left: Int) -> String {
-        guard let info else { return String(localized: "One-time code for \(title), loading") }
+        guard let info else {
+            if onDemand { return String(localized: "One-time code for \(title), hidden") }
+            return String(localized: "One-time code for \(title), loading")
+        }
         let digits = info.code.map(String.init).joined(separator: " ")
         let changes = String(localized: "Changes in \(left) seconds", comment: "VoiceOver, after the code; plural")
         return String(localized: "One-time code for \(title): \(digits). \(changes)")

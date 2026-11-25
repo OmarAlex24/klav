@@ -15,8 +15,8 @@
 //! Locking drops everything but the declarations, which go when their
 //! connection closes or the setting moves to Always.
 //!
-//! The gate is off unless `klavd` starts with `--presence-gate` (§7): then
-//! every operation behaves exactly as before this layer.
+//! The gate is always on since layer 6 (§7); layers 2–5 built it behind a
+//! hidden `--presence-gate` flag, which is gone.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -127,7 +127,12 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::AgentRotateCancel { .. }
         | Request::AgentRotatePending { .. }
         | Request::BrowserFill { .. } => Gate::AgentProof,
-        Request::BrowserTab | Request::ExtensionReply { .. } => Gate::BrowserChannel,
+        // `extension_presence` carries the person's master password for
+        // an extension connection's presence (§3.1), checked where it is
+        // handled; it hands out nothing.
+        Request::BrowserTab | Request::ExtensionReply { .. } | Request::ExtensionPresence { .. } => {
+            Gate::BrowserChannel
+        }
         Request::Status
         | Request::Unlock { .. }
         | Request::Lock
@@ -376,19 +381,37 @@ pub(crate) enum Purpose<'a> {
 }
 
 /// What a master password sent again after `presence_required` must be
-/// for (finding 2 of layer 3's review): the same request, and, for a
-/// request that names an item, the same item. `klavd` checks the password
-/// only if it would ask exactly what it asked, for this. Its size is fixed,
-/// whatever the request's (the second review of layer 3, finding 5).
+/// for (finding 2 of layer 3's review): the same request, and the same
+/// thing the request names. `klavd` checks the password only if it would
+/// ask exactly what it asked, for this. Its size is fixed, whatever the
+/// request's (the second review of layer 3, finding 5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Bound {
     /// The request as sent, without its password: its SHA-256
     /// ([`request_digest`]), never the request itself.
     pub(crate) request: [u8; 32],
-    /// The item the request names, as `klavd` resolved it under the
-    /// session's lock: always set for `view`, `previous_password`, `totp`
-    /// and `autofill`, never for `generated_value` and `resolve`.
-    pub(crate) item: Option<klav_core::ids::ItemId>,
+    /// What the request names, as `klavd` resolved it under the session's
+    /// lock, as a digest through `klav-core`: the item for `view`,
+    /// `previous_password`, `totp` and `autofill`; every referenced item,
+    /// in order, for `resolve`; the generator history entry for
+    /// `generated_value` (Omar's decision K of 2026-11-19). Set for every
+    /// request of the window row that was asked about.
+    pub(crate) names: Option<[u8; 32]>,
+}
+
+/// The state of what a value request named when `klavd` asked about it,
+/// which the hand-out must still find (Omar's decisions F and K of
+/// 2026-11-19), as a digest through `klav-core`: the item's version, every
+/// referenced item's version for `resolve`, or the entry (its instant and
+/// its value) for `generated_value`. The last is derived from a password,
+/// so it never prints.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Version(pub(crate) [u8; 32]);
+
+impl std::fmt::Debug for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Version(…)")
+    }
 }
 
 /// The digest [`Bound::request`] keeps of `request` (taken out of its
@@ -410,10 +433,11 @@ struct Pending {
     generation: u64,
     ask: PresenceAsk,
     bound: Bound,
-    /// The version of `bound.item` that was asked about (Omar's decision F
-    /// of 2026-11-19): not part of what a resend must match, but what the
-    /// hand-out must still find (`Passed::version`).
-    version: Option<u64>,
+    /// The state of what `bound.names` names when it was asked about
+    /// (Omar's decisions F and K of 2026-11-19): not part of what a resend
+    /// must match, but what the hand-out must still find
+    /// (`Passed::version`).
+    version: Option<Version>,
 }
 
 impl Pending {
@@ -430,12 +454,12 @@ impl Pending {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub(crate) struct Passed {
-    /// The version of the item the ask was about, which the hand-out must
-    /// still find under the session's lock, in the same hold that hands it
-    /// out (Omar's decision F of 2026-11-19): for a password sent again,
-    /// the version when `klavd` asked, not now. `None` for a request bound
-    /// to no item.
-    pub(crate) version: Option<u64>,
+    /// The state of what the ask was about, which the hand-out must still
+    /// find under the session's lock, in the same hold that hands it out
+    /// (Omar's decisions F and K of 2026-11-19): for a password sent again,
+    /// the state when `klavd` asked, not now. `None` when a window covered
+    /// the request before anything was read.
+    pub(crate) version: Option<Version>,
     /// The window the answer opens, not open yet: [`Presence::open_window`] opens
     /// it once the hand-out finds what was asked about. A `conflict`, or any
     /// refusal before that check, drops it, and the next value asks again
@@ -444,7 +468,8 @@ pub(crate) struct Passed {
 }
 
 /// A window an answer was going to open (Omar's decision G of 2026-11-19):
-/// what the prompt stated, for the session it was stated in.
+/// what the prompt stated, for the session it was stated in, from the
+/// instant the verification passed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub(crate) struct Opening {
@@ -452,6 +477,11 @@ pub(crate) struct Opening {
     lasts: Lasts,
     declared: bool,
     setting: Window,
+    /// When the verification passed: the window counts from here, not
+    /// from the hand-out, so a request that then waits for the session's
+    /// lock gains nothing by waiting (the third layer-3 re-review; ADR
+    /// 0041, plan item 6).
+    at: Instant,
 }
 
 /// What [`Presence::first`] found.
@@ -496,7 +526,6 @@ pub(crate) struct Device<'a> {
     pub(crate) touch_id: bool,
     pub(crate) check: Option<&'a PasswordCheck>,
     pub(crate) passwords: &'a OnePassword,
-    pub(crate) gate: bool,
 }
 
 impl Verify for Device<'_> {
@@ -515,16 +544,14 @@ impl Verify for Device<'_> {
     }
 
     fn password(&self, password: SecretText) -> Result<(), ErrorBody> {
-        self.passwords.check(self.gate, self.check, password)
+        self.passwords.check(self.check, password)
     }
 }
 
 /// One master-password check at a time in `klavd` (finding 1 of the second
 /// layer-2 review): each wrong password costs an Argon2id run with a large
 /// memory setting on its own thread, so a second check while one runs is
-/// answered at once instead of starting another. The answer is
-/// `presence_busy` with the gate on, and `conflict`, which older clients
-/// know, with it off (the ADR's own choice; Still open).
+/// answered at once instead of starting another, with `presence_busy`.
 #[derive(Debug, Default)]
 pub(crate) struct OnePassword(std::sync::atomic::AtomicBool);
 
@@ -534,11 +561,10 @@ impl OnePassword {
     /// when there is no session to check it against.
     pub(crate) fn check(
         &self,
-        gate: bool,
         check: Option<&PasswordCheck>,
         password: SecretText,
     ) -> Result<(), ErrorBody> {
-        self.one(gate, || {
+        self.one(|| {
             let Some(check) = check else {
                 return Err(crate::server::error_body(
                     &klav_client::ClientError::WrongCredentials,
@@ -554,7 +580,6 @@ impl OnePassword {
     /// once (nobody waits, so nothing piles up behind a slow one).
     pub(crate) fn one<T>(
         &self,
-        gate: bool,
         check: impl FnOnce() -> Result<T, ErrorBody>,
     ) -> Result<T, ErrorBody> {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -570,17 +595,7 @@ impl OnePassword {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err(if gate {
-                busy()
-            } else {
-                ErrorBody {
-                    code: ErrorCode::Conflict,
-                    message: "klavd is checking another master password: try again in a moment"
-                        .into(),
-                    paused: None,
-                    presence: None,
-                }
-            });
+            return Err(busy());
         }
         let _running = Running(&self.0);
         check()
@@ -639,6 +654,9 @@ struct Inner {
     held: HashSet<u64>,
     /// Connections that declared `hold`; kept across locks.
     declared: HashSet<u64>,
+    /// Extension connections whose presence was verified (§3.1): agents
+    /// fill through them until Klav locks or they close. Not under Always.
+    extensions: HashSet<u64>,
     /// The prompt `klavd` shows now, if any: one at a time (§2.4).
     prompt: Option<PromptKind>,
     /// The key that unlocked `klavd`, until it locks.
@@ -764,6 +782,7 @@ impl Presence {
         inner.passkeys.clear();
         inner.asks.clear();
         inner.held.clear();
+        inner.extensions.clear();
         inner.unlocked_by = Some(caller.key);
         if settings.presence == Window::Always {
             inner.declared.clear();
@@ -792,6 +811,7 @@ impl Presence {
         inner.passkeys.clear();
         inner.asks.clear();
         inner.held.clear();
+        inner.extensions.clear();
         inner.unlocked_by = None;
     }
 
@@ -800,6 +820,7 @@ impl Presence {
         let mut inner = self.inner();
         inner.declared.remove(&conn);
         inner.held.remove(&conn);
+        inner.extensions.remove(&conn);
         inner.windows.remove(&Key::Connection(conn));
         inner.asks.remove(&conn);
         inner.passkeys.remove(&Key::Connection(conn));
@@ -957,6 +978,49 @@ impl Presence {
         if window == Window::Always {
             inner.held.clear();
             inner.declared.clear();
+            inner.extensions.clear();
+        }
+        Ok(())
+    }
+
+    /// What extension connection `conn` needs before an agent's event
+    /// carries values to it (§3.1), in the session of `generation`:
+    /// `None` when its presence was verified and still holds; else the
+    /// setting a verification is made under now (Always: this event only).
+    /// A held connection (§1.2) or a key's window doesn't count here.
+    pub(crate) fn extension_needs(
+        &self,
+        generation: u64,
+        conn: u64,
+    ) -> Result<Option<Window>, ErrorBody> {
+        let inner = self.inner();
+        let settings = inner
+            .settings
+            .filter(|_| inner.generation == generation)
+            .ok_or_else(locked)?;
+        let covered = settings.presence != Window::Always && inner.extensions.contains(&conn);
+        Ok((!covered).then_some(settings.presence))
+    }
+
+    /// Extension connection `conn`'s presence was verified, by a prompt
+    /// that stated `stated` (§3.1). Under 5 minutes or While unlocked it
+    /// lasts until Klav locks or the connection closes; a prompt stated
+    /// under Always covers its one event, and so does any while the
+    /// setting is Always now (loosening is not retroactive). `locked` when
+    /// Klav locked since: the verification grants nothing then.
+    pub(crate) fn extension_verified(
+        &self,
+        generation: u64,
+        conn: u64,
+        stated: Window,
+    ) -> Result<(), ErrorBody> {
+        let mut inner = self.inner();
+        let settings = inner
+            .settings
+            .filter(|_| inner.generation == generation)
+            .ok_or_else(locked)?;
+        if stated != Window::Always && settings.presence != Window::Always {
+            inner.extensions.insert(conn);
         }
         Ok(())
     }
@@ -1043,7 +1107,7 @@ impl Presence {
         purpose: Purpose<'_>,
         password: Option<SecretText>,
         bound: &Bound,
-        version: Option<u64>,
+        version: Option<Version>,
         verify: &dyn Verify,
         lang: Lang,
         now: &dyn Fn() -> Instant,
@@ -1089,6 +1153,7 @@ impl Presence {
                     declared,
                     lasts: lasts.map(wire_lasts),
                     value,
+                    browser: None,
                 },
                 bound: bound.clone(),
                 version,
@@ -1146,6 +1211,9 @@ impl Presence {
             }
         };
         checked?;
+        // The window's start: the verification, read before anything else
+        // can wait (plan item 6).
+        let at = now();
         let inner = self.inner();
         if inner.settings.is_none() || inner.generation != generation {
             return Err(locked());
@@ -1157,15 +1225,17 @@ impl Presence {
             lasts,
             declared,
             setting,
+            at,
         });
         Ok(Passed { version, opens })
     }
 
     /// Opens the window a passed verification stated (`Passed::opens`),
-    /// called under the session's lock once the hand-out found the item and
-    /// the version that were asked about. What the prompt said, shortened by
-    /// any tightening since; nothing once Klav locked since.
-    pub(crate) fn open_window(&self, caller: &Caller, opening: Opening, now: Instant) {
+    /// called under the session's lock once the hand-out found what was
+    /// asked about, in the state it was asked about. What the prompt said,
+    /// shortened by any tightening since, counted from the verification
+    /// (`Opening::at`), not from now; nothing once Klav locked since.
+    pub(crate) fn open_window(&self, caller: &Caller, opening: Opening) {
         let mut inner = self.inner();
         let Some(settings) = inner
             .settings
@@ -1184,7 +1254,7 @@ impl Presence {
                 inner.held.insert(caller.conn);
             }
         } else {
-            inner.grant(caller, window, now);
+            inner.grant(caller, window, opening.at);
         }
     }
 

@@ -530,7 +530,7 @@ final class SandboxesTests: XCTestCase {
         XCTAssertEqual(model.unregisteredRevocations.map(\.id), [missed.id])
 
         // «Not applied» covers nothing new either: still red.
-        try engine.unlock(password: "sample")
+        _ = try engine.unlock(password: "sample", shown: nil)
         engine.revokeNotApplied = true
         _ = try await model.revokeAgain(missed)
         XCTAssertEqual(model.unregisteredRevocations.map(\.id), [missed.id])

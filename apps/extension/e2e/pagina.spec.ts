@@ -5,7 +5,7 @@
  */
 import { resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, clickIn, frameOf, launch, openMenu, shoot, startStack, type Stack, waitArmed } from "./harness";
+import { type Browser, clickIn, frameOf, launch, openMenu, shoot, startStack, type Stack, waitArmed, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
@@ -30,7 +30,7 @@ test.beforeAll(async () => {
   browser = await launch(stack);
   started = browser;
   // The card only shows while Klav is unlocked.
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
 });
 
 test.afterAll(async () => {

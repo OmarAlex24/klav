@@ -58,12 +58,19 @@ Todas las capturas usan la bóveda de ejemplo (§4), sin valores reales. Las de 
   - `Shared/App/` es de las dos apps: el protocolo del motor, las tarjetas de las solicitudes de agentes, las palabras de las tareas y de la salud, lo que hace el editor de elementos (`ItemDraft`) y el generador (`GeneratorWords`), y la tarjeta de «Arreglar mis contraseñas repetidas» con su progreso (`FixReused`).
 
   Detalle en [ios.md](ios.md) §1.
-- **El motor es `klavd`** (ADR 0027 §3). La rebanada `macos-arm64` de `KlavFFI` trae `DaemonEngine`, un cliente del socket de `klavd` con una conexión por petición. Así, un desbloqueo que espera a Touch ID no detiene el estado de la barra de menús. `DaemonEngine` cumple `VaultEngine`, el mismo protocolo que `KlavCore` en iOS, y además `MacEngine`, con lo que solo hace `klavd`:
+- **El motor es `klavd`** (ADR 0027 §3). La rebanada `macos-arm64` de `KlavFFI` trae `DaemonEngine`, un cliente del socket de `klavd`:
+  - **Una conexión larga** ([ADR 0041](decisiones/0041-presence-for-values-and-the-inject-card.md) §1.2, la conexión retenida) para lo que puede pedir presencia: desbloquear y los valores (mostrar o copiar un campo, las notas, el código, una contraseña anterior o una generada). Su primera petición es `hold`. Un `klavd` sin la puerta de presencia contesta `not_supported`, y uno anterior `bad_request`; en los dos casos la app sigue con esa conexión. Las peticiones van de una en una; una que espera más de 3 s a otra (un diálogo de Touch ID abierto) recibe «Klav ya está confirmando otra cosa en esta app» en vez de hacer cola.
+  - **Una conexión por petición** para todo lo demás. Así, un desbloqueo que espera a Touch ID no detiene el estado de la barra de menús. `DaemonEngine` cumple `VaultEngine`, el mismo protocolo que `KlavCore` en iOS, y además `MacEngine`, con lo que solo hace `klavd`:
   - su estado;
   - desbloquear con Touch ID o con la contraseña, y bloquear;
   - las variantes `…WithPassword` para aprobar en un Mac sin Touch ID.
 - **Ningún secreto vive en la app:** los valores se piden a `klavd` cuando la persona los copia o los muestra, como en la CLI con `--reveal`. Al bloquear o al cambiar de elemento, la ficha los olvida.
-- **El directorio es el de la CLI y `klavd`:** `KLAV_HOME` si está definido, si no `~/Library/Application Support/klav`. El [ADR 0041](decisiones/0041-presence-for-values-and-the-inject-card.md) §1.2 (aceptado, sin construir) hace que la versión con Developer ID no haga caso de `KLAV_HOME` y use siempre el directorio por defecto; las compilaciones Debug y la app de ejemplo lo siguen respetando. La app no tiene *sandbox*, porque se distribuye fuera de la Mac App Store.
+- **El directorio es el de la CLI y `klavd`,** `~/Library/Application Support/klav`, pero la app lo busca de otra forma según la compilación (ADR 0041 §1.2, N1):
+  - **La compilación Release** (la del DMG, firmada con Developer ID) toma el home de la persona del registro de su cuenta (`getpwuid_r(getuid())`, `KlavHome.accountHome()`) y le añade `Library/Application Support/klav`. No hace caso de ninguna variable de entorno: ni `KLAV_HOME`, ni `HOME`, ni `CFFIXED_USER_HOME`. Si no, un programa que abriera la app con una de ellas apuntando a un directorio suyo la haría conectarse a su propio `klavd.sock` y leer todo lo que pasa por la conexión retenida. Lo mismo vale para el home donde la app busca los manifiestos de los navegadores y el enlace de la CLI (`InstallPaths.live()`).
+  - **Las compilaciones Debug** (las pruebas, la app de ejemplo, Xcode) siguen respetando `KLAV_HOME`, `KLAV_BROWSER_HOME`, `KLAV_HELPERS_DIR` y `KLAV_CLI_LINK_DIR`. La regla está en el código (`#if DEBUG` en `KlavHome.directory()`), no en un ajuste.
+  - `KlavFFI` no lee ninguna variable para el home: la app se lo pasa (`DaemonEngine(homeDir:)`, `KlavCore(homeDir:)`).
+
+  La CLI y `klavd` no cambian: siguen respetando `KLAV_HOME`. La app no tiene *sandbox*, porque se distribuye fuera de la Mac App Store.
 - **`MacModel`** consulta el estado de `klavd` cada 2 s (un socket Unix, barato) y las solicitudes cada 10 s mientras está desbloqueado. Cuando cambia la revisión de `klavd`, las vistas vuelven a leer.
 - **Avisos locales:** cada solicitud nueva (una aprobación, un agente que pide unirse o una tarea) avisa con una notificación del sistema. No hay APNs en el Mac (ADR 0027 §1). La primera lectura después de desbloquear solo recuerda lo que ya había. Al pulsar un aviso, la ventana se abre en Solicitudes.
 
@@ -181,6 +188,23 @@ Lo propio del Mac:
   Los nombres de los agentes y los títulos van limpios y entre comillas, sin IDs ni el motivo del agente (T140).
 - **Con la contraseña maestra:** si el Mac no tiene Touch ID, si está apagado o si `klavd` pide la contraseña (tras reiniciar el Mac o cada 14 días), la pantalla de bloqueo pide la contraseña maestra.
 - **Aprobaciones sin Touch ID:** se piden con la contraseña maestra en una hoja, y la acción se repite con ella.
+- **Un desbloqueo que no fue suyo** (ADR 0041, Q-N1): si otro programa ya había desbloqueado Klav, la app lo dice: «Klav ya estaba desbloqueado en otro lugar; este desbloqueo no le dio nada a esta app. Si no lo desbloqueaste tú, bloquea Klav.». Con la contraseña maestra, dice que contó igualmente como la confirmación de la app.
+- **El ajuste viejo de las passkeys** (Q-N3): el desbloqueo que encuentra el `passkeys.json` de antes lo dice una vez («Klav ya no lee tu antiguo ajuste de passkeys…»), y los demás avisos del desbloqueo salen igual, en una línea.
+
+### Presencia para los valores (ADR 0041, capa 5)
+
+Desde la capa 6 la puerta de presencia está encendida (la opción oculta `klavd --presence-gate` de las capas 2 a 5 ya no existe). `hold` sigue contestando `not_supported` hasta que Omar haga a mano, en una versión firmada con Developer ID, las comprobaciones de la capa 5 (el depurador y `HOME`, `CFFIXED_USER_HOME` y `KLAV_HOME` hostiles): mientras tanto, la conexión larga no queda retenida y cada valor pide presencia según el ajuste, como cualquier otro programa. Con un `klavd` anterior, sin la puerta, la app se ve y se comporta como antes. Con ella:
+
+- **Con Touch ID** el diálogo lo muestra `klavd`, con su texto (§Desbloqueo). Cuando `hold` esté encendido, desbloquear desde la app retendrá su conexión hasta que Klav se bloquee, salvo con «Cada vez».
+- **Sin Touch ID** (o bloqueado, o apagado), `klavd` contesta `presence_required` y la app pide la contraseña maestra en su hoja. La hoja dice lo que concede, a partir de lo que dijo `klavd` (`lasts`, o el valor de esa sola vez), nunca del ajuste solo: «Al confirmar, esta app podrá usar tu bóveda hasta que Klav se bloquee», o «Al confirmar, Klav muestra «GitHub» solo esta vez». La contraseña va por la conexión que recibió la pregunta (elección propia 32); por otra, `klavd` la ignoraría y volvería a preguntar.
+  - La hoja sale encima de donde se pidió el valor: la ventana, el editor, «Cambiar permisos…», la hoja de «Borrar la copia de este Mac» o Ajustes. Desde la barra de menús, la app abre la ventana y la hoja sale ahí.
+  - Mientras la hoja de un valor está abierta, otro valor recibe «Klav ya está confirmando otra cosa en esta app». Cerrar la hoja (o que Klav se bloquee) la retira y libera la conexión.
+  - Una contraseña equivocada deja la hoja abierta. La app vuelve a preguntar a `klavd` sin contraseña, porque una respuesta borra su pregunta.
+- **La pantalla de bloqueo** dice antes de escribir qué abre la contraseña («Desbloquear con la contraseña maestra también deja que esta app use tu bóveda hasta que Klav se bloquee»), leído en `status` por la misma conexión, y lo manda como `shown` (elección propia 34): `klavd` abre solo eso.
+- **Los códigos de un solo uso** no se piden solos: cada petición podría mostrar Touch ID. Las filas de la lista no muestran el código, y en la ficha se muestra al pulsarlo, hasta que cambia. «Código» en la barra de menús sabe que el elemento tiene código por sus datos, sin pedirlo.
+- **Lo que dice cada respuesta ocupada:** otro programa con un diálogo de Touch ID abierto («Otro programa está pidiendo Touch ID en Klav…»), `klavd` comprobando otra contraseña maestra (con la puerta apagada lo dice con `conflict`, que antes salía como «El elemento cambió en otro dispositivo») o la propia app. Un elemento que cambió entre la pregunta y la entrega no entrega nada y lo dice.
+- **Ajustes › Presencia** (solo con la puerta encendida) elige cuánto dura una confirmación: «Cada vez», «Durante 5 minutos» (por defecto) o «Mientras Klav esté desbloqueado». Vale para todo programa que lea de Klav en este Mac. Reducirla no pide nada y se aplica al momento; ampliarla pide Touch ID en `klavd`, o la contraseña maestra en una hoja sobre Ajustes, y cuenta desde la próxima confirmación. Con Klav bloqueado, `klavd` no puede leer el ajuste, y la pestaña dice «Desbloquea Klav para ver y cambiar este ajuste» en vez de mostrar uno por defecto (Q-N2). Al pasar de «Cada vez» a otro, la app abre otra conexión larga con `hold`, porque «Cada vez» borró la declaración de la anterior (elección propia 1).
+- **El límite de una compilación Debug:** se firma con `get-task-allow`, así que cualquier depurador del mismo usuario se engancha a ella y, por su conexión retenida, lee los valores de la ventana hasta que Klav se bloquee. No la uses con tu bóveda de verdad. La de Developer ID lleva *hardened runtime* y ninguno de `get-task-allow`, `com.apple.security.cs.disable-library-validation` o `com.apple.security.cs.allow-dyld-environment-variables`: un programa del mismo usuario no puede engancharse ni cargarle una biblioteca, salvo como root o con SIP apagado. `build-app.sh` lo comprueba en cada compilación (§5).
 
 ### Idiomas
 
@@ -366,6 +390,9 @@ KLAV_IOS_SKIP_FFI=1 scripts/macos/test.sh   # reusar target/ios/KlavFFI.xcframew
   | `-KlavSheet deleteAccount` | Abre la hoja del borrado en Ajustes › Cuenta |
   | `-KlavSheet newItem` o `editItem` | Abre el editor en un login nuevo o en `-KlavItem` |
   | `-KlavSheet trash` | Abre «Mover a la papelera» de `-KlavItem` |
+  | `-KlavSamplePresence YES` | La puerta de presencia encendida (ADR 0041); con `-KlavSampleNoTouchID YES`, los valores piden la contraseña maestra (`sample`) |
+  | `-KlavSheet presenceValue` | Con esos dos, abre la hoja de la contraseña maestra para la contraseña de `-KlavItem` |
+  | `-KlavOpen settings` con `-KlavSettingsTab presence` | Abre Ajustes › Presencia (con `-KlavSamplePresence YES`) |
   | `-KlavGenerator YES` | Con `newItem`, abre el generador sobre el editor |
   | `-KlavSheet fixReused` | Con `-KlavSection health`, abre «Arreglar mis contraseñas repetidas» para release-agent |
   | `-KlavSampleFix YES` | Esa tarea ya corre, con un sitio cambiado y otro en curso |
@@ -410,7 +437,7 @@ scripts/macos/build-app.sh adhoc                                         # sin c
    - cada ayudante con su identificador `dev.klav.<nombre>`. `klavd` se firma como su *bundle*, `klavd.app`, y el script comprueba que `Helpers/klavd` sea el enlace a él;
    - después la app, que sella `Helpers` (el enlace incluido) y el *plist*.
 
-   El script comprueba la firma completa (`codesign --verify --deep --strict`) y la misma regla de T120 en cada ayudante (`klavd.app` para `klavd`).
+   El script comprueba la firma completa (`codesign --verify --deep --strict`) y la misma regla de T120 en cada ayudante (`klavd.app` para `klavd`). En `release`, además, `scripts/macos/check-signature.sh` comprueba la app y sus tres ayudantes (ADR 0041 §1.2, N10): falla la compilación si a alguno le falta la bandera `runtime` en `codesign -dv`, o si sus *entitlements* traen `com.apple.security.get-task-allow`, `get-task-allow`, `com.apple.security.cs.disable-library-validation` o `com.apple.security.cs.allow-dyld-environment-variables`. Falla cerrado: una ruta que `codesign` no lee, o una firma sin línea de banderas, también falla. `scripts/macos/check-signature-test.sh` lo prueba con binarios firmados *ad hoc* bajo `target/`.
 4. **La notarización** con `notarytool` y la llave de App Store Connect, pasada solo como ruta (`KLAV_NOTARY_KEY`, con su ID en `KLAV_NOTARY_KEY_ID` y el del emisor en `KLAV_NOTARY_ISSUER`; no tienen valor por defecto: van en el entorno o en la configuración local de compilación, [ios.md](ios.md) §5, y sin ellos `release` se detiene antes de compilar): primero la app (en un zip), que se grapa para abrir sin red; después el DMG, que también se grapa. Si Apple no la acepta, el script imprime su registro y para.
 5. **El DMG** (`Klav-<versión>.dmg`, ULFO): `Klav.app` y un alias a `/Applications`, firmado. Al final, `spctl` evalúa el DMG y la app como lo haría Gatekeeper.
 
@@ -536,7 +563,7 @@ Lo mismo que en el iPhone ([ios.md](ios.md) §11), con «este Mac» donde iOS di
 
 Las capturas usan la bóveda de ejemplo con `-KlavSampleDeletion` (§4).
 
-- **Dónde:** Ajustes (⌘,) › Cuenta, el botón rojo «Borrar mi cuenta». Ajustes tiene ahora dos pestañas: «Este Mac» (la configuración y desinstalar) y «Cuenta». Antes de nada, la app pregunta al servidor si puede (`account_deletion` en `/v1/health`); si no, dice «Este servidor no permite borrar la cuenta desde la app. Pídeselo a quien lo opera.».
+- **Dónde:** Ajustes (⌘,) › Cuenta, el botón rojo «Borrar mi cuenta». Ajustes tiene ahora dos pestañas: «Este Mac» (la configuración y desinstalar) y «Cuenta» (y «Presencia» con la puerta de presencia encendida, §2). Antes de nada, la app pregunta al servidor si puede (`account_deletion` en `/v1/health`); si no, dice «Este servidor no permite borrar la cuenta desde la app. Pídeselo a quien lo opera.».
 - **Los dos pasos** son los del iPhone en una hoja: qué se borra y qué no, con la fecha a 7 días, y la contraseña maestra.
 - **Quién hace qué** (ADR 0037 §1, T164):
   - La petición sale del proceso de la app, con `DaemonEngine::request_account_deletion`, como el inicio de sesión (ADR 0027 §3). La contraseña se comprueba aquí y va al servidor con OPAQUE; `klavd` nunca la ve.

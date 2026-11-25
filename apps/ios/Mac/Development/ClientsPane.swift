@@ -269,7 +269,10 @@ func sentenceCase(_ text: String) -> String { text.prefix(1).uppercased() + text
 
 /// `~/…` for a path in the home.
 func shortPath(_ path: String) -> String {
-    let home = ProcessInfo.processInfo.environment["KLAV_BROWSER_HOME"] ?? NSHomeDirectory()
+    var home = (try? KlavHome.accountHome().path) ?? NSHomeDirectory()
+    #if DEBUG
+    if let dir = ProcessInfo.processInfo.environment["KLAV_BROWSER_HOME"], !dir.isEmpty { home = dir }
+    #endif
     return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
 }
 

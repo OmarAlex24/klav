@@ -5,7 +5,7 @@
  */
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
-import { type Browser, clickIn, frameOf, launch, openMenu, PASSWORD, settled, shoot, startStack, type Stack, UNLOCK_MS, waitArmed } from "./harness";
+import { type Browser, clickIn, frameOf, launch, openMenu, PASSWORD, settled, shoot, startStack, type Stack, UNLOCK_MS, waitArmed, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
@@ -73,7 +73,7 @@ test("the popup speaks Spanish: unlock, the vault, the page's login and an item"
 });
 
 test("the field menu and the save bar speak Spanish", async () => {
-  stack.klav(["unlock"], { unlocked: true });
+  await unlockInBrowser(stack, browser);
   const page = await browser.context.newPage();
   await page.goto(site.url("/login"));
   const menu = await openMenu(page, page.locator("#username"));

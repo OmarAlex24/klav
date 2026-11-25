@@ -5,7 +5,7 @@
  */
 import { resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, launch, shoot, type Stack, startStack } from "./harness";
+import { type Browser, launch, shoot, type Stack, startStack, unlockInBrowser } from "./harness";
 import { type Site, startSite } from "./site";
 
 const shots = process.env.SCREENSHOTS === "1" ? resolve(import.meta.dirname, "..", "..", "..", "docs", "img", "extension") : undefined;
@@ -29,8 +29,8 @@ test.beforeAll(async () => {
   add(["card", "--title", "Visa", "--field", "cardholder=Ana López"]);
   add(["note", "--title", "Router"]);
   add(["ssh-key", "--title", "Servidor", "--field", "fingerprint=SHA256:example"]);
-  stack.klav(["unlock"], { unlocked: true });
   browser = await launch(stack);
+  await unlockInBrowser(stack, browser);
   await browser.context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: site.url("/").replace(/\/$/, "") });
 });
 
@@ -119,8 +119,8 @@ test("a vault without codes has no «Codes» tab", async () => {
   try {
     other.klav(["item", "add", "note", "--title", "Wi-Fi"], { unlocked: true });
     other.klav(["item", "add", "login", "--title", "Linear", "--username", "ana", "--secret-stdin", "password"], { unlocked: true, stdin: "MARKER-x\n" });
-    other.klav(["unlock"], { unlocked: true });
     const mine = await launch(other);
+    await unlockInBrowser(other, mine);
     try {
       const popup = await mine.popup();
       await expect(popup.locator(".list .row")).toHaveCount(2);

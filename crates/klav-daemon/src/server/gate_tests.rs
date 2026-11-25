@@ -48,6 +48,8 @@ struct Hold {
 /// A Touch ID that says yes, counts its prompts, and can hold one open.
 struct Fake {
     available: AtomicBool,
+    /// The person cancels every gate prompt (`authenticate`).
+    cancels: AtomicBool,
     prompts: Mutex<Vec<String>>,
     hold: Mutex<Option<Hold>>,
 }
@@ -56,6 +58,7 @@ impl Fake {
     fn new(available: bool) -> Arc<Fake> {
         Arc::new(Fake {
             available: AtomicBool::new(available),
+            cancels: AtomicBool::new(false),
             prompts: Mutex::new(Vec::new()),
             hold: Mutex::new(None),
         })
@@ -159,6 +162,10 @@ impl Biometric for Shared {
     }
 
     fn authenticate(&self, reason: &str) -> Result<(), klav_touchid::Error> {
+        if self.0.available.load(Ordering::SeqCst) && self.0.cancels.load(Ordering::SeqCst) {
+            self.0.prompts.lock().unwrap().push(reason.to_owned());
+            return Err(klav_touchid::Error::Cancelled);
+        }
         if self.0.prompt(reason) {
             Ok(())
         } else {
@@ -203,15 +210,14 @@ impl Drop for Daemon {
 
 /// A test `klavd` for `home`, with the fake Touch ID. Each connection takes
 /// the next of `keys`.
-async fn daemon(home: &Home, gate: bool, fake: &Arc<Fake>, keys: &[Key], hold: bool) -> Daemon {
-    daemon_with(home, gate, fake, keys, hold, BeforePrompt::default()).await
+async fn daemon(home: &Home, fake: &Arc<Fake>, keys: &[Key], hold: bool) -> Daemon {
+    daemon_with(home, fake, keys, hold, BeforePrompt::default()).await
 }
 
 /// [`daemon`], with the pause before a prompt the test sets through
 /// `before_prompt` ([`pause_before_prompt`]).
 async fn daemon_with(
     home: &Home,
-    gate: bool,
     fake: &Arc<Fake>,
     keys: &[Key],
     hold: bool,
@@ -219,7 +225,6 @@ async fn daemon_with(
 ) -> Daemon {
     daemon_seams(
         home,
-        gate,
         fake,
         keys,
         hold,
@@ -233,7 +238,6 @@ async fn daemon_with(
 /// too.
 async fn daemon_seams(
     home: &Home,
-    gate: bool,
     fake: &Arc<Fake>,
     keys: &[Key],
     hold: bool,
@@ -247,7 +251,6 @@ async fn daemon_seams(
         touch_id: true,
         sync_after: crate::SYNC_AFTER,
         build: None,
-        presence_gate: gate,
     };
     let seams = TestSeams {
         keys: Mutex::new(keys.iter().copied().collect()),
@@ -468,7 +471,7 @@ async fn a_password_for_swapped_files_is_no_presence_with_the_gate_on() {
     let (person, scratch) = two_accounts(&server, dir.path()).await;
     // Touch ID can't be shown: the password is the verification.
     let fake = Fake::new(false);
-    let _klavd = daemon(&person, true, &fake, &[session(40)], false).await;
+    let _klavd = daemon(&person, &fake, &[session(40)], false).await;
     let c = conn(&person).await;
     call::<DaemonStatus>(&c, unlock(Some(PERSON)))
         .await
@@ -520,59 +523,6 @@ async fn a_password_for_swapped_files_is_no_presence_with_the_gate_on() {
     assert_eq!(fake.asked(), 0, "no Touch ID was shown");
 }
 
-/// The same with the gate off, where the password check of an operation
-/// that already asks and an `unlock` with the password while unlocked are
-/// live today.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_password_for_swapped_files_is_no_presence_with_the_gate_off() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().unwrap();
-    let (person, scratch) = two_accounts(&server, dir.path()).await;
-    let fake = Fake::new(false);
-    let _klavd = daemon(&person, false, &fake, &[], false).await;
-    let c = conn(&person).await;
-    // The gate off: `status` says nothing of it, locked or not (layer 3's
-    // review: the CLI reads the gate from there).
-    let s: DaemonStatus = call(&c, Request::Status).await.expect("status");
-    assert_eq!(s.presence, None);
-    call::<DaemonStatus>(&c, unlock(Some(PERSON)))
-        .await
-        .expect("unlock");
-    let s: DaemonStatus = call(&c, Request::Status).await.expect("status");
-    assert_eq!(s.presence, None);
-
-    let aside = dir.path().join("aside");
-    swap(&person, &scratch, &aside);
-    assert_eq!(
-        code(&c, cancel_deletion(Some(THEIRS))).await,
-        ErrorCode::WrongCredentials
-    );
-    assert_eq!(
-        code(&c, unlock(Some(THEIRS))).await,
-        ErrorCode::WrongCredentials
-    );
-    assert_eq!(
-        code(
-            &c,
-            Request::PasskeyUv {
-                window: Some(Window::Unlocked),
-                password: secret(Some(THEIRS)),
-            }
-        )
-        .await,
-        ErrorCode::WrongCredentials
-    );
-    for name in FILES {
-        std::fs::remove_file(person.file(name)).unwrap();
-    }
-    put_back(&person, &aside);
-    call::<Value>(&c, cancel_deletion(Some(PERSON)))
-        .await
-        .expect("cancel");
-    let s: DaemonStatus = call(&c, unlock(Some(PERSON))).await.expect("unlock");
-    assert!(s.unlocked && !s.already_unlocked);
-}
-
 /// Where Touch ID is available, a password that comes along is the
 /// verification and no dialog shows; a wrong one grants nothing.
 #[tokio::test(flavor = "multi_thread")]
@@ -582,7 +532,7 @@ async fn a_password_brought_where_touch_id_is_available_shows_no_dialog() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40)], false).await;
     let c = conn(&home).await;
     call::<DaemonStatus>(&c, unlock(Some(PERSON)))
         .await
@@ -625,7 +575,7 @@ async fn another_key_is_told_already_unlocked_and_gets_no_window() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     // The first unlock since klavd started opens no window (Omar's
@@ -668,7 +618,7 @@ async fn the_passkey_window_is_per_key_through_the_socket() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -718,7 +668,7 @@ async fn a_second_unlock_while_the_unlock_prompt_is_open_is_busy() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let (open, release) = fake.hold_next();
@@ -753,7 +703,7 @@ async fn a_waiting_unlock_is_busy_once_the_unlock_prompt_opens() {
     let fake = Fake::new(true);
     let seam = BeforePrompt::default();
     let keys = [session(40), session(41)];
-    let _klavd = daemon_with(&home, true, &fake, &keys, false, Arc::clone(&seam)).await;
+    let _klavd = daemon_with(&home, &fake, &keys, false, Arc::clone(&seam)).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let (reached, go) = pause_before_prompt(&seam);
@@ -792,7 +742,7 @@ async fn no_prompt_waits_behind_a_dialog_that_holds_the_session() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -837,7 +787,7 @@ async fn a_prompt_waiting_for_the_session_is_busy_once_a_dialog_opens() {
     let fake = Fake::new(true);
     let seam = BeforePrompt::default();
     let keys = [session(40), session(41), session(42)];
-    let _klavd = daemon_with(&home, true, &fake, &keys, false, Arc::clone(&seam)).await;
+    let _klavd = daemon_with(&home, &fake, &keys, false, Arc::clone(&seam)).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let c = conn(&home).await;
@@ -886,7 +836,7 @@ async fn a_value_under_an_open_window_still_waits_for_the_session() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     // a's second unlock opened a's window (5 minutes, the default): the
@@ -924,7 +874,7 @@ async fn every_prompt_waits_for_none_while_another_is_open() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -965,40 +915,6 @@ async fn every_prompt_waits_for_none_while_another_is_open() {
     assert_eq!(fake.asked(), 2);
 }
 
-/// With the gate off, the operations that already ask keep showing their
-/// dialogs as before: nothing waits or is busy.
-#[tokio::test(flavor = "multi_thread")]
-async fn with_the_gate_off_prompts_are_not_busy() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().unwrap();
-    let home = Home::at(dir.path().join("home"));
-    account(&server, &home, "ana@example.com", PERSON).await;
-    let fake = Fake::new(true);
-    let _klavd = daemon(&home, false, &fake, &[], false).await;
-    let a = conn(&home).await;
-    let b = conn(&home).await;
-    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
-        .await
-        .expect("unlock");
-    let (open, release) = fake.hold_next();
-    let first = {
-        let a = Arc::clone(&a);
-        tokio::spawn(async move { call::<Value>(&a, cancel_deletion(None)).await })
-    };
-    opened(open).await;
-    at_once(call::<Value>(
-        &b,
-        Request::ConfirmPresence {
-            purpose: crate::protocol::PresencePurpose::DeleteAccount,
-        },
-    ))
-    .await
-    .expect("not busy with the gate off");
-    release.send(()).unwrap();
-    first.await.unwrap().expect("cancel");
-    assert_eq!(fake.asked(), 2);
-}
-
 // ------------------------------------------------------------ settings
 
 /// One setting change at a time (finding 3 of the second layer-2 review):
@@ -1012,7 +928,7 @@ async fn a_setting_change_while_another_runs_is_busy() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -1076,7 +992,7 @@ async fn other_verifications_on_a_declared_connection_do_not_hold_it() {
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
     let keys = [session(40), Key::Connection(0), Key::Connection(0)];
-    let _klavd = daemon(&home, true, &fake, &keys, true).await;
+    let _klavd = daemon(&home, &fake, &keys, true).await;
     let person = conn(&home).await;
     let app = conn(&home).await;
     let other = conn(&home).await;
@@ -1138,7 +1054,7 @@ async fn a_password_grants_only_what_its_ask_said() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let other = conn(&home).await;
     unlock_shown(&a, PERSON).await.expect("unlock");
@@ -1235,7 +1151,7 @@ async fn a_notice_goes_before_the_dialog_only_to_a_request_that_asked() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40)], false).await;
     let a = conn(&home).await;
     unlock_shown(&a, PERSON).await.expect("unlock");
     call::<Value>(&a, presence_window(Some(Window::Always), None))
@@ -1290,7 +1206,7 @@ async fn a_password_unlock_opens_only_what_its_question_said() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40); 6], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40); 6], false).await;
     {
         let a = conn(&home).await;
         let unlock_with = |shown: Option<Window>| {
@@ -1365,7 +1281,6 @@ async fn a_setting_changed_between_the_passes_leaves_an_ask_the_resend_answers()
     let keys = [session(40), session(41)];
     let _klavd = daemon_seams(
         &home,
-        true,
         &fake,
         &keys,
         false,
@@ -1468,7 +1383,7 @@ async fn a_query_that_names_no_single_item_is_refused_before_any_ask() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -1565,7 +1480,7 @@ async fn an_item_renamed_while_its_dialog_is_open_is_not_handed_out() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let program = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -1652,7 +1567,7 @@ async fn a_conflict_opens_no_window() {
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
     let keys = [session(40), session(41), session(42)];
-    let _klavd = daemon(&home, true, &fake, &keys, false).await;
+    let _klavd = daemon(&home, &fake, &keys, false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let program = conn(&home).await;
@@ -1740,7 +1655,7 @@ async fn an_untyped_unlock_is_no_passkey_verification_with_the_gate_on() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     unlock_shown(&a, PERSON).await.expect("unlock");
@@ -1803,35 +1718,6 @@ async fn an_untyped_unlock_is_no_passkey_verification_with_the_gate_on() {
     call::<Value>(&a, view(None)).await.expect("a's window");
 }
 
-/// With the gate off nothing changes: `untyped` is ignored, and a password
-/// unlock is the passkey verification, as before this layer.
-#[tokio::test(flavor = "multi_thread")]
-async fn with_the_gate_off_an_untyped_unlock_is_a_passkey_verification_as_before() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().unwrap();
-    let home = Home::at(dir.path().join("home"));
-    account(&server, &home, "ana@example.com", PERSON).await;
-    let fake = Fake::new(false);
-    let _klavd = daemon(&home, false, &fake, &[], false).await;
-    let a = conn(&home).await;
-    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
-        .await
-        .expect("unlock");
-    call::<Value>(
-        &a,
-        Request::PasskeyUv {
-            window: Some(Window::FiveMinutes),
-            password: secret(Some(PERSON)),
-        },
-    )
-    .await
-    .expect("loosen");
-    call::<DaemonStatus>(&a, Request::Lock).await.expect("lock");
-    let s = unlock_with(&a, PERSON, None, true).await.expect("unlock");
-    assert!(s.presence.is_none(), "the gate is off");
-    assert!(passkey_verified(&a).await);
-}
-
 /// With the setting on Always, the value's dialog names who asks, as the
 /// dialogs that open a window do (Omar's decision C of 2026-11-19): the
 /// terminal, so the CLI's "Touch ID for the terminal …" line has something
@@ -1845,7 +1731,7 @@ async fn the_always_dialog_names_who_asks() {
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
     let keys = [session(40), Key::Connection(0)];
-    let _klavd = daemon(&home, true, &fake, &keys, false).await;
+    let _klavd = daemon(&home, &fake, &keys, false).await;
     let terminal = conn(&home).await;
     let connection = conn(&home).await;
     call::<DaemonStatus>(&terminal, unlock(Some(PERSON)))
@@ -1932,7 +1818,7 @@ async fn an_item_edited_while_its_dialog_is_open_is_not_handed_out() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let program = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -2028,7 +1914,7 @@ async fn a_new_version_synced_during_the_dialog_is_not_handed_out() {
     .await
     .expect("another device");
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let program = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -2057,4 +1943,813 @@ async fn a_new_version_synced_during_the_dialog_is_not_handed_out() {
     // The next ask is about the synced version, and hands it out.
     let shown = call::<Value>(&a, view(None)).await.expect("handed out");
     assert!(holds(&shown, "from the phone"));
+}
+
+/// The reference, by name, of the field `field` of the item titled
+/// `title`, read through `klavd` without a value.
+async fn reference_of(c: &Conn, title: &str, field: &str) -> String {
+    let view = call::<Value>(c, view_of(title, None).without_reveal())
+        .await
+        .expect("view");
+    let reference = view["reference"].as_str().expect("reference");
+    format!("{reference}/{field}")
+}
+
+impl Request {
+    /// The same `view`, without `reveal`: metadata only, outside the gate.
+    fn without_reveal(self) -> Request {
+        match self {
+            Request::View { query, .. } => Request::View {
+                query,
+                reveal: false,
+                password: None,
+            },
+            other => other,
+        }
+    }
+}
+
+fn resolve_of(references: &[String], password: Option<&str>) -> Request {
+    Request::Resolve {
+        references: references.to_vec(),
+        password: secret(password),
+    }
+}
+
+/// The text values a `resolve` handed out (never printed).
+fn resolved(answer: Value) -> Vec<String> {
+    serde_json::from_value::<Vec<klav_client::ops::ResolvedValue>>(answer)
+        .expect("resolved values")
+        .iter()
+        .map(|v| v.text().expect("text").to_owned())
+        .collect()
+}
+
+/// `resolve` is bound to what its references named when it was asked
+/// about (Omar's decision K of 2026-11-19): every reference is resolved to
+/// its item before the ask, each item's version is kept with it, and the
+/// hand-out answers `conflict` if any of them was edited, renamed away or
+/// replaced in between, under Touch ID (the dialog held open) and under the
+/// password sent again. Under 5 minutes, that `conflict` opens no window,
+/// so the rerun asks again. A reference that names nothing is refused
+/// before any ask. Unedited items are still handed out, by both paths.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resolve_whose_items_change_while_it_asks_hands_out_nothing() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let keys = [session(40), session(41), session(42)];
+    let _klavd = daemon(&home, &fake, &keys, false).await;
+    let a = conn(&home).await;
+    let b = conn(&home).await;
+    let program = conn(&home).await;
+    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    create(&a, "Bank").await;
+    set_password(&a, "github 1").await;
+    call::<Value>(
+        &a,
+        Request::Edit {
+            query: "Bank".into(),
+            patch: password_patch("bank 1"),
+        },
+    )
+    .await
+    .expect("edited");
+    // By title, so a rename can point them at another item.
+    let references = vec![
+        reference_of(&a, "GitHub", "password").await,
+        reference_of(&a, "Bank", "password").await,
+    ];
+    assert!(
+        references[0].ends_with("/GitHub/password"),
+        "{references:?}"
+    );
+
+    // A reference that names nothing: refused before any ask.
+    let nothing = vec![references[0].replace("/GitHub/", "/Nowhere/")];
+    let e = call::<Value>(&a, resolve_of(&nothing, None))
+        .await
+        .expect_err("refused");
+    // As the hand-out refuses it: a reference error is `invalid`.
+    assert_eq!(e.code, ErrorCode::Invalid, "{}", e.message);
+    assert!(e.message.contains("not found"), "{}", e.message);
+    assert_eq!(fake.asked(), 0, "nothing was asked");
+
+    call::<Value>(&a, presence_window(Some(Window::FiveMinutes), Some(PERSON)))
+        .await
+        .expect("5 minutes");
+    let mut edits = 1;
+    // Touch ID: the program edits the second item while the dialog is
+    // open, then swaps the first one's title.
+    for change in ["edit", "rename"] {
+        let (open, release) = fake.hold_next();
+        let asked = {
+            let a = Arc::clone(&a);
+            let request = resolve_of(&references, None);
+            tokio::spawn(async move { call::<Value>(&a, request).await })
+        };
+        opened(open).await;
+        assert_eq!(
+            fake.last(),
+            "let the terminal ttys040 use your vault for 5 minutes",
+            "{change}"
+        );
+        if change == "edit" {
+            edits += 1;
+            call::<Value>(
+                &program,
+                Request::Edit {
+                    query: "Bank".into(),
+                    patch: password_patch(&format!("bank {edits}")),
+                },
+            )
+            .await
+            .expect("edited");
+        } else {
+            rename(&program, "GitHub", "GitHub (old)").await;
+            create(&program, "GitHub").await;
+            set_password(&program, "replaced").await;
+        }
+        release.send(()).unwrap();
+        let e = at_once(asked).await.unwrap().expect_err("refused");
+        assert_eq!(e.code, ErrorCode::Conflict, "{change}, Touch ID");
+        assert!(e.message.contains("nothing was handed out"), "{change}");
+        if change == "rename" {
+            call::<Value>(
+                &program,
+                Request::Trash {
+                    query: "GitHub".into(),
+                },
+            )
+            .await
+            .expect("trashed");
+            rename(&program, "GitHub (old)", "GitHub").await;
+        }
+        // No window from that answer: the rerun asks again, and the
+        // unedited items are handed out.
+        let before = fake.asked();
+        let values = resolved(
+            call::<Value>(&a, resolve_of(&references, None))
+                .await
+                .expect("handed out"),
+        );
+        assert_eq!(fake.asked(), before + 1, "{change}: the rerun asks");
+        assert_eq!(values, ["github 1".to_owned(), format!("bank {edits}")]);
+        call::<DaemonStatus>(&a, Request::Lock).await.expect("lock");
+        call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+            .await
+            .expect("unlock");
+    }
+
+    // The password sent again, on b's key: an edit between the ask and the
+    // resend is a `conflict` (the password answers the ask, and is
+    // checked); a swap makes `klavd` ask again (the request names other
+    // items now).
+    fake.available.store(false, Ordering::SeqCst);
+    assert_eq!(
+        code(&b, resolve_of(&references, None)).await,
+        ErrorCode::PresenceRequired
+    );
+    edits += 1;
+    call::<Value>(
+        &program,
+        Request::Edit {
+            query: "Bank".into(),
+            patch: password_patch(&format!("bank {edits}")),
+        },
+    )
+    .await
+    .expect("edited");
+    assert_eq!(
+        code(&b, resolve_of(&references, Some(PERSON))).await,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        code(&b, resolve_of(&references, None)).await,
+        ErrorCode::PresenceRequired,
+        "the conflict opened no window"
+    );
+    rename(&program, "GitHub", "GitHub (old)").await;
+    create(&program, "GitHub").await;
+    set_password(&program, "replaced").await;
+    assert_eq!(
+        code(&b, resolve_of(&references, Some(PERSON))).await,
+        ErrorCode::PresenceRequired,
+        "another item now: asked again, the password unchecked"
+    );
+    call::<Value>(
+        &program,
+        Request::Trash {
+            query: "GitHub".into(),
+        },
+    )
+    .await
+    .expect("trashed");
+    rename(&program, "GitHub (old)", "GitHub").await;
+    assert_eq!(
+        code(&b, resolve_of(&references, None)).await,
+        ErrorCode::PresenceRequired
+    );
+    let values = resolved(
+        call::<Value>(&b, resolve_of(&references, Some(PERSON)))
+            .await
+            .expect("handed out"),
+    );
+    assert_eq!(values, ["github 1".to_owned(), format!("bank {edits}")]);
+    call::<Value>(&b, resolve_of(&references, None))
+        .await
+        .expect("covered by the window the hand-out opened");
+}
+
+/// `generated_value` is bound to its generator history entry when it is
+/// asked about (Omar's decision K of 2026-11-19): an instant that names no
+/// entry is refused before any ask, and an entry deleted while the dialog
+/// is open is a `conflict` that opens no window, where the hand-out used
+/// to look the instant up afresh. An entry nobody touched is handed out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generated_value_whose_entry_goes_while_it_asks_hands_out_nothing() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
+    let a = conn(&home).await;
+    let program = conn(&home).await;
+    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    call::<Value>(&a, presence_window(Some(Window::FiveMinutes), Some(PERSON)))
+        .await
+        .expect("5 minutes");
+    let record = |value: &'static str| {
+        let a = Arc::clone(&a);
+        async move {
+            let answer = call::<Value>(
+                &a,
+                Request::GeneratorRecord {
+                    value: SecretText::new(value),
+                    host: None,
+                },
+            )
+            .await
+            .expect("recorded");
+            answer["created_at"].as_i64().expect("created_at")
+        }
+    };
+    let generated = |created_at: i64, password: Option<&str>| Request::GeneratedValue {
+        created_at,
+        password: secret(password),
+    };
+    let first = record("generated one").await;
+    // An instant that names no entry: refused before any ask.
+    let e = call::<Value>(&a, generated(first - 1, None))
+        .await
+        .expect_err("refused");
+    assert_eq!(e.code, ErrorCode::NotFound, "{}", e.message);
+    assert_eq!(fake.asked(), 0, "nothing was asked");
+    // Deleted while the dialog is open.
+    let (open, release) = fake.hold_next();
+    let asked = {
+        let a = Arc::clone(&a);
+        tokio::spawn(async move { call::<Value>(&a, generated(first, None)).await })
+    };
+    opened(open).await;
+    call::<Value>(
+        &program,
+        Request::GeneratorDelete {
+            which: klav_client::history::GeneratedSelection::Some(vec![first]),
+        },
+    )
+    .await
+    .expect("deleted");
+    release.send(()).unwrap();
+    let e = at_once(asked).await.unwrap().expect_err("refused");
+    assert_eq!(e.code, ErrorCode::Conflict, "{}", e.message);
+    assert!(e.message.contains("nothing was handed out"));
+    // Untouched: handed out, and the window it opened covers the next.
+    let second = record("generated two").await;
+    let before = fake.asked();
+    let shown = call::<Value>(&a, generated(second, None))
+        .await
+        .expect("handed out");
+    assert_eq!(fake.asked(), before + 1, "the conflict opened no window");
+    assert!(holds(&shown, "generated two"));
+    call::<Value>(&a, generated(second, None))
+        .await
+        .expect("covered");
+    assert_eq!(fake.asked(), before + 1);
+}
+
+// ------------------------------------------------- the extension (layer 4)
+
+/// A browser's extension on the socket, as `klav-native-host` relays it.
+/// Events and the answers to its own requests share the line: an event
+/// read while it waits for an answer is kept for [`Ext::event`].
+struct Ext {
+    reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: tokio::net::unix::OwnedWriteHalf,
+    next: u64,
+    events: std::collections::VecDeque<Value>,
+}
+
+impl Ext {
+    /// Connects and attaches: the connection takes the next key.
+    async fn attach(home: &Home) -> Ext {
+        let stream = tokio::net::UnixStream::connect(home.socket_path())
+            .await
+            .expect("connect");
+        let (read, writer) = stream.into_split();
+        let mut ext = Ext {
+            reader: tokio::io::BufReader::new(read),
+            writer,
+            next: 1,
+            events: std::collections::VecDeque::new(),
+        };
+        let answer = ext
+            .request(serde_json::json!({ "op": "extension_attach", "browser": "Chrome" }))
+            .await;
+        assert!(answer.get("ok").is_some(), "{answer}");
+        ext
+    }
+
+    async fn line(&mut self) -> Value {
+        use tokio::io::AsyncBufReadExt;
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(30), self.reader.read_line(&mut line))
+            .await
+            .expect("a line in time")
+            .expect("read");
+        serde_json::from_str(&line).expect("json line")
+    }
+
+    /// Sends `request` and returns its answer.
+    async fn request(&mut self, request: Value) -> Value {
+        use tokio::io::AsyncWriteExt;
+        let id = self.next;
+        self.next += 1;
+        let line = serde_json::json!({ "v": 1, "id": id, "request": request });
+        let mut bytes = serde_json::to_vec(&line).expect("json");
+        bytes.push(b'\n');
+        self.writer.write_all(&bytes).await.expect("write");
+        loop {
+            let line = self.line().await;
+            if line.get("event").is_some() {
+                self.events.push_back(line["event"].clone());
+            } else {
+                assert_eq!(line["id"], id, "{line}");
+                return line;
+            }
+        }
+    }
+
+    /// The next event `klavd` sends this extension.
+    async fn event(&mut self) -> Value {
+        if let Some(event) = self.events.pop_front() {
+            return event;
+        }
+        let line = self.line().await;
+        assert!(line["event"].is_object(), "expected an event, got {line}");
+        line["event"].clone()
+    }
+
+    /// Whether `klavd` sends this extension no event for a while.
+    async fn quiet(&mut self) -> bool {
+        use tokio::io::AsyncBufReadExt;
+        if !self.events.is_empty() {
+            return false;
+        }
+        let mut line = String::new();
+        tokio::time::timeout(SETTLE, self.reader.read_line(&mut line))
+            .await
+            .is_err()
+    }
+
+    /// Answers event `event` with `body` (`{"ok": …}` or `{"error": …}`).
+    async fn reply(&mut self, event: &Value, mut body: Value) -> Value {
+        body["op"] = "extension_reply".into();
+        body["event"] = event["id"].clone();
+        self.request(body).await
+    }
+
+    /// Answers the next event, a `tab`, with tab 3 of this browser.
+    async fn tab(&mut self, focused: bool) {
+        let event = self.event().await;
+        assert_eq!(event["kind"], "tab", "{event}");
+        let answer = self
+            .reply(
+                &event,
+                serde_json::json!({ "ok": {
+                    "tab_id": 3, "url": "https://github.com/login", "focused": focused
+                } }),
+            )
+            .await;
+        assert!(answer.get("ok").is_some(), "{answer}");
+    }
+
+    /// Answers the next event, a `fill`, with the fields it got; returns it.
+    async fn filled(&mut self) -> Value {
+        let event = self.event().await;
+        assert_eq!(event["kind"], "fill", "{event}");
+        let names: Vec<Value> = event["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .map(|f| f["name"].clone())
+            .collect();
+        let answer = self
+            .reply(
+                &event,
+                serde_json::json!({ "ok": { "url": "https://github.com", "filled": names } }),
+            )
+            .await;
+        assert!(answer.get("ok").is_some(), "{answer}");
+        event
+    }
+}
+
+/// A process the extension's connection is keyed on (macOS: the browser).
+fn browser_parent() -> Key {
+    Key::Parent(peer::Process {
+        pid: 4242,
+        start: peer::StartTime(9),
+    })
+}
+
+/// The ID of «GitHub», the account's one login.
+async fn github(c: &Conn) -> klav_core::ids::ItemId {
+    let request: Request =
+        serde_json::from_value(serde_json::json!({ "op": "list", "filter": {} })).expect("list");
+    let items: Value = call(c, request).await.expect("list");
+    serde_json::from_value(items[0]["id"].clone()).expect("item id")
+}
+
+/// An agent's fill of «GitHub» into `tab`.
+fn agent_fill(tab: &str, item: Option<klav_core::ids::ItemId>) -> Request {
+    Request::BrowserFill {
+        tab: tab.to_owned(),
+        host: "github.com".into(),
+        agent: "claude-code".into(),
+        agent_id: None,
+        reason: "log in to check CI".into(),
+        item,
+        kind: ItemKind::Login,
+        fields: serde_json::from_value(serde_json::json!([
+            { "name": "password", "kind": "password", "value": "MARKER-pw" }
+        ]))
+        .expect("fields"),
+        selectors: Vec::new(),
+        submit: false,
+    }
+}
+
+/// Sends `request` from `c` in the background.
+fn spawn_call(
+    c: &Arc<Conn>,
+    request: Request,
+) -> tokio::task::JoinHandle<Result<Value, ErrorBody>> {
+    let c = Arc::clone(c);
+    tokio::spawn(async move { call::<Value>(&c, request).await })
+}
+
+/// The agent's `browser_tab`, answered by `ext` (the only one attached).
+async fn agent_tab(agent: &Arc<Conn>, ext: &mut Ext) -> String {
+    let asked = spawn_call(agent, Request::BrowserTab);
+    ext.tab(false).await;
+    let tab = at_once(asked).await.unwrap().expect("tab");
+    tab["tab"].as_str().expect("tab").to_owned()
+}
+
+/// ADR 0041 §3.1 with Touch ID: one presence per extension connection
+/// until Klav locks, with the text that names the fill; nothing asked again
+/// for the next fill; a lock drops it, and a locked `klavd` fills nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_extension_connection_asks_once_until_klav_locks() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let _klavd = daemon(
+        &home,
+        &fake,
+        &[browser_parent(), session(1), session(2)],
+        false,
+    )
+    .await;
+    let mut ext = Ext::attach(&home).await;
+    let person = conn(&home).await;
+    let agent = conn(&home).await;
+    call::<DaemonStatus>(&person, unlock(None))
+        .await
+        .expect("unlock");
+    assert_eq!(fake.asked(), 1);
+    let item = github(&person).await;
+    let tab = agent_tab(&agent, &mut ext).await;
+
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    let event = ext.filled().await;
+    assert_eq!(event["fields"][0]["value"], "MARKER-pw");
+    let report = at_once(filled).await.unwrap().expect("filled");
+    assert!(!report.to_string().contains("MARKER"), "{report}");
+    assert_eq!(fake.asked(), 2);
+    assert_eq!(
+        fake.last(),
+        "let agents fill in a browser until Klav locks, starting with “claude-code”'s fill of “GitHub”"
+    );
+    // The next fill on that connection asks nothing.
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    ext.filled().await;
+    at_once(filled).await.unwrap().expect("filled");
+    assert_eq!(fake.asked(), 2);
+
+    // Locked: nothing reaches the page, and the agent hears why.
+    call::<Value>(&person, Request::Lock).await.expect("lock");
+    let e = call::<Value>(&agent, agent_fill(&tab, Some(item)))
+        .await
+        .expect_err("locked");
+    assert_eq!(e.code, ErrorCode::Locked);
+    assert!(ext.quiet().await, "no event while locked");
+    // Unlocked again: the connection asks once more.
+    call::<DaemonStatus>(&person, unlock(None))
+        .await
+        .expect("unlock");
+    assert_eq!(fake.asked(), 3);
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    ext.filled().await;
+    at_once(filled).await.unwrap().expect("filled");
+    assert_eq!(fake.asked(), 4);
+}
+
+/// With the setting on Always every event asks, with the one Always text
+/// (Omar's decision of 2026-11-19); a fill from an SDK that names no item
+/// names none. Canceled: `denied`, and the page gets nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn on_always_every_agent_event_asks_and_a_cancel_fills_nothing() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let _klavd = daemon(
+        &home,
+        &fake,
+        &[browser_parent(), session(1), session(2)],
+        false,
+    )
+    .await;
+    let mut ext = Ext::attach(&home).await;
+    let person = conn(&home).await;
+    let agent = conn(&home).await;
+    call::<DaemonStatus>(&person, unlock(None))
+        .await
+        .expect("unlock");
+    call::<Value>(&person, presence_window(Some(Window::Always), None))
+        .await
+        .expect("tighten");
+    let item = github(&person).await;
+    let tab = agent_tab(&agent, &mut ext).await;
+    for n in 2..4 {
+        let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+        ext.filled().await;
+        at_once(filled).await.unwrap().expect("filled");
+        assert_eq!(fake.asked(), n);
+        assert_eq!(
+            fake.last(),
+            "let a browser connection receive “claude-code”'s values for “GitHub”"
+        );
+    }
+    let filled = spawn_call(&agent, agent_fill(&tab, None));
+    ext.filled().await;
+    at_once(filled).await.unwrap().expect("filled");
+    assert_eq!(
+        fake.last(),
+        "let a browser connection receive “claude-code”'s values"
+    );
+
+    fake.cancels.store(true, Ordering::SeqCst);
+    let e = call::<Value>(&agent, agent_fill(&tab, Some(item)))
+        .await
+        .expect_err("declined");
+    assert_eq!(e.code, ErrorCode::Denied);
+    assert!(
+        e.message.contains("declined in the browser"),
+        "{}",
+        e.message
+    );
+    assert!(ext.quiet().await, "the page got nothing");
+}
+
+/// Without Touch ID (Linux, or a Mac without it): the extension connection
+/// that will get the fill is asked, in Klav's frame, with what `klavd`'s
+/// dialog would say, as data; the count of connections as a hint. Only a
+/// master password `klavd` checks, sent on that connection, verifies it:
+/// not a wrong one (the frame asks again), not another connection's, not
+/// an `extension_reply`. Canceling in the frame is `denied`.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_touch_id_the_frame_asks_on_the_connection_that_gets_the_fill() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(false);
+    let _klavd = daemon(
+        &home,
+        &fake,
+        &[
+            Key::Connection(0),
+            Key::Connection(0),
+            session(1),
+            session(2),
+        ],
+        false,
+    )
+    .await;
+    let mut front = Ext::attach(&home).await;
+    let mut other = Ext::attach(&home).await;
+    let person = conn(&home).await;
+    let agent = conn(&home).await;
+    call::<DaemonStatus>(&person, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    let item = github(&person).await;
+    // Two attached: the tab is the focused one's.
+    let asked = spawn_call(&agent, Request::BrowserTab);
+    other.tab(false).await;
+    front.tab(true).await;
+    let tab = at_once(asked).await.unwrap().expect("tab");
+    let tab = tab["tab"].as_str().unwrap().to_owned();
+
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    // Focus again before the prompt (P25), then the ask.
+    other.tab(false).await;
+    front.tab(true).await;
+    let ask = front.event().await;
+    assert_eq!(ask["kind"], "presence", "{ask}");
+    assert_eq!(ask["tab_id"], 3);
+    assert_eq!(
+        ask["presence"],
+        serde_json::json!({
+            "key": "connection", "window": "5m", "lasts": "until_lock",
+            "browser": {
+                "event": "fill", "agent": "claude-code", "title": "GitHub",
+                "attached": 2, "connection": true,
+            },
+        })
+    );
+    let id = ask["id"].clone();
+    // A wrong password: refused, and the frame may try again.
+    let wrong = front
+        .request(serde_json::json!({ "op": "extension_presence", "event": id, "password": THEIRS }))
+        .await;
+    assert_eq!(wrong["error"]["code"], "wrong_credentials", "{wrong}");
+    // Only the connection that got the ask answers it.
+    let elsewhere = other
+        .request(serde_json::json!({ "op": "extension_presence", "event": id, "password": PERSON }))
+        .await;
+    assert_eq!(elsewhere["error"]["code"], "not_found", "{elsewhere}");
+    // The extension's own word verifies nothing.
+    let said = front.reply(&ask, serde_json::json!({ "ok": {} })).await;
+    assert_eq!(said["error"]["code"], "bad_request", "{said}");
+    let right = front
+        .request(serde_json::json!({ "op": "extension_presence", "event": id, "password": PERSON }))
+        .await;
+    assert!(right.get("ok").is_some(), "{right}");
+    // Focus once more, right before the values go.
+    other.tab(false).await;
+    front.tab(true).await;
+    front.filled().await;
+    at_once(filled).await.unwrap().expect("filled");
+    assert_eq!(fake.asked(), 0, "no Touch ID");
+
+    // Verified until Klav locks: no ask, only the focus check.
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    other.tab(false).await;
+    front.tab(true).await;
+    front.filled().await;
+    at_once(filled).await.unwrap().expect("filled");
+
+    // On Always, every event asks; canceling in the frame fills nothing.
+    call::<Value>(&person, presence_window(Some(Window::Always), None))
+        .await
+        .expect("tighten");
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    other.tab(false).await;
+    front.tab(true).await;
+    let ask = front.event().await;
+    assert_eq!(ask["kind"], "presence", "{ask}");
+    assert_eq!(ask["presence"]["window"], "always");
+    assert!(ask["presence"].get("lasts").is_none(), "{ask}");
+    let canceled = front
+        .reply(
+            &ask,
+            serde_json::json!({ "error": { "code": "denied", "message": "canceled" } }),
+        )
+        .await;
+    assert!(canceled.get("ok").is_some(), "{canceled}");
+    let e = at_once(filled).await.unwrap().expect_err("declined");
+    assert_eq!(e.code, ErrorCode::Denied);
+    assert!(
+        e.message.contains("declined in the browser"),
+        "{}",
+        e.message
+    );
+    assert!(front.quiet().await, "the page got nothing");
+    // A password with no ask open is never checked.
+    let late = front
+        .request(serde_json::json!({ "op": "extension_presence", "event": id, "password": PERSON }))
+        .await;
+    assert_eq!(late["error"]["code"], "not_found", "{late}");
+}
+
+/// P25 (Omar's decisions on N5 and Q-N5): with two connections attached,
+/// `browser_tab` and each value-carrying event go out only when exactly one
+/// reports focus, checked again just before the event; otherwise
+/// `browser_ambiguous`, nobody is asked, and no value goes.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_two_browsers_only_the_one_in_front_gets_values() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let _klavd = daemon(
+        &home,
+        &fake,
+        &[browser_parent(), browser_parent(), session(1), session(2)],
+        false,
+    )
+    .await;
+    let mut a = Ext::attach(&home).await;
+    let mut b = Ext::attach(&home).await;
+    let person = conn(&home).await;
+    let agent = conn(&home).await;
+    call::<DaemonStatus>(&person, unlock(None))
+        .await
+        .expect("unlock");
+    let asked_before = fake.asked();
+    let item = github(&person).await;
+    // Newest first: `b` is asked before `a`.
+    for (a_focused, b_focused) in [(false, false), (true, true)] {
+        let asked = spawn_call(&agent, Request::BrowserTab);
+        b.tab(b_focused).await;
+        a.tab(a_focused).await;
+        let e = at_once(asked).await.unwrap().expect_err("ambiguous");
+        assert_eq!(e.code, ErrorCode::BrowserAmbiguous);
+        assert!(e.message.contains("to the front"), "{}", e.message);
+    }
+    let asked = spawn_call(&agent, Request::BrowserTab);
+    b.tab(true).await;
+    a.tab(false).await;
+    let tab = at_once(asked).await.unwrap().expect("tab");
+    let tab = tab["tab"].as_str().unwrap().to_owned();
+
+    // The person moved to the other browser before the fill: refused
+    // before the prompt.
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    b.tab(false).await;
+    a.tab(true).await;
+    let e = at_once(filled).await.unwrap().expect_err("ambiguous");
+    assert_eq!(e.code, ErrorCode::BrowserAmbiguous);
+    assert_eq!(fake.asked(), asked_before, "nobody was asked");
+    assert!(a.quiet().await && b.quiet().await, "no value went");
+
+    // Back in front: asked (with the count), then checked again, filled.
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    b.tab(true).await;
+    a.tab(false).await;
+    b.tab(true).await;
+    a.tab(false).await;
+    b.filled().await;
+    at_once(filled).await.unwrap().expect("filled");
+    assert_eq!(fake.asked(), asked_before + 1);
+    assert_eq!(
+        fake.last(),
+        "let agents fill in a browser until Klav locks, starting with “claude-code”'s fill of “GitHub”; 2 browser connections are attached"
+    );
+
+    // Verified, but both in front right before the event: no value goes.
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    b.tab(true).await;
+    a.tab(true).await;
+    let e = at_once(filled).await.unwrap().expect_err("ambiguous");
+    assert_eq!(e.code, ErrorCode::BrowserAmbiguous);
+    assert!(a.quiet().await && b.quiet().await, "no value went");
+    // Neither in front: the same.
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    b.tab(false).await;
+    a.tab(false).await;
+    let e = at_once(filled).await.unwrap().expect_err("ambiguous");
+    assert_eq!(e.code, ErrorCode::BrowserAmbiguous);
+    // One closes: the other is the only one, as with one browser.
+    drop(a);
+    tokio::time::sleep(SETTLE).await;
+    let filled = spawn_call(&agent, agent_fill(&tab, Some(item)));
+    b.filled().await;
+    at_once(filled).await.unwrap().expect("filled");
+    assert_eq!(fake.asked(), asked_before + 1);
 }

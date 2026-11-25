@@ -18,7 +18,8 @@
 import { localizePage, t, tNodes } from "../shared/i18n";
 import { ask, type PasskeyState } from "../shared/messages";
 import type { PasskeyCandidate } from "../shared/passkey";
-import type { DaemonStatus } from "../shared/protocol";
+import { presenceQuestion } from "../shared/presence";
+import type { DaemonError, DaemonStatus, PresenceAsk } from "../shared/protocol";
 import { h } from "./dom";
 import { framePage } from "./frame";
 import { armed, COVERED, personClicked } from "./guard";
@@ -270,5 +271,57 @@ async function load(): Promise<void> {
   else create(state);
 }
 
+/**
+ * The presence gate's question (ADR 0041 §3.2): klavd wants the master
+ * password before a value reaches this browser, and this frame asks for
+ * it, never a field of the page. The text says what klavd's Touch ID
+ * dialog would; closing the frame declines.
+ */
+function presenceFrame(question: PresenceAsk, problem?: DaemonError): void {
+  const slot = h("div", { class: "notice-slot" });
+  if (problem) say(slot, alertText(problem));
+  const actions = h("div", { class: "passkey-actions" });
+  const cancel = h("button", { class: "btn", type: "button" }, t("presence_cancel"));
+  cancel.addEventListener("click", page.close);
+  const go = (password?: string): void => {
+    for (const b of root.querySelectorAll<HTMLButtonElement>("button")) b.disabled = true;
+    ask({ type: "presence_answer", presenceId: passkeyId, password: password ?? "" }).catch((e: unknown) => {
+      const error = errorOf(e);
+      // klavd now asks something else: the new question. Anything else (a
+      // wrong password, a frame the page covered) asks again with why; a
+      // question that is over closes the frame from the background.
+      if (error.code === "presence_required" && error.presence) presenceFrame(error.presence);
+      else presenceFrame(question, error);
+    });
+  };
+  render(
+    frameHead(undefined, iconButton("close", t("close"), page.close)),
+    h(
+      "div",
+      { class: "card" },
+      h(
+        "div",
+        { class: "card-main" },
+        h("p", { class: "section-title" }, t("presence_title")),
+        h("p", { class: "passkey-question presence-question" }, presenceQuestion(question)),
+        actions,
+        slot,
+      ),
+    ),
+  );
+  presence(actions, false, go, [cancel]);
+  actions.querySelector("input")?.setAttribute("aria-label", t("presence_password"));
+  page.resize();
+}
+
+async function loadPresence(): Promise<void> {
+  try {
+    presenceFrame(await ask<PresenceAsk>({ type: "presence_load", presenceId: passkeyId }));
+  } catch {
+    // Over (answered, declined or timed out): the background closes the frame.
+  }
+}
+
 keyboard(root, page.close);
-void load();
+if (passkeyId.startsWith("presence-")) void loadPresence();
+else void load();

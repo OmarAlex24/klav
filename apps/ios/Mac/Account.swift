@@ -461,6 +461,11 @@ struct DeleteCopySheet: View {
         .background(Palette.papel)
         .interactiveDismissDisabled(deleting)
         .task { await check() }
+        // The master password for a generated password (ADR 0041).
+        .sheet(item: model.passwordPromptHere(.deleteCopy)) { prompt in
+            PasswordSheet(prompt: prompt).environmentObject(model)
+        }
+        .onDisappear { model.withdrawPrompt(over: .deleteCopy) }
     }
 
     @ViewBuilder
@@ -523,8 +528,11 @@ struct DeleteCopySheet: View {
         let at = entry.createdAt
         Task {
             do {
-                let value = try await model.run { try $0.generatedValue(createdAt: at) }
+                let value = try await model.value(
+                    host: .deleteCopy, { try $0.generatedValue(createdAt: at) },
+                    withPassword: { try $0.generatedValueWithPassword(createdAt: at, password: $1) })
                 model.copy(value)
+            } catch is CancellationError {
             } catch {
                 listProblem = describe(error)
             }

@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:https";
 import { join, resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
-import { type Browser, clickIn, frameOf, KLAV_BIN, launch, openMenu, registerAgent, settled, type Stack, startStack, waitArmed } from "./harness";
+import { type Browser, clickIn, frameOf, KLAV_BIN, launch, openMenu, registerAgent, settled, type Stack, startStack, waitArmed, unlockInBrowser } from "./harness";
 import { McpClient } from "./mcp";
 
 test.skip(process.env.STORE_SHOTS !== "1", "store screenshots: STORE_SHOTS=1");
@@ -246,7 +246,7 @@ for (const lang of ["en", "es"] as const) {
         lang,
         args: [`--host-resolver-rules=MAP ${HOST} 127.0.0.1:${String(site.port)}`, "--ignore-certificate-errors"],
       });
-      stack.klav(["unlock"], { unlocked: true });
+      await unlockInBrowser(stack, browser);
     });
 
     test.afterAll(async () => {

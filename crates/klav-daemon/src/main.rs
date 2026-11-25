@@ -27,11 +27,6 @@ struct Args {
     /// Mac app's LaunchAgent: another one is not an error to retry).
     #[arg(long)]
     if_not_running: bool,
-    /// Turn the presence gate on (ADR 0041): Touch ID, or the master
-    /// password, before a value, per window. Off by default until the
-    /// clients answer `presence_required`; the tests use it.
-    #[arg(long, hide = true)]
-    presence_gate: bool,
 }
 
 fn parse_duration(text: &str) -> Result<Duration, String> {
@@ -107,7 +102,6 @@ fn main() -> ExitCode {
             commit: commit.to_owned(),
             commit_time: time,
         }),
-        presence_gate: args.presence_gate,
     };
     if args.if_not_running
         && runtime

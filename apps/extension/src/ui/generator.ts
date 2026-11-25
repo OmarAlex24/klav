@@ -16,6 +16,7 @@ import { klavCore } from "../shared/wasm";
 import { h } from "./dom";
 import { icon, iconButton } from "./kit";
 import { errorText } from "./strings";
+import { gated } from "./presence";
 
 /** What went wrong, in the words of the rest of Klav. */
 function why(e: unknown): string {
@@ -386,7 +387,7 @@ export async function historyPanel(o: HistoryOptions): Promise<HTMLElement> {
     const sub = [when(e.created_at), e.saved_in_title ? t("gen_history_saved_in", e.saved_in_title) : null, e.pending ? t("gen_history_pending") : null].filter(Boolean).join(" · ");
     const copy = iconButton("copy", t("gen_copy_entry", when(e.created_at)), (event) => {
       if (!o.guard(event)) return;
-      void daemon<string>({ op: "generated_value", created_at: e.created_at }).then(o.copy, (err: unknown) => {
+      void gated<string>({ op: "generated_value", created_at: e.created_at }).then(o.copy, (err: unknown) => {
         o.say(why(err));
       });
     });

@@ -1,9 +1,10 @@
 //! Presence before `klavd` hands out a value (ADR 0041, layer 3): the
-//! CLI's side of the gate that `klavd --presence-gate` turns on.
+//! CLI's side of `klavd`'s gate, on since layer 6.
 //!
 //! - **Whether the gate is on** comes from `status` (`presence`), which the
-//!   CLI reads anyway before it uses `klavd`. A `klavd` that sends none has
-//!   the gate off or is older, and the CLI does what it did before.
+//!   CLI reads anyway before it uses `klavd`. A `klavd` that sends none is
+//!   older than layer 2, or of layers 2–5 with the gate off, and the CLI
+//!   does what it did before.
 //! - **Who asks.** With Touch ID, `klavd` shows the dialog itself and the
 //!   request waits for it; just before, `klavd` sends a notice and the CLI
 //!   prints its terminal's name (Omar's decision 2 of 2026-11-19). Without
@@ -339,14 +340,50 @@ pub(crate) fn read_on_terminal(prompt: &str) -> Result<Zeroizing<String>, Unaske
     termios::tcflush(&tty, FlushArg::TCIFLUSH).map_err(|e| failed(&e))?;
     out.write_all(prompt.as_bytes()).map_err(|e| failed(&e))?;
     let line = read_line(&tty);
-    // A line refused for its length was read to its end; what is still
-    // queued after it (the rest of a paste) is thrown away while echo is
-    // still off, so none of it reaches the shell once the terminal is back.
-    if matches!(line, Err(Unasked::TooLong)) {
-        let _ = termios::tcflush(&tty, FlushArg::TCIFLUSH);
-    }
+    // However the line ended, what the terminal still delivers after it
+    // (the rest of a paste of several lines, after a password or a line
+    // refused for its length) is read and thrown away while echo is still
+    // off, so none of it reaches the shell once the terminal is back
+    // (Omar's decision M of 2026-11-19).
+    drain(&tty, &quiet);
     drop(restore);
     line
+}
+
+/// How long the terminal must stay quiet, in tenths of a second (`VTIME`),
+/// for [`drain`] to take a paste as over.
+const DRAIN_QUIET_DECISECONDS: u8 = 2;
+
+/// The longest [`drain`] reads, whatever keeps arriving.
+const DRAIN_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Reads and drops what the terminal delivers once the question's line
+/// ended, with the question's modes (echo off): until it has been quiet for
+/// [`DRAIN_QUIET_DECISECONDS`], or for [`DRAIN_MAX`] in all; then flushes
+/// what is queued. A paste's later lines can arrive after Enter, while the
+/// terminal emulator still writes them; flushing only what was queued at
+/// that instant left those for the shell (Omar's decision M of
+/// 2026-11-19). Each chunk read is zeroed. Best effort: if the terminal
+/// can't be set to wait, it only flushes.
+fn drain(tty: &std::fs::File, quiet: &nix::sys::termios::Termios) {
+    use nix::sys::termios::{self, FlushArg, SetArg, SpecialCharacterIndices};
+    let mut waiting = quiet.clone();
+    waiting.control_chars[SpecialCharacterIndices::VMIN as usize] = 0;
+    waiting.control_chars[SpecialCharacterIndices::VTIME as usize] = DRAIN_QUIET_DECISECONDS;
+    if termios::tcsetattr(tty, SetArg::TCSANOW, &waiting).is_ok() {
+        let deadline = std::time::Instant::now() + DRAIN_MAX;
+        let mut chunk = Zeroizing::new([0u8; 256]);
+        let mut reader = tty;
+        while std::time::Instant::now() < deadline {
+            match reader.read(&mut chunk[..]) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = termios::tcflush(tty, FlushArg::TCIFLUSH);
 }
 
 /// Where the reader is in an escape sequence a key sent.
@@ -793,6 +830,7 @@ mod tests {
                 title: Some("GitHub".into()),
                 count: None,
             }),
+            browser: None,
         }
     }
 

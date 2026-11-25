@@ -380,6 +380,9 @@ struct MenuBarView: View {
         dismiss()
     }
 
+    /// The master password's sheet shows over the window (ADR 0041).
+    private func showWindow() { open() }
+
     private func search() async {
         guard model.phase == .unlocked else { results = []; return }
         let text = query.trimmingCharacters(in: .whitespaces)
@@ -396,7 +399,9 @@ struct MenuBarView: View {
     private func copyFirst() {
         guard let first = results.first else { return }
         Task {
-            if let value = try? await model.run({ try $0.fieldValue(id: first.id, field: "password") }) {
+            let id = first.id
+            if let value = try? await model.value(onAsk: showWindow, { try $0.fieldValue(id: id, field: "password") },
+                                                  withPassword: { try $0.fieldValueWithPassword(id: id, field: "password", password: $1) }) {
                 model.copy(value)
             }
         }
@@ -441,6 +446,8 @@ private struct DeletedLine: View {
 
 private struct QuickRow: View {
     @EnvironmentObject private var model: MacModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
     let item: ItemInfo
     @State private var hovering = false
     /// A login shows «Code» once klavd says it has one.
@@ -477,16 +484,27 @@ private struct QuickRow: View {
         .task(id: item.id) {
             guard item.kind == .login else { return }
             let id = item.id
-            hasCode = (try? await model.run { try $0.totp(id: id) }) != nil
+            // From the item, not by fetching a code: with the presence gate
+            // on a fetch may ask for Touch ID (ADR 0041).
+            hasCode = (try? await model.run { try $0.item(id: id) })?.hasTotp ?? false
         }
+    }
+
+    /// The master password's sheet shows over the window (ADR 0041).
+    private func showWindow() {
+        openWindow(id: WindowID.main)
+        NSApp.activate()
+        dismiss()
     }
 
     private func copy(_ field: String) {
         let id = item.id
         Task {
             do {
-                let value = try await model.run { try $0.fieldValue(id: id, field: field) }
+                let value = try await model.value(onAsk: showWindow, { try $0.fieldValue(id: id, field: field) },
+                                                  withPassword: { try $0.fieldValueWithPassword(id: id, field: field, password: $1) })
                 model.copy(value)
+            } catch is CancellationError {
             } catch {
                 model.show(Toast(text: describe(error)))
             }
@@ -497,8 +515,10 @@ private struct QuickRow: View {
         let id = item.id
         Task {
             do {
-                let info = try await model.run { try $0.totp(id: id) }
+                let info = try await model.value(onAsk: showWindow, { try $0.totp(id: id) },
+                                                 withPassword: { try $0.totpWithPassword(id: id, password: $1) })
                 model.copy(info.code)
+            } catch is CancellationError {
             } catch {
                 model.show(Toast(text: describe(error)))
             }

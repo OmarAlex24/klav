@@ -1637,5 +1637,101 @@
   },
   "sr_save": {
     "message": "Guardar en Klav"
+  },
+  "presence_title": {
+    "message": "Confirma que eres tú"
+  },
+  "presence_klav_wants": {
+    "message": "Klav quiere $1."
+  },
+  "presence_until_lock": {
+    "message": "dejar que los agentes rellenen $1 hasta que Klav se bloquee, empezando por $2"
+  },
+  "presence_place_browser": {
+    "message": "en un navegador"
+  },
+  "presence_place_connection": {
+    "message": "por esta conexión del navegador"
+  },
+  "presence_start_fill": {
+    "message": "el relleno de $2 que pidió $1"
+  },
+  "presence_start_fill_any": {
+    "message": "un relleno que pidió $1"
+  },
+  "presence_start_change": {
+    "message": "el cambio de contraseña de $2 que pidió $1"
+  },
+  "presence_start_change_any": {
+    "message": "un cambio de contraseña que pidió $1"
+  },
+  "presence_start_passkey": {
+    "message": "el inicio de sesión con passkey en $2 que pidió $1"
+  },
+  "presence_start_passkey_any": {
+    "message": "un inicio de sesión con passkey que pidió $1"
+  },
+  "presence_once": {
+    "message": "dejar que una conexión del navegador reciba los valores de $1 para $2"
+  },
+  "presence_once_any": {
+    "message": "dejar que una conexión del navegador reciba los valores de $1"
+  },
+  "presence_attached": {
+    "message": "$1; hay $2 conexiones del navegador activas"
+  },
+  "presence_lasts_5m": {
+    "message": "dejar que este navegador use tu bóveda durante 5 minutos"
+  },
+  "presence_lasts_until_lock": {
+    "message": "dejar que este navegador use tu bóveda hasta que Klav se bloquee"
+  },
+  "presence_value_fill": {
+    "message": "rellenar $1 en este navegador"
+  },
+  "presence_value_show": {
+    "message": "mostrar $1"
+  },
+  "presence_value_code": {
+    "message": "mostrar el código de $1"
+  },
+  "presence_value_previous": {
+    "message": "mostrar una contraseña anterior de $1"
+  },
+  "presence_value_generated": {
+    "message": "copiar una contraseña que generaste"
+  },
+  "presence_value_any": {
+    "message": "usar un valor de tu bóveda"
+  },
+  "presence_password": {
+    "message": "Contraseña maestra, para confirmar"
+  },
+  "presence_cancel": {
+    "message": "Ahora no"
+  },
+  "presence_declined": {
+    "message": "Dijiste que no: no se rellenó nada."
+  },
+  "presence_no_frame": {
+    "message": "Klav no pudo mostrar su recuadro en esta pestaña, así que no se rellenó nada"
+  },
+  "unlock_opens_5m": {
+    "message": "Al desbloquear, este navegador también podrá usar tu bóveda durante 5 minutos."
+  },
+  "unlock_opens_until_lock": {
+    "message": "Al desbloquear, este navegador también podrá usar tu bóveda hasta que Klav se bloquee."
+  },
+  "already_unlocked": {
+    "message": "Klav ya estaba desbloqueado."
+  },
+  "error_presence_busy": {
+    "message": "Klav ya te está pidiendo que confirmes otra cosa. Responde eso primero y vuelve a intentarlo."
+  },
+  "error_browser_ambiguous": {
+    "message": "Hay más de un navegador conectado a Klav y no queda claro cuál está al frente. Trae al frente el navegador que quieres usar, o cierra los demás, y vuelve a intentarlo."
+  },
+  "presence_canceled": {
+    "message": "Cancelado."
   }
 }

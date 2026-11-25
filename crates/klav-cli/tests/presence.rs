@@ -1,6 +1,6 @@
 //! Presence through the CLI (ADR 0041, layer 3), end to end with the
-//! master password: a test `klavd` started with `--presence-gate` and
-//! Touch ID off, in its own temporary home, and `klav` in a
+//! master password: a test `klavd` (the gate is always on since layer 6)
+//! with Touch ID off, in its own temporary home, and `klav` in a
 //! pseudo-terminal (`script`) or with no controlling terminal at all.
 //!
 //! On Linux CI this is the path people take: no Touch ID, so `klavd`
@@ -14,55 +14,14 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::{Device, PASSWORD, Run, ServerProcess, path_without_installed_klav, wait_until};
+use common::{
+    Device, Klavd, PASSWORD, Run, ServerProcess, path_without_installed_klav, wait_until,
+};
 use serde_json::{Value, json};
 
 const VALUE: &str = "MARKER-presence-value";
 const REFERENCE: &str = "klav://Personal/General/Deploy/api_key";
 const EMAIL: &str = "presence@example.com";
-
-/// A test `klavd` for one home, stopped by its pid when the test ends,
-/// also when it fails.
-struct Klavd(Child);
-
-impl Klavd {
-    fn start(device: &Device, root: &Path, gate: bool) -> Self {
-        let mut cmd = Command::new(common::built_binary("klavd"));
-        cmd.current_dir(root)
-            .env("KLAV_HOME", &device.home)
-            .env("PATH", path_without_installed_klav())
-            .env("KLAV_NO_DEFAULT_SERVER", "1")
-            .args(["--no-touch-id", "--idle-lock", "10m"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(
-                std::fs::File::create(root.join("klavd-test.log"))
-                    .map_or(Stdio::null(), Stdio::from),
-            );
-        if gate {
-            cmd.arg("--presence-gate");
-        }
-        let klavd = Klavd(cmd.spawn().expect("start klavd"));
-        let socket = device.home.join("klavd.sock");
-        assert!(
-            wait_until(30, || socket.exists()),
-            "klavd did not start: {}",
-            std::fs::read_to_string(root.join("klavd-test.log")).unwrap_or_default()
-        );
-        klavd
-    }
-
-    fn pid(&self) -> u32 {
-        self.0.id()
-    }
-}
-
-impl Drop for Klavd {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 /// Whether this test process has a controlling terminal (a developer's
 /// terminal; never CI).
@@ -219,6 +178,13 @@ impl Terminal {
         stdin.flush().expect("flush");
     }
 
+    /// Writes `bytes` to the terminal as they are, as a paste does.
+    fn paste(&mut self, bytes: &str) {
+        let stdin = self.child.stdin.as_mut().expect("stdin");
+        stdin.write_all(bytes.as_bytes()).expect("paste");
+        stdin.flush().expect("flush");
+    }
+
     /// The exit codes the shell printed (`KLAV-EXIT n`), once `n` of them
     /// have.
     #[track_caller]
@@ -300,7 +266,7 @@ fn with_the_gate_on_values_ask_for_the_master_password_on_the_terminal() {
         r#"{"v":1,"window":"unlocked"}"#,
     )
     .expect("passkeys.json");
-    let klavd = Klavd::start(&device, root.path(), true);
+    let klavd = Klavd::start(&device, root.path());
 
     // Locked: the setting doesn't show, and the CLI says how to unlock.
     let locked = detached(&device, &["presence", "window"], "").err();
@@ -696,6 +662,48 @@ fn with_the_gate_on_values_ask_for_the_master_password_on_the_terminal() {
     assert!(!text.contains("ZZZZ"), "some of it was echoed:\n{text}");
     assert!(!text.contains(VALUE), "{text}");
     drop(pasted);
+
+    // A paste of several lines (Omar's decision M of 2026-11-19): the
+    // question takes its first line, and none of the rest reaches the
+    // shell, whether it was queued when Enter arrived or arrives a moment
+    // later, as a terminal emulator writes a long paste in pieces. The
+    // shell then reads its terminal for a second: it must find nothing.
+    // Before the fix, only an over-long line flushed, and only what was
+    // queued at Enter: here the shell got the later lines. Each case runs
+    // once with the correct password first (the value is handed out) and
+    // once with an over-long first line (refused).
+    for (what, first, ok) in [
+        ("password", format!("{PASSWORD}\n"), true),
+        ("over-long", format!("{}\n", "Z".repeat(1500)), false),
+    ] {
+        let mut several = Terminal::open(
+            &device,
+            root.path(),
+            &format!(
+                r#"{}; stty -icanon -echo min 0 time 10; echo "LEFT $(head -c 100000 | wc -c | tr -d ' ') LEFT-END""#,
+                klav_line(&format!("item get {REFERENCE} --reveal"))
+            ),
+        );
+        several.wait_for(&format!("Master password for {EMAIL}: "), 1);
+        several.paste(&format!("{first}echo PASTED-TWO\necho PASTED-THREE\n"));
+        std::thread::sleep(Duration::from_millis(60));
+        several.paste("echo PASTED-FOUR\n");
+        assert_eq!(
+            several.exits(1),
+            vec![if ok { 0 } else { 1 }],
+            "{what}: {}",
+            several.text()
+        );
+        several.wait_for("LEFT-END", 1);
+        let text = several.text();
+        assert_eq!(text.contains(VALUE), ok, "{what}: {text}");
+        assert!(
+            text.contains("LEFT 0 LEFT-END"),
+            "{what}: the shell got some of the paste:\n{text}"
+        );
+        assert!(!text.contains("PASTED"), "{what}: echoed or run:\n{text}");
+        drop(several);
+    }
     drop(klavd);
 }
 
@@ -715,7 +723,7 @@ fn a_typed_unlock_opens_the_window_its_question_names() {
     let root = tempfile::tempdir().expect("tempdir");
     let device = Device::new(root.path(), "home");
     account(&server, &device);
-    let klavd = Klavd::start(&device, root.path(), true);
+    let klavd = Klavd::start(&device, root.path());
 
     // The first unlock since klavd started.
     let mut first = Terminal::open(
@@ -791,70 +799,6 @@ fn a_typed_unlock_opens_the_window_its_question_names() {
     assert_eq!(text.matches(VALUE).count(), 1, "{text}");
     assert!(!text.contains(PASSWORD), "{text}");
     drop(later);
-    drop(klavd);
-}
-
-#[test]
-fn without_the_gate_the_cli_does_what_it_did() {
-    let server = ServerProcess::start(900);
-    let root = tempfile::tempdir().expect("tempdir");
-    let device = Device::new(root.path(), "home");
-    account(&server, &device);
-    let klavd = Klavd::start(&device, root.path(), false);
-
-    let unlock = detached(
-        &device,
-        &["--password-stdin", "unlock"],
-        &format!("{PASSWORD}\n"),
-    )
-    .ok();
-    assert!(
-        unlock.stderr.contains(&format!(
-            "Unlocked with password (klavd, pid {})",
-            klavd.pid()
-        )),
-        "{}",
-        unlock.stderr
-    );
-    for args in [
-        &["presence", "window"][..],
-        &["presence", "window", "always"][..],
-    ] {
-        let off = detached(&device, args, "").err();
-        assert_eq!(off.code, 1);
-        assert!(
-            off.stderr.contains("the presence gate is off"),
-            "{}",
-            off.stderr
-        );
-    }
-
-    // A value with no prompt, from a terminal or without one; `unlock`
-    // from a terminal says what it said before.
-    let value = detached(&device, &["item", "get", REFERENCE, "--reveal"], "").ok();
-    assert_eq!(value.stdout.trim(), VALUE);
-    let term = Terminal::open(
-        &device,
-        root.path(),
-        &format!(
-            "{}; {}",
-            klav_line(&format!("item get {REFERENCE} --reveal")),
-            klav_line("unlock")
-        ),
-    );
-    assert_eq!(term.exits(2), vec![0, 0], "{}", term.text());
-    let text = term.text();
-    assert!(!text.contains("Master password"), "{text}");
-    assert!(text.contains(VALUE), "{text}");
-    assert!(
-        text.contains(&format!(
-            "Unlocked with password (klavd, pid {})",
-            klavd.pid()
-        )),
-        "{text}"
-    );
-    assert!(!text.contains("already unlocked"), "{text}");
-    drop(term);
     drop(klavd);
 }
 

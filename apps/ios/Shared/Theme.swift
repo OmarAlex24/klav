@@ -622,6 +622,8 @@ struct Toast: Equatable {
     let text: String
     /// Seconds until the clipboard is cleared (the toast counts them down).
     var clears: TimeInterval?
+    /// How long it stays (the Mac app; a long sentence stays longer).
+    var seconds: TimeInterval = 3
 }
 
 /// Floats over the screen with an ink edge, as in the extension; after a

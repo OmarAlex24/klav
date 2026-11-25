@@ -23,9 +23,9 @@ use crate::imports::Imports;
 use crate::presence::{self, Caller, Gate, OnePassword, Presence, PromptKind, Purpose, Untitled};
 use crate::prompt::{ItemShown, Lang, Prompt, Source, Widening};
 use crate::protocol::{
-    AskValue, AskValueKind, DaemonStatus, ErrorBody, ErrorCode, MAX_LINE, PROTOCOL_VERSION,
-    PasskeyArmed, PauseInEffect, PresencePurpose, Request, RequestEnvelope, ResponseEnvelope,
-    RevocationProgress,
+    AskLasts, AskValue, AskValueKind, BrowserAsk, BrowserCause, DaemonStatus, ErrorBody, ErrorCode,
+    MAX_LINE, PROTOCOL_VERSION, PasskeyArmed, PauseInEffect, PresenceAsk, PresenceKey,
+    PresencePurpose, Request, RequestEnvelope, ResponseEnvelope, RevocationProgress,
 };
 use crate::touchid::{self, Biometric};
 use crate::uv;
@@ -63,10 +63,6 @@ pub struct Config {
     /// The build this `klavd` runs, for `status` (`build.rs`); `None` when
     /// unknown (a source without Git, and the tests).
     pub build: Option<Build>,
-    /// The presence gate (ADR 0041, layer 2): off by default, and then
-    /// every operation behaves as before it. On only with `klavd`'s
-    /// `--presence-gate`, which the tests use, until layer 6.
-    pub presence_gate: bool,
 }
 
 /// The commit a `klavd` was built from and its committer time, which tell
@@ -125,9 +121,6 @@ struct Slot {
     /// change the person asked for ([`rotate_in_steps`]). Nothing else
     /// moves it.
     last_use: std::sync::Mutex<Instant>,
-    /// The last real verification, for the passkey window (ADR 0020 §8).
-    /// Gone with the slot: locking closes the window.
-    verified: std::sync::Mutex<Option<uv::Verified>>,
     /// Passkey uses agents armed in tabs (ADR 0020 §9). Gone with the
     /// slot: locking drops them.
     arms: std::sync::Mutex<Vec<Arm>>,
@@ -193,14 +186,6 @@ impl Slot {
         *self.last_use.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 
-    fn verified(&self) -> Option<uv::Verified> {
-        *self.verified.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn set_verified(&self, verified: uv::Verified) {
-        *self.verified.lock().unwrap_or_else(PoisonError::into_inner) = Some(verified);
-    }
-
     fn arms(&self) -> std::sync::MutexGuard<'_, Vec<Arm>> {
         self.arms.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -231,18 +216,6 @@ impl Slot {
 
     fn disarm(&self, digest: &[u8; token::DIGEST_LEN]) {
         self.arms().retain(|a| a.digest != *digest);
-    }
-
-    /// A passkey use relied on the last verification.
-    fn spend(&self) {
-        if let Some(v) = self
-            .verified
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_mut()
-        {
-            v.spent = true;
-        }
     }
 }
 
@@ -1274,7 +1247,12 @@ pub(crate) async fn serve_with(
         generation: watch::Sender::new(0),
         unlocking: Mutex::new(()),
         shutdown: Notify::new(),
-        browsers: Hub::default(),
+        browsers: {
+            let hub = Hub::default();
+            // P25's rule, with the presence gate (ADR 0041 §3.1).
+            hub.set_focus_rule(true);
+            hub
+        },
         revision: AtomicU64::new(0),
         spent_proofs: std::sync::Mutex::default(),
         // A restart does not lift what the person paused here, nor forget
@@ -1960,8 +1938,8 @@ async fn serve_connection(
                         .then(|| state.current().as_ref().map(Arc::downgrade))
                         .flatten();
                     // Who asks, read per request (ADR 0041 §1.1: on macOS
-                    // the socket's last user), only with the gate on.
-                    let caller = state.config.presence_gate.then(|| {
+                    // the socket's last user).
+                    let caller = Some({
                         let mut caller = match key {
                             Some(key) => Caller::fixed(conn, key, source),
                             None => {
@@ -2038,6 +2016,7 @@ async fn handle_browser(
     state: &State,
     conn: u64,
     lines: &mpsc::Sender<Line>,
+    caller: Option<&Caller>,
     request: Request,
 ) -> Reply {
     let hub = &state.browsers;
@@ -2048,7 +2027,36 @@ async fn handle_browser(
                 .filter(|c| !c.is_control())
                 .take(40)
                 .collect();
-            hub.attach(conn, browser, lines.clone());
+            // How its presence prompt names it (ADR 0041 §3.1, own choice
+            // 3): "a browser" when its peer shares the browser's key
+            // (macOS), "this browser connection" otherwise.
+            let connection_keyed = caller.is_none_or(|c| {
+                matches!(
+                    c.key,
+                    presence::Key::Connection(_) | presence::Key::NoWindow(_)
+                )
+            });
+            hub.attach(conn, browser, lines.clone(), connection_keyed);
+            ok(serde_json::json!({}), Vec::new())
+        }
+        Request::ExtensionPresence { event, password } => {
+            // Checked only as the answer to a presence event this
+            // connection got and still waits on (own choice 32).
+            if !hub.presence_waits(conn, event) {
+                return Err(ErrorBody {
+                    code: ErrorCode::NotFound,
+                    message: "no such event".into(),
+                    paused: None,
+                    presence: None,
+                });
+            }
+            let Some(slot) = state.current() else {
+                return Err(locked());
+            };
+            // The session's own password (§2.3), one check at a time. A
+            // wrong one leaves the event waiting: the frame asks again.
+            state.passwords.check(slot.password.as_ref(), password)?;
+            hub.presence_verified(conn, event)?;
             ok(serde_json::json!({}), Vec::new())
         }
         Request::ExtensionReply {
@@ -2070,6 +2078,7 @@ async fn handle_browser(
             agent,
             agent_id,
             reason,
+            item,
             kind,
             fields,
             selectors,
@@ -2079,6 +2088,22 @@ async fn handle_browser(
             // agent's access (ADR 0033 §7.2).
             state.refuse_deleting()?;
             state.refuse_paused(agent_id)?;
+            // The connection's presence first (ADR 0041 §3.1). It needs
+            // the unlocked session (the setting, the password's check), so
+            // a locked `klavd` says `locked`.
+            let Some(slot) = state.current() else {
+                return Err(locked());
+            };
+            browser_presence(
+                state,
+                &slot,
+                &tab,
+                BrowserCause::Fill,
+                &agent,
+                Title::Item(item),
+                None,
+            )
+            .await?;
             let report = hub
                 .fill(&tab, host, agent, reason, kind, fields, selectors, submit)
                 .await?;
@@ -2086,6 +2111,114 @@ async fn handle_browser(
         }
         _ => Err(bad_request("not a browser request")),
     }
+}
+
+/// Where an extension connection's presence prompt takes the item's title
+/// from.
+enum Title {
+    /// Already read from the vault (an assisted change, a passkey's login).
+    Known(String),
+    /// The item a fill names, looked up in the vault only if a prompt
+    /// shows: `None` from an older SDK, and a missing item, name none.
+    Item(Option<ItemId>),
+}
+
+/// ADR 0041 §3.1: before an agent's event carries values to the extension
+/// connection behind `tab`, that connection's presence. Under 5 minutes or
+/// While unlocked, one verification lets agents fill through it until
+/// Klav locks or it closes; under Always, every event asks. Touch ID where
+/// `klavd` can show it, else the master password in Klav's own frame of
+/// that browser ([`Event::Presence`]). Canceled, failed or unanswered:
+/// `denied`, with what the agent tells the person. With more than one
+/// connection attached, P25's rule first, so nobody is asked for a target
+/// that would be refused. Only with the gate on.
+///
+/// [`Event::Presence`]: crate::protocol::Event::Presence
+async fn browser_presence(
+    state: &State,
+    slot: &Slot,
+    tab: &str,
+    event: BrowserCause,
+    agent: &str,
+    title: Title,
+    site: Option<&str>,
+) -> Result<(), ErrorBody> {
+    let hub = &state.browsers;
+    let (conn, _) = hub.tab_ids(tab)?;
+    let Some(setting) = state.presence.extension_needs(slot.generation, conn)? else {
+        return Ok(());
+    };
+    hub.focus(conn).await?;
+    let device = presence::Device {
+        touch: state.touch.as_ref(),
+        touch_id: state.config.touch_id,
+        check: slot.password.as_ref(),
+        passwords: &state.passwords,
+    };
+    let touch = presence::Verify::touch_id_available(&device);
+    let clean = |text: &str| crate::prompt::clean(text, crate::prompt::MAX_NAME);
+    let title = match title {
+        Title::Known(title) => Some(clean(&title)),
+        Title::Item(None) => None,
+        Title::Item(Some(item)) => {
+            // Never behind an open dialog when Touch ID follows (the third
+            // layer-2 review, finding A).
+            let session = if touch {
+                state.presence.lock(&slot.session, true, None).await?.0
+            } else {
+                slot.session.lock().await
+            };
+            let u = &session.unlocked;
+            u.find_item(&item.to_string())
+                .and_then(|loc| u.item_summary(loc))
+                .ok()
+                .map(|summary| clean(&summary.title))
+        }
+    };
+    let attached = u32::try_from(hub.attached()).unwrap_or(u32::MAX);
+    let until_lock = setting != uv::Window::Always;
+    let ask = BrowserAsk {
+        event,
+        agent: clean(agent),
+        title,
+        site: site.map(clean),
+        attached: (attached > 1).then_some(attached),
+        connection: hub.connection_keyed(conn),
+    };
+    if touch {
+        let reason = Prompt::Browser {
+            ask: &ask,
+            until_lock,
+        }
+        .reason(Lang::current(), None);
+        let verified = {
+            let _open = state.presence.open_prompt(PromptKind::Presence)?;
+            tokio::task::block_in_place(|| presence::Verify::touch_id(&device, &reason))
+        };
+        match verified {
+            Ok(()) => {
+                return state
+                    .presence
+                    .extension_verified(slot.generation, conn, setting);
+            }
+            Err(presence::Refused::Failed(_)) => return Err(crate::browser::declined()),
+            // Locked out meanwhile: the master password, as without it.
+            Err(presence::Refused::Unavailable) => {}
+        }
+    }
+    let ask = PresenceAsk {
+        key: PresenceKey::Connection,
+        window: setting,
+        terminal: None,
+        declared: false,
+        lasts: until_lock.then_some(AskLasts::UntilLock),
+        value: None,
+        browser: Some(ask),
+    };
+    hub.ask_presence(tab, ask).await?;
+    state
+        .presence
+        .extension_verified(slot.generation, conn, setting)
 }
 
 fn bad_request(message: &str) -> ErrorBody {
@@ -2151,24 +2284,17 @@ fn ok(value: impl Serialize, warnings: Vec<String>) -> Reply {
 
 fn status(state: &State, session: Option<&Slot>, caller: Option<&Caller>) -> DaemonStatus {
     let account = klav_client::account(&state.config.home).ok();
-    let (passkey_uv, passkey_verified) = if state.config.presence_gate {
-        // Sealed, read at unlock: nothing to report while locked (ADR
-        // 0041 §2.4, Omar's decision on Q-N2). The passkey window is the
-        // caller's key's (§2.5).
+    // Sealed, read at unlock: nothing to report while locked (ADR 0041
+    // §2.4, Omar's decision on Q-N2). The passkey window is the caller's
+    // key's (§2.5).
+    let (passkey_uv, passkey_verified) =
         match session.and_then(|s| state.presence.settings(s.generation).ok()) {
             Some(settings) => (
                 Some(settings.passkey),
                 caller.is_some_and(|c| !state.presence.passkey_needs(c, Instant::now())),
             ),
             None => (None, false),
-        }
-    } else {
-        let window = uv::load(&state.config.home);
-        (
-            Some(window),
-            session.is_some_and(|s| !uv::needs_verification(window, s.verified(), Instant::now())),
-        )
-    };
+        };
     // One lock, released before the rest: two guards in the literal below
     // would both live to its end and deadlock.
     let deletion = {
@@ -2210,11 +2336,8 @@ fn status(state: &State, session: Option<&Slot>, caller: Option<&Caller>) -> Dae
         account_deletion: deletion.0,
         account_deleted: deletion.1,
         revocations: state.revocations_in_progress(session.is_some()),
-        // Only with the gate on: what the caller's own unlock would open
-        // (ADR 0041 §2.4). With it off, `status` is what it was.
-        presence: caller
-            .filter(|_| state.config.presence_gate)
-            .map(|c| presence::status_presence(&state.presence, c)),
+        // What the caller's own unlock would open (ADR 0041 §2.4).
+        presence: caller.map(|c| presence::status_presence(&state.presence, c)),
         revocations_unreadable: record.0,
         revocations_newer: record.1,
         already_unlocked: false,
@@ -2356,6 +2479,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ImportPreview { .. }
         | Request::ExtensionAttach { .. }
         | Request::ExtensionReply { .. }
+        | Request::ExtensionPresence { .. }
         | Request::BrowserTab
         | Request::Hold => false,
         // Use only when it changes the setting; reading it is not.
@@ -2490,32 +2614,22 @@ fn passkey_presence(
     caller: Option<&Caller>,
     behind: bool,
 ) -> Result<(), ErrorBody> {
-    if state.config.presence_gate {
-        // The passkey window per key, from the sealed setting (ADR 0041
-        // §2.5). The caller is always known with the gate on.
-        let Some(caller) = caller else {
-            return Err(locked());
-        };
-        if password.is_none() && !state.presence.passkey_needs(caller, Instant::now()) {
-            state.presence.passkey_spend(caller);
-            return Ok(());
-        }
-        if behind && password.is_none() {
-            return Err(presence::busy());
-        }
-        state.confirm(slot, password, reason)?;
-        state
-            .presence
-            .passkey_checked(slot.generation, caller, Instant::now());
+    // The passkey window per key, from the sealed setting (ADR 0041 §2.5).
+    // Every request has a caller; fail closed if not.
+    let Some(caller) = caller else {
+        return Err(locked());
+    };
+    if password.is_none() && !state.presence.passkey_needs(caller, Instant::now()) {
+        state.presence.passkey_spend(caller);
         return Ok(());
     }
-    let window = uv::load(&state.config.home);
-    if password.is_none() && !uv::needs_verification(window, slot.verified(), Instant::now()) {
-        slot.spend();
-        return Ok(());
+    if behind && password.is_none() {
+        return Err(presence::busy());
     }
     state.confirm(slot, password, reason)?;
-    slot.set_verified(uv::Verified::checked(Instant::now()));
+    state
+        .presence
+        .passkey_checked(slot.generation, caller, Instant::now());
     Ok(())
 }
 
@@ -2531,28 +2645,21 @@ impl State {
         reason: &str,
     ) -> Result<(), ErrorBody> {
         match password {
-            Some(password) => {
-                self.passwords
-                    .check(self.config.presence_gate, slot.password.as_ref(), password)
-            }
+            Some(password) => self.passwords.check(slot.password.as_ref(), password),
             None => self.touch_id(reason),
         }
     }
 
-    /// Touch ID with `reason`, blocking on the prompt. With the gate on,
-    /// only while no other prompt of `klavd`'s is open (ADR 0041 §2.4,
-    /// finding 5 of the second layer-2 review), else `presence_busy`.
+    /// Touch ID with `reason`, blocking on the prompt, only while no other
+    /// prompt of `klavd`'s is open (ADR 0041 §2.4, finding 5 of the second
+    /// layer-2 review), else `presence_busy`.
     fn touch_id(&self, reason: &str) -> Result<(), ErrorBody> {
         if !self.config.touch_id {
             return Err(touchid::turned_off());
         }
         #[cfg(test)]
         self.seams.before_prompt();
-        let _open = self
-            .config
-            .presence_gate
-            .then(|| self.presence.open_prompt(PromptKind::Presence))
-            .transpose()?;
+        let _open = self.presence.open_prompt(PromptKind::Presence)?;
         tokio::task::block_in_place(|| self.touch.authenticate(reason))
             .map_err(|e| touchid::refused(&e))
     }
@@ -2573,57 +2680,10 @@ fn confirm_presence(state: &State, purpose: PresencePurpose, source: Option<Sour
     if !state.config.touch_id {
         return Err(touchid::turned_off());
     }
-    // With the gate on, its prompt is one of `klavd`'s: one at a time
-    // (ADR 0041 §2.4).
-    let _open = state
-        .config
-        .presence_gate
-        .then(|| state.presence.open_prompt(PromptKind::Presence))
-        .transpose()?;
+    // Its prompt is one of `klavd`'s: one at a time (ADR 0041 §2.4).
+    let _open = state.presence.open_prompt(PromptKind::Presence)?;
     tokio::task::block_in_place(|| state.touch.confirm_with_key(home, ctx, &reason))?;
     ok(serde_json::json!({ "ok": true }), Vec::new())
-}
-
-/// `passkey_uv`: the passkey verification window of this `klavd`, set
-/// first with `window`. Loosening it asks for a real verification;
-/// tightening it does not (ADR 0020 §8).
-fn passkey_uv(
-    state: &State,
-    window: Option<uv::Window>,
-    password: Option<klav_client::ops::SecretText>,
-    source: Option<Source>,
-) -> Reply {
-    let home = &state.config.home;
-    let current = uv::load(home);
-    if let Some(window) = window {
-        if window > current {
-            let reason = Prompt::PasskeyWindow.reason(Lang::current(), source);
-            match state.current() {
-                Some(slot) => {
-                    state.confirm(&slot, password, &reason)?;
-                    slot.set_verified(uv::Verified::checked(Instant::now()));
-                }
-                // Locked, with the gate off: there is no session to check a
-                // password against, and this setting is a plain file any
-                // program of the user can write (why the gate seals it, ADR
-                // 0041 §2.4). So the check stays what it was, the files in
-                // the home (the ADR's own choice; Still open).
-                None => match password {
-                    Some(password) => state.passwords.one(false, || {
-                        let password = MasterPassword::new(password.expose());
-                        tokio::task::block_in_place(|| unlock_with_password(home, &password))
-                            .map(drop)
-                            .map_err(|e| error_body(&e))
-                    })?,
-                    None => state.touch_id(&reason)?,
-                },
-            }
-        }
-        if window != current {
-            uv::save(home, window).map_err(|e| error_body(&e))?;
-        }
-    }
-    ok(serde_json::json!({ "window": uv::load(home) }), Vec::new())
 }
 
 /// `health_settings`: the breach check's setting of this home, and what
@@ -2697,6 +2757,18 @@ async fn rotate_steps(
         .rotate_probe(&tab, plan.host.clone(), plan.urls.clone())
         .await?;
     plan.check_page(&target.url).map_err(e)?;
+    // The extension connection's presence before the fill step carries
+    // values to it, and before anything is stored (ADR 0041 §3.1).
+    browser_presence(
+        state,
+        slot,
+        &tab,
+        BrowserCause::PasswordChange,
+        &plan.agent_name,
+        Title::Known(plan.title.clone()),
+        None,
+    )
+    .await?;
     // 3. The new password, stored as pending in a new version of the item
     //    before anything touches the page. If this fails, nothing is filled.
     let new = {
@@ -2794,6 +2866,19 @@ async fn arm_steps(
         state.spend_proof(step.agent_id, &step.request)?;
         (plan, warnings)
     };
+    // The extension connection's presence before the use is armed there,
+    // naming the rpId `klavd` armed from the vault, never the site the
+    // agent claims (ADR 0041 §3.1, T140).
+    browser_presence(
+        state,
+        slot,
+        &tab,
+        BrowserCause::PasskeySignIn,
+        &plan.agent_name,
+        Title::Known(plan.title.clone()),
+        Some(&plan.rp_id),
+    )
+    .await?;
     let secret = token::generate_token("kpa_");
     let digest = token::token_digest(&secret);
     slot.arm(Arm {
@@ -3203,8 +3288,9 @@ async fn route(
     match request {
         request @ (Request::ExtensionAttach { .. }
         | Request::ExtensionReply { .. }
+        | Request::ExtensionPresence { .. }
         | Request::BrowserTab
-        | Request::BrowserFill { .. }) => handle_browser(state, conn, lines, request).await,
+        | Request::BrowserFill { .. }) => handle_browser(state, conn, lines, caller, request).await,
         Request::AgentPasskeyUse {
             tab_id,
             origin,
@@ -3227,14 +3313,15 @@ async fn route(
     }
 }
 
-/// What the window gate passed a request for: the session, and the item
-/// the request named when it was asked for, at the version it was asked
-/// about (set for `view`, `previous_password`, `totp` and `autofill` unless
-/// a window covered them before anything was read; never for `resolve` and
-/// `generated_value`). The request must still resolve to that item, at
-/// that version, under the session's lock, in the same hold that hands it
-/// out: a rename (findings 2 of layer 3's two reviews) or an edit (Omar's
-/// decision F of 2026-11-19) in between hands out nothing.
+/// What the window gate passed a request for: the session, and what the
+/// request named when it was asked for, in the state it was asked about
+/// (set for every request of the window row unless a window covered it
+/// before anything was read). The request must still name that, in that
+/// state, under the session's lock, in the same hold that hands it out: a
+/// rename (findings 2 of layer 3's two reviews), an edit (Omar's decision
+/// F of 2026-11-19), or, for `resolve` and `generated_value`, any change
+/// to a referenced item or to the history entry (his decision K) in
+/// between hands out nothing.
 struct Checked {
     slot: Arc<Slot>,
     item: Option<Asked>,
@@ -3243,11 +3330,18 @@ struct Checked {
     opens: Option<presence::Opening>,
 }
 
-/// An item as an ask named it: which one, and its version then.
+/// What an ask named, and its state then ([`asked_now`]): two digests
+/// through `klav-core`, so what is kept has a fixed size whatever the
+/// request's (the second review of layer 3, finding 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Asked {
-    item: klav_core::ids::ItemId,
-    version: u64,
+    /// Which item, which items in order (`resolve`), or which generator
+    /// history entry (`generated_value`): what a password sent again must
+    /// still match.
+    names: [u8; 32],
+    /// Their versions, or the entry's instant and value: what the hand-out
+    /// must still find.
+    version: presence::Version,
 }
 
 /// The window row (ADR 0041 §4): with the gate on, the session the value
@@ -3265,13 +3359,10 @@ async fn window_gate(
     request: &Request,
     password: Option<klav_client::ops::SecretText>,
 ) -> Result<Option<Checked>, ErrorBody> {
-    if !state.config.presence_gate {
-        return Ok(None);
-    }
     let Some(slot) = state.current() else {
         return Err(locked());
     };
-    // With the gate on every request has a caller; fail closed if not.
+    // Every request has a caller; fail closed if not.
     let Some(caller) = caller else {
         return Err(locked());
     };
@@ -3280,7 +3371,6 @@ async fn window_gate(
         touch_id: state.config.touch_id,
         check: slot.password.as_ref(),
         passwords: &state.passwords,
-        gate: true,
     };
     // The first look keeps and compares no ask: only `require` does, so a
     // setting changed between the two can't leave an ask that no resend
@@ -3311,7 +3401,7 @@ async fn window_gate(
     // digest (finding 5), and the item it named.
     let bound = presence::Bound {
         request: presence::request_digest(request)?,
-        item: asked.map(|a| a.item),
+        names: asked.map(|a| a.names),
     };
     let passed = tokio::task::block_in_place(|| {
         state.presence.require(
@@ -3331,10 +3421,10 @@ async fn window_gate(
     // below (Omar's decision F of 2026-11-19).
     let item = match (asked, passed.version) {
         (Some(a), Some(version)) => Some(Asked {
-            item: a.item,
+            names: a.names,
             version,
         }),
-        // The ask named an item: its version must be known (fails closed).
+        // The ask named something: its state must be known (fails closed).
         (Some(_), None) => return Err(changed()),
         (None, _) => None,
     };
@@ -3345,9 +3435,11 @@ async fn window_gate(
     }))
 }
 
-/// The answer when the item a value was asked for was renamed away or
-/// edited before the hand-out: nothing goes (ADR 0041; Omar's decision F of
-/// 2026-11-19).
+/// The answer when what a value was asked for was renamed away, replaced or
+/// edited before the hand-out: nothing goes (ADR 0041; Omar's decisions F
+/// and K of 2026-11-19). The wording is matched by the clients
+/// (`klav-ffi`'s `CHANGED_WHILE_CONFIRMING`), so it stays one sentence for
+/// every request.
 fn changed() -> ErrorBody {
     ErrorBody {
         code: ErrorCode::Conflict,
@@ -3374,16 +3466,10 @@ async fn handle(
         Request::HealthSettings { breach_check } => {
             return health_settings(state, breach_check);
         }
-        Request::PasskeyUv { window, password } if state.config.presence_gate => {
+        Request::PasskeyUv { window, password } => {
             return setting_change(state, presence::Which::Passkey, window, password, source).await;
         }
-        Request::PasskeyUv { window, password } => {
-            return passkey_uv(state, window, password, source);
-        }
         Request::PresenceWindow { window, password } => {
-            if !state.config.presence_gate {
-                return Err(not_supported("the presence gate is off in this klavd"));
-            }
             return setting_change(state, presence::Which::Presence, window, password, source)
                 .await;
         }
@@ -3428,21 +3514,16 @@ async fn handle(
     let Some(slot) = checked.map(|c| c.slot).or_else(|| state.current()) else {
         return Err(locked());
     };
-    // With the gate on, no prompt waits behind an open dialog (ADR 0041
-    // §2.4; the third layer-2 review, finding A): `dispatch` shows its
-    // prompts with the session's lock held, so a request that will show one
-    // is answered `presence_busy` instead of waiting for that lock while a
-    // dialog is open; any other waits as before, and if it then needs a
-    // prompt after all (`behind`), it is busy too.
-    let gate = state.config.presence_gate;
-    let asks = gate && state.config.touch_id && will_ask(state, &request, caller);
+    // No prompt waits behind an open dialog (ADR 0041 §2.4; the third
+    // layer-2 review, finding A): `dispatch` shows its prompts with the
+    // session's lock held, so a request that will show one is answered
+    // `presence_busy` instead of waiting for that lock while a dialog is
+    // open; any other waits as before, and if it then needs a prompt after
+    // all (`behind`), it is busy too.
+    let asks = state.config.touch_id && will_ask(state, &request, caller);
     state
         .unless_locked(slot.generation, async {
-            let (mut session, behind) = if gate {
-                state.presence.lock(&slot.session, asks, None).await?
-            } else {
-                (slot.session.lock().await, false)
-            };
+            let (mut session, behind) = state.presence.lock(&slot.session, asks, None).await?;
             let behind = behind && state.config.touch_id;
             let warnings = if reads_without_syncing(&request) {
                 revalidate(state, &slot, &session)
@@ -3456,13 +3537,14 @@ async fn handle(
             {
                 return Err(error_body(&ClientError::AccountDeleted(at)));
             }
-            // The item the verification named, still the one the request
-            // names now (finding 2 of layer 3's review), and at the version
-            // it was asked about (Omar's decision F of 2026-11-19): under
+            // What the verification named, still what the request names
+            // now (finding 2 of layer 3's review), and in the state it was
+            // asked about (Omar's decisions F and K of 2026-11-19): under
             // the session's lock, in the hold that hands it out. A sync that
-            // brought a newer version meanwhile is an edit too.
+            // brought a newer version meanwhile is an edit too; a reference
+            // or an entry that names nothing now is a change as well.
             if let Some(named) = named
-                && value_asked(&session.unlocked, &request) != Some(named)
+                && asked_now(&session.unlocked, &request).ok().flatten() != Some(named)
             {
                 return Err(changed());
             }
@@ -3470,7 +3552,7 @@ async fn handle(
             // any refusal before it, opens none, and the next value asks
             // again (Omar's decision G of 2026-11-19).
             if let (Some(opening), Some(caller)) = (opens, caller) {
-                state.presence.open_window(caller, opening, Instant::now());
+                state.presence.open_window(caller, opening);
             }
             let reply = dispatch(
                 state,
@@ -3545,53 +3627,43 @@ async fn unlock(
     caller: Option<&Caller>,
     shown: Option<uv::Window>,
 ) -> Reply {
-    let gate = state.config.presence_gate;
     // No queue behind an open unlock prompt (ADR 0041 §2.4, N2): the
     // person's own `unlock` must not succeed silently on a dialog another
     // program started, nor show its own right after it. `presence_busy`
     // while one is open, and as soon as one opens while this waits for the
     // unlock running now (the third layer-2 review, finding A).
-    let _one = if gate {
-        state
-            .presence
-            .lock(&state.unlocking, true, Some(PromptKind::Unlock))
-            .await?
-            .0
-    } else {
-        state.unlocking.lock().await
-    };
+    let _one = state
+        .presence
+        .lock(&state.unlocking, true, Some(PromptKind::Unlock))
+        .await?
+        .0;
     let home = state.config.home.clone();
     let since = state.generation();
     if let Some(slot) = state.current() {
         // Unlocked by another key (ADR 0041 §2.4, Omar's decision on
         // Q-N1): say so; without the password this grants nothing.
-        let elsewhere = gate && caller.is_some_and(|c| state.presence.unlocked_by_other(c));
+        let elsewhere = caller.is_some_and(|c| state.presence.unlocked_by_other(c));
         if let Some(password) = password {
             // The master password of the session in memory, never of the
             // files in the home (ADR 0041 §2.3; finding 1 of the second
             // layer-2 review).
-            state
-                .passwords
-                .check(gate, slot.password.as_ref(), password)?;
-            match caller.filter(|_| gate) {
-                // The checked password is the caller's own verification:
-                // it opens what the client's question said, if that is what
-                // `klavd` would open, and otherwise none (finding 1 of
-                // layer 3's review).
-                Some(caller) => {
-                    let stated = presence::unlock_stated(&state.presence, caller, shown);
-                    // A password the client didn't read on its terminal is
-                    // no passkey verification (Omar's decision B).
-                    state.presence.password_at_unlock(
-                        slot.generation,
-                        caller,
-                        stated,
-                        !caller.untyped,
-                        passkey_flow,
-                        Instant::now(),
-                    );
-                }
-                None => slot.set_verified(uv::Verified::unlock(Instant::now(), passkey_flow)),
+            state.passwords.check(slot.password.as_ref(), password)?;
+            // The checked password is the caller's own verification: it
+            // opens what the client's question said, if that is what
+            // `klavd` would open, and otherwise none (finding 1 of layer
+            // 3's review). Every request has a caller.
+            if let Some(caller) = caller {
+                let stated = presence::unlock_stated(&state.presence, caller, shown);
+                // A password the client didn't read on its terminal is no
+                // passkey verification (Omar's decision B).
+                state.presence.password_at_unlock(
+                    slot.generation,
+                    caller,
+                    stated,
+                    !caller.untyped,
+                    passkey_flow,
+                    Instant::now(),
+                );
             }
         }
         let warnings = state
@@ -3606,14 +3678,12 @@ async fn unlock(
         answer.already_unlocked = elsewhere;
         return ok(answer, warnings);
     }
-    // With the gate on: the window the unlock opens for its caller, which
-    // is what its prompt said (ADR 0041 §2.4). A password unlock shows no
+    // The window the unlock opens for its caller, which is what its prompt
+    // said (ADR 0041 §2.4). A password unlock shows no
     // prompt in `klavd`: it opens what the client's own question said, if
     // that is what the Touch ID prompt would have said, and otherwise none
     // (finding 1 of layer 3's review; Omar's decision 4 of 2026-11-19).
-    let mut stated = caller
-        .filter(|_| gate)
-        .and_then(|c| presence::unlock_stated(&state.presence, c, shown));
+    let mut stated = caller.and_then(|c| presence::unlock_stated(&state.presence, c, shown));
     let (unlocked, method) = match password {
         Some(password) => {
             let unlocked = tokio::task::block_in_place(|| {
@@ -3633,7 +3703,7 @@ async fn unlock(
                 });
             }
             let account = klav_client::account(&home).map_err(|e| error_body(&e))?;
-            let reason = match caller.filter(|_| gate) {
+            let reason = match caller {
                 Some(caller) => {
                     let declared = state.presence.is_declared(caller.conn);
                     let (window, who, lasts) =
@@ -3653,13 +3723,11 @@ async fn unlock(
             };
             let ctx = account.local_context();
             let local_key = tokio::task::block_in_place(|| {
-                // With the gate on, the unlock prompt is open while Touch
-                // ID runs, and only when no other prompt is (§2.4).
+                // The unlock prompt is open while Touch ID runs, and only
+                // when no other prompt is (§2.4).
                 #[cfg(test)]
                 state.seams.before_prompt();
-                let _open = gate
-                    .then(|| state.presence.open_prompt(PromptKind::Unlock))
-                    .transpose()?;
+                let _open = state.presence.open_prompt(PromptKind::Unlock)?;
                 state.touch.unlock(&home, ctx, &reason)
             })?;
             let unlocked =
@@ -3667,8 +3735,10 @@ async fn unlock(
             (unlocked, "touch_id")
         }
     };
-    // The unlock is a real verification (ADR 0020 §8).
-    let verified = uv::Verified::unlock(Instant::now(), passkey_flow);
+    // The unlock is a real verification (ADR 0020 §8): its instant is the
+    // windows' start, as the sync below can take seconds and a window
+    // counts from the verification (ADR 0041, plan item 6).
+    let verified_at = Instant::now();
     let mut unlocked = unlocked;
     // Before the first sync: it plans with the account's URL (ADR 0028
     // §4). At most a few seconds, and no session is published yet.
@@ -3681,11 +3751,11 @@ async fn unlock(
     let mut warnings = Vec::new();
     // The settings, sealed in the local data, read now with the local key
     // (ADR 0041 §2.4); the old `passkeys.json` only checked for and gone.
-    let settings = gate.then(|| {
+    let settings = {
         let ctx = unlocked.account().local_context();
         presence::load_settings(&home, unlocked.local_key(), &ctx)
-    });
-    if gate && let Some(warning) = presence::forget_old_passkey_file(&home) {
+    };
+    if let Some(warning) = presence::forget_old_passkey_file(&home) {
         warnings.push(warning.to_owned());
     }
     // What checks a password against this session from now on (ADR 0041
@@ -3730,7 +3800,6 @@ async fn unlock(
         method,
         generation: since,
         last_use: std::sync::Mutex::new(Instant::now()),
-        verified: std::sync::Mutex::new(Some(verified)),
         arms: std::sync::Mutex::new(Vec::new()),
         syncing: std::sync::Mutex::new(None),
         password: password_check,
@@ -3742,7 +3811,7 @@ async fn unlock(
             return Err(locked());
         }
         *current = Some(Arc::clone(&slot));
-        if let (Some(settings), Some(caller)) = (settings, caller) {
+        if let Some(caller) = caller {
             // Touch ID, or a password the client typed, is the passkey
             // verification; one it didn't read on its terminal isn't
             // (Omar's decision B of 2026-11-19).
@@ -3754,7 +3823,7 @@ async fn unlock(
                 stated,
                 passkey,
                 passkey_flow,
-                Instant::now(),
+                verified_at,
             );
         }
     }
@@ -3781,14 +3850,14 @@ async fn unlock(
     )
 }
 
-/// `hold` (ADR 0041 §1.2): answered `not_supported` until layer 6 turns it
-/// on, after layer 5's checks, and always on Linux.
+/// `hold` (ADR 0041 §1.2): answered `not_supported` until
+/// [`HOLD_SUPPORTED`] turns it on, and always on Linux.
 fn hold(state: &State, caller: Option<&Caller>) -> Reply {
     #[cfg(test)]
     let supported = hold_supported() || state.seams.hold;
     #[cfg(not(test))]
     let supported = hold_supported();
-    let caller = caller.filter(|_| state.config.presence_gate && supported);
+    let caller = caller.filter(|_| supported);
     let Some(caller) = caller else {
         return Err(not_supported(if cfg!(target_os = "macos") {
             "this klavd does not hold connections yet"
@@ -3803,10 +3872,19 @@ fn hold(state: &State, caller: Option<&Caller>) -> Reply {
     )
 }
 
-/// Whether `hold` is on. Layer 6 turns it on, on macOS only, if layer 5's
-/// checks of the signed app passed (ADR 0041 §1.2, stop rule).
+/// Whether `hold` is on (ADR 0041 §1.2). **Off, by the stop rule of layer
+/// 5:** `klavd` answers `hold` with `not_supported` until Omar has run layer
+/// 5's by-hand checks on a signed Developer ID build (a same-user debugger
+/// can't attach; started with `HOME`, `CFFIXED_USER_HOME` and `KLAV_HOME`
+/// pointing elsewhere, the app connects to the default socket) and they
+/// passed. Turning it on is this one constant, and only on macOS: Linux
+/// never holds a connection (§1.2, R9). Without it, the app's long
+/// connection is an ordinary one, keyed by its connection (§2.1).
+const HOLD_SUPPORTED: bool = false;
+
+/// [`HOLD_SUPPORTED`], on macOS only.
 const fn hold_supported() -> bool {
-    false
+    cfg!(target_os = "macos") && HOLD_SUPPORTED
 }
 
 fn not_supported(message: &str) -> ErrorBody {
@@ -3899,8 +3977,12 @@ async fn setting_change(
 /// `dispatch` gives, `not_found` or `invalid` (ambiguous), which `view`
 /// without `reveal` already gives that caller. So its ask always names the
 /// item and its title, and the hand-out is checked against that item under
-/// the session's lock (`handle`). `generated_value` and `resolve` name no
-/// item and read nothing here. `touch`: a Touch ID prompt follows, so the
+/// the session's lock (`handle`). `resolve` and `generated_value` name no
+/// item in the ask, but are resolved here all the same, every reference to
+/// its item and the instant to its history entry, so a reference or an
+/// instant that names nothing is refused before any ask, and the hand-out
+/// is checked against what they named (Omar's decision K of 2026-11-19;
+/// [`asked_now`]). `touch`: a Touch ID prompt follows, so the
 /// session's lock is never awaited behind an open dialog: `presence_busy`
 /// instead (§2.4; the third layer-2 review, finding A).
 async fn value_text(
@@ -3910,26 +3992,12 @@ async fn value_text(
     touch: bool,
 ) -> Result<(AskValue, Option<Asked>), ErrorBody> {
     let (kind, query) = match request {
-        Request::View { query, .. } => (AskValueKind::Show, query),
-        Request::PreviousPassword { query, .. } => (AskValueKind::Previous, query),
-        Request::Totp { query, .. } => (AskValueKind::Code, query),
-        Request::Autofill { item, .. } => (AskValueKind::Fill, item),
-        Request::GeneratedValue { .. } => {
-            let value = AskValue {
-                kind: AskValueKind::Generated,
-                title: None,
-                count: None,
-            };
-            return Ok((value, None));
-        }
-        Request::Resolve { references, .. } => {
-            let value = AskValue {
-                kind: AskValueKind::Resolve,
-                title: None,
-                count: Some(u32::try_from(references.len()).unwrap_or(u32::MAX)),
-            };
-            return Ok((value, None));
-        }
+        Request::View { query, .. } => (AskValueKind::Show, Some(query)),
+        Request::PreviousPassword { query, .. } => (AskValueKind::Previous, Some(query)),
+        Request::Totp { query, .. } => (AskValueKind::Code, Some(query)),
+        Request::Autofill { item, .. } => (AskValueKind::Fill, Some(item)),
+        Request::GeneratedValue { .. } => (AskValueKind::Generated, None),
+        Request::Resolve { .. } => (AskValueKind::Resolve, None),
         // Only the window row reaches here (`presence::gate`).
         _ => {
             return Err(ErrorBody {
@@ -3946,47 +4014,99 @@ async fn value_text(
         slot.session.lock().await
     };
     let u = &session.unlocked;
-    let loc = u.find_item(query).map_err(|e| error_body(&e))?;
-    let summary = u.item_summary(loc).map_err(|e| error_body(&e))?;
-    let title = crate::prompt::clean(&summary.title, crate::prompt::MAX_NAME);
-    Ok((
-        AskValue {
-            kind,
-            title: Some(title),
-            count: None,
-        },
-        Some(Asked {
-            item: loc.item,
-            version: summary.version,
-        }),
-    ))
+    // What the request names, resolved before anything is asked: a query,
+    // a reference or an instant that names nothing is refused here (Omar's
+    // decision K of 2026-11-19 for `resolve` and `generated_value`).
+    let asked = asked_now(u, request).map_err(|e| error_body(&e))?;
+    let title = match query {
+        Some(query) => {
+            let loc = u.find_item(query).map_err(|e| error_body(&e))?;
+            let summary = u.item_summary(loc).map_err(|e| error_body(&e))?;
+            Some(crate::prompt::clean(
+                &summary.title,
+                crate::prompt::MAX_NAME,
+            ))
+        }
+        None => None,
+    };
+    let count = match request {
+        Request::Resolve { references, .. } => {
+            Some(u32::try_from(references.len()).unwrap_or(u32::MAX))
+        }
+        _ => None,
+    };
+    Ok((AskValue { kind, title, count }, asked))
 }
 
-/// The item a value request names, as the vault resolves it now, and its
-/// version: `view`, `previous_password`, `totp` and `autofill`. `None` for
-/// the others, and when it resolves to none. The version is the item's
-/// `version`, which every write to its content raises (a sync refuses a
-/// version lower than one already seen). The trash and a restore raise the
-/// server's `revision` instead, and change no content.
-fn value_asked(u: &Unlocked, request: &Request) -> Option<Asked> {
-    let loc = value_location(u, request)?;
-    let version = u.item_summary(loc).ok()?.version;
-    Some(Asked {
-        item: loc.item,
-        version,
-    })
-}
-
-/// Where [`value_asked`]'s item is.
-fn value_location(u: &Unlocked, request: &Request) -> Option<klav_client::ItemLocation> {
-    let query = match request {
+/// What a value request names now, and its state, as [`Asked`]'s digests:
+///
+/// - `view`, `previous_password`, `totp` and `autofill`: the item the query
+///   finds, at its `version`, which every write to its content raises (a
+///   sync refuses a version lower than one already seen; the trash and a
+///   restore raise the server's `revision` instead, and change no content);
+/// - `resolve`: every referenced item, in order, at its version, each
+///   reference checked as the hand-out resolves it
+///   (`klav_client::Unlocked::reference_items`);
+/// - `generated_value`: the generator history entry at that instant, by
+///   its instant and its value (`klav_client::Unlocked::generated_digest`).
+///
+/// `Ok(None)` for any other request. An error when the request names
+/// nothing now.
+fn asked_now(u: &Unlocked, request: &Request) -> Result<Option<Asked>, ClientError> {
+    let item = |loc: klav_client::ItemLocation| -> Result<(String, u64), ClientError> {
+        Ok((loc.item.to_string(), u.item_summary(loc)?.version))
+    };
+    let (label, names, versions): (&str, Vec<Vec<u8>>, Vec<Vec<u8>>) = match request {
         Request::View { query, .. }
         | Request::PreviousPassword { query, .. }
-        | Request::Totp { query, .. } => query,
-        Request::Autofill { item, .. } => item,
-        _ => return None,
+        | Request::Totp { query, .. }
+        | Request::Autofill { item: query, .. } => {
+            let (id, version) = item(u.find_item(query)?)?;
+            (
+                "item",
+                vec![id.clone().into_bytes()],
+                vec![id.into_bytes(), version.to_be_bytes().to_vec()],
+            )
+        }
+        Request::Resolve { references, .. } => {
+            let mut names = Vec::new();
+            let mut versions = Vec::new();
+            for loc in u.reference_items(references)? {
+                let (id, version) = item(loc)?;
+                names.push(id.clone().into_bytes());
+                versions.push(id.into_bytes());
+                versions.push(version.to_be_bytes().to_vec());
+            }
+            ("resolve", names, versions)
+        }
+        Request::GeneratedValue { created_at, .. } => {
+            let entry = u.generated_digest(*created_at)?;
+            (
+                "generated",
+                vec![created_at.to_be_bytes().to_vec()],
+                vec![entry.to_vec()],
+            )
+        }
+        _ => return Ok(None),
     };
-    u.find_item(query).ok()
+    Ok(Some(Asked {
+        names: bind_digest(label, "names", &names),
+        version: presence::Version(bind_digest(label, "version", &versions)),
+    }))
+}
+
+/// SHA-256, through `klav-core`, of `label`, `part` and `fields`, each
+/// prefixed with its length, so no two lists give the same bytes.
+fn bind_digest(label: &str, part: &str, fields: &[Vec<u8>]) -> [u8; 32] {
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    for field in [label.as_bytes(), part.as_bytes()]
+        .into_iter()
+        .chain(fields.iter().map(Vec::as_slice))
+    {
+        bytes.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    klav_core::crypto::agent::body_digest(&bytes)
 }
 
 /// Every request that needs the account unlocked. `behind`: with the gate
@@ -4766,6 +4886,7 @@ async fn dispatch(
         Request::TaskProgress { task } => ok(u.task_progress(&task).await.map_err(e)?, warnings),
         Request::ExtensionAttach { .. }
         | Request::ExtensionReply { .. }
+        | Request::ExtensionPresence { .. }
         | Request::BrowserTab
         | Request::BrowserFill { .. } => Err(bad_request("not handled here")),
         Request::Status

@@ -49,7 +49,7 @@ function asAgent(args: string[]): { code: number | null; out: string; err: strin
 
 async function unlocked(popup: Page): Promise<void> {
   const locked = popup.getByRole("heading", { name: "Klav is locked" });
-  await expect(locked.or(popup.getByText("Your vault"))).toBeVisible();
+  await expect(locked.or(popup.getByText("Your vault", { exact: true }))).toBeVisible();
   if (await locked.isVisible()) {
     await unlockForm(popup);
   }
