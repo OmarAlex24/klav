@@ -486,7 +486,7 @@ Omar lo aceptó el 2026-11-25 con la opción (a) en Q1–Q7: `klav-server` gana 
 - [x] Capa 1 (servidor): `klav-core::crypto::invite` (especificación §4.7 y `docs/vectores/invite.json`), tipos de `klav-proto`, `registration_mode`, migración 0021, `POST /v1/auth/invite/check` y la invitación en `register/*`, `klav-server invite create|ls|revoke`, las cuatro cuotas con el candado de la cuenta (también en `create_vault`), el límite de invitaciones por IP y la identidad de compilación en `klav-server --version`; pruebas en SQLite y Postgres
 - [ ] Capa 2 (clientes): `klav-client`, `klav signup` (`--invite`, `KLAV_INVITE`), `klav-ffi` y la app de Mac
 - [ ] Capa 3 (sitio): la lista de espera como cola de invitaciones y el texto de la beta en inglés y español
-- [ ] Capa 4 (distribución): `klav-server` en la compilación de Linux y el kit, la unidad de systemd, `docker-compose.yml` con la imagen fijada, README, `self-hosting.md`/`apps/docs` y las fórmulas de Homebrew
+- [x] Capa 4 (distribución): `klav-server` en la compilación de Linux y el kit, la unidad de systemd, `docker-compose.yml` con la imagen fijada, README, `self-hosting.md`/`apps/docs` y las fórmulas de Homebrew
 
 ### Agentes personales en la nube (idea de Omar, sin ADR)
 Omar lo pidió el 2026-11-06: que los agentes personales como Muse (Meta), Grok Bot (xAI) y Dots (OpenAI) usen las contraseñas de la persona sin ver los valores. Los tres corren en una computadora en la nube de su proveedor (Muse en la «Muse Secure VM» de Meta, cada Dot en la suya y los Grok Bots en una compartida), y hoy Klav solo habla con los agentes por la CLI y `klav mcp` locales. Falta diseñar la pieza que los conecte. La página de `klav.dev` los lista en «También en camino», sin fecha. No cambia la fase en curso.

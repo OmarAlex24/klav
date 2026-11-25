@@ -39,7 +39,7 @@ mkdir klav && cd klav
 curl -fsSLO https://raw.githubusercontent.com/OmarAlex24/klav/v0.10.0/docker-compose.yml
 docker compose up -d
 curl http://127.0.0.1:8080/v1/health
-# {"status":"ok",…,"registration_open":false,"registration_mode":"invite",…}
+# {"status":"ok",…,"registration_open":false,…,"registration_mode":"invite"}
 # Then TLS in front (§3), and the invite you sign up with:
 docker compose exec klav klav-server invite create --email you@example.com
 ```
