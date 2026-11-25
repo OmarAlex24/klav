@@ -1643,12 +1643,27 @@ enum SandboxSamples {
 struct SampleAccounts: AccountMaker {
     let engine: SampleEngine
 
+    /// `-KlavSampleRegistration invite|closed` (open without it). The
+    /// sample's only good invite is `KLAV-SAMPLE`.
+    func mode(of server: String) throws -> RegistrationMode {
+        switch UserDefaults.standard.string(forKey: "KlavSampleRegistration") {
+        case "invite": return .invite
+        case "closed": return .closed
+        default: return .open
+        }
+    }
+
+    func check(invite: String, email: String, server: String) throws {
+        guard invite.uppercased() == "KLAV-SAMPLE" else { throw KlavError.InviteInvalid }
+    }
+
     func signIn(server: String, email: String, password: String, secretKey: String, deviceName: String) throws {
         guard password == "sample" else { throw KlavError.WrongCredentials }
         engine.signedIn()
     }
 
-    func signUp(server: String, email: String, password: String, deviceName: String) throws -> String {
+    func signUp(server: String, email: String, password: String, deviceName: String, invite: String?) throws -> String {
+        if try mode(of: server) == .invite { try check(invite: invite ?? "", email: email, server: server) }
         engine.signedIn()
         return """
         KLAV EMERGENCY KIT (SAMPLE, NOT A REAL ACCOUNT)

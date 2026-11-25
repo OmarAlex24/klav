@@ -136,6 +136,10 @@ extension KlavError {
                 return String(localized: "The server canceled the deletion, but this Mac couldn’t save it. It shows after the next sync.")
             }
             return String(localized: "The server scheduled the deletion for \(deletionDay(deleteAt)), but this Mac couldn’t save it. It shows after the next sync.")
+        // ADR 0048 §2, §3.2: the invite, in the person's language; a
+        // quota, in the server's words (which limit, used, maximum).
+        case .InviteInvalid: return String(localized: "This invite code isn’t valid for this email.")
+        case .QuotaExceeded(let message): return message
         case .Invalid(let message): return message
         }
     }

@@ -5860,6 +5860,16 @@
         }
       }
     },
+    "Invite code": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Código de invitación"
+          }
+        }
+      }
+    },
     "Issuer %@": {
       "localizations": {
         "es": {
@@ -10305,6 +10315,16 @@
         }
       }
     },
+    "Request an invite": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pedir una invitación"
+          }
+        }
+      }
+    },
     "Requests": {
       "localizations": {
         "es": {
@@ -13635,6 +13655,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nombre de este iPhone"
+          }
+        }
+      }
+    },
+    "This invite code isn’t valid for this email.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este código no sirve para este correo."
           }
         }
       }
