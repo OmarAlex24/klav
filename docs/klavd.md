@@ -103,10 +103,11 @@ user sees them. Both sides keep the lines in buffers that are zeroed
 (`zeroize`). The intermediate copies `serde_json` makes can't be guaranteed
 (T33).
 
-Today, any process of that user gets values from an unlocked `klavd` with
-no presence (`view` with `reveal`, `previous_password`, `totp`,
-`generated_value`, `resolve`, `autofill`) and may `extension_attach`; the
-peer's executable only words the Touch ID dialog (§6.1). [ADR
+Before ADR 0041's gate, any process of that user got values from an
+unlocked `klavd` with no presence (`view` with `reveal`,
+`previous_password`, `totp`, `generated_value`, `resolve`, `autofill`); it
+may still `extension_attach`, and the peer's executable only words the
+Touch ID dialog (§6.1). [ADR
 0041](decisiones/0041-presence-for-values-and-the-inject-card.md),
 accepted on 2026-11-17, asks for presence once per window
 and per key (a terminal session, the browser, a parent process, or the
@@ -114,10 +115,11 @@ connection) before those operations. The Mac app reads until Klav locks
 only on a connection where its `unlock`, or the gate's window
 verification, followed `hold`, not because of its code signature: what
 the kernel says about the peer doesn't prove which code it is (ADR 0041 §1.1, §1.2). With the setting on Always,
-every value asks, the app included. The gate is built (layer 2) but off:
-`klavd --presence-gate`, a hidden flag, turns it on for tests, and layer 6
-turns it on for everyone. With it off, nothing below marked "with the gate
-on" happens, and older clients see no change. The gate, below §3.
+every value asks, the app included. The gate is on since layer 6; layers
+2–5 built it off, behind a hidden `--presence-gate` flag that is gone.
+Clients still tell from `status` (§5) whether the `klavd` they talk to has
+it: an older one, or one of layers 2–5, does not. `hold` still answers
+`not_supported` (below). The gate, below §3.
 
 `mlock` is postponed (ADR 0013): an attacker who reads swap can already read live memory.
 
@@ -186,10 +188,9 @@ state.
 - **The presence gate's three envelope fields** (ADR 0041, layer 3; all
   optional, and sent only to a `klavd` whose `status` has `presence`,
   because a `klavd` from before layer 3 answers an unknown envelope field
-  with `bad_request`). A `klavd` of layer 3 or later reads all three with
-  the gate off too, and ignores them there: no notice, no change to what an
-  `unlock` opens. That is the only change layer 3 makes to the gate-off
-  `klavd` on the wire, and no client of this repository sends them to it:
+  with `bad_request`). A `klavd` of layers 3–5 read all three with its
+  gate off too, and ignored them there; no client of this repository sends
+  them to such a `klavd`:
   - **`notify: true`** asks for a notice before a Touch ID dialog this
     request causes. Just before the dialog, `klavd` writes
     `{"v":1,"id":7,"notice":"touch_id"}`, with the request's `id` and no
@@ -202,11 +203,10 @@ state.
   - **`shown`** (`always`, `5m` or `unlocked`), on an `unlock` with
     `password`: the window the client's own question said the password
     opens (`always`: none). `klavd` opens it only if it is what it would
-    open now, and otherwise none (§3, the gate, `unlock`). Without the
-    gate it is ignored.
+    open now, and otherwise none (§3, the gate, `unlock`).
   - **`untyped: true`**, on an `unlock` with `password`: the client didn't
     read this password on its terminal (stdin, a pipe, a program that
-    keeps it). With the gate on, the unlock then opens no window, whatever
+    keeps it). The unlock then opens no window, whatever
     `shown` says, and isn't the passkey verification of ADR 0020 §8 for
     the caller's key (Omar's decisions 4 and B of 2026-11-19). Missing
     means typed, as every client sent before. It is the client's own
@@ -287,11 +287,11 @@ padding.
 | `password_history` | `query` | `PasswordHistoryView`: `entries` (`index`, `field`, `label`, `from_ms?`, `to_ms`, `unconfirmed`), newest to oldest, `pending` and `pending_since?`; no values. `unconfirmed` marks a password that an assisted change generated and nobody confirmed | no |
 | `previous_password` | `query`, `index`, `password?` | The value of that previous password. No presence | no |
 | `vault_health` | — | `VaultHealth` (ADR 0022 §4): `items`, `passwords`, `skipped?`, `reused` (groups of `items`), `weak` (`item`, `score`, `generated_bits?`), `old` (`item`, `since_ms`, `days`, `source`: `record` or `created`) and `breaches` (`status`: `off`, `checked` with `found` and `queries`, or `failed` with `message`). Each `item` carries ID, reference, title, username, `hosts` and field; never values. The Have I Been Pwned lookup runs only if `health.json` turns it on, and outside the session's lock | no |
-| `extension_attach` | `browser` | `{}`. The connection is now an extension's: it receives events (below). No presence to attach: any process of the same user may. With the gate on, an agent's values ask for this connection's presence (below, the gate) | yes |
+| `extension_attach` | `browser` | `{}`. The connection is now an extension's: it receives events (below). No presence to attach: any process of the same user may. An agent's values ask for this connection's presence (below, the gate) | yes |
 | `extension_reply` | `event`, `ok?` or `error?` | `{}`. Answers an event of this connection. A `presence` event takes only an `error` (the person declined): its `ok` is `extension_presence`, and an `ok` here is `bad_request` | yes |
 | `extension_presence` | `event`, `password` | `{}`. The master password for this connection's `presence` event `event` (the gate, below), checked against the unlocked session. Wrong: `wrong_credentials`, and the event keeps waiting for another. Only on the connection the event went to; any other, or an event no longer waiting: `not_found` | yes |
 | `browser_tab` | — | `BrowserTab`: `{tab, url, browser}` of the active tab of the browser with the focus | yes |
-| `browser_fill` | `tab`, `host`, `agent`, `agent_id?`, `item?`, `reason`, `kind`, `fields`, `selectors?`, `submit?` | The extension's report: `{url, filled, submitted?, navigated?, url_after?}`, never values (the SDK adds `warnings?` for the person: below, Compatibility). `agents_paused` if a pause stops the agent (below) | yes |
+| `browser_fill` | `tab`, `host`, `agent`, `agent_id?`, `item?`, `reason`, `kind`, `fields`, `selectors?`, `submit?` | The extension's report: `{url, filled, submitted?, navigated?, url_after?}`, never values (the SDK adds `warnings?` for the person: below, Compatibility). `agents_paused` if a pause stops the agent (below). Needs the session unlocked, for the connection's presence (§3, the gate); a pause is checked first and works locked | no |
 | `resolve_pending` | `query`, `accept` | The item's `PasswordHistoryView`. The person decides on the pending password of an assisted change: `accept` makes it current ("Use the new one"); if not, it goes to the history as unconfirmed ("Keep the current one"). With nothing pending, `not_found` | no |
 | `agent_rotate_begin` | `tab`, `step` (`RotationStep`), `submit?` | `{filled, pending_id}` (plus `submitted?`, `navigated?`, `url_after?` with `submit`); never values. Assisted change, below | no |
 | `agent_rotate_confirm` | `step` | `{ok: true}`: the pending one becomes current and the previous one goes to the history | no |
@@ -299,9 +299,9 @@ padding.
 | `agent_rotate_pending` | `step`, with a request signed for `POST /v1/agent/rotations/{id}/pending` | `{pending}`: whether the item's pending password is this change's. Read only; asked before the server gets the step. Hands out no value, and asks no presence: it needs a request the agent signed, checked as for a step (signature, age, once, the task). An older `klavd` answers `bad_request` | no |
 | `agent_passkey_arm` | `tab`, `step` (`PasskeyArmStep`) | `PasskeyArmed`: `{used, rp_id, expires_in_s?}`; never the assertion. An agent signs in with one of the person's passkeys, below | no |
 | `agent_passkey_use` | `tab_id`, `origin`, `rp_id?`, `challenge`, `token` | `PasskeyAssertion`, like `passkey_get`. Only the extension, with the *token* of the use armed in that tab | no |
-| `passkey_uv` | `window?` (`always`, `5m` or `unlocked`), `password?` | `{window}`: the passkey verification window of this `KLAV_HOME` (`passkeys.json`), after changing it if `window` comes. Loosening it asks for Touch ID (or `password`); tightening it, nothing. With the gate on, it is sealed in `passkey-window.bin` and answers `locked` while locked (the gate, below) | yes; with the gate on, no |
-| `presence_window` | `window?` (`always`, `5m` or `unlocked`), `password?` | `{window}`: the presence setting (the gate, below), after changing it if `window` comes. Loosening asks for Touch ID (or `password`) and opens no window; tightening asks nothing and shortens open windows at once. With the gate off, `not_supported`. The extension can't ask for it | no |
-| `hold` | — | `{declared, held}`: declares this connection held (the gate, below). Today it always answers `not_supported`: until layer 6 on macOS, and always on Linux. The extension can't ask for it | yes |
+| `passkey_uv` | `window?` (`always`, `5m` or `unlocked`), `password?` | `{window}`: the passkey verification window of this `KLAV_HOME`, sealed in `passkey-window.bin` (the gate, below), after changing it if `window` comes. Loosening it asks for Touch ID (or `password`) and opens nothing; tightening it, nothing | no |
+| `presence_window` | `window?` (`always`, `5m` or `unlocked`), `password?` | `{window}`: the presence setting (the gate, below), after changing it if `window` comes. Loosening asks for Touch ID (or `password`) and opens no window; tightening asks nothing and shortens open windows at once. A `klavd` of layers 2–5 with its gate off answers `not_supported`. The extension can't ask for it | no |
+| `hold` | — | `{declared, held}`: declares this connection held (the gate, below). Today it always answers `not_supported`: on macOS until Omar's by-hand check of layer 5 on a signed build passes, and always on Linux. The extension can't ask for it | yes |
 | `health_settings` | `breach_check?` | `{breach_check, notice}`: the breach lookup setting of this `KLAV_HOME` (`health.json`), after changing it if `breach_check` comes, and what it sends | yes |
 | `reused_offer` | `agent?` | `ReusedOffer` (ADR 0022 §6): `agents` (active ones with a grant, only `{id, name}`), `agent`, `rows` (the logins that share a password, sorted by host: `item_id`, reference, title, username, `hosts`, `change_url`, `group`, `permissions` and `blocked?`: `not_granted`, `no_site`, `not_login` or `other_field`) and the default title, reason and duration. Without `agent`, the only one there is. Never values | no |
 | `offer_task` | `offer` (`agent`, `items`, `task?`, `reason?`, `duration_secs?`), `password?` | `TaskCard` of the offered task: `rotate` on each login, and `totp` ("Added by Klav") if it has a code and the policy doesn't deny it. It checks everything before asking for presence | no |
@@ -312,8 +312,8 @@ locked. Those that don't answer `locked`.
 
 The `password?` of `view`, `totp`, `resolve`, `autofill`,
 `generated_value` and `previous_password` is the gate's (below): the
-master password, sent after a `presence_required`. With the gate off it is
-ignored. `klavd` checks it and the operation never sees it.
+master password, sent after a `presence_required`. `klavd` checks it and
+the operation never sees it.
 
 **A master password as presence.** Wherever a `password` stands in for
 Touch ID on an unlocked `klavd` (the gate, the operations that already ask
@@ -324,8 +324,7 @@ the Secret Key, it must derive the session's local key. A password that only
 opens the account files now in `KLAV_HOME` is `wrong_credentials`. If those
 files were replaced, the person's own password fails too, until they are
 put back. One password is checked
-at a time: another that arrives meanwhile gets `presence_busy` with the gate
-on and `conflict` with it off, at once.
+at a time: another that arrives meanwhile gets `presence_busy` at once.
 
 **Agents and the extension** ([`extension.md`](extension.md) §8). The extension
 attaches with `extension_attach` through `klav-native-host`; from then on,
@@ -854,16 +853,18 @@ operation: it signs inside and returns the assertion.
   saving, the ones an agent added are removed and stay pending. The
   agent can propose them again.
 - **Verification window** (ADR 0020 §8, `passkey_uv`). It is a local
-  setting, not synced: `passkeys.json` in the `KLAV_HOME`, `{"v": 1,
-  "window": …}`. If it is missing, can't be read, is of another version or
-  other users can write it, it is `always`.
+  setting, not synced, sealed in `passkey-window.bin` in the `KLAV_HOME`
+  (§3, the gate, «Settings»; the old `passkeys.json` is no longer read). If
+  it is missing or doesn't open, it is `always`. What a verification covers
+  is per key (§3, the gate): one key's verification never covers another's
+  use.
   - `always` (default): Touch ID or `password` on every use, except the use
     for which the passkey frame unlocked Klav (`unlock` with
     `passkey_flow`). That unlock covers **one** use and only for 60 s.
     An unlock through the CLI or the *popup* covers none.
   - `5m`: another verification if the last real one was more than 5 minutes ago.
-    Any unlock counts, as do the presence of a use and the one that loosened
-    the setting.
+    An unlock the client typed counts (an `untyped` one doesn't), as does
+    the presence of a use; loosening the setting opens nothing.
   - `unlocked`: the unlock holds until the next lock.
   - It applies the same to signing and to saving a passkey.
   - A use consumes the verification it relied on, in any window:
@@ -932,17 +933,17 @@ task with `passkey`, and only in the person's browser.
 is, because the extension sends it, and it only works with the *token* that `klavd`
 gave that connection.
 
-### The presence gate (ADR 0041, off by default)
+### The presence gate (ADR 0041)
 
 [ADR 0041](decisiones/0041-presence-for-values-and-the-inject-card.md)
-§2–§3. Built in layer 2 and off: `klavd --presence-gate` (hidden) turns it
-on. Everything in this section is what `klavd` does with it on.
+§2–§3. Built off in layers 2–5, behind a hidden `--presence-gate` flag, and
+on for everyone since layer 6; the flag is gone.
 
 **Which operations.** Every operation has one row of §3's table,
 `presence::gate` in `crates/klav-daemon/src/presence.rs`, a `match` with no
 catch-all: a new operation doesn't compile without its row.
 
-| Row | Operations | With the gate on |
+| Row | Operations | What `klavd` does |
 |---|---|---|
 | Window | `view` with `reveal`, `previous_password`, `totp`, `generated_value`, `resolve`, `autofill` | The caller's key needs an open window, or a verification now |
 | Extension's connection | `extension_attach`, and the value events it then gets (`browser_fill`'s `fill`, the fill step of `agent_rotate_begin`, `passkey_arm`) | One presence for the connection, until Klav locks or the connection closes; under `always`, one per event. Below, «The extension's connection» |
@@ -1032,8 +1033,8 @@ ask is kept per connection: a client resends on the connection that got
 the ask. So a password never grants more than the question the person
 read. For the four requests bound to an item (`view`, `previous_password`,
 `totp`, `autofill`), what it hands out is the item, at the version, that
-`klavd` asked about (below); `resolve` and `generated_value` are bound to
-no item. The CLI then asks once more with the new words, and stops at a
+`klavd` asked about; for `resolve`, every item its references name, each at
+its version; for `generated_value`, the history entry (below). The CLI then asks once more with the new words, and stops at a
 third ask.
 
 **The item binds the hand-out, also when the answer opens a window.** For
@@ -1052,10 +1053,19 @@ new version a sync brought meanwhile (Omar's decision F of 2026-11-19). It
 doesn't make the title proof: an item renamed or edited *before* the ask
 is asked for as it is then (above). An ask for one value names the item;
 an ask that opens a window names who and for how long, and no item.
-`resolve` resolves each reference only at the hand-out, so a reference
-that names nothing fails after presence, and the item behind a reference
-can change between the ask and the hand-out with no `conflict`; nor is
-`generated_value` bound to anything (the ADR's own choice 51).
+
+`resolve` and `generated_value` are bound the same way since layer 6
+(Omar's decision K, which overturned the ADR's own choice 51). Before
+asking, `klavd` resolves each reference of a `resolve` to its item and
+checks its field, and remembers every item with its version; a reference
+that names nothing, or a field the item doesn't have, is refused at once
+with the error `resolve` gave it before (now before the ask), and nothing
+is asked. For `generated_value`, it remembers a digest of the
+entry (its instant and its value); an instant with no entry is `not_found`
+at once. At the hand-out, under the session's lock, it checks the same
+again: an item edited, moved or deleted, a reference that now names another
+item, or an entry deleted or replaced while it asked, is `conflict`, and
+nothing is handed out.
 
 **A `conflict` opens no window.** A verification that passes doesn't open
 its window by itself: `klavd` opens it, under the session's lock, only
@@ -1075,9 +1085,8 @@ request, and is served once the dialog closes. One that finds out it needs
 a dialog only after that wait (a widening `grant_change_apply`, a passkey
 use whose window lapsed meanwhile) gets `presence_busy` if a dialog opened
 while it waited. That covers every dialog `klavd` shows with
-the gate on: a value's, an unlock's, `confirm_presence`, a passkey use, an
-operation that already asks, and a setting's loosening. With the gate off,
-those dialogs don't wait for each other, as before. A wrong password is
+the gate: a value's, an unlock's, `confirm_presence`, a passkey use, an
+operation that already asks, and a setting's loosening. A wrong password is
 `wrong_credentials` and grants nothing; a canceled Touch ID is
 `biometry_failed`. A change of either setting while another change is
 running gets `presence_busy`.
@@ -1127,14 +1136,17 @@ it until Klav locks, under `5m` or `unlocked`. A declaration survives a lock,
 a held connection doesn't. Only that connection, never another of the same
 key. Not held by: an `always` value, a passkey use, `confirm_presence` or
 another "already asks" operation. `always` drops every declaration and held
-connection, and a move back brings none. Not built yet: `hold` answers
-`not_supported` until layer 6, and always on Linux.
+connection, and a move back brings none. Built, and off: `hold` answers
+`not_supported` until Omar has run layer 5's by-hand checks on a signed
+Developer ID build (the debugger and the hostile `HOME`,
+`CFFIXED_USER_HOME` and `KLAV_HOME`), and always on Linux. Turning it on
+is one constant, `HOLD_SUPPORTED` in `crates/klav-daemon/src/server.rs`.
 
 **The extension's connection** (ADR 0041 §3.1, layer 4). Before an agent's
 values go to a browser connection (a `browser_fill`, the fill step of an
 `agent_rotate_begin`, an `agent_passkey_arm`), `klavd` asks the person,
 needing the session unlocked (`locked` otherwise, also for `browser_fill`,
-which works locked with the gate off). Under `5m` and `unlocked`, one
+which worked locked before the gate). Under `5m` and `unlocked`, one
 answer covers that connection until Klav locks or it closes; under
 `always`, every event asks, and moving to `always` drops what was covered.
 
@@ -1169,15 +1181,14 @@ answer covers that connection until Klav locks or it closes; under
 - **One at a time** per connection: a second event that needs a presence
   while one is open gets `presence_busy`.
 
-**One browser in front** (P25, Omar's decision on Q-N5). With the gate on
-and more than one extension connection attached, `browser_tab` asks every
+**One browser in front** (P25, Omar's decision on Q-N5). With more than
+one extension connection attached, `browser_tab` asks every
 connection and needs exactly one to report focus; otherwise
 `browser_ambiguous`. Right before each value event (`fill`, `rotate_fill`,
 `passkey_arm`) `klavd` asks again, and only the connection that gets the
 values may report focus. The check runs before the presence question too,
 so the person is never asked for a browser that then gets nothing. With
-one connection, or the gate off, nothing changes: the focused one, or the
-newest.
+one connection, that one.
 
 ## 4. Errors
 
@@ -1188,7 +1199,7 @@ newest.
 | `wrong_credentials` | Wrong password | 1 |
 | `rollback` | **Possible server rollback (T7)**: nothing was applied | 3 |
 | `security` | A security check failed (tampered grant, different pairing words, tampered audit log) | 3 |
-| `not_found`, `invalid`, `conflict` | As in direct mode. With the gate off, `conflict` also means another master password is being checked: try again in a moment | 1 |
+| `not_found`, `invalid`, `conflict` | As in direct mode. `conflict` also means the item, or what a `resolve` or `generated_value` named, changed while `klavd` asked (§3, the gate) | 1 |
 | `network`, `session_expired` | Server unreachable; session expired or revoked | 1 |
 | `biometry_unavailable` | Touch ID isn't available or isn't turned on | 1 (`klav` asks for the password) |
 | `biometry_failed` | Touch ID canceled or failed | 1 (`klav` asks for the password) |
@@ -1197,10 +1208,10 @@ newest.
 | `agents_paused` | The person paused that agent or every agent (ADR 0033 §7) | 7 |
 | `account_deleting` | The person asked to delete the account (ADR 0037 §3): `klavd` mediates nothing for agents | 8 |
 | `account_deleted` | Klav has already deleted the account: it can neither write nor mediate for agents | 8 in agent commands; 1 in the others |
-| `presence_required` | With the gate on: no window for the caller's key and no Touch ID to ask. It carries `presence` (§3, the gate); the client asks for the master password and sends `password` | `klav` asks on its controlling terminal and sends it again; 9 with no terminal ([cli.md](cli.md) §8) |
-| `presence_busy` | With the gate on: another Touch ID dialog is open, another master password is being checked, or another setting change is running; try again after it. Also a second presence on one extension connection | 1 (`klav` says which, from what it sent) |
-| `browser_ambiguous` | With the gate on: more than one browser is attached and not exactly one reports focus, or the one that does isn't the one that would get the values (§3, the gate) | 1 |
-| `not_supported` | This `klavd` doesn't do it: `hold` (until layer 6, and on Linux), `presence_window` with the gate off | 1 |
+| `presence_required` | No window for the caller's key and no Touch ID to ask. It carries `presence` (§3, the gate); the client asks for the master password and sends `password` | `klav` asks on its controlling terminal and sends it again; 9 with no terminal ([cli.md](cli.md) §8) |
+| `presence_busy` | Another Touch ID dialog is open, another master password is being checked, or another setting change is running; try again after it. Also a second presence on one extension connection | 1 (`klav` says which, from what it sent) |
+| `browser_ambiguous` | More than one browser is attached and not exactly one reports focus, or the one that does isn't the one that would get the values (§3, the gate) | 1 |
+| `not_supported` | This `klavd` doesn't do it: `hold` (on macOS until the signed-build check, and on Linux); `presence_window` on a `klavd` of layers 2–5 with its gate off | 1 |
 | `extension_not_allowed` | Only `klav-native-host` sends it, never `klavd`: the extension that started it isn't on its list. The message says which command adds it ([extension.md](extension.md) §3) | — |
 | `internal` | Any other error | 1 |
 
@@ -1238,7 +1249,7 @@ newest.
   unlock. A client that keeps what it read reads again only when it changes.
 - **`syncing`:** a background sync is in progress (§3).
 - **`passkey_uv`**, **`passkey_verified`:** the passkey verification
-  window (§4) and whether the next use falls inside it. With the gate on,
+  window (§4) and whether the next use falls inside it.
   `passkey_uv` is missing while locked (the setting is sealed), and
   `passkey_verified` is about the caller's key. With `passkey_verified`,
   the frame doesn't ask for the password.
@@ -1288,12 +1299,11 @@ newest.
   The extension never receives it, as it doesn't receive `agents` either. Missing if there
   are none.
 
-- **`already_unlocked`:** only in the answer to an `unlock` with the gate
-  on, `true` when another key had already unlocked `klavd` (§3, the gate).
+- **`already_unlocked`:** only in the answer to an `unlock`, `true` when another key had already unlocked `klavd` (§3, the gate).
   Missing otherwise.
-- **`presence`:** only with the gate on, so its presence is how a client
-  tells the gate is on (an older `klavd` and one with the gate off leave
-  it out). What an `unlock` from the caller's key would mean now:
+- **`presence`:** how a client tells the gate is on: since layer 6
+  always there (an older `klavd`, and one of layers 2–5 with its gate off,
+  leave it out). What an `unlock` from the caller's key would mean now:
   `elsewhere` (`true` when `klavd` is unlocked and another key unlocked
   it), `key`, `terminal?` and `declared?` as in `presence_required`, and
   `lasts?`: the window a typed password unlock opens (`5m` or
@@ -1349,11 +1359,11 @@ macOS writes the dialog as "`<process>` is trying to `<reason>`." (in Spanish, �
 | `offer_task` | offer claude-code a Klav task on 4 logins | offer “claude-code” a task to change 4 passwords | ofrecer a «claude-code» una tarea para cambiar 4 contraseñas |
 | `resume_agents` | — | let “claude-code” use Klav again · let your agents use Klav again | dejar que «claude-code» vuelva a usar Klav · dejar que tus agentes vuelvan a usar Klav |
 | `confirm_presence` (`delete_account`) | — | confirm it’s you to delete your account | confirmar que eres tú para borrar tu cuenta |
-| `view`, `totp`… (gate on, a window) | — | let the terminal ttys003 use your vault for 5 minutes · let this connection use your vault until Klav locks | dejar que la terminal ttys003 use tu bóveda durante 5 minutos · dejar que esta conexión use tu bóveda hasta que Klav se bloquee |
-| `totp`, `autofill`, `resolve`… (gate on, Always) | — | show the code of “GitHub” (for the terminal ttys003) · fill “GitHub” in a browser · use 3 values from your vault in a command (for a program with no terminal) | mostrar el código de «GitHub» (para la terminal ttys003) · rellenar «GitHub» en un navegador · usar 3 valores de tu bóveda en un comando (para un programa sin terminal) |
-| `unlock` (gate on) | — | unlock your vault for the terminal ttys003, and let it use the vault for 5 minutes (ana@example.com) | desbloquear tu bóveda para la terminal ttys003 y dejar que la use durante 5 minutos (ana@example.com) |
-| An extension's connection (gate on, `5m` or `unlocked`) | — | let agents fill in a browser until Klav locks, starting with “claude-code”'s fill of “GitHub” · … through this browser connection … (Linux) · starting with “claude-code”'s password change for “GitHub” · starting with “claude-code”'s passkey sign-in to “github.com”; and "; 2 browser connections are attached" when there are more | dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por el relleno de «GitHub» que pidió «claude-code» · … por esta conexión del navegador … · el cambio de contraseña de «GitHub» que pidió «claude-code» · el inicio de sesión con passkey en «github.com» que pidió «claude-code»; y «; hay 2 conexiones del navegador activas» |
-| An extension's connection (gate on, `always`) | — | let a browser connection receive “claude-code”'s values for “GitHub” | dejar que una conexión del navegador reciba los valores de «claude-code» para «GitHub» |
+| `view`, `totp`… (a window) | — | let the terminal ttys003 use your vault for 5 minutes · let this connection use your vault until Klav locks | dejar que la terminal ttys003 use tu bóveda durante 5 minutos · dejar que esta conexión use tu bóveda hasta que Klav se bloquee |
+| `totp`, `autofill`, `resolve`… (Always) | — | show the code of “GitHub” (for the terminal ttys003) · fill “GitHub” in a browser · use 3 values from your vault in a command (for a program with no terminal) | mostrar el código de «GitHub» (para la terminal ttys003) · rellenar «GitHub» en un navegador · usar 3 valores de tu bóveda en un comando (para un programa sin terminal) |
+| `unlock` | — | unlock your vault for the terminal ttys003, and let it use the vault for 5 minutes (ana@example.com) | desbloquear tu bóveda para la terminal ttys003 y dejar que la use durante 5 minutos (ana@example.com) |
+| An extension's connection (`5m` or `unlocked`) | — | let agents fill in a browser until Klav locks, starting with “claude-code”'s fill of “GitHub” · … through this browser connection … (Linux) · starting with “claude-code”'s password change for “GitHub” · starting with “claude-code”'s passkey sign-in to “github.com”; and "; 2 browser connections are attached" when there are more | dejar que los agentes rellenen en un navegador hasta que Klav se bloquee, empezando por el relleno de «GitHub» que pidió «claude-code» · … por esta conexión del navegador … · el cambio de contraseña de «GitHub» que pidió «claude-code» · el inicio de sesión con passkey en «github.com» que pidió «claude-code»; y «; hay 2 conexiones del navegador activas» |
+| An extension's connection (`always`) | — | let a browser connection receive “claude-code”'s values for “GitHub” | dejar que una conexión del navegador reciba los valores de «claude-code» para «GitHub» |
 | `presence_window` (loosens) | — | ask for your presence every 5 minutes instead of for every value | pedir tu presencia cada 5 minutos en vez de en cada valor |
 | `grant_change_apply` (widens) | — | let “claude-code” do more: Personal/Release, reveal (ask) | dejar que «claude-code» haga más: Personal/Release, revelar (preguntar) |
 
@@ -1369,7 +1379,7 @@ then "and 2 more changes" («y 2 cambios más»): the sheet already showed them 
 - **With several projects,** an agent's permission names the first two and counts the rest: "Work/P1, Work/P2 and 3 more", «Work/P1, Work/P2 y 3 más».
 - **A task's number** counts the items that stay checked after what the person changed on the card.
 - **Without the item on this device,** it says "an item" or «un elemento».
-- **A value with the setting on Always** (gate on) ends with who asks, as
+- **A value with the setting on Always** ends with who asks, as
   the dialogs that open a window name it: "(for the terminal ttys003)",
   "(for a terminal)", "(for a program with no terminal)", "(for a
   browser)", "(for this connection)", "(for this browser connection)",

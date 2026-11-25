@@ -193,9 +193,9 @@ Lo propio del Mac:
 
 ### Presencia para los valores (ADR 0041, capa 5)
 
-La puerta de presencia está apagada por defecto (`klavd --presence-gate`), y `hold` contesta `not_supported` hasta la capa 6. Con la puerta apagada, la app se ve y se comporta como antes. Con ella encendida:
+Desde la capa 6 la puerta de presencia está encendida (la opción oculta `klavd --presence-gate` de las capas 2 a 5 ya no existe). `hold` sigue contestando `not_supported` hasta que Omar haga a mano, en una versión firmada con Developer ID, las comprobaciones de la capa 5 (el depurador y `HOME`, `CFFIXED_USER_HOME` y `KLAV_HOME` hostiles): mientras tanto, la conexión larga no queda retenida y cada valor pide presencia según el ajuste, como cualquier otro programa. Con un `klavd` anterior, sin la puerta, la app se ve y se comporta como antes. Con ella:
 
-- **Con Touch ID** el diálogo lo muestra `klavd`, con su texto (§Desbloqueo). Desbloquear desde la app retiene su conexión hasta que Klav se bloquee, salvo con «Cada vez».
+- **Con Touch ID** el diálogo lo muestra `klavd`, con su texto (§Desbloqueo). Cuando `hold` esté encendido, desbloquear desde la app retendrá su conexión hasta que Klav se bloquee, salvo con «Cada vez».
 - **Sin Touch ID** (o bloqueado, o apagado), `klavd` contesta `presence_required` y la app pide la contraseña maestra en su hoja. La hoja dice lo que concede, a partir de lo que dijo `klavd` (`lasts`, o el valor de esa sola vez), nunca del ajuste solo: «Al confirmar, esta app podrá usar tu bóveda hasta que Klav se bloquee», o «Al confirmar, Klav muestra «GitHub» solo esta vez». La contraseña va por la conexión que recibió la pregunta (elección propia 32); por otra, `klavd` la ignoraría y volvería a preguntar.
   - La hoja sale encima de donde se pidió el valor: la ventana, el editor, «Cambiar permisos…», la hoja de «Borrar la copia de este Mac» o Ajustes. Desde la barra de menús, la app abre la ventana y la hoja sale ahí.
   - Mientras la hoja de un valor está abierta, otro valor recibe «Klav ya está confirmando otra cosa en esta app». Cerrar la hoja (o que Klav se bloquee) la retira y libera la conexión.

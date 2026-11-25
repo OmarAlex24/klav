@@ -26,15 +26,13 @@ cargo build --release -p klav-cli     # binario en target/release/klav
   - con `klav totp`, `klav generate` y `klav generated show N`;
   - con `klav inject` sin `-o`, que existe para emitirlos.
 
-  Con `klavd` desbloqueado, ninguno de ellos pide Touch ID ni la contraseña
-  maestra: los frena el bloqueo de `klavd`, no una confirmación por comando
-  ([`klavd.md`](klavd.md), tabla de operaciones;
-  [`modelo-de-amenazas.md`](modelo-de-amenazas.md) §6 y riesgo 49). El
-  [ADR 0041](decisiones/0041-presence-for-values-and-the-inject-card.md)
-  les pide presencia una vez por ventana y por sesión de terminal (5
-  minutos por defecto). La CLI ya lo sabe hacer (§8, «Presencia antes de los
-  valores»), pero la puerta de `klavd` sigue apagada hasta la capa 6 del
-  ADR: hoy nada de eso se ve.
+  Con `klavd` desbloqueado, los que piden el valor a `klavd` (todos menos
+  `klav generate`, que lo crea) necesitan tu presencia: Touch ID o la
+  contraseña maestra en la terminal, una vez por ventana y por sesión de
+  terminal (5 minutos por defecto), nunca la de stdin. Es la puerta del
+  [ADR 0041](decisiones/0041-presence-for-values-and-the-inject-card.md),
+  encendida desde la capa 6 (§8, «Presencia antes de los valores»;
+  [`modelo-de-amenazas.md`](modelo-de-amenazas.md) T195 y riesgo 49).
 - **`--password-stdin`** lee la contraseña maestra de la **primera** línea de
   stdin. Los valores de `--secret-stdin` van en las líneas siguientes, en el
   orden de los argumentos. Sirve para scripts. En una terminal, lo normal es el
@@ -49,7 +47,7 @@ cargo build --release -p klav-cli     # binario en target/release/klav
   | 1 | error (red, contraseña incorrecta, elemento inexistente…) |
   | 2 | uso incorrecto |
   | 3 | **posible rollback del servidor** |
-  | 9 | `klavd` pide tu presencia antes de dar un valor y `klav` no tiene terminal donde pedir la contraseña maestra (§8, «Presencia antes de los valores»). Solo con la puerta de presencia encendida |
+  | 9 | `klavd` pide tu presencia antes de dar un valor y `klav` no tiene terminal donde pedir la contraseña maestra (§8, «Presencia antes de los valores») |
 
   El código 3 significa que el servidor mostró un estado más viejo que uno que
   este dispositivo ya vio (amenaza T7). No se aplica nada; revisa el servidor.
@@ -725,27 +723,28 @@ En macOS, tras el primer desbloqueo con contraseña, `klavd` desbloquea con
 
 Uso, seguridad y protocolo: [`klavd.md`](klavd.md).
 
-### Presencia antes de los valores (ADR 0041, apagada por defecto)
+### Presencia antes de los valores (ADR 0041)
 
-`klavd --presence-gate` (oculto) enciende la puerta de presencia del
+Desde la capa 6, `klavd` tiene siempre encendida la puerta de presencia del
 [ADR 0041](decisiones/0041-presence-for-values-and-the-inject-card.md):
-antes de dar un valor, `klavd` pide Touch ID o la contraseña maestra, una vez
+antes de dar un valor, pide Touch ID o la contraseña maestra, una vez
 por ventana y por clave (la sesión de tu terminal, el proceso padre o la
-conexión; [`klavd.md`](klavd.md) §3, «The presence gate»). Sigue apagada
-hasta la capa 6; con ella apagada, o con un `klavd` anterior, la CLI hace lo
-mismo que antes.
+conexión; [`klavd.md`](klavd.md) §3, «The presence gate»). Las capas 2 a 5
+la construyeron apagada, tras una opción oculta, `klavd --presence-gate`,
+que ya no existe. Con un `klavd` anterior, o uno de esas capas con la puerta
+apagada, la CLI hace lo mismo que antes. El modo directo (`--no-daemon`) no
+pasa por `klavd` y no pide presencia.
 
 - **Qué comandos.** Los que piden un valor a `klavd`: `klav item get
   --reveal` (`view`), `klav item history --reveal N` (`previous_password`),
   `klav totp` (`totp`), `klav generated show N` (`generated_value`), `klav run`
   y `klav inject` (`resolve`). Ningún comando de agente pasa por aquí: `klav
   agent …` y `klav mcp` no piden valores a `klavd` (`klav agent list`, por
-  ejemplo, no pide nada aunque la puerta esté encendida). Los que ya piden
+  ejemplo, no pide nada). Los que ya piden
   presencia por su cuenta, como `klav agent resume`, `klav agent approve` y
   los cambios de permisos que los amplían, sí piden Touch ID y, si falla o
   no hay, la contraseña maestra, también con `--password-stdin`: confirma esa
-  acción y no abre ventana. Con la puerta encendida, la pregunta en la
-  terminal nombra la terminal y dice «It confirms this one action, and opens
+  acción y no abre ventana. La pregunta en la terminal nombra la terminal y dice «It confirms this one action, and opens
   no window.».
 - **Con Touch ID** (un Mac con Touch ID y sin `--no-touch-id`), `klavd`
   muestra el diálogo y el comando espera. Justo antes, `klavd` avisa a la CLI
@@ -788,11 +787,13 @@ mismo que antes.
   (se renombra, se edita o llega una versión nueva al sincronizar), no se
   entrega nada (`conflict`, código 1; decisión F de Omar, 2026-11-19).
   Tras un `conflict` no queda ninguna ventana abierta: al volver a correr
-  el comando, pregunta otra vez (decisión G). `run`, `inject` y `generated
-  show` no van atados a un elemento: una referencia que no nombra nada
-  falla después de la presencia, y el elemento detrás de una referencia
-  puede cambiar entre la pregunta y la entrega sin `conflict` (elección
-  propia 51 del ADR). `klavd` solo comprueba la contraseña si
+  el comando, pregunta otra vez (decisión G). Desde la capa 6, `run` e
+  `inject` van atados igual a cada elemento que nombran sus referencias, y
+  `generated show` a su entrada del historial (decisión K de Omar, que
+  revocó la elección propia 51 del ADR): una referencia que no nombra nada,
+  o un campo que el elemento no tiene, falla antes de preguntar, y si un
+  elemento o la entrada cambia mientras confirmas, no se entrega nada
+  (`conflict`). `klavd` solo comprueba la contraseña si
   todavía preguntaría exactamente eso; si algo cambió (el ajuste, el
   elemento al que apunta la consulta), no la usa y vuelve a preguntar, y la
   CLI lo dice y pregunta una vez más con las palabras nuevas. Una tercera
@@ -811,22 +812,22 @@ mismo que antes.
   entera («the master password is longer than 1024 bytes: nothing was
   sent», código 1), pero solo al terminar: la CLI sigue leyendo, sin eco y
   sin decir nada, hasta Enter o Ctrl-C, y descarta lo que quede en cola
-  antes de devolver la terminal, así que esa línea no llega a la shell. En
-  un pegado de varias líneas, lo que la terminal entregue después de ese
-  instante todavía puede llegar; eso se cierra antes de encender la puerta
-  (elección propia 53 del ADR).
+  antes de devolver la terminal, así que esa línea no llega a la shell.
+  Desde la capa 6 (decisión M de Omar, que cierra lo que dejaba la
+  elección propia 53), después de cualquier respuesta, buena o rechazada,
+  la CLI sigue leyendo sin eco hasta que la terminal calla 0,2 s (2 s como
+  mucho) y lo descarta: en un pegado de varias líneas, la contraseña es la
+  primera línea, y las demás nunca llegan a la shell.
 - **Sin terminal** (un script, un servicio): sale con el **código 9** y dice
   qué hacer: correr el comando desde una terminal. Como el resto de los
   errores, va en stderr también con `--json`.
-- **`presence_busy`**, que solo llega con la puerta encendida, se dice según
-  lo que mandó la CLI: sin contraseña, otro programa tiene abierto un diálogo
-  de Touch ID de Klav; con ella, `klavd` está comprobando otra contraseña. Con
-  la puerta apagada, esa segunda comprobación es `conflict`, y su mensaje ya lo
-  dice («klavd is checking another master password»). Las dos salen con 1;
-  vuelve a intentarlo cuando termine.
+- **`presence_busy`** se dice según lo que mandó la CLI: sin contraseña,
+  otro programa tiene abierto un diálogo de Touch ID de Klav; con ella,
+  `klavd` está comprobando otra contraseña. Sale con 1; vuelve a intentarlo
+  cuando termine.
 - **`klav unlock`.** La CLI sabe si la puerta está encendida por el `status`
-  de `klavd` (`presence`); un `klavd` con la puerta apagada o anterior no lo
-  manda, y la CLI hace lo de antes. Con la puerta encendida:
+  de `klavd` (`presence`); un `klavd` anterior, o uno de las capas 2 a 5 con
+  la puerta apagada, no lo manda, y la CLI hace lo de antes. Con la puerta:
   - antes de Touch ID escribe `klav: Touch ID for the terminal ttys003`, el
     nombre que verás en el diálogo;
   - la pregunta por la contraseña maestra nombra la terminal y dice qué abre
@@ -852,8 +853,7 @@ mismo que antes.
     `presence_busy`.
 
   Los avisos de la respuesta de `unlock` (el del `passkeys.json` viejo) salen
-  en stderr. Con la puerta apagada, `klav unlock` a un `klavd` ya
-  desbloqueado tampoco manda `unlock`, como antes.
+  en stderr.
 
 ```sh
 klav presence window [--json]                 # el ajuste, con klavd desbloqueado
@@ -871,9 +871,9 @@ klav presence window always|5m|unlocked       # cambiarlo
   arriba, también con el código 9 sin terminal), con el cambio en el diálogo
   («ask for your presence every 5 minutes instead of for every value»), y no
   abre ninguna ventana: el siguiente valor vuelve a pedir presencia.
-- Un `klavd` con la puerta apagada responde `not_supported` («the presence
-  gate is off»); uno anterior no conoce la operación y la CLI pide
-  actualizar Klav. Los dos salen con 1.
+- Un `klavd` de las capas 2 a 5 con la puerta apagada responde
+  `not_supported` («the presence gate is off»); uno anterior no conoce la
+  operación y la CLI pide actualizar Klav. Los dos salen con 1.
 
 ### Extensión de navegador
 

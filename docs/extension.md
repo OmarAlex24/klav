@@ -153,7 +153,7 @@ The *host* only lets these `klavd` operations through; the others answer
 | `generator_record`, `generator_history`, `generated_value`, `generator_delete` | The generator: save each password before filling it, and its history (ADR 0022 §2) |
 | `password_history`, `previous_password` | An item's "Previous passwords" (ADR 0022 §3) |
 | `resolve_pending` | "Pending change": the person decides on the password an assisted change generated (ADR 0022 §5) |
-| `passkey_uv` | The *popup*'s settings: the passkey verification window (ADR 0020 §8). Loosening it asks for Touch ID in `klavd` or the password in the *popup* |
+| `passkey_uv` | The *popup*'s settings: the passkey verification window (ADR 0020 §8). Loosening it asks for Touch ID in `klavd` or the password in the *popup*, and opens nothing: the next use still asks once (ADR 0041 §3) |
 | `vault_health`, `health_settings` | The *popup*'s "Health" view (ADR 0022 §4): items, hosts and reasons, without values, and the switch for the breach lookup |
 | `reused_offer`, `offer_task`, `task_progress` | "Fix my reused passwords" (ADR 0022 §6): the list for the person, the offered task (with presence) and the progress per site. `reused_offer` names the agents only with `{id, name}`; `agents` stays out |
 | `approvals`, `decide_approval` | Agent approvals from the *popup* |
@@ -935,11 +935,12 @@ with `klav approval`.
 ![Notice on the page after filling for an agent](img/extension/aviso-agente.png)
 ![A pending approval in the popup](img/extension/popup-aprobacion.png)
 
-### The presence gate (ADR 0041, off by default)
+### The presence gate (ADR 0041)
 
-With `klavd --presence-gate` (off until layer 6), values need the
-person's presence ([`klavd.md`](klavd.md) §3, the gate). Without the gate
-`klavd` sends none of this and the extension behaves as above.
+Since layer 6, values need the person's presence ([`klavd.md`](klavd.md)
+§3, the gate). An older `klavd`, or one of layers 2–5 (built with the gate
+off behind a hidden `--presence-gate` flag, now gone), sends none of this,
+and the extension behaves as above.
 
 - **Agents' values.** Before the first value an agent sends this browser
   connection (a fill, the fill step of an assisted change, a passkey
@@ -1208,7 +1209,7 @@ policy in [privacidad.md](privacidad.md).
   languages and the site icons
   (that no site receives an icon request if the setting is
   off), passkeys against a test RP (§13) and the presence gate
-  (`presencia.spec.ts`: a `klavd` with `--presence-gate`, the master
+  (`presencia.spec.ts`: a `klavd` with Touch ID off, the master
   password in Klav's frame, and a second browser connection where
   neither, one or both report focus, also changing right before the
   fill). Each run uses its own temporary
