@@ -89,7 +89,7 @@ pub(crate) async fn log_cmd(ctx: &mut Ctx, args: LogArgs) -> CliResult<()> {
             }
             continue;
         }
-        folded = session.then(|| (key, 1));
+        folded = session.then_some((key, 1));
         rows.push(vec![
             format_utc(l.at),
             who(l),
