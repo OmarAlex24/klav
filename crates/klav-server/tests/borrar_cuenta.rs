@@ -698,8 +698,10 @@ async fn nothing_in_memory_outlives_the_account() {
 
 // ------------------------------------------------- every table, every file
 
-/// Tables that belong to the server, not to any account.
-const SERVER_TABLES: &[&str] = &["server_state", "_sqlx_migrations"];
+/// Tables that belong to the server, not to any account. An invite stays
+/// when the account it created goes (ADR 0048 §1.3); its use row goes with
+/// the account.
+const SERVER_TABLES: &[&str] = &["server_state", "_sqlx_migrations", "registration_invites"];
 /// Columns that name an account, a device or an agent (ADR 0037 §5.2).
 const NAMING_COLUMNS: &[&str] = &[
     "account_id",
@@ -1233,6 +1235,28 @@ async fn the_purge_leaves_no_row_and_no_file_of_the_account() {
     .execute(&db)
     .await
     .unwrap();
+    // Both came from one batch invite (ADR 0048 §1.3): the invite is the
+    // server's and stays, with its spent uses; Ana's use row goes with her.
+    sqlx::query(
+        "INSERT INTO registration_invites (id, code_hash, max_uses, used_count, created_at) \
+         VALUES ('invite-1', $1, 5, 2, $2)",
+    )
+    .bind(vec![7_u8; 32])
+    .bind(now_ms())
+    .execute(&db)
+    .await
+    .unwrap();
+    for creds in [&ana_creds, &bob_creds] {
+        sqlx::query(
+            "INSERT INTO registration_invite_uses (invite_id, account_id, used_at) \
+             VALUES ('invite-1', $1, $2)",
+        )
+        .bind(creds.account_id.to_string())
+        .bind(now_ms())
+        .execute(&db)
+        .await
+        .unwrap();
+    }
 
     let tables = schema(&db, postgres).await;
     check_schema(&tables);
@@ -1302,6 +1326,18 @@ async fn the_purge_leaves_no_row_and_no_file_of_the_account() {
             .iter()
             .any(|r| r.starts_with("audit_events.account_id"))
     );
+
+    // The invite stays, its use is not given back, and only Bob's use row
+    // is left.
+    let (used, uses): (i64, i64) = sqlx::query_as(
+        "SELECT CAST(used_count AS BIGINT), \
+         (SELECT COUNT(*) FROM registration_invite_uses WHERE invite_id = 'invite-1') \
+         FROM registration_invites WHERE id = 'invite-1'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!((used, uses), (2, 1));
 
     // The files, now, not at the next orphan sweep.
     assert!(!files.join(ana_vault.id.to_string()).exists());

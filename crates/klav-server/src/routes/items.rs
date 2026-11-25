@@ -277,6 +277,23 @@ pub(crate) async fn insert_item(
         ));
     };
     check_project_version(project_version, req.project_version)?;
+    // Quotas of the vault's owner (ADR 0048 §3.2). `writer.begin` locked
+    // the writer's account, which is the owner: today only the owner is a
+    // member, and an agent writes for the account that granted it.
+    let owner = crate::quota::owner_of(&mut w.tx, &vault_id.to_string()).await?;
+    crate::quota::check(
+        &mut w.tx,
+        &state.config().limits,
+        &owner,
+        crate::quota::Delta {
+            items: 1,
+            vault_bytes: crate::quota::len(req.wrapped_key.as_bytes())
+                + crate::quota::len(req.overview.as_bytes())
+                + crate::quota::len(req.details.as_bytes()),
+            ..Default::default()
+        },
+    )
+    .await?;
     let inserted = sqlx::query(
         "INSERT INTO items (id, vault_id, project_id, version, wrapped_key, overview, details, \
          revision, created_at, updated_at, author_agent_id) \
@@ -402,6 +419,20 @@ pub(crate) async fn write_version(
     }
     check_project_version(cur.project_version, req.project_version)?;
     let id = item_id.to_string();
+    // The vault-data quota (ADR 0048 §3.2) is checked on what the write
+    // really adds: the new version, minus the kept versions it drops. The
+    // old current version moves to the history and keeps counting, so
+    // same-size edits still grow the account until the history is full.
+    // Measured before and after, under the owner's lock (see
+    // `insert_item`).
+    let limits = &state.config().limits;
+    let quota_before = if crate::quota::measures_vault_bytes(limits) {
+        let owner = crate::quota::owner_of(&mut w.tx, &vault_id.to_string()).await?;
+        let before = crate::quota::vault_bytes(&mut w.tx, &owner).await?;
+        Some((owner, before))
+    } else {
+        None
+    };
     // A new item key (ADR 0036 §18) brings every attachment key wrapped
     // again with it, or the attachments would stay with the old one.
     if let Some(keys) = &req.attachment_keys {
@@ -441,6 +472,9 @@ pub(crate) async fn write_version(
     .bind(new_version - keep)
     .execute(&mut *w.tx)
     .await?;
+    if let Some((owner, before)) = quota_before {
+        crate::quota::check_growth(&mut w.tx, limits, &owner, before).await?;
+    }
     writer
         .log(&mut w, "item.updated", vault_id, cur.project_id, item_id)
         .await?;

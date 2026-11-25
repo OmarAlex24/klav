@@ -76,10 +76,7 @@ impl Db {
         }
         .map_err(DbError::Connect)?;
 
-        let mut migrator = match backend {
-            Backend::Sqlite => sqlx::migrate!("migrations/sqlite"),
-            Backend::Postgres => sqlx::migrate!("migrations/postgres"),
-        };
+        let mut migrator = migrator(backend);
         // A build older than its database still starts. After a rollback the
         // newer build's migrations stay recorded, and without this sqlx
         // refuses them (`VersionMissing`) and the server never comes up.
@@ -90,6 +87,56 @@ impl Db {
         Ok(Self { pool })
     }
 
+    /// Connects to a database the server already created and migrated, for
+    /// the admin subcommands (`klav-server invite …`, ADR 0048 §1.4): never
+    /// migrates and never creates a SQLite file, and refuses a schema older
+    /// than this build's, so a newer CLI never changes the schema of an
+    /// older running server.
+    pub(crate) async fn connect_existing(url: &str) -> Result<Self, AdminDbError> {
+        sqlx::any::install_default_drivers();
+        let backend = backend_of(url).map_err(|_| AdminDbError::UnsupportedScheme)?;
+        let pool = match backend {
+            Backend::Sqlite => {
+                let url = without_create_mode(url);
+                AnyPoolOptions::new()
+                    .max_connections(1)
+                    .after_connect(|conn, _meta| {
+                        Box::pin(async move {
+                            // The server set WAL on the file already; the
+                            // CLI waits for its writers instead of failing.
+                            conn.execute("PRAGMA busy_timeout = 10000").await?;
+                            conn.execute("PRAGMA foreign_keys = ON").await?;
+                            Ok(())
+                        })
+                    })
+                    .connect(&url)
+                    .await
+            }
+            Backend::Postgres => {
+                AnyPoolOptions::new()
+                    .max_connections(2)
+                    .acquire_timeout(Duration::from_secs(10))
+                    .connect(url)
+                    .await
+            }
+        }
+        .map_err(AdminDbError::Connect)?;
+        let applied: Vec<i64> = sqlx::query_scalar(
+            "SELECT CAST(version AS BIGINT) FROM _sqlx_migrations WHERE success = TRUE",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| AdminDbError::SchemaBehind)?;
+        let behind = migrator(backend)
+            .iter()
+            .filter(|m| m.migration_type.is_up_migration())
+            .any(|m| !applied.contains(&m.version));
+        if behind {
+            return Err(AdminDbError::SchemaBehind);
+        }
+        Ok(Self { pool })
+    }
+
     /// `SELECT 1`: used by the health check.
     pub(crate) async fn ping(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT 1")
@@ -97,6 +144,40 @@ impl Db {
             .await
             .map(|_| ())
     }
+}
+
+/// Error raised while opening an existing database for an admin command.
+#[derive(Debug, thiserror::Error)]
+pub enum AdminDbError {
+    /// The URL is neither `sqlite:` nor `postgres:`.
+    #[error("unsupported database URL scheme (use sqlite:// or postgres://)")]
+    UnsupportedScheme,
+    /// Connecting failed (for SQLite, also: the file does not exist).
+    #[error("cannot open the database: {0}")]
+    Connect(#[source] sqlx::Error),
+    /// The schema is older than this build's (or there is none).
+    #[error(
+        "the database schema is older than this klav-server: upgrade the server and start it \
+         once (it migrates on start), then run this again. This command never migrates"
+    )]
+    SchemaBehind,
+}
+
+/// This build's migrations for `backend`.
+fn migrator(backend: Backend) -> sqlx::migrate::Migrator {
+    match backend {
+        Backend::Sqlite => sqlx::migrate!("migrations/sqlite"),
+        Backend::Postgres => sqlx::migrate!("migrations/postgres"),
+    }
+}
+
+/// The SQLite file of `url`, if it names one (not `:memory:`).
+pub(crate) fn sqlite_path(url: &str) -> Option<std::path::PathBuf> {
+    let rest = url
+        .strip_prefix("sqlite://")
+        .or_else(|| url.strip_prefix("sqlite:"))?;
+    let path = rest.split_once('?').map_or(rest, |(p, _)| p);
+    (!path.is_empty() && !path.starts_with(':')).then(|| std::path::PathBuf::from(path))
 }
 
 fn backend_of(url: &str) -> Result<Backend, DbError> {
@@ -117,6 +198,17 @@ fn with_create_mode(url: &str) -> String {
         format!("{url}&mode=rwc")
     } else {
         format!("{url}?mode=rwc")
+    }
+}
+
+/// Opens an existing SQLite file read-write, never creating it.
+fn without_create_mode(url: &str) -> String {
+    if url.contains("mode=") {
+        url.replace("mode=rwc", "mode=rw")
+    } else if url.contains('?') {
+        format!("{url}&mode=rw")
+    } else {
+        format!("{url}?mode=rw")
     }
 }
 
@@ -155,6 +247,78 @@ mod tests {
             with_create_mode("sqlite://a.db?mode=ro"),
             "sqlite://a.db?mode=ro"
         );
+    }
+
+    #[test]
+    fn admin_urls_never_create_a_file() {
+        assert_eq!(
+            without_create_mode("sqlite://a.db"),
+            "sqlite://a.db?mode=rw"
+        );
+        assert_eq!(
+            without_create_mode("sqlite://a.db?mode=rwc"),
+            "sqlite://a.db?mode=rw"
+        );
+        assert_eq!(
+            sqlite_path("sqlite:///data/klav.db?mode=rwc"),
+            Some(std::path::PathBuf::from("/data/klav.db"))
+        );
+        assert_eq!(
+            sqlite_path("sqlite://data/klav.db"),
+            Some(std::path::PathBuf::from("data/klav.db"))
+        );
+        assert_eq!(sqlite_path("sqlite::memory:"), None);
+        assert_eq!(sqlite_path("postgres://h/db"), None);
+    }
+
+    #[tokio::test]
+    async fn admin_connect_refuses_a_missing_or_older_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("t.db").display());
+        // No file: not created.
+        assert!(matches!(
+            Db::connect_existing(&url).await,
+            Err(AdminDbError::Connect(_))
+        ));
+        assert!(!dir.path().join("t.db").exists());
+        // A file without the schema (or behind it): refused, not migrated.
+        let empty = format!("sqlite://{}?mode=rwc", dir.path().join("e.db").display());
+        sqlx::any::install_default_drivers();
+        let pool = sqlx::AnyPool::connect(&empty).await.unwrap();
+        sqlx::query("CREATE TABLE x (y INTEGER)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let empty = format!("sqlite://{}", dir.path().join("e.db").display());
+        assert!(matches!(
+            Db::connect_existing(&empty).await,
+            Err(AdminDbError::SchemaBehind)
+        ));
+        // Migrated by the server, then one migration "missing" (an older
+        // server): refused.
+        let db = Db::connect(&url).await.unwrap();
+        Db::connect_existing(&url)
+            .await
+            .unwrap()
+            .ping()
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 21")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            Db::connect_existing(&url).await,
+            Err(AdminDbError::SchemaBehind)
+        ));
+        // The admin connection did not migrate it back.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 21")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]

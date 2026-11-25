@@ -23,7 +23,7 @@ pub mod task;
 pub mod vault;
 
 pub use blob::Blob;
-pub use common::{ErrorBody, ErrorCode, HealthResponse};
+pub use common::{ErrorBody, ErrorCode, HealthResponse, RegistrationMode};
 
 /// Prefix of every versioned API route.
 pub const API_PREFIX: &str = "/v1";

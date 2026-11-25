@@ -45,6 +45,8 @@ SQL, rutas de archivos, trazas):
 | 403 | `not_issuer` | El emisor que nombra el proxy de credenciales no está en su grant, o ya no es un agente activo cuyo grant nombra a ese proxy (§8.8) |
 | 403 | `profile_not_allowed` | El sandbox pide un perfil que su emisor no tiene (§8.8) |
 | 403 | `sandbox_revoked` | El sandbox está revocado o vencido, o su emisor ya no lo es; también al registrar su fin por segunda vez (§8.8) |
+| 403 | `invite_invalid` | Servidor en modo `invite`: el código no sirve para ese correo ahora (no existe, está revocado, venció, se agotó o está ligado a otro correo). Una sola respuesta para todos los motivos, que nunca dice si el correo tiene cuenta (§2.2, ADR [0048](decisiones/0048-invite-beta-and-distribution.md) §1.3) |
+| 403 | `quota_exceeded` | La escritura pasaría a la cuenta por encima de una cuota (adjuntos, datos de la bóveda, elementos o bóvedas); el mensaje dice cuál, cuánto se usa y el máximo (§7, ADR 0048 §3.2). No es `413`: aquí `413` es un cuerpo demasiado grande |
 | 404 | `not_found` | No existe **o no eres miembro** (no se distingue a propósito) |
 | 404 | `sandbox_not_found` | Las rutas de §8.8 no conocen ese sandbox: este proxy nunca registró su `sandbox.issued`. Solo este código le dice al proxy que puede olvidar el fin pendiente de un sandbox; el `not_found` genérico de una ruta que el servidor no tiene no dice nada de él. Los servidores anteriores responden `not_found` |
 | 409 | `conflict` | Versión vieja, ID repetido, estado incompatible (p. ej. editar algo en la papelera) |
@@ -72,8 +74,19 @@ Todas las respuestas llevan `Strict-Transport-Security`,
 
 ### 1.3 Salud
 
-`GET /v1/health` → `200 {"status":"ok","version":"…","registration_open":true,"account_deletion":true}`.
+`GET /v1/health` → `200 {"status":"ok","version":"…","registration_open":true,"account_deletion":true,"registration_mode":"open"}`.
 Si la base no responde, devuelve `503`. No requiere sesión.
+
+`registration_mode` (ADR [0048](decisiones/0048-invite-beta-and-distribution.md)
+§1.2) dice cómo acepta cuentas nuevas el servidor: `open` (cualquiera),
+`invite` (con un código de invitación, §2.2) o `closed` (nadie). Sale de
+`registration_mode` / `KLAV_REGISTRATION_MODE` y del ajuste anterior
+`allow_registration` / `KLAV_ALLOW_REGISTRATION`: `true` es `open`, `false` es
+`closed`, y sin ninguno de los dos, `open`. Con los dos puestos tienen que
+concordar (`true` solo con `open`; `false` con `closed` y con `invite`), o el
+servidor no arranca. Los clientes nuevos lo leen primero; si falta (un
+servidor anterior), usan `registration_open`. Un valor que no conocen (un
+servidor más nuevo) lo tratan como `closed`.
 
 `registration_open` dice si el servidor acepta cuentas nuevas
 (`KLAV_ALLOW_REGISTRATION`, [`self-hosting.md`](self-hosting.md)). Los
@@ -81,7 +94,9 @@ clientes lo consultan antes de pedir la contraseña del registro y, si es
 `false`, lo dicen sin crear nada (ADR
 [0028](decisiones/0028-servidor-por-defecto-klav-dev.md) §3). Es opcional: un
 servidor anterior no lo manda y el cliente intenta el registro, que responde
-`403` si está cerrado (§2.2).
+`403` si está cerrado (§2.2). En modo `invite` es `false`: así un cliente
+anterior a `registration_mode` se detiene antes de escribir el kit de
+emergencia o derivar llaves, con el mensaje de «registro no abierto».
 
 `account_deletion` dice que el servidor sabe borrar una cuenta desde las apps
 y la CLI (§2.4). Todo servidor con esta versión lo manda en `true`, sin un
@@ -143,6 +158,36 @@ correos desconocidos, y una cuenta con otros se distinguiría de un correo
 que no existe.
 Si el registro está cerrado responde `403`. Si el correo ya existe, `409`
 (la verificación por correo que lo oculta llega con el plan alojado, fase 8).
+
+**Con invitación** (`registration_mode = "invite"`, ADR
+[0048](decisiones/0048-invite-beta-and-distribution.md) §1.3):
+
+- `POST /v1/auth/invite/check` `{ "email", "invite" }` → `204` si el código
+  sirve ahora para ese correo, o `403 invite_invalid` con el mismo mensaje
+  por cualquier motivo. No lee las cuentas: responde igual tenga o no cuenta
+  el correo. No reserva nada: dos personas con el último uso de un código de
+  grupo pueden pasarlo, y solo una termina. En `open` y `closed` responde
+  `404`. Los clientes lo llaman antes de pedir la contraseña y de entregar el
+  kit.
+- `register/start` y `register/finish` aceptan un campo opcional `invite`. En
+  modo `invite` es obligatorio: `start` hace la misma comprobación antes del
+  trabajo de OPAQUE, y `finish`, en una sola transacción y con la escritura
+  primero, gasta un uso del código (un `UPDATE` condicional), crea la cuenta
+  y anota qué cuenta lo usó. Si el correo ya existe, la transacción se
+  deshace (el uso no se gasta) y la respuesta es el `409` de siempre. Dos
+  `finish` por el último uso no pueden confirmarse los dos. En `open` el
+  campo se ignora. Los clientes solo lo mandan cuando `health` dijo
+  `invite`: un servidor anterior rechaza campos desconocidos.
+- El código es `KLAV-` y 26 caracteres de Crockford base32 (128 bits), en
+  grupos; se aceptan minúsculas, sin prefijo, sin guiones o con espacios, y
+  `I`/`L` valen `1` y `O` vale `0` (especificación §4.7). El servidor guarda
+  solo su resumen.
+- Límite propio por IP (§7): cada `invite/check` y cada fallo de invitación
+  en `start` o `finish` gastan una ficha; con el cubo vacío, también un
+  código bueno espera (`429`). Cada fallo deja una línea `warn` con la IP y
+  sin el código ni el correo.
+- Los códigos los crea quien opera el servidor con `klav-server invite
+  create|ls|revoke` (ADR 0048 §1.4), no hay API HTTP de administración.
 
 ### 2.3 Login
 
@@ -658,12 +703,41 @@ bóveda borrada no se crean, suben ni completan adjuntos (`404`).
 | Adjunto | 100 MiB | 400 |
 | Trozo de subida | 8 MiB | 413 |
 | Subidas sin completar por cuenta | 1 GiB | 409 |
+| Adjuntos de la cuenta (`max_account_attachment_bytes`, `KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES`) | 10 GiB | 403 `quota_exceeded` |
+| Datos de la bóveda de la cuenta (`max_account_vault_bytes`, `KLAV_MAX_ACCOUNT_VAULT_BYTES`) | 1 GiB | 403 `quota_exceeded` |
+| Elementos de la cuenta (`max_items_per_account`, `KLAV_MAX_ITEMS_PER_ACCOUNT`) | 100 000 | 403 `quota_exceeded` |
+| Bóvedas de la cuenta (`max_vaults_per_account`, `KLAV_MAX_VAULTS_PER_ACCOUNT`) | 1 000 | 403 `quota_exceeded` |
 | Peticiones por IP | 600/min, ráfaga 120 | 429 |
 | Autenticación por IP | 30/min, ráfaga 10 | 429 |
 | Autenticación por correo e IP | 10/min, ráfaga 5 | 429 |
 | Peticiones por cuenta | 1200/min, ráfaga 300 | 429 |
+| Invitaciones por IP (`invite/check` y fallos de invitación, §2.2) | 1/min, ráfaga 10 | 429 |
 | Reautenticaciones para borrar la cuenta (`account/delete/start`) | 5 por cuenta y hora | 429 |
 | Borrados de la cuenta pedidos | 3 por cuenta cada 7 días | 429 |
+
+**Cuotas por cuenta** (ADR [0048](decisiones/0048-invite-beta-and-distribution.md)
+§3). Cuentan todo lo de las bóvedas de las que la cuenta es dueña (paga la
+dueña), y `0` es sin límite:
+
+- **Adjuntos:** el tamaño declarado de cada adjunto no purgado: terminados,
+  pendientes y los de elementos en la papelera. Se comprueba al declararlo
+  (`POST …/attachments`); su tamaño queda fijo ahí. Una cuota distinta de `0`
+  tiene que ser al menos `max_attachment_bytes`.
+- **Datos de la bóveda:** `overview`, `details` y `wrapped_key` de cada
+  elemento no purgado **y de sus versiones guardadas**, más el `meta` de cada
+  bóveda y proyecto. Una versión nueva cuenta lo que de verdad añade: su
+  tamaño, menos las versiones viejas que descarta (la anterior pasa a la
+  historia y sigue contando).
+- **Elementos:** los no purgados (la papelera cuenta).
+- **Bóvedas:** las de la cuenta, también las borradas hasta que se purgan.
+
+Cada escritura que suma a una cuenta comprueba su cuota dentro de su
+transacción, bajo el candado de la cuenta dueña, así que dos escrituras a la
+vez no caben las dos en el último hueco: crear una bóveda toma ese candado, y
+también crear o cambiar un proyecto o el `meta` de una bóveda. Nunca se
+rechaza una escritura que no hace crecer la cuenta, ni borrar, ni mover a la
+papelera, ni leer: una cuenta por encima de una cuota que se bajó después lo
+conserva todo y puede limpiar.
 
 Todos se pueden cambiar en la configuración (ver
 [`self-hosting.md`](self-hosting.md) §2), salvo los dos del borrado de la

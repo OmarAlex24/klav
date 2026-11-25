@@ -1,0 +1,69 @@
+{
+  "cases": [
+    {
+      "bytes": "00000000000000000000000000000000",
+      "code": "KLAV-00000-00000-00000-00000-000000",
+      "digest": "d3c30b6cd95a5ba1734820bea25c7c0c3e80d8720113011a13e1f120dcecae94",
+      "name": "zeros",
+      "spellings": [
+        "klav-00000-00000-00000-00000-000000",
+        "00000000000000000000000000",
+        "klav 00000 00000 00000 00000 000000",
+        "KLAV-OOOOO-OOOOO-OOOOO-OOOOO-OOOOOO"
+      ]
+    },
+    {
+      "bytes": "ffffffffffffffffffffffffffffffff",
+      "code": "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZW",
+      "digest": "eb59874748add567a656b182e677c8b55b8a716bebbb432f25beeb2a88d11016",
+      "name": "ones",
+      "spellings": [
+        "klav-zzzzz-zzzzz-zzzzz-zzzzz-zzzzzw",
+        "ZZZZZZZZZZZZZZZZZZZZZZZZZW",
+        "klav ZZZZZ ZZZZZ ZZZZZ ZZZZZ ZZZZZW",
+        "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZW"
+      ]
+    },
+    {
+      "bytes": "8f5287a67f9947aa6beb47dee25f6937",
+      "code": "KLAV-HX98F-9KZK5-3TMTZ-B8ZFE-4QV96W",
+      "digest": "4f1084ae953abca87851b697965cab65e8e97cefdec4a8ca9e0be321a06ff5b7",
+      "name": "pseudo-random",
+      "spellings": [
+        "klav-hx98f-9kzk5-3tmtz-b8zfe-4qv96w",
+        "HX98F9KZK53TMTZB8ZFE4QV96W",
+        "klav HX98F 9KZK5 3TMTZ B8ZFE 4QV96W",
+        "KLAV-HX98F-9KZK5-3TMTZ-B8ZFE-4QV96W"
+      ]
+    },
+    {
+      "bytes": "08020080200802008020080200802008",
+      "code": "KLAV-10101-01010-10101-01010-101010",
+      "digest": "7b74c81a31c9ed4395977989c8bf603d8c829428898fa6fc7f1a09e75b759024",
+      "name": "ones-and-zeros",
+      "spellings": [
+        "klav-10101-01010-10101-01010-101010",
+        "10101010101010101010101010",
+        "klav 10101 01010 10101 01010 101010",
+        "KLAV-lOlOl-OlOlO-lOlOl-OlOlO-lOlOlO"
+      ]
+    },
+    {
+      "invalid": [
+        "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZX",
+        "KLAV-00000-00000-00000-00000-000001",
+        "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZW",
+        "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZWW",
+        "KLAV-UZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZW",
+        "KLAV-ZZZZZ_ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZW",
+        "XLAVZZZZZZZZZZZZZZZZZZZZZZZZZW",
+        ""
+      ],
+      "name": "rejected"
+    }
+  ],
+  "description": "Invite codes: canonical spelling, other spellings, digest and codes to reject (ADR 0048)",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §4.7"
+}

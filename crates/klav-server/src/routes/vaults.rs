@@ -131,6 +131,21 @@ async fn create_vault(
     .await?;
     let now = now_ms();
     let mut tx = state.db().pool.begin().await?;
+    // The account's lock first (ADR 0048 §3.2), as every write that can
+    // grow the account takes it: two vaults created at once can't both fit
+    // in the last free place.
+    crate::deletion::lock_account(&mut tx, auth.account_id).await?;
+    crate::quota::check(
+        &mut tx,
+        &state.config().limits,
+        &auth.account_id.to_string(),
+        crate::quota::Delta {
+            vaults: 1,
+            vault_bytes: crate::quota::len(req.meta.as_bytes()),
+            ..Default::default()
+        },
+    )
+    .await?;
     let inserted = sqlx::query(
         "INSERT INTO vaults (id, owner_account_id, revision, version, meta, meta_revision, \
          created_at, updated_at) VALUES ($1, $2, 1, 1, $3, 1, $4, $5) ON CONFLICT DO NOTHING",
@@ -283,7 +298,7 @@ async fn update_vault(
     require_owner(&state, vault_id, auth.account_id).await?;
     check_meta(&state, &req.meta)?;
     let new_version = to_i64(req.version)?;
-    let mut w = VaultWrite::begin(&state, vault_id).await?;
+    let (mut w, owner) = VaultWrite::begin_owner(&state, vault_id).await?;
     let current: i64 = sqlx::query_scalar("SELECT version FROM vaults WHERE id = $1")
         .bind(vault_id.to_string())
         .fetch_one(&mut *w.tx)
@@ -291,6 +306,22 @@ async fn update_vault(
     if new_version != current + 1 {
         return Err(ApiError::stale(current));
     }
+    let old = crate::quota::stored_len(
+        &mut w.tx,
+        "SELECT CAST(LENGTH(meta) AS BIGINT) FROM vaults WHERE id = $1",
+        &vault_id.to_string(),
+    )
+    .await?;
+    crate::quota::check(
+        &mut w.tx,
+        &state.config().limits,
+        &owner,
+        crate::quota::Delta {
+            vault_bytes: crate::quota::len(req.meta.as_bytes()) - old,
+            ..Default::default()
+        },
+    )
+    .await?;
     sqlx::query(
         "UPDATE vaults SET version = $1, meta = $2, meta_revision = $3, updated_at = $4 \
          WHERE id = $5",
@@ -466,7 +497,17 @@ async fn create_project(
     require_member(&state, vault_id, auth.account_id).await?;
     check_project_key(&req.wrapped_key)?;
     check_meta(&state, &req.meta)?;
-    let mut w = VaultWrite::begin(&state, vault_id).await?;
+    let (mut w, owner) = VaultWrite::begin_owner(&state, vault_id).await?;
+    crate::quota::check(
+        &mut w.tx,
+        &state.config().limits,
+        &owner,
+        crate::quota::Delta {
+            vault_bytes: crate::quota::len(req.meta.as_bytes()),
+            ..Default::default()
+        },
+    )
+    .await?;
     let inserted = sqlx::query(
         "INSERT INTO projects (id, vault_id, version, wrapped_key, meta, revision, created_at, \
          updated_at) VALUES ($1, $2, 1, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
@@ -519,11 +560,12 @@ async fn update_project(
     check_project_key(&req.wrapped_key)?;
     check_meta(&state, &req.meta)?;
     let new_version = to_i64(req.version)?;
-    let mut w = VaultWrite::begin(&state, vault_id).await?;
+    let (mut w, owner) = VaultWrite::begin_owner(&state, vault_id).await?;
     let current = live_project_version(&mut w, vault_id, project_id).await?;
     if new_version != current + 1 {
         return Err(ApiError::stale(current));
     }
+    check_project_meta_growth(&state, &mut w, &owner, project_id, &req.meta).await?;
     sqlx::query(
         "UPDATE projects SET version = $1, wrapped_key = $2, meta = $3, revision = $4, \
          updated_at = $5 WHERE id = $6",
@@ -539,6 +581,33 @@ async fn update_project(
     let revision = w.commit().await?;
     state.notify(vault_id, revision);
     fetch_project(&state, vault_id, project_id).await.map(Json)
+}
+
+/// Refuses a project `meta` change that grows the owner's vault data over
+/// its quota (ADR 0048 §3.2). Inside the write, under the owner's lock.
+pub(super) async fn check_project_meta_growth(
+    state: &AppState,
+    w: &mut VaultWrite,
+    owner: &str,
+    project_id: ProjectId,
+    meta: &Blob,
+) -> ApiResult<()> {
+    let old = crate::quota::stored_len(
+        &mut w.tx,
+        "SELECT CAST(LENGTH(meta) AS BIGINT) FROM projects WHERE id = $1",
+        &project_id.to_string(),
+    )
+    .await?;
+    crate::quota::check(
+        &mut w.tx,
+        &state.config().limits,
+        owner,
+        crate::quota::Delta {
+            vault_bytes: crate::quota::len(meta.as_bytes()) - old,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Deletes an empty project (every item purged); leaves a tombstone.

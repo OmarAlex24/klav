@@ -12,6 +12,7 @@ pub mod context;
 pub mod encoding;
 mod error;
 pub mod identity;
+pub mod invite;
 pub mod item;
 pub mod kdf;
 pub mod keys;

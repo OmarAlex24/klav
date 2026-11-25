@@ -60,6 +60,15 @@ pub enum ErrorCode {
     /// the generic `not_found` of a route the server does not have says
     /// nothing about it. Older servers answer `not_found`.
     SandboxNotFound,
+    /// The server is in `invite` mode and this invite code cannot be used
+    /// by this email now: unknown, revoked, expired, used up or bound to
+    /// another email. One answer for every reason, and it never says
+    /// whether the email has an account (403, ADR 0048 §1.3).
+    InviteInvalid,
+    /// The write would take the account over one of its quotas
+    /// (attachments, vault data, items or vaults). The message names the
+    /// limit, how much is used and the maximum (403, ADR 0048 §3.2).
+    QuotaExceeded,
 }
 
 /// Body of every non-2xx JSON response.
@@ -104,4 +113,84 @@ pub struct HealthResponse {
     /// servers, which cannot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_deletion: Option<bool>,
+    /// How the server takes new accounts (ADR 0048 §1.2). Clients read it
+    /// first and fall back to `registration_open` when it is absent (an
+    /// older server). In `invite` mode `registration_open` is `false`, so
+    /// older clients stop before writing an emergency kit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_mode: Option<RegistrationMode>,
+}
+
+/// How a server takes new accounts (`registration_mode`, ADR 0048 §1.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrationMode {
+    /// Anyone can sign up.
+    Open,
+    /// Signing up needs a valid invite code.
+    Invite,
+    /// Nobody can sign up.
+    Closed,
+    /// A mode this client does not know (a newer server). Clients treat it
+    /// as closed; a server never sends it.
+    #[serde(other)]
+    Unknown,
+}
+
+impl RegistrationMode {
+    /// The name used in the configuration and on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Invite => "invite",
+            Self::Closed => "closed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_reads_with_and_without_a_registration_mode() {
+        let old: HealthResponse =
+            serde_json::from_str(r#"{"status":"ok","version":"0.9.2","registration_open":false}"#)
+                .unwrap();
+        assert_eq!(old.registration_mode, None);
+        let new: HealthResponse = serde_json::from_str(
+            r#"{"status":"ok","version":"0.10.0","registration_open":false,"registration_mode":"invite"}"#,
+        )
+        .unwrap();
+        assert_eq!(new.registration_mode, Some(RegistrationMode::Invite));
+        // A mode from a newer server does not break the whole answer.
+        let newer: HealthResponse = serde_json::from_str(
+            r#"{"status":"ok","version":"9.0.0","registration_mode":"waitlist"}"#,
+        )
+        .unwrap();
+        assert_eq!(newer.registration_mode, Some(RegistrationMode::Unknown));
+        for mode in [
+            RegistrationMode::Open,
+            RegistrationMode::Invite,
+            RegistrationMode::Closed,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&mode).unwrap(),
+                format!("\"{}\"", mode.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn new_error_codes_are_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::InviteInvalid).unwrap(),
+            "\"invite_invalid\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::QuotaExceeded).unwrap(),
+            "\"quota_exceeded\""
+        );
+    }
 }

@@ -140,6 +140,16 @@ async fn rotate(
     if new_version != current + 1 {
         return Err(ApiError::stale(current));
     }
+    // The caller is the owner (`require_owner`), whose lock `begin_for`
+    // took first.
+    super::vaults::check_project_meta_growth(
+        &state,
+        &mut w,
+        &auth.account_id.to_string(),
+        project_id,
+        &req.meta,
+    )
+    .await?;
     let stored = load_keys(&mut w.tx, project_id).await?;
     if !stored.keys().eq(submitted.keys()) {
         return Err(ApiError::conflict(

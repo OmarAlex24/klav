@@ -480,6 +480,14 @@ Omar lo aceptó el 2026-11-23 con las cinco opciones recomendadas (Q1–Q5): un 
 - [x] Capa 5 (`klav-ffi`, Mac, iOS y extensión): tarjeta en Solicitudes con campo oculto, selector de proyecto, aviso de `setup_url`, URLs de `login` desmarcadas por defecto y toggle opcional de `proxy grant` con Touch ID / Face ID
 - [x] Capa 6 (prueba de punta a punta): el agente pide una API key con `proxy_proposal`, la persona la completa sin que el valor toque servidor/logs/stdout/LLM, el agente verifica la decisión firmada y la usa, y se rechazan decisiones falsificadas y `setup_url` maliciosos (`crates/klav-cli/tests/e2e_secret_requests.rs` y `crates/klav-server/src/routes/secret_requests.rs`)
 
+### Beta con invitación en `api.klav.dev`, cuotas por cuenta e instalación sin Docker (aceptado, ADR [0048](decisiones/0048-invite-beta-and-distribution.md))
+Omar lo aceptó el 2026-11-25 con la opción (a) en Q1–Q7: `klav-server` gana `registration_mode` (`open`, `invite`, `closed`) y códigos de invitación de un solo uso o de grupo, las cuentas tienen cuatro cuotas, la lista de espera se vuelve la cola de invitaciones y el servidor se instala sin Docker. No cambia la fase en curso.
+- [x] ADR 0048 aceptado el 2026-11-25 con las respuestas de Omar a Q1–Q7; modelo de amenazas §5.25 (T242–T253 y riesgos 98–100)
+- [x] Capa 1 (servidor): `klav-core::crypto::invite` (especificación §4.7 y `docs/vectores/invite.json`), tipos de `klav-proto`, `registration_mode`, migración 0021, `POST /v1/auth/invite/check` y la invitación en `register/*`, `klav-server invite create|ls|revoke`, las cuatro cuotas con el candado de la cuenta (también en `create_vault`), el límite de invitaciones por IP y la identidad de compilación en `klav-server --version`; pruebas en SQLite y Postgres
+- [ ] Capa 2 (clientes): `klav-client`, `klav signup` (`--invite`, `KLAV_INVITE`), `klav-ffi` y la app de Mac
+- [ ] Capa 3 (sitio): la lista de espera como cola de invitaciones y el texto de la beta en inglés y español
+- [ ] Capa 4 (distribución): `klav-server` en la compilación de Linux y el kit, la unidad de systemd, `docker-compose.yml` con la imagen fijada, README, `self-hosting.md`/`apps/docs` y las fórmulas de Homebrew
+
 ### Agentes personales en la nube (idea de Omar, sin ADR)
 Omar lo pidió el 2026-11-06: que los agentes personales como Muse (Meta), Grok Bot (xAI) y Dots (OpenAI) usen las contraseñas de la persona sin ver los valores. Los tres corren en una computadora en la nube de su proveedor (Muse en la «Muse Secure VM» de Meta, cada Dot en la suya y los Grok Bots en una compartida), y hoy Klav solo habla con los agentes por la CLI y `klav mcp` locales. Falta diseñar la pieza que los conecte. La página de `klav.dev` los lista en «También en camino», sin fecha. No cambia la fase en curso.
 - [ ] ADR que conecte a los agentes personales en la nube (Muse, Grok Bot, Dots) con Klav sin que vean los valores

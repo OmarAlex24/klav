@@ -12,6 +12,7 @@
 //!    (`POST /v1/account/delete/start` + `…/finish`) and schedules the
 //!    deletion 7 days later (ADR 0037).
 
+use klav_core::crypto::invite::InviteCode;
 use klav_core::ids::{AccountId, DeviceId};
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +42,10 @@ pub struct RegisterStartRequest {
     pub email: String,
     /// OPAQUE `RegistrationRequest`.
     pub registration_request: Blob,
+    /// Invite code, only for a server in `invite` mode (ADR 0048 §1.3).
+    /// Never serialized when absent: older servers refuse unknown fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<InviteCode>,
 }
 
 /// Response to [`RegisterStartRequest`].
@@ -66,6 +71,22 @@ pub struct RegisterFinishRequest {
     pub public_identity: Blob,
     /// Identity private keys sealed with the KEK (kind `0x01`).
     pub sealed_identity: Blob,
+    /// Invite code, only for a server in `invite` mode (ADR 0048 §1.3).
+    /// Never serialized when absent: older servers refuse unknown fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<InviteCode>,
+}
+
+/// `POST /v1/auth/invite/check` (ADR 0048 §1.3): whether `invite` can be
+/// used by `email` now. `204` or `403 invite_invalid`; `404` on a server
+/// that is not in `invite` mode. Not a reservation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InviteCheckRequest {
+    /// Account e-mail the person will sign up with.
+    pub email: String,
+    /// The invite code as typed or pasted.
+    pub invite: InviteCode,
 }
 
 /// Response to [`RegisterFinishRequest`].
@@ -362,6 +383,54 @@ pub struct PushRegistration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn register_requests_send_no_invite_key_without_one() {
+        // Older servers refuse unknown fields (`deny_unknown_fields`): a
+        // client that has no invite must send exactly what it sent before.
+        let start = RegisterStartRequest {
+            email: "ana@example.com".into(),
+            registration_request: Blob::new(vec![1]),
+            invite: None,
+        };
+        let json = serde_json::to_string(&start).unwrap();
+        assert!(!json.contains("invite"), "{json}");
+        let back: RegisterStartRequest = serde_json::from_str(&json).unwrap();
+        assert!(back.invite.is_none());
+
+        let finish = RegisterFinishRequest {
+            email: "ana@example.com".into(),
+            account_id: AccountId::generate(),
+            registration_upload: Blob::new(vec![1]),
+            kdf_params: Blob::new(vec![2]),
+            public_identity: Blob::new(vec![3]),
+            sealed_identity: Blob::new(vec![4]),
+            invite: None,
+        };
+        assert!(!serde_json::to_string(&finish).unwrap().contains("invite"));
+    }
+
+    #[test]
+    fn debug_never_prints_an_invite() {
+        let code = "KLAV-HX98F-9KZK5-3TMTZ-B8ZFE-4QV96W";
+        let start = RegisterStartRequest {
+            email: "ana@example.com".into(),
+            registration_request: Blob::new(vec![1]),
+            invite: Some(InviteCode::new(code)),
+        };
+        assert!(!format!("{start:?}").contains("HX98F"));
+        let json = serde_json::to_string(&start).unwrap();
+        assert!(json.contains(code), "the wire carries it: {json}");
+        let check: InviteCheckRequest =
+            serde_json::from_str(&format!(r#"{{"email":"a@b.c","invite":"{code}"}}"#)).unwrap();
+        assert!(!format!("{check:?}").contains("HX98F"));
+        assert!(
+            serde_json::from_str::<InviteCheckRequest>(
+                r#"{"email":"a@b.c","invite":"x","extra":1}"#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn debug_never_prints_tokens() {

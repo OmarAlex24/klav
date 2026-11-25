@@ -100,6 +100,7 @@ impl TestServer {
                 &RegisterStartRequest {
                     email: email.into(),
                     registration_request: Blob::new(request),
+                    invite: None,
                 },
             )
             .await;
@@ -116,6 +117,7 @@ impl TestServer {
                     kdf_params: Blob::new(declared.as_ref().unwrap_or(&params).encode()),
                     public_identity: Blob::new(identity.public().encode().to_vec()),
                     sealed_identity: Blob::new(sealed),
+                    invite: None,
                 },
             )
             .await;
@@ -129,6 +131,74 @@ impl TestServer {
             secret_key_text: secret_key.to_text().expose_secret().to_owned(),
             account_id,
         })
+    }
+
+    /// Runs `register/start` with `invite` and builds the matching
+    /// `register/finish` body (ADR 0048), without sending it. `Err` is the
+    /// status of a refused start.
+    pub async fn prepare_signup(
+        &self,
+        email: &str,
+        password: &str,
+        invite: Option<&str>,
+    ) -> Result<RegisterFinishRequest, StatusCode> {
+        use klav_core::crypto::invite::InviteCode;
+        let secret_key = SecretKey::generate();
+        let params = fast_params();
+        let account_id = AccountId::generate();
+        let keys = derive_account_keys(&MasterPassword::new(password), &secret_key, &params)
+            .expect("derive");
+        let identity = IdentityKeyPair::generate();
+        let sealed = seal_identity(keys.kek(), account_id, &identity);
+        let (state, request) =
+            opaque::client_start_registration(keys.opaque_input()).expect("start");
+        let res = self
+            .post_json(
+                "/v1/auth/register/start",
+                &RegisterStartRequest {
+                    email: email.into(),
+                    registration_request: Blob::new(request),
+                    invite: invite.map(InviteCode::new),
+                },
+            )
+            .await;
+        if res.status() != StatusCode::OK {
+            return Err(res.status());
+        }
+        let start: RegisterStartResponse = res.json().await.expect("start body");
+        let upload = state
+            .finish(keys.opaque_input(), start.registration_response.as_bytes())
+            .expect("finish");
+        Ok(RegisterFinishRequest {
+            email: email.into(),
+            account_id,
+            registration_upload: Blob::new(upload),
+            kdf_params: Blob::new(params.encode()),
+            public_identity: Blob::new(identity.public().encode().to_vec()),
+            sealed_identity: Blob::new(sealed),
+            invite: invite.map(InviteCode::new),
+        })
+    }
+
+    /// Sends a prepared `register/finish`; the response.
+    pub async fn finish_signup(&self, body: &RegisterFinishRequest) -> Response {
+        self.post_json("/v1/auth/register/finish", body).await
+    }
+
+    /// Signs up with `invite`: the status of the first refused step, or
+    /// the new account's ID.
+    pub async fn signup_with_invite(
+        &self,
+        email: &str,
+        invite: Option<&str>,
+    ) -> Result<AccountId, StatusCode> {
+        let body = self.prepare_signup(email, "pw", invite).await?;
+        let res = self.finish_signup(&body).await;
+        if res.status() == StatusCode::CREATED {
+            Ok(body.account_id)
+        } else {
+            Err(res.status())
+        }
     }
 
     /// Runs the OPAQUE login. Returns the raw `login/finish` response.

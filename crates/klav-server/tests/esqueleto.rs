@@ -22,7 +22,7 @@ async fn health_reports_ok_and_version() {
 
     // Clients say registration is closed before asking for a password
     // (ADR 0028 §3).
-    let closed = TestServer::start_with(|c| c.allow_registration = false).await;
+    let closed = TestServer::start_with(|c| c.allow_registration = Some(false)).await;
     let body: HealthResponse = closed
         .http
         .get(closed.url("/v1/health"))

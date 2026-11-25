@@ -2282,6 +2282,14 @@ fn files() -> Vec<VectorFile> {
             check: secret_key_check,
         },
         VectorFile {
+            name: "invite",
+            description: "Invite codes: canonical spelling, other spellings, digest and codes to reject (ADR 0048)",
+            spec: "§4.7",
+            inputs: invite_inputs,
+            compute: invite_compute,
+            check: invite_check,
+        },
+        VectorFile {
             name: "kdf",
             description: "Contraseña maestra + Secret Key → KEK",
             spec: "§4.3",
@@ -3133,6 +3141,102 @@ fn agent_check(case: &Value) {
         &sig("audit_head_signature"),
     )
     .expect("audit head");
+}
+
+// ------------------------------------------------------------------ invite --
+
+fn invite_inputs() -> Vec<Value> {
+    vec![
+        json!({"name": "zeros", "bytes": hx(&[0u8; 16])}),
+        json!({"name": "ones", "bytes": hx(&[0xFFu8; 16])}),
+        json!({
+            "name": "pseudo-random",
+            "bytes": hx(&det::<16>("invite")),
+        }),
+        json!({
+            "name": "ones-and-zeros",
+            "bytes": hx(&*super::invite::InviteCode::new("1010101010101010101010101O")
+                .canonical()
+                .expect("a valid code")),
+        }),
+        json!({
+            "name": "rejected",
+            "invalid": [
+                "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZX",
+                "KLAV-00000-00000-00000-00000-000001",
+                "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZW",
+                "KLAV-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZWW",
+                "KLAV-UZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZW",
+                "KLAV-ZZZZZ_ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZW",
+                "XLAVZZZZZZZZZZZZZZZZZZZZZZZZZW",
+                "",
+            ],
+        }),
+    ]
+}
+
+/// Other spellings of a code that must canonicalize to the same bytes:
+/// lowercase, without the prefix or the dashes, with spaces, and with the
+/// `I`/`L`/`O` aliases where the code has `1` or `0`.
+fn invite_spellings(code: &str) -> Vec<String> {
+    let bare = code[super::invite::PREFIX.len()..].replace('-', "");
+    let aliased: String = code[super::invite::PREFIX.len()..]
+        .chars()
+        .map(|c| match c {
+            '1' => 'l',
+            '0' => 'O',
+            c => c,
+        })
+        .collect();
+    vec![
+        code.to_lowercase(),
+        bare.clone(),
+        format!(
+            "klav {}",
+            code[super::invite::PREFIX.len()..].replace('-', " ")
+        ),
+        format!("KLAV-{aliased}"),
+    ]
+}
+
+fn invite_compute(case: &Value) -> Value {
+    if case.get("invalid").is_some() {
+        return json!({});
+    }
+    let bytes = array::<16>(case, "bytes");
+    let code = super::invite::InviteCode::from_bytes(&bytes);
+    json!({
+        "code": code.expose(),
+        "spellings": invite_spellings(code.expose()),
+        "digest": hx(&super::invite::digest_bytes(&bytes)),
+    })
+}
+
+fn invite_check(case: &Value) {
+    if let Some(invalid) = case.get("invalid") {
+        for text in invalid.as_array().expect("invalid") {
+            let text = text.as_str().expect("string");
+            assert!(
+                super::invite::InviteCode::new(text).canonical().is_err(),
+                "accepted {text:?}"
+            );
+        }
+        return;
+    }
+    let digest = bytes(case, "digest");
+    let mut spellings = vec![text(case, "code").to_owned()];
+    for s in case["spellings"].as_array().expect("spellings") {
+        spellings.push(s.as_str().expect("string").to_owned());
+    }
+    for spelling in spellings {
+        let code = super::invite::InviteCode::new(spelling.clone());
+        assert_eq!(
+            code.canonical().ok().map(|b| *b),
+            Some(array::<16>(case, "bytes")),
+            "{spelling}"
+        );
+        assert_eq!(code.digest().ok().map(|d| d.to_vec()), Some(digest.clone()));
+    }
 }
 
 fn render(file: &VectorFile) -> Value {

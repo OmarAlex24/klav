@@ -145,6 +145,34 @@ impl RateLimiter {
         }
     }
 
+    /// Whether the bucket `key` has a token now, without taking it (a
+    /// bucket never used is full). For limits that charge only failures:
+    /// peek first, so an empty bucket refuses before the work, and take the
+    /// token with [`RateLimiter::check`] when the attempt fails.
+    pub(crate) fn peek(&self, key: &str, quota: Quota) -> Result<(), u64> {
+        self.peek_at(key, quota, Instant::now())
+    }
+
+    fn peek_at(&self, key: &str, quota: Quota, now: Instant) -> Result<(), u64> {
+        let rate_per_sec = quota.rate_per_sec();
+        let buckets = self
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(bucket) = buckets.map.get(key) else {
+            return Ok(());
+        };
+        let elapsed = now.saturating_duration_since(bucket.updated).as_secs_f64();
+        let tokens = (bucket.tokens + elapsed * rate_per_sec).min(quota.size());
+        if tokens >= 1.0 {
+            Ok(())
+        } else {
+            let wait = (1.0 - tokens) / rate_per_sec;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Err(wait.ceil().max(1.0) as u64)
+        }
+    }
+
     /// Like [`RateLimiter::check`] but returns an [`ApiError`].
     pub(crate) fn enforce(&self, key: &str, quota: Quota) -> Result<(), ApiError> {
         self.check(key, quota)
@@ -254,6 +282,31 @@ pub(crate) async fn limit_by_ip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peeking_takes_no_token() {
+        let limiter = RateLimiter::default();
+        let quota = Quota {
+            per_minute: 1,
+            burst: 2,
+        };
+        let t0 = Instant::now();
+        // An unknown bucket is full, and peeking does not create it.
+        assert!(limiter.peek_at("k", quota, t0).is_ok());
+        assert_eq!(limiter.len(), 0);
+        assert!(limiter.check_at("k", quota, t0).is_ok());
+        for _ in 0..5 {
+            assert!(limiter.peek_at("k", quota, t0).is_ok());
+        }
+        assert!(limiter.check_at("k", quota, t0).is_ok());
+        // Empty now: peek refuses with the wait, and refills with time.
+        assert_eq!(limiter.peek_at("k", quota, t0), Err(60));
+        assert!(
+            limiter
+                .peek_at("k", quota, t0 + Duration::from_secs(60))
+                .is_ok()
+        );
+    }
 
     const QUOTA: Quota = Quota {
         per_minute: 60,

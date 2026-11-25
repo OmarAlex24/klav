@@ -105,7 +105,7 @@ async fn duplicate_accounts_and_closed_registration_are_rejected() {
         Some(StatusCode::CONFLICT)
     );
 
-    let closed = TestServer::start_with(|c| c.allow_registration = false).await;
+    let closed = TestServer::start_with(|c| c.allow_registration = Some(false)).await;
     let res = closed
         .post_json(
             "/v1/auth/register/start",
