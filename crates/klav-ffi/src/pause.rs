@@ -346,6 +346,7 @@ mod tests {
                     prefix: "Bearer ".into(),
                     upstream: "https://api.northflank.com".into(),
                     rate_per_minute: None,
+                    mcp: None,
                 }],
                 policy: Policy::default(),
                 v: 3,

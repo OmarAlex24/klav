@@ -377,6 +377,7 @@ mod tests {
                     method: Some(method.to_owned()),
                     path: Some(path.to_owned()),
                     now: 1,
+                    mcp_tool: None,
                 },
             )
             .effect
@@ -543,6 +544,7 @@ mod tests {
                         method: Some(method.to_owned()),
                         path: Some(path.to_owned()),
                         now: 1,
+                        mcp_tool: None,
                     },
                 )
                 .effect

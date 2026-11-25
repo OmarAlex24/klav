@@ -444,6 +444,7 @@ async fn proxy_agent_is_refused() {
             prefix: "Bearer ".into(),
             upstream: "https://api.example.com".into(),
             rate_per_minute: None,
+            mcp: None,
         }],
     );
     assert_eq!(

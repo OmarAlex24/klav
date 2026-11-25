@@ -148,6 +148,11 @@ fn scope_inside(inner: &Scope, outer: &Scope) -> bool {
         && subset(&inner.items, &outer.items)
         && subset(&inner.methods, &outer.methods)
         && subset(&inner.path_prefixes, &outer.path_prefixes)
+        // A rule without tools only denies a tool call, one with tools
+        // allows the tools it names (ADR 0049 §5.3): a rule with tools is
+        // never inside one without, nor the other way round.
+        && inner.mcp_tools.is_empty() == outer.mcp_tools.is_empty()
+        && subset(&inner.mcp_tools, &outer.mcp_tools)
 }
 
 #[cfg(test)]
@@ -157,7 +162,7 @@ mod tests {
     use super::*;
     use crate::ids::{ItemId, ProjectId, VaultId};
     use crate::model::reference::Selector;
-    use crate::policy::{Request, Target, TimeWindow, evaluate};
+    use crate::policy::{Request, Target, TimeWindow, ToolPattern, evaluate};
 
     const NOW: u64 = 1_800_000_000;
 
@@ -402,16 +407,25 @@ mod tests {
                     .collect(),
             ),
             picks(vec![item(0), item(1)]),
+            picks(
+                ["get_*", "get_logs", "*"]
+                    .iter()
+                    .map(|t| t.parse::<ToolPattern>().unwrap())
+                    .collect(),
+            ),
         )
-            .prop_map(|(vaults, projects, tags, domains, hours, items)| Scope {
-                vaults,
-                projects,
-                tags,
-                domains,
-                hours,
-                items,
-                ..Scope::default()
-            })
+            .prop_map(
+                |(vaults, projects, tags, domains, hours, items, mcp_tools)| Scope {
+                    vaults,
+                    projects,
+                    tags,
+                    domains,
+                    hours,
+                    items,
+                    mcp_tools,
+                    ..Scope::default()
+                },
+            )
     }
 
     fn a_rule() -> impl Strategy<Value = Rule> {
@@ -441,25 +455,29 @@ mod tests {
             ])),
             prop::option::of(0u8..3),
             0u64..(7 * 24 * 3600),
+            prop::option::of(prop::sample::select(vec!["get_logs", "get_x", "delete_x"])),
         )
-            .prop_map(|(permission, v, p, tags, domain, it, offset)| Request {
-                permission,
-                vault: Target {
-                    id: vault(v),
-                    name: format!("v{v}"),
+            .prop_map(
+                |(permission, v, p, tags, domain, it, offset, tool)| Request {
+                    permission,
+                    vault: Target {
+                        id: vault(v),
+                        name: format!("v{v}"),
+                    },
+                    project: Target {
+                        id: project(p),
+                        name: format!("p{p}"),
+                    },
+                    tags,
+                    domain: domain.map(str::to_owned),
+                    item: it.map(item),
+                    method: Some("GET".into()),
+                    path: Some("/v1".into()),
+                    mcp_tool: tool.map(str::to_owned),
+                    // Before, at and after each expiry, across a week of hours.
+                    now: T0 - 3600 + offset,
                 },
-                project: Target {
-                    id: project(p),
-                    name: format!("p{p}"),
-                },
-                tags,
-                domain: domain.map(str::to_owned),
-                item: it.map(item),
-                method: Some("GET".into()),
-                path: Some("/v1".into()),
-                // Before, at and after each expiry, across a week of hours.
-                now: T0 - 3600 + offset,
-            })
+            )
     }
 
     /// Changes that must always read as narrowing: they are what the

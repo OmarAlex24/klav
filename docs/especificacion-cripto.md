@@ -88,6 +88,8 @@ Etiquetas usadas en v1 (todas empiezan con `klav/v1/`):
 | `klav/v1/sig/sandbox-revoke` | la persona revoca un sandbox de un proxy o todos, ADR [0036](decisiones/0036-sandboxes-de-agentes.md) E3.3 (§13.11) |
 | `klav/v1/agent/secret-request` | `info` de HPKE de la propuesta cifrada de una solicitud de secreto (tipo `0x25`), ADR [0046](decisiones/0046-agent-secret-requests.md) (§13.14) |
 | `klav/v1/sig/secret-request-decision` | decisión de la persona sobre una solicitud de secreto de un agente, ADR [0046](decisiones/0046-agent-secret-requests.md) (§13.14) |
+| `klav/v1/proxy/local-client` | resumen del token de un cliente local que lleva el grant del proxy, ADR [0049](decisiones/0049-mcp-gateway.md) (§13.16) |
+| `klav/v1/proxy/mcp-args` | resumen de los argumentos de una llamada `tools/call` de la pasarela MCP, ADR [0049](decisiones/0049-mcp-gateway.md) (§13.16) |
 
 Las etiquetas de HKDF (`kdf/…`) y el contexto de OPAQUE se usan como bytes ASCII tal cual, sin `lp`, salvo `kdf/local-key` y `kdf/keystore-wrap`, que llevan contexto y van dentro de `tuple` como `server/decoy-kdf-salt`. El resto siempre va dentro de `tuple`.
 
@@ -542,6 +544,7 @@ Están en [`docs/vectores/`](vectores/), uno por formato, en JSON (campos binari
 | `passkey.json` | llave privada de una passkey sellada (`0x15`), su llave pública (SEC1 y SPKI), una firma ES256 determinista, y un registro y una aserción de Klav (COSE, `authData`, `attestationObject` y `clientDataJSON`) (§14) |
 | `webauthn-l3.json` | vector oficial de WebAuthn nivel 3, «ES256 Credential with No Attestation», transcrito del texto: con la misma llave, AAGUID, `credential_id` y banderas, `klav-core` produce el mismo `attestationObject`, el mismo `authenticatorData`, el mismo `clientDataJSON` de la aserción y la misma firma (RFC 6979) (§14) |
 | `invite.json` | códigos de invitación: escritura canónica, otras escrituras que dan los mismos bytes (minúsculas, sin prefijo ni guiones, con espacios, con `I`/`L`/`O`), resumen, y códigos que hay que rechazar (§4.7) |
+| `mcp-gateway.json` | la pasarela MCP: tokens de cliente local (`klc1_`) con su resumen y tokens que hay que rechazar, el resumen de los argumentos (también reordenados y ausentes), la coincidencia de los patrones de herramienta con patrones inválidos, y la evaluación de una llamada con herramienta (§13.4, §13.16) |
 | `totp.json` | vectores oficiales de RFC 6238 (TOTP, SHA-1/256/512) y RFC 4226 (HOTP), transcritos de los RFC |
 
 Para regenerarlos tras un cambio **intencional** de formato: `KLAV_REGEN_VECTORS=1 cargo test -p klav-core vectors`.
@@ -739,6 +742,21 @@ payload v3 del emisor = { v: 3, account_id, agent_id, version, issued_at, policy
 - **`v: 3` solo con `issuers` o `sandbox`**, y siempre con ellos: un grant `v: 2` no se reetiqueta `3`, y un grant `v: 1` o `v: 2` con alguno de los dos se rechaza. Al volver a emitir un grant, el cliente escribe el `v` que necesita lo que lleva, sin bajar nunca de 2 a 1: el grant del proxy vuelve a `v: 2` al quitar su último emisor, y el del emisor sigue en `v: 3` mientras lleve `sandbox`, también con `proxy: null`.
 - Los clientes, `klavd`, el verificador de la bitácora y los `klav-proxy` anteriores rechazan `v: 3` («the grant is not readable»): el primer `klav proxy issuer add` de la cuenta pide `--every-device-is-updated`.
 
+**Versión 4: la pasarela MCP (ADR [0049](decisiones/0049-mcp-gateway.md) §2–§3).** Un superconjunto de `v: 3` con tres cosas nuevas, todas en el grant del proxy:
+
+```
+perfil MCP      = perfil + { mcp: { endpoint, headers?: [ { name, value } ] } }
+regla de proxy  = regla + { scope: { …, mcp_tools: [ patrón ] } }
+payload v4      = payload v3 del proxy + { local_clients: [ { name, token_digest, profiles } ] }
+```
+
+- **`mcp.endpoint`:** la ruta del *endpoint* MCP en `upstream`, canónica (como las rutas de arriba) y de 64 bytes como mucho. Alguna regla de `proxy` que no es `deny` deja al elemento del perfil llegar al host de `upstream` con un prefijo que cubre el *endpoint*. **`mcp.headers`:** hasta 4 cabeceras fijas y no secretas; cada nombre sigue la regla de `header` de arriba, no es la del propio perfil ni una de estas: `authorization`, `cookie`, `www-authenticate`, `mcp-session-id`, `mcp-protocol-version`, `last-event-id`, `content-type`, `content-encoding`, `accept`, `accept-encoding`, `origin`; no se repite; y su valor tiene hasta 128 bytes de ASCII imprimible. `headers` vacío no se escribe.
+- **`mcp_tools`:** patrones de herramienta, solo en reglas de `proxy` (`ToolPattern`). Un patrón es un nombre exacto en la gramática de herramientas (de 1 a 128 bytes de `A-Z a-z 0-9 _ - .`), ese nombre seguido de un `*` final (un prefijo), o `*` solo. Se compara byte a byte y distingue mayúsculas; un nombre fuera de la gramática no coincide con nada. Una regla con `mcp_tools` nombra al menos un elemento, y todos sus elementos son de perfiles MCP.
+- **La evaluación** (ADR 0049 §5.3, Q3): una petición con herramienta (`mcp_tool`) solo la alcanzan las reglas sin `mcp_tools` que deniegan, como las peticiones que no se pueden juzgar; ningún valor por defecto deja pasar una herramienta (sin reglas para el permiso, `deny`); y una herramienta fuera de la gramática, o con un permiso que no es `proxy`, no se puede juzgar. Sin herramienta, la evaluación es la de siempre. Los vectores de `mcp-gateway.json` lo fijan.
+- **`local_clients`:** solo en un grant con `profiles` (un proxy), como mucho 16. `name` tiene de 1 a 32 bytes de `a-z 0-9 -` y no se repite; `token_digest` son los 32 bytes de §13.16, sin repetir; `profiles` nombra uno o más perfiles **MCP** de este grant, sin repetir.
+- **`v: 4` solo con algo de lo anterior**, y siempre con ello: un `v` menor con un perfil MCP, una regla con `mcp_tools` o `local_clients` se rechaza, y un `v: 4` sin nada de eso también. Al volver a emitir el grant, el cliente escribe el `v` que necesita lo que lleva, sin bajar de 2: vuelve a 3 o a 2 al quitar lo último de la pasarela.
+- Los clientes, `klavd`, el verificador de la bitácora, los servidores y los `klav-proxy` anteriores rechazan `v: 4` (`deny_unknown_fields`, versión desconocida): fallan cerrados. Un `klav-proxy` de las capas 1–3 lo lee pero **no sirve** ningún perfil MCP hasta la capa 4.
+
 ### 13.5 Decisión sobre una aprobación
 
 ```
@@ -747,6 +765,7 @@ mensaje = tuple("klav/v1/sig/approval", approval_id(16), agent_id(16), petición
 
 - `petición` son los bytes JSON de la petición pendiente, tal como los guarda el servidor y se le muestran a la persona.
 - `lease_until_ms` es el fin del arrendamiento ("aprobar 15 min"), o `0` para "solo esta vez" y para las negativas.
+- **La pasarela MCP** (ADR [0049](decisiones/0049-mcp-gateway.md) §5.4). Con el interruptor `mcp_gateway` de la cuenta encendido, la petición gana `caller`, `{"sandbox_id": …}` o `{"local_client": …}` (exactamente uno), cuando la llamada es de un sandbox o de un cliente local, y sus `claims` pueden traer `mcp_tool` y `mcp_args` (§13.16). Con el interruptor apagado no aparecen, y la petición es la de siempre byte a byte. El dispositivo comprueba la gramática de la herramienta y del cliente antes de mostrar nada; si falla, muestra una tarjeta de seguridad y no firma nada.
 
 ### 13.6 Revocación
 
@@ -977,6 +996,34 @@ firma = Ed25519(cuenta, tuple(
 
 Todas las firmas de esta sección son Ed25519 según §9: las del agente con su identidad, y las de la persona con la identidad de la cuenta.
 
+### 13.16 La pasarela MCP: token de cliente local y resumen de los argumentos (ADR 0049)
+
+*(§13.15 queda reservada para el blob `0x27` `mcp-call`, los argumentos sellados de una capa posterior del ADR 0049.)*
+
+**Token de cliente local.** Lo genera el dispositivo de la persona, uno por cliente MCP de su Mac, y va en la configuración del cliente como `Authorization: Bearer …` hacia el proxy en *loopback* (ADR 0049 §3.2). Versionado desde el primer byte, como `kag1_` (§13.2):
+
+```
+blob  = 0x01 ‖ token(32)                                   (33 bytes)
+texto = "klc1_" ‖ BASE64URL-SIN-RELLENO(blob)               (49 caracteres)
+token_digest = SHA-256(tuple("klav/v1/proxy/local-client", agent_id(16), token(32)))
+```
+
+- `agent_id` es el del proxy; `token` son los 32 bytes aleatorios, sin el byte de versión.
+- Al decodificar se rechaza: otro prefijo (también `KLC1_`), espacios alrededor, un base64url que no es el canónico sin relleno (`=`, `+`, `/`), una longitud distinta de 33 bytes y otro byte de versión. 33 bytes son exactamente 44 símbolos, así que cada token tiene una sola escritura.
+- El grant del proxy lleva solo `token_digest` (§13.4, `local_clients`); el proxy lo compara en tiempo constante. El token va en un `SecretString` (`klav_core::crypto::mcp::LocalClientToken`), sin `Debug` que lo muestre ni `Display`, y el servidor de Klav nunca lo ve.
+
+**Resumen de los argumentos** (`claims.mcp_args`, ADR 0049 §5.4):
+
+```
+mcp_args = SHA-256(tuple("klav/v1/proxy/mcp-args", agent_id(16), item_id(16), herramienta, argumentos))
+```
+
+- Cada campo lleva su propio prefijo de longitud, como en toda `tuple` (§2.3): `herramienta` son los bytes UTF-8 del nombre (el `lp(tool)` del ADR 0049 §5.4 es este campo, no un segundo prefijo) y `argumentos` los bytes exactos de `params.arguments` tal como llegaron, sin reserializar; vacío cuando falta (que no es `{}`). `agent_id` es el del proxy e `item_id` el elemento del perfil.
+- Su forma de texto es base64url sin relleno, 43 caracteres, con una sola escritura (los 2 bits que sobran son cero): el servidor rechaza cualquier otra con `400`.
+- Los mismos argumentos escritos de otra manera (otro orden de claves, otros espacios) dan otro resumen y piden otra aprobación «una vez»: falla cerrado (ADR 0049 §5.4).
+
+Vectores: `mcp-gateway.json` (tokens, sus resúmenes y tokens que hay que rechazar; resúmenes de argumentos, también reordenados y ausentes; coincidencia de patrones y patrones inválidos; y la evaluación del ejemplo de Maple de ADR 0049 §5.3).
+
 ## 14. Passkeys
 
 > **ADR [0020](decisiones/0020-passkeys.md), en implementación.** Están en `klav-core` las primitivas (§14.1), la llave sellada `0x15` (§14.3, `crypto::passkey`), `authData`, COSE, `attestationObject` y `clientDataJSON` (§14.4–§14.6, `passkey::webauthn`), el AAGUID (§14.8), la validación del rpId (§14.9, `passkey::rp`) y la cola `0x43` del escritorio y de iOS (§14.7, `klav-client::passkey_outbox`), con vectores en [`docs/vectores/passkey.json`](vectores/passkey.json) y [`docs/vectores/webauthn-l3.json`](vectores/webauthn-l3.json). La passkey dentro de un login (§14.2) está en `model::passkey`.
@@ -1175,3 +1222,4 @@ Un UUID v4 fijo de Klav, constante en `klav-core` (`crypto::passkey::AAGUID`) y 
 | 2026-11-19 | **ADR 0041 en código, capa 2** (la puerta de presencia, apagada): §12.2: los propósitos `presence` y `passkey-window` de los datos locales (`0x41`). El sobre y la AAD no cambian; ningún vector cambia. |
 | 2026-11-23 | **ADR 0046 en código, capa 1** (solicitudes de secreto por un agente): §2.3, §3 y §13.14 nueva: tipo `0x25` (`secret-request-proposal`, HPKE con `klav/v1/agent/secret-request`), firma `klav/v1/sig/secret-request-decision`, tipos `SecretRequestProposal`/`SecretRequestDecision` y validador de `setup_url` en `klav-core`. Vector nuevo `secret-request.json`; los demás no cambian. |
 | 2026-11-25 | **ADR 0048 en código, capa 1** (invitaciones al registro): §2.3: etiqueta `klav/v1/server/invite`; §4.7 nueva: el código de invitación (128 bits en Crockford base32 tras `KLAV-`), su forma canónica y su resumen, en `klav_core::crypto::invite`. Vector nuevo `invite.json`; los demás no cambian. |
+| 2026-11-25 | **ADR 0049 aceptado y en código, capas 1–3** (la pasarela MCP): §2.3: etiquetas `klav/v1/proxy/local-client` y `klav/v1/proxy/mcp-args`; §13.4: grant `v: 4` (perfiles MCP, `mcp_tools`, `local_clients`) y la regla de evaluación de las herramientas; §13.5: `caller` y las *claims* de la pasarela, solo con el interruptor de la cuenta encendido; §13.16 nueva: el token de cliente local (`klc1_`) y el resumen de los argumentos, en `klav_core::crypto::mcp`. §13.15 queda reservada para `0x27`. Vector nuevo `mcp-gateway.json`; los demás no cambian. |

@@ -1225,6 +1225,13 @@ impl Verifier<'_> {
                 if e.path.is_some() && e.path != request.claims.path {
                     return Err(differs("path"));
                 }
+                // ADR 0049 §5.4 (T260): the server refuses a tool or a
+                // caller outside its grammar before it stores the request.
+                if !crate::agents::approval_mcp_ok(&request) {
+                    return Err(tampered(format!(
+                        "event {seq}: the approval request names an MCP tool or caller the server never accepts"
+                    )));
+                }
                 agent::verify_approval(
                     self.account,
                     &ApprovalToSign {
@@ -1508,6 +1515,24 @@ fn check_sandbox_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditRes
     Ok(())
 }
 
+/// An event whose signed body carries MCP fields the server refuses before
+/// it logs anything (ADR 0049 §5.4).
+fn mcp_refused(entry: &Entry) -> AuditError {
+    tampered(format!(
+        "event {} ({}): the signed body names an MCP tool or caller the server never accepts",
+        entry.seq, entry.event.action
+    ))
+}
+
+/// Claims on a route that is not `access`: the server refuses MCP claims
+/// on every one of them (`check_claims`).
+fn no_mcp_claims(entry: &Entry, claims: &klav_proto::agent::Claims) -> AuditResult<()> {
+    if claims.mcp_tool.is_some() || claims.mcp_args.is_some() {
+        return Err(mcp_refused(entry));
+    }
+    Ok(())
+}
+
 /// What the event says must be what the agent signed (ADR 0030 §4.4).
 fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> {
     if route.is_sandbox() {
@@ -1528,6 +1553,16 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
         match route {
             AgentRoute::Access => {
                 let req: AccessRequest = parse_body(entry, body)?;
+                // The MCP gateway's fields (ADR 0049 §5.4, T260): the
+                // server refuses them out of their grammars before it logs.
+                if !crate::agents::mcp_fields_ok(
+                    req.permission,
+                    &req.claims,
+                    req.local_client.as_deref(),
+                    req.sandbox,
+                ) {
+                    return Err(mcp_refused(entry));
+                }
                 // The server refuses a sandbox on anything but `proxy`
                 // before it logs (ADR 0036 E3.3).
                 if req.sandbox.is_some() && req.permission != Permission::Proxy {
@@ -1546,6 +1581,7 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
             }
             AgentRoute::Create => {
                 let req: AgentCreateItem = parse_body(entry, body)?;
+                no_mcp_claims(entry, &req.claims)?;
                 if e.vault_id != Some(req.vault_id) || e.project_id != Some(req.item.project_id) {
                     return Err(differs("project"));
                 }
@@ -1555,6 +1591,7 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
             }
             AgentRoute::Update => {
                 let req: AgentUpdateItem = parse_body(entry, body)?;
+                no_mcp_claims(entry, &req.claims)?;
                 (
                     e.item_id,
                     route_permission(route),
@@ -1564,6 +1601,7 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
             }
             AgentRoute::Trash => {
                 let req: AgentTrashItem = parse_body(entry, body)?;
+                no_mcp_claims(entry, &req.claims)?;
                 (
                     e.item_id,
                     route_permission(route),
@@ -1581,6 +1619,7 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
             }
             AgentRoute::RotateStart => {
                 let req: AgentRotateStart = parse_body(entry, body)?;
+                no_mcp_claims(entry, &req.claims)?;
                 if req.task_id.is_some() && e.task_id.is_some() && req.task_id != e.task_id {
                     return Err(differs("task"));
                 }
@@ -1604,6 +1643,7 @@ fn check_body(entry: &Entry, route: AgentRoute, body: &[u8]) -> AuditResult<()> 
             }
             AgentRoute::Ask => {
                 let req: AgentAsk = parse_body(entry, body)?;
+                no_mcp_claims(entry, &req.claims)?;
                 if !matches!(
                     req.permission,
                     Permission::Create | Permission::Update | Permission::Delete
@@ -2137,6 +2177,40 @@ pub struct LogLine {
     /// verify`); a later one shows «not verified yet» (ADR 0033 §8.1).
     #[serde(default)]
     pub verified: bool,
+    /// The MCP tool a proxied call named, according to the MCP server, as
+    /// the proxy signed it (ADR 0049 §6). Only in its grammar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tool: Option<String>,
+    /// The local client a proxied call was for, according to the proxy,
+    /// as it signed it (ADR 0049 §6). Only in its grammar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_client: Option<String>,
+}
+
+/// The MCP tool and local client an `agent.access` event's signed body
+/// names (ADR 0049 §6), when both keep their grammars; nothing otherwise.
+fn mcp_of(e: &AuditEvent) -> (Option<String>, Option<String>) {
+    let Some(body) = e
+        .agent_proof
+        .as_ref()
+        .filter(|_| e.action == "agent.access")
+        .and_then(|p| p.body.as_ref())
+    else {
+        return (None, None);
+    };
+    match serde_json::from_slice::<AccessRequest>(body.as_bytes()) {
+        Ok(req)
+            if crate::agents::mcp_fields_ok(
+                req.permission,
+                &req.claims,
+                req.local_client.as_deref(),
+                req.sandbox,
+            ) =>
+        {
+            (req.claims.mcp_tool, req.local_client)
+        }
+        _ => (None, None),
+    }
 }
 
 /// Filters for [`Unlocked::audit_log`].
@@ -2675,6 +2749,7 @@ impl Unlocked {
                     .map(|s| s.reference),
                 _ => None,
             };
+            let (mcp_tool, local_client) = mcp_of(e);
             let line = LogLine {
                 seq: entry.seq,
                 at: e.at,
@@ -2701,6 +2776,8 @@ impl Unlocked {
                 until: e.until,
                 alerts: e.alerts.clone(),
                 verified: entry.seq <= verified,
+                mcp_tool,
+                local_client,
             };
             if filter.keeps(&line) {
                 out.push(line);
@@ -2874,6 +2951,8 @@ mod tests {
             until: None,
             alerts: Vec::new(),
             verified: false,
+            mcp_tool: None,
+            local_client: None,
         };
         let filter =
             |permissions: Vec<Permission>, outcomes: &[&str], text: Option<&str>| LogFilter {
@@ -3118,6 +3197,7 @@ mod tests {
                 profiles: Vec::new(),
                 issuers: Vec::new(),
                 sandbox: None,
+                local_clients: Vec::new(),
             })
             .unwrap();
             let signature = agent::sign_grant(
@@ -3217,6 +3297,7 @@ mod tests {
                 claims: Claims::default(),
                 grant_version: 1,
                 requested_at: AT,
+                caller: None,
             })
             .unwrap();
             let parsed: ApprovalRequest = serde_json::from_slice(&request).unwrap();
@@ -4648,6 +4729,221 @@ mod tests {
         let mut grant = w.granted();
         grant.path = Some("/".into());
         assert!(w.check(vec![grant], &w.listed()).is_err());
+    }
+
+    /// ADR 0049 §5.4 and §6: a proxied MCP call's signed tool, argument
+    /// digest and local client verify, show in the log, and anything
+    /// outside their grammars (which the server refuses before it logs)
+    /// is tampering.
+    #[test]
+    fn an_mcp_call_verifies_and_out_of_grammar_fields_are_tampering() {
+        let w = World::new();
+        let args = klav_core::crypto::mcp::digest_text(&[4; 32]);
+        let mcp =
+            |permission: &str, tool: &str, local: Option<&str>, sandbox: Option<SandboxId>| {
+                let mut body = serde_json::json!({
+                    "item_id": w.item,
+                    "permission": permission,
+                    "reason": "look at the logs",
+                    "claims": {
+                        "domain": "api.maple.dev", "method": "POST", "path": "/mcp",
+                        "mcp_tool": tool, "mcp_args": args,
+                    },
+                });
+                if let Some(local) = local {
+                    body["local_client"] = local.into();
+                }
+                if let Some(sandbox) = sandbox {
+                    body["sandbox"] = sandbox.to_string().into();
+                }
+                let body = serde_json::to_vec(&body).unwrap();
+                let mut e = w.signed("agent.access", "POST", "/v1/agent/access", Some(&body), AT);
+                e.item_id = Some(w.item);
+                e.permission = serde_json::from_value(permission.into()).ok();
+                e.reason = Some("look at the logs".into());
+                e.domain = Some("api.maple.dev".into());
+                e.method = Some("POST".into());
+                e.path = Some("/mcp".into());
+                e.outcome = Some("allow".into());
+                e
+            };
+        let good = mcp("proxy", "query_logs", Some("claude-code"), None);
+        let report = w
+            .check(vec![w.granted(), good.clone()], &w.listed())
+            .unwrap();
+        assert_eq!(report.agent_signatures, 1);
+        assert_eq!(
+            mcp_of(&good),
+            (Some("query_logs".into()), Some("claude-code".into()))
+        );
+        for (bad, why) in [
+            (mcp("proxy", "query logs", None, None), "tool"),
+            (mcp("proxy", "q\u{202e}l", None, None), "bidi tool"),
+            (
+                mcp("proxy", "query_logs", Some("Claude Code"), None),
+                "client",
+            ),
+            (
+                mcp(
+                    "proxy",
+                    "query_logs",
+                    Some("cursor"),
+                    Some(SandboxId::generate()),
+                ),
+                "two callers",
+            ),
+        ] {
+            assert_eq!(mcp_of(&bad), (None, None), "{why}");
+            assert_rejected(
+                w.check(vec![w.granted(), bad], &w.listed()),
+                "MCP tool or caller",
+            );
+        }
+        // A tool on anything but `proxy`.
+        let mut fill = mcp("fill", "query_logs", None, None);
+        fill.method = None;
+        fill.path = None;
+        assert!(w.check(vec![w.granted(), fill], &w.listed()).is_err());
+    }
+
+    #[test]
+    fn an_approval_with_an_mcp_tool_and_caller_verifies_only_in_grammar() {
+        let w = World::new();
+        let approval_for = |tool: &str, caller: Option<klav_proto::agent::ApprovalCaller>| {
+            let approval = ApprovalId::generate();
+            let request = serde_json::to_vec(&ApprovalRequest {
+                v: 1,
+                approval_id: approval,
+                agent_id: w.agent,
+                agent_name: "proxy".into(),
+                permission: Permission::Proxy,
+                vault_id: VaultId::generate(),
+                project_id: ProjectId::generate(),
+                item_id: Some(w.item),
+                reason: "deploy".into(),
+                claims: Claims {
+                    domain: Some("api.maple.dev".into()),
+                    method: Some("POST".into()),
+                    path: Some("/mcp".into()),
+                    mcp_tool: Some(tool.into()),
+                    mcp_args: Some(klav_core::crypto::mcp::digest_text(&[1; 32])),
+                    ..Claims::default()
+                },
+                grant_version: 1,
+                requested_at: AT,
+                caller,
+            })
+            .unwrap();
+            let parsed: ApprovalRequest = serde_json::from_slice(&request).unwrap();
+            assert_eq!(
+                crate::agents::approval_mcp_ok(&parsed),
+                tool_name_ok_for_test(tool)
+                    && parsed.caller.as_ref().is_none_or(|c| c.is_well_formed())
+            );
+            let signature = agent::sign_approval(
+                &w.keys,
+                &ApprovalToSign {
+                    approval,
+                    agent: w.agent,
+                    request: &request,
+                    approve: true,
+                    lease_until_ms: 0,
+                    decided_at_ms: 5,
+                },
+            );
+            let mut e = AuditEvent::new(ActorKind::Person, "approval.decided");
+            e.at = AT;
+            e.agent_id = Some(w.agent);
+            e.approval_id = Some(approval);
+            e.vault_id = Some(parsed.vault_id);
+            e.project_id = Some(parsed.project_id);
+            e.item_id = parsed.item_id;
+            e.permission = Some(parsed.permission);
+            e.outcome = Some("approve".into());
+            e.lease_until = Some(0);
+            e.decided_at = Some(5);
+            e.signed = Some(Blob::new(request));
+            e.account_signature = Some(Blob::new(signature.to_bytes().to_vec()));
+            e
+        };
+        let client = |name: &str| klav_proto::agent::ApprovalCaller {
+            sandbox_id: None,
+            local_client: Some(name.into()),
+        };
+        w.check(
+            vec![
+                w.granted(),
+                approval_for("deploy_worker", Some(client("cursor"))),
+            ],
+            &w.listed(),
+        )
+        .unwrap();
+        w.check(
+            vec![
+                w.granted(),
+                approval_for(
+                    "deploy_worker",
+                    Some(klav_proto::agent::ApprovalCaller {
+                        sandbox_id: Some(SandboxId::generate()),
+                        local_client: None,
+                    }),
+                ),
+            ],
+            &w.listed(),
+        )
+        .unwrap();
+        for bad in [
+            approval_for("deploy worker", None),
+            approval_for("deploy_worker", Some(client("Cursor\u{202e}"))),
+            approval_for(
+                "deploy_worker",
+                Some(klav_proto::agent::ApprovalCaller {
+                    sandbox_id: None,
+                    local_client: None,
+                }),
+            ),
+        ] {
+            assert_rejected(
+                w.check(vec![w.granted(), bad], &w.listed()),
+                "MCP tool or caller",
+            );
+        }
+    }
+
+    fn tool_name_ok_for_test(tool: &str) -> bool {
+        klav_core::policy::tool_name_ok(tool)
+    }
+
+    #[test]
+    fn a_security_card_is_never_decided() {
+        let view = |security: Option<String>| crate::agents::ApprovalView {
+            id: ApprovalId::generate(),
+            status: klav_proto::agent::ApprovalStatus::Pending,
+            agent_id: AgentId::generate(),
+            agent: "proxy".into(),
+            permission: Permission::Proxy,
+            target: "x".into(),
+            target_name: None,
+            reason: "r".into(),
+            domain: None,
+            created_at: 0,
+            expires_at: 0,
+            lease_until: None,
+            task: None,
+            request_digest: String::new(),
+            mcp_tool: None,
+            sandbox: None,
+            local_client: None,
+            security,
+        };
+        assert!(crate::agents::refuse_security_card(&view(None)).is_ok());
+        let err = crate::agents::refuse_security_card(&view(Some(
+            crate::agents::MCP_SECURITY_CARD.into(),
+        )))
+        .unwrap_err();
+        assert!(matches!(err, ClientError::Security(_)));
+        // The fixed text, never what the server sent.
+        assert!(err.to_string().contains(crate::agents::MCP_SECURITY_CARD));
     }
 
     #[test]

@@ -76,6 +76,16 @@ impl ApiError {
         )
     }
 
+    /// `400 mcp_gateway_off`: MCP claims or a local client while the
+    /// account's `mcp_gateway` switch is off (ADR 0049 §9).
+    pub(crate) fn mcp_gateway_off() -> Self {
+        Self::Coded(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::McpGatewayOff,
+            "the MCP gateway is off for this account: the person turns it on once every device runs a Klav that knows it".into(),
+        )
+    }
+
     /// `403 quota_exceeded` with a message naming the limit, the use and the
     /// maximum (ADR 0048 §3.2).
     pub(crate) fn quota_exceeded(message: String) -> Self {

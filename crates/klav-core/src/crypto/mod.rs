@@ -18,6 +18,7 @@ pub mod kdf;
 pub mod keys;
 pub mod keystore;
 pub mod local;
+pub mod mcp;
 pub mod meta;
 pub mod opaque;
 pub mod passkey;

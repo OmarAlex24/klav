@@ -168,9 +168,11 @@ fn request(items: &[ItemLocation]) -> ItemGrantRequest {
             prefix: "Bearer ".into(),
             upstream: format!("https://{RAILWAY}"),
             rate_per_minute: Some(30),
+            mcp: None,
         }],
         policy: proxy_policy(&items.iter().map(|l| l.item).collect::<Vec<_>>()),
         issuers: Vec::new(),
+        local_clients: Vec::new(),
     }
 }
 
@@ -195,6 +197,7 @@ async fn proxied(session: &Session, item: ItemId) -> Result<Item, ClientError> {
                 task_id: None,
                 include_attachments: false,
                 sandbox: None,
+                local_client: None,
             }),
         )
         .await?;

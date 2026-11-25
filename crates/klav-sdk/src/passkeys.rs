@@ -139,6 +139,7 @@ impl Session {
                     task_id: Some(task),
                     include_attachments: false,
                     sandbox: None,
+                    local_client: None,
                 },
             )
             .await?;

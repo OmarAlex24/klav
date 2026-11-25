@@ -954,6 +954,7 @@ impl Unlocked {
             profiles: payload.profiles.clone(),
             policy: payload.policy.clone(),
             issuers: payload.issuers.clone(),
+            local_clients: payload.local_clients.clone(),
         };
         let mut gone = Vec::new();
         for GrantedItem {
@@ -1022,6 +1023,7 @@ fn check_candidate(grant: &ProxyGrant, request: &ItemGrantRequest) -> ClientResu
         profiles: request.profiles.clone(),
         issuers: request.issuers.clone(),
         sandbox: None,
+        local_clients: request.local_clients.clone(),
     };
     // The `v` the signer writes: 3 while issuers remain (a candidate
     // labelled 2 with issuers was refused before any re-grant of an item).
@@ -1056,6 +1058,7 @@ pub fn credential_profile(
         prefix: spec.prefix.clone(),
         upstream: spec.upstream.clone(),
         rate_per_minute: spec.rate_per_minute,
+        mcp: None,
     };
     let (upstream_host, _) = profile.upstream_host().ok_or_else(|| {
         ClientError::Invalid(format!(
@@ -1207,6 +1210,23 @@ fn strip_item(request: &mut ItemGrantRequest, item: ItemId) {
         rule.scope.items.retain(|i| *i != item);
         !rule.scope.items.is_empty()
     });
+    keep_local_clients(request);
+}
+
+/// A local client keeps the profiles of the request that are still MCP
+/// profiles (ADR 0049 §3.2), and a client left with none goes: the grant
+/// would refuse it, and nothing it called would work.
+fn keep_local_clients(request: &mut ItemGrantRequest) {
+    let mcp: std::collections::HashSet<&str> = request
+        .profiles
+        .iter()
+        .filter(|p| p.mcp.is_some())
+        .map(|p| p.name.as_str())
+        .collect();
+    for client in &mut request.local_clients {
+        client.profiles.retain(|p| mcp.contains(p.as_str()));
+    }
+    request.local_clients.retain(|c| !c.profiles.is_empty());
 }
 
 /// One issuer's loss in a change: its ID, the profiles it loses, and
@@ -1407,6 +1427,7 @@ mod tests {
             item: Some(item),
             method: Some(method.into()),
             path: Some(path.into()),
+            mcp_tool: None,
             now: 0,
         }
     }
@@ -1553,6 +1574,7 @@ mod tests {
             items: Vec::new(),
             profiles: Vec::new(),
             issuers: Vec::new(),
+            local_clients: Vec::new(),
             policy: Policy {
                 rules: shared
                     .into_iter()

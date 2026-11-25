@@ -487,6 +487,7 @@ impl Unlocked {
                 item: Some(loc.item),
                 method: None,
                 path: None,
+                mcp_tool: None,
                 now: u64::try_from(now_ms() / 1000).unwrap_or(0),
             },
         )
@@ -1080,7 +1081,8 @@ impl Unlocked {
                 info.status.as_str()
             )));
         }
-        let (_, request) = self.approval_view(&info)?;
+        let (view, request) = self.approval_view(&info)?;
+        crate::agents::refuse_security_card(&view)?;
         let live = self.live_tasks().await?;
         let outside = self.outside_task(&live, &request).ok_or_else(|| {
             ClientError::Invalid(format!(

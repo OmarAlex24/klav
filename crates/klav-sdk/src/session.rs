@@ -452,6 +452,7 @@ impl Session {
                 method: None,
                 path: None,
                 now: now_secs(),
+                mcp_tool: None,
             },
         )
     }
@@ -494,6 +495,7 @@ impl Session {
                 method: None,
                 path: None,
                 now: now_secs(),
+                mcp_tool: None,
             },
         );
         Ok((granted.ctx.vault, decision))
@@ -692,6 +694,7 @@ impl Session {
             task_id,
             include_attachments: with_files,
             sandbox: None,
+            local_client: None,
         };
         let bytes =
             serde_json::to_vec(&body).map_err(|e| ClientError::Invalid(format!("request: {e}")))?;

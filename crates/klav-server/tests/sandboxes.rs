@@ -126,6 +126,7 @@ async fn account_on(server: std::sync::Arc<TestServer>, email: &str) -> World {
             prefix: "Bearer ".into(),
             upstream: format!("https://{RAILWAY}"),
             rate_per_minute: None,
+            mcp: None,
         }],
     );
     let proxy_v2: GrantPayload = serde_json::from_slice(signed.payload.as_bytes()).expect("grant");
@@ -190,6 +191,7 @@ impl World {
                     url: "tls://proxy.example.com:8443".into(),
                 }),
             }),
+            local_clients: Vec::new(),
         };
         self.post(
             &self.issuer,
@@ -835,6 +837,7 @@ async fn an_issuer_listed_but_not_active_or_not_naming_the_proxy_is_refused() {
         profiles: Vec::new(),
         issuers: Vec::new(),
         sandbox: Some(IssuerGrant { proxy: None }),
+        local_clients: Vec::new(),
     };
     w.post(
         &w.issuer,
@@ -975,6 +978,7 @@ async fn an_issuer_that_names_no_proxy_is_gone_for_the_proxy() {
         profiles: Vec::new(),
         issuers: Vec::new(),
         sandbox: Some(IssuerGrant { proxy: None }),
+        local_clients: Vec::new(),
     };
     w.post(
         &w.issuer,

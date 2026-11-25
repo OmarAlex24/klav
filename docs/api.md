@@ -47,6 +47,7 @@ SQL, rutas de archivos, trazas):
 | 403 | `sandbox_revoked` | El sandbox está revocado o vencido, o su emisor ya no lo es; también al registrar su fin por segunda vez (§8.8) |
 | 403 | `invite_invalid` | Servidor en modo `invite`: el código no sirve para ese correo ahora (no existe, está revocado, venció, se agotó o está ligado a otro correo). Una sola respuesta para todos los motivos, que nunca dice si el correo tiene cuenta (§2.2, ADR [0048](decisiones/0048-invite-beta-and-distribution.md) §1.3) |
 | 403 | `quota_exceeded` | La escritura pasaría a la cuenta por encima de una cuota (adjuntos, datos de la bóveda, elementos o bóvedas); el mensaje dice cuál, cuánto se usa y el máximo (§7, ADR 0048 §3.2). No es `413`: aquí `413` es un cuerpo demasiado grande |
+| 400 | `mcp_gateway_off` | La petición trae `claims.mcp_tool`, `claims.mcp_args` o `local_client` y el interruptor `mcp_gateway` de la cuenta está apagado (§8.13, ADR [0049](decisiones/0049-mcp-gateway.md) §9). Solo lo recibe un agente nuevo: uno anterior no manda esos campos |
 | 404 | `not_found` | No existe **o no eres miembro** (no se distingue a propósito) |
 | 404 | `sandbox_not_found` | Las rutas de §8.8 no conocen ese sandbox: este proxy nunca registró su `sandbox.issued`. Solo este código le dice al proxy que puede olvidar el fin pendiente de un sandbox; el `not_found` genérico de una ruta que el servidor no tiene no dice nada de él. Los servidores anteriores responden `not_found` |
 | 409 | `conflict` | Versión vieja, ID repetido, estado incompatible (p. ej. editar algo en la papelera) |
@@ -880,7 +881,7 @@ y no se puede repetir más tarde.
 
 | Método y ruta | Respuesta |
 |---|---|
-| `GET /v1/agent/me` | `{ id, name, status, lapsed?, account_id, account_public_identity, grant?, paused?, account_delete_at?, gone_issuers? }` |
+| `GET /v1/agent/me` | `{ id, name, status, lapsed?, account_id, account_public_identity, grant?, paused?, account_delete_at?, gone_issuers?, mcp_gateway? }` |
 
 Un agente pendiente, denegado o revocado solo puede consultar `me`, para
 saber en qué estado está. Una solicitud pendiente que caducó sale como
@@ -1037,7 +1038,8 @@ deniega todo, también `passkey` y `rotate` dentro de una tarea.
   elemento, y mismo `claims.domain`; para `proxy`, también el método y la
   ruta (sin la consulta), y el `sandbox` cuando la petición lo nombra
   (§8.8): la aprobación de un sandbox no sirve a otro ni a una llamada sin
-  sandbox. El motivo y las etiquetas no cuentan.
+  sandbox. Con la pasarela MCP, también la herramienta, el resumen de sus
+  argumentos y el cliente local (§8.13). El motivo y las etiquetas no cuentan.
 - **Con `ask` y sin `approval_id`**, el servidor prueba en este orden:
   1. una tarea vigente que cubre la acción (§8.5): pasa;
   1. un arrendamiento vigente con el mismo destino: pasa;
@@ -1457,6 +1459,38 @@ ADR [0036](decisiones/0036-sandboxes-de-agentes.md) §5, §7 modo (a) y §10. Co
 
     En el último caso termina pronto (10 s como mucho si el proxy no responde, 15 s si otro programa tiene el puerto de un `state.json` viejo y no contesta) y, salvo `klav_forward_cannot_stop`, con `0`. Ese `1` viene del reenviador de otro paquete, que tiene el puerto: con `set -e` para el *script* antes de `up`, que con el puerto ocupado tampoco arrancaría. Sin la opción, `down` no mira `KLAV_SANDBOX` y para el reenviador de este mismo paquete: en un *setup script* que se repite, el `up` siguiente se negaría con `klav_forward_already_claimed`. Un `klav-forward` anterior a esta opción sale con `2` (`unexpected argument '--if-other-package' found`, o `unrecognized subcommand 'down'` si es anterior a `down`), sin tocar nada.
 - **`up` sale** con `0` al reclamar o si su reenviador ya corre, `1` con `klav_forward_already_claimed`, `klav_forward_state_not_private` o `klav_forward_cannot_record`, `2` sin paquete o con uno que no es un paquete (sin repetirlo) o si no puede crear ni alcanzar su directorio de estado (el `next` no ofrece otro: puede ser donde otro usuario ya reclamó este paquete, y entonces hace falta `klav sandbox start`), y con los códigos de `status` si el proxy rechaza el reclamo.
+
+### 8.13 La pasarela MCP (ADR 0049, capas 1–3)
+
+El [ADR 0049](decisiones/0049-mcp-gateway.md) hace de `klav-proxy` una pasarela hacia servidores MCP remotos, con reglas por herramienta firmadas en el grant. El servidor ya conoce sus campos; el proxy todavía no sirve los perfiles MCP (llega con la capa 4), así que hoy solo los puede mandar un agente de pruebas.
+
+**El interruptor de la cuenta.** Los campos nuevos rompen la lista de aprobaciones y el `klav log verify` de un dispositivo anterior, así que van detrás de un interruptor por cuenta, `mcp_gateway`, apagado por defecto (como el de ADR 0041 §5.6):
+
+| Método y ruta | Quién | Respuesta |
+|---|---|---|
+| `GET /v1/account/mcp-gateway` | la persona (sesión) | `{ mcp_gateway, since? }`; un servidor anterior responde `404` |
+| `POST /v1/account/mcp-gateway` | la persona (sesión) | Lo enciende y responde como el `GET`. Repetirlo conserva el primer `since`. No hay ruta para apagarlo |
+
+- **Apagado:** el servidor rechaza con `400 mcp_gateway_off` un `POST /v1/agent/access` con `claims.mcp_tool`, `claims.mcp_args` o `local_client`, antes de evaluar o registrar nada. Toda otra respuesta es la de antes byte a byte: `GET /v1/agent/me` no trae `mcp_gateway` y ninguna aprobación trae `caller`.
+- **Encendido:** `GET /v1/agent/me` trae `mcp_gateway: true`. Encenderlo no deja evento en la bitácora.
+
+**Los campos** (`POST /v1/agent/access`, solo con `permission: proxy`; con otro permiso, o en las demás rutas del agente, `400`):
+
+- `claims.mcp_tool`: la herramienta de un `tools/call`, de 1 a 128 bytes de `A-Z a-z 0-9 _ - .` (T260). Va siempre con `claims.mcp_args`.
+- `claims.mcp_args`: el resumen de los argumentos, 32 bytes en base64url sin relleno, con una sola escritura (especificación §13.16). El servidor nunca ve los argumentos.
+- `local_client` (fuera de `claims`, como `sandbox`): el cliente MCP del Mac de la persona para el que es la llamada, de 1 a 32 bytes de `a-z 0-9 -`. El servidor lo acepta solo si el grant del proxy tiene ese cliente para el perfil MCP del elemento (`local_clients`, especificación §13.4); si no, `400`, sin registrar nada. Una llamada es de un sandbox o de un cliente local, nunca de los dos.
+- Con cualquiera de los tres, `claims.path` mide como mucho 64 bytes (el *endpoint* del perfil).
+
+Fuera de esas gramáticas, el servidor responde `400` sin guardar ni registrar nada, así que ninguna tarjeta ni línea de la bitácora contiene otra cosa. El dispositivo de la persona lo comprueba otra vez antes de mostrar nada.
+
+**La política.** Con `mcp_tool`, una regla de `proxy` sin `mcp_tools` solo cuenta si deniega, y ningún valor por defecto deja pasar una herramienta: la que ninguna regla nombra se deniega (ADR 0049 Q3).
+
+**Aprobaciones** (§8.3, «Mismo destino»). Después del método, la ruta y el `sandbox`, el destino gana una parte fija `["mcp", herramienta, argumentos, cliente local]` (`""` si falta). Una petición sin esos campos conserva su destino de siempre.
+
+- **«Una vez»** sirve al destino completo: la misma herramienta con **los mismos argumentos** (T261). Nombrada para otros argumentos, `409`.
+- **«Por un rato»** sirve además a la llave de arrendamiento, el mismo destino sin los argumentos: la misma herramienta con cualquier argumento, del mismo llamador. Nunca otra herramienta ni otro llamador.
+- La aprobación guarda las dos llaves (`lease_key`, columna nueva, migración 0022).
+- **`caller`.** Con el interruptor encendido, la solicitud que firma la persona (`ApprovalRequest`, especificación §13.5) gana `caller`, `{ sandbox_id }` o `{ local_client }`, cuando la llamada es de un sandbox o de un cliente local. Con el interruptor apagado, o sin llamador, no aparece.
 
 ### 8.12 Solicitudes de secreto
 

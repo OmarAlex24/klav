@@ -564,6 +564,7 @@ impl Unlocked {
             profiles: Vec::new(),
             issuers: Vec::new(),
             sandbox,
+            local_clients: Vec::new(),
         };
         payload.v = payload.version_after(slot.floor);
         self.upload_grant(id, public, payload).await
@@ -752,6 +753,71 @@ pub struct ApprovalView {
     /// (ADR 0030 §5): deciding passes it back, and nothing is signed if
     /// the request changed in between.
     pub request_digest: String,
+    /// The MCP tool of a proxied call, according to the MCP server (ADR
+    /// 0049 §5.4): only once it passed the tool grammar on this device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tool: Option<String>,
+    /// The sandbox a proxied call is for, according to the proxy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<klav_core::ids::SandboxId>,
+    /// The local client a proxied call is for, according to the proxy:
+    /// only once it passed the client grammar on this device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_client: Option<String>,
+    /// Set when the request breaks a rule the server should have enforced
+    /// (ADR 0049 §5.4, T260): the card shows this fixed text, nothing of
+    /// the offending field, and nothing can be approved or denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<String>,
+}
+
+/// The fixed text of an approval whose MCP fields break their grammars
+/// (ADR 0049 §5.4, T260). It never repeats what the server sent.
+pub const MCP_SECURITY_CARD: &str = "This request names an MCP tool or a caller in a form Klav never accepts. Your server should have refused it, so nothing can be approved here. Check your server, and tell Klav if this keeps happening.";
+
+/// Whether the MCP gateway's fields of a request keep the rules the server
+/// enforces (ADR 0049 §5.4, T260): only with `proxy`; `mcp_tool` and
+/// `mcp_args` together, the tool in the tool grammar and the digest in its
+/// one spelling; a local client in the client grammar; one caller; and a
+/// path no longer than an MCP endpoint.
+/// The approval card and `klav log verify` check it before using any of it.
+pub fn mcp_fields_ok(
+    permission: Permission,
+    claims: &klav_proto::agent::Claims,
+    local_client: Option<&str>,
+    sandbox: Option<klav_core::ids::SandboxId>,
+) -> bool {
+    if claims.mcp_tool.is_none() && claims.mcp_args.is_none() && local_client.is_none() {
+        return true;
+    }
+    permission == Permission::Proxy
+        && claims.mcp_tool.is_some() == claims.mcp_args.is_some()
+        && claims
+            .mcp_tool
+            .as_deref()
+            .is_none_or(klav_core::policy::tool_name_ok)
+        && claims
+            .mcp_args
+            .as_deref()
+            .is_none_or(klav_core::crypto::mcp::digest_text_ok)
+        && local_client.is_none_or(klav_core::policy::local_client_name_ok)
+        && !(local_client.is_some() && sandbox.is_some())
+        && claims
+            .path
+            .as_deref()
+            .is_none_or(|p| p.len() <= klav_proto::agent::MAX_MCP_ENDPOINT)
+}
+
+/// [`mcp_fields_ok`] for an approval request: its claims and its caller.
+pub(crate) fn approval_mcp_ok(request: &ApprovalRequest) -> bool {
+    let (sandbox, local) = match &request.caller {
+        None => (None, None),
+        Some(c) if c.is_well_formed() => (c.sandbox_id, c.local_client.as_deref()),
+        Some(_) => return false,
+    };
+    // A caller only on a proxied call.
+    (request.caller.is_none() || request.permission == Permission::Proxy)
+        && mcp_fields_ok(request.permission, &request.claims, local, sandbox)
 }
 
 /// Picks an approval among `views` by ID or a unique ID prefix (6+
@@ -773,6 +839,15 @@ pub fn pick_approval(views: Vec<ApprovalView>, wanted: &str) -> ClientResult<App
         _ => Err(ClientError::Ambiguous(format!(
             "several approval requests start with {wanted:?}"
         ))),
+    }
+}
+
+/// Refuses to decide on an approval that shows a security card (ADR 0049
+/// §5.4): nothing is signed, approve or deny.
+pub(crate) fn refuse_security_card(view: &ApprovalView) -> ClientResult<()> {
+    match view.security {
+        Some(_) => Err(ClientError::Security(MCP_SECURITY_CARD.to_owned())),
+        None => Ok(()),
     }
 }
 
@@ -811,6 +886,7 @@ impl Unlocked {
             .get(&request.vault_id)
             .map(|v| v.meta.name().to_owned())
             .unwrap_or_else(|| request.vault_id.to_string());
+        let mcp_ok = approval_mcp_ok(&request);
         let (target, target_name) = match request.item_id {
             Some(item) => {
                 let summary = self
@@ -846,6 +922,18 @@ impl Unlocked {
                 lease_until: info.lease_until,
                 task: None,
                 request_digest: agent::request_digest(info.request.as_bytes()),
+                mcp_tool: request.claims.mcp_tool.clone().filter(|_| mcp_ok),
+                sandbox: request
+                    .caller
+                    .as_ref()
+                    .and_then(|c| c.sandbox_id)
+                    .filter(|_| mcp_ok),
+                local_client: request
+                    .caller
+                    .as_ref()
+                    .and_then(|c| c.local_client.clone())
+                    .filter(|_| mcp_ok),
+                security: (!mcp_ok).then(|| MCP_SECURITY_CARD.to_owned()),
             },
             request,
         ))
@@ -925,8 +1013,9 @@ impl Unlocked {
             )));
         }
         check_shown("request", info.request.as_bytes(), shown)?;
-        // Parse and check what the person is about to sign.
-        self.approval_view(&info)?;
+        // Parse and check what the person is about to sign: a request that
+        // breaks the MCP gateway's grammars is never signed, either way.
+        refuse_security_card(&self.approval_view(&info)?.0)?;
         let decided_at = now_ms();
         let lease_until = match (approve, lease) {
             (true, Some(d)) => decided_at + i64::try_from(d.as_millis()).unwrap_or(i64::MAX / 2),

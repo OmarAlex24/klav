@@ -63,10 +63,15 @@ impl Profiles {
     /// not carry, whose header does not parse or whose upstream is not a
     /// host name is left out (the grant was checked when it was opened; this
     /// fails closed on anything a newer format could mean differently).
+    ///
+    /// An MCP profile (`v: 4`, ADR 0049 §2.1) is left out too until the
+    /// proxy reads, checks and filters its JSON-RPC (ADR 0049, layer 4):
+    /// served as a plain mode (a) profile, its session rule would let every
+    /// tool through, which the signed tool rules say it must not.
     pub fn from_grant(grant: &OpenGrant) -> Self {
         let mut by_name = HashMap::new();
         for p in &grant.payload.profiles {
-            if !grant.items.contains_key(&p.item_id) {
+            if p.mcp.is_some() || !grant.items.contains_key(&p.item_id) {
                 continue;
             }
             let Some((host, port)) = p.upstream_host() else {
@@ -429,5 +434,70 @@ mod tests {
             !err.contains("X-Evil"),
             "the error must not carry the value"
         );
+    }
+
+    /// ADR 0049, layers 2–3 before layer 4: a grant may name MCP profiles,
+    /// and the proxy serves none of them yet, rather than serving one as a
+    /// plain profile whose session rule would let every tool through.
+    #[test]
+    fn mcp_profiles_are_not_served_until_the_proxy_governs_them() {
+        use klav_core::crypto::context::ItemContext;
+        use klav_core::crypto::keys::ItemKey;
+        use klav_core::ids::{AccountId, AgentId, ProjectId, VaultId};
+        use klav_proto::agent::{GrantPayload, McpProfile, ProxyProfile};
+        use klav_sdk::grant::GrantedItemKey;
+
+        let (plain, mcp) = (ItemId::generate(), ItemId::generate());
+        let profile = |name: &str, item_id, mcp: Option<McpProfile>| ProxyProfile {
+            name: name.into(),
+            item_id,
+            field: None,
+            header: "authorization".into(),
+            prefix: "Bearer ".into(),
+            upstream: "https://api.example.com".into(),
+            rate_per_minute: None,
+            mcp,
+        };
+        let key = |item| GrantedItemKey {
+            ctx: ItemContext {
+                account: AccountId::generate(),
+                vault: VaultId::generate(),
+                project: ProjectId::generate(),
+                item,
+            },
+            key: ItemKey::generate(),
+        };
+        let grant = OpenGrant {
+            payload: GrantPayload {
+                v: 4,
+                account_id: AccountId::generate(),
+                agent_id: AgentId::generate(),
+                version: 1,
+                issued_at: 0,
+                policy: klav_core::policy::Policy::default(),
+                projects: Vec::new(),
+                items: Vec::new(),
+                profiles: vec![
+                    profile("rest", plain, None),
+                    profile(
+                        "maple",
+                        mcp,
+                        Some(McpProfile {
+                            endpoint: "/mcp".into(),
+                            headers: Vec::new(),
+                        }),
+                    ),
+                ],
+                issuers: Vec::new(),
+                sandbox: None,
+                local_clients: Vec::new(),
+            },
+            keys: HashMap::new(),
+            items: HashMap::from([(plain, key(plain)), (mcp, key(mcp))]),
+        };
+        let profiles = Profiles::from_grant(&grant);
+        assert!(profiles.get("rest").is_some());
+        assert!(profiles.get("maple").is_none());
+        assert_eq!(profiles.len(), 1);
     }
 }
