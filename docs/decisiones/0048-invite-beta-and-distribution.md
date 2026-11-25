@@ -50,10 +50,10 @@ Out of scope: billing, email verification (§3.5 says when it becomes mandatory)
   - `closed`: as `allow_registration = false` today.
   - `invite`: `register/start` and `register/finish` need a valid invite (§1.3).
 - **The old key is still read.** `allow_registration` / `KLAV_ALLOW_REGISTRATION` = `true` means `open`, and `false` means `closed`.
-- **Both keys set:** after the file and the environment are merged (the environment wins, as today), the two must agree (`true` with `open`, `false` with `closed`). If they don't, the server refuses to start, with an error that names both keys.
-  - That way production can't end up in a mode nobody meant. To go to `invite`, Omar removes `KLAV_ALLOW_REGISTRATION` and adds `KLAV_REGISTRATION_MODE=invite` in the same deploy (§8, rollout).
+- **Both keys set:** after the file and the environment are merged (the environment wins, as today), the two must agree. `true` agrees only with `open`. `false` agrees with `closed` **and with `invite`**: it means "not open to everyone". Any other pair stops the server at start-up, with an error that names both keys.
+  - **`false` is the floor that keeps a rollback closed.** A binary from before this ADR ignores `KLAV_REGISTRATION_MODE` (unknown `KLAV_*` variables are skipped) and defaults to open. Without `KLAV_ALLOW_REGISTRATION=false` next to it, a Railway rollback, or an older image pinned under the new `docker-compose.yml`, would run fully open (T253). So production and every shipped configuration that uses the environment keep `KLAV_ALLOW_REGISTRATION=false` and add `KLAV_REGISTRATION_MODE=invite`. Going to `open` means removing `false` on purpose.
 - **The default of the bare binary stays `open`**, the same as today's `allow_registration = true`, so no existing configuration changes meaning.
-  - The shipped configurations change instead (layer 4): `docker-compose.yml`, the Railway template, the Homebrew `server.toml` and the systemd unit all start in `invite`. A self-hoster then creates their own invite (§1.4), and never has to reopen or restart anything.
+  - The shipped configurations change instead (layer 4): `docker-compose.yml`, the Railway template, the Homebrew `server.toml` and the systemd unit all start in `invite`, each with `allow_registration = false` / `KLAV_ALLOW_REGISTRATION=false` next to it (above). A self-hoster then creates their own invite (§1.4), and never has to reopen or restart anything.
 - **Production is untouched when layer 1 deploys:** today's `KLAV_ALLOW_REGISTRATION=false` maps to `closed`.
 
 #### 1.2 What `GET /v1/health` says
@@ -86,7 +86,7 @@ Plus `registration_invite_uses (invite_id, account_id, used_at)`, so that `ls` c
 **The code** (format pending Q2; recommended):
 
 - **16 random bytes (128 bits)** from `klav_core::crypto::random`, written in Crockford base32 (26 characters) after a `KLAV-` prefix, in groups so that it can be read aloud: `KLAV-XXXXX-XXXXX-XXXXX-XXXXX-XXXXXX`.
-- **Canonical form:** remove the prefix, dashes and spaces; turn it to uppercase; map `I`/`L` to `1` and `O` to `0`; decode to the 16 bytes. The digest is over those bytes. A code that doesn't decode to exactly 16 bytes is invalid, and is rejected before touching the database.
+- **Canonical form:** remove the prefix, dashes and spaces; turn it to uppercase; map `I`/`L` to `1` and `O` to `0`; decode to the 16 bytes. 26 characters carry 130 bits, so the 2 bits left over must be zero; otherwise two spellings would decode to the same bytes. The digest is over those bytes. A code that doesn't decode to exactly 16 bytes with those bits at zero is invalid, and is rejected before touching the database.
 - **Generation, canonical form and digest live in `klav-core`** (`crypto::invite`, following the `crypto::token` pattern with its own label). `klav-server` and the CLI only call it. The code is a `SecretString` everywhere, and is never in a `Debug`, a log or an error.
 - **Why 128 bits, with the arithmetic:**
   - *Online:* with N live codes and G guesses, the chance of a hit is about G·N/2^b. With 60 bits (`KLAV-XXXX-XXXX-XXXX`, the format first suggested), 1,000 live codes and the per-IP limit below from 10,000 IPs for a year (about 5.3·10^9 guesses), that is about 4.6·10^-6. That's small, but it depends on the rate limit holding. With 128 bits it is about 1.5·10^-26, whatever the rate limit.
@@ -137,7 +137,7 @@ klav-server invite revoke <ID>
 - **They never migrate the database.** If the schema is older than the binary's, the subcommand stops and says to upgrade and start the server first. A CLI run from a newer image against a running older server must never change its schema.
 - **They run alongside the running server:** SQLite in WAL with `busy_timeout`, or Postgres.
 - **Where Omar runs them:**
-  - on Railway, inside the service with `railway ssh` (the binary is already in the image);
+  - on Railway, inside the service with `railway ssh` (the binary is already in the image). The Railway image starts as root and drops to `klav` (`self-hosting.md` §8), so layer 1 tests which user and environment that session has: run as root against SQLite, the subcommand could leave a WAL file owned by root that the server can't write. If needed, the subcommand refuses to run as root on a database it doesn't own, or the docs say to switch to `klav` first;
   - with Compose, `docker compose exec klav klav-server invite create`;
   - with Homebrew or systemd, directly.
 - **Who can run them:** whoever can read and write the database, who already controls the server. There is no new privilege.
@@ -175,11 +175,11 @@ New keys in `[limits]`, each with a `KLAV_*` variable, because production is con
 | Key / variable | What it counts | Default (self-hosting) | `api.klav.dev` beta (Q4) |
 |---|---|---|---|
 | `max_account_attachment_bytes` / `KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES` | Declared size of every attachment in the owner's vaults that isn't purged: finished, pending, and those of trashed items | 10 GiB | 250 MiB |
-| `max_account_item_bytes` / `KLAV_MAX_ACCOUNT_ITEM_BYTES` | `overview` + `details` + `wrapped_key` of every item that isn't purged, **plus their kept versions** | 1 GiB | 64 MiB |
+| `max_account_vault_bytes` / `KLAV_MAX_ACCOUNT_VAULT_BYTES` | Everything encrypted in the owner's vaults except attachments: `overview` + `details` + `wrapped_key` of every item that isn't purged **plus their kept versions**, and the `meta` of every vault and project | 1 GiB | 64 MiB |
 | `max_items_per_account` / `KLAV_MAX_ITEMS_PER_ACCOUNT` | Items that aren't purged (trashed ones count until they are purged) | 100,000 | 5,000 |
 | `max_vaults_per_account` / `KLAV_MAX_VAULTS_PER_ACCOUNT` | Owned vaults that aren't deleted, and deleted ones until they are purged | 1,000 | 20 |
 
-- **Why there is a byte limit on items:** counting items isn't enough. Details may be 1 MiB with 50 kept versions, so 5,000 items could weigh about 250 GiB. Real items weigh a few KiB, so 64 MiB covers tens of thousands of versions.
+- **Why there is a byte limit on vault data:** counting items isn't enough. Details may be 1 MiB with 50 kept versions, so 5,000 items could weigh about 250 GiB. Projects have no count limit either, and carry up to 64 KiB of `meta` each, so their `meta` counts here too. Real items weigh a few KiB, so 64 MiB covers tens of thousands of versions.
 - **The self-hosting defaults are generous but finite.** A server someone leaves open by mistake gets a ceiling, and nobody with a normal vault ever sees it. `self-hosting.md` §6 stops saying finished attachments have no quota.
 - **`validate()`** accepts `0` or a positive value. For attachments, a non-zero quota must be at least `max_attachment_bytes`, so that a single allowed attachment always fits. `max_pending_upload_bytes` keeps its own meaning.
 
@@ -187,8 +187,8 @@ New keys in `[limits]`, each with a `KLAV_*` variable, because production is con
 
 - **One helper, `quota::check(tx, owner, delta)`,** called inside the transaction that already holds the owner's account lock:
   - **attachments:** at `create`, the upload's declaration. Its size is fixed there, and chunks can't exceed it, so `complete` needs no check. The pending bytes count from the moment they are declared;
-  - **items:** in `insert_item` and in the item update path (people and agents: `Writer::Person` and `Writer::Agent`, rotation, accepted secret requests), and when an item is restored from the trash or a version is restored;
-  - **vaults:** in `create_vault`, which **starts taking the account lock** before inserting, the same lock as the other writes.
+  - **items:** in `insert_item` and in the item update path (people and agents: `Writer::Person` and `Writer::Agent`, rotation, accepted secret requests). Restoring a version is an update, with its own delta. Restoring from the trash adds nothing, because trashed items already count;
+  - **vaults and projects:** in `create_vault`, which **starts taking the account lock** before inserting, the same lock as the other writes, and in `create_project` and every change to a vault's or project's `meta`, under the same lock.
 - **Atomic against concurrency:** every write that adds bytes or rows for an account goes through that account's lock. So two uploads or two items declared at the same time can't both fit in the last free space.
 - **Measured inside the transaction:** `SUM`/`COUNT` under the lock, as the pending uploads are today (with `CAST(… AS BIGINT)` for `sqlx::Any` on Postgres). Writes to a password manager are rare, so this is cheap. If it ever shows up in the traces, a counter column comes later, in its own ADR.
 - **What is never refused:**
@@ -205,9 +205,10 @@ New keys in `[limits]`, each with a `KLAV_*` variable, because production is con
 
 The quota is per account. There is no global ceiling: the risk is that the sum of seats times quotas exceeds the volume. **The rule that Omar applies when sizing each wave of invites:**
 
-> used today + (live seats × (`max_account_attachment_bytes` + `max_account_item_bytes`)) ≤ 80% of the Railway volume
+> used today + (live seats × (`max_account_attachment_bytes` + `max_account_vault_bytes`)) ≤ 80% of the Railway volume
 
 - With the recommended numbers (250 MiB + 64 MiB ≈ 314 MiB per account), **50 seats are at most about 15.3 GiB**. Omar checks the real size of the `/data` volume before the first wave, and grows it, or lowers quotas, before the next one.
+- **The formula covers only attachments and vault data.** Other per-account rows grow outside any quota: the audit log (`audit_events`, one row per logged action), devices, sessions, agents, approvals, tasks, rotations, sandboxes and secret requests. Most have their own pending limits (`api.md` §7, ADR 0046) and the request rate limits, but the audit log grows for as long as the account is used. That is why the rule leaves 20% free.
 - **An alarm** on the volume's usage (Railway metrics, Maple) at 70%. Setting it up is Omar's step.
 - A server-side "minimum free disk" check is left out: it needs `statvfs` through a new dependency or `unsafe`, and both are outside this ADR.
 
@@ -221,7 +222,7 @@ The quota is per account. There is no global ceiling: the risk is that the sum o
 - **ADR 0010 §2** puts email verification in phase 8, so that registration stops revealing which emails exist.
 - **A bound invite is the verification, done by hand.** Omar writes to the address on the waitlist with a code that only works for that address. Whoever registers it has read that mailbox.
 - **The `409` that reveals existing emails** is now reachable only by someone with a valid invite for that same email (bound), or with a batch code (Q3), and within the auth limits.
-- **What it doesn't cover:** with a batch code, someone can register an address that isn't theirs and keep its real owner out (squatting). They can read nothing, because the vault is end-to-end encrypted. That is residual risk 98.
+- **What it doesn't cover:** with a batch code, or with someone else's invite email in hand (T246), someone can register an address that isn't theirs and keep its real owner out (squatting). They can read nothing, because the vault is end-to-end encrypted. That is residual risk 98.
 - **Email verification becomes mandatory** before `api.klav.dev` runs in `open` mode, and before the paid plan, whichever comes first (Q7). It needs transactional email, which is outside this ADR.
 
 ### 4. The waitlist becomes the invite queue (`apps/web`)
@@ -255,7 +256,7 @@ The quota is per account. There is no global ceiling: the risk is that the sum o
 - **`ghcr.io/omaralex24/klav-server` already exists** (`release-docker.yml`), for `linux/amd64` only, published by hand with `:<version>` and `:latest`. The quick start (README and `self-hosting.md` §1) still builds with `--build`.
 - **Change:** the root `docker-compose.yml` uses `image: ghcr.io/omaralex24/klav-server:<version>`, pinned to the release (the release PR bumps it), with no `build:`. Building from source goes in `docker-compose.build.yml` (`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`).
   - The quick start no longer needs `git clone`: you download the `docker-compose.yml` of the tag (`raw.githubusercontent.com/OmarAlex24/klav/vX.Y.Z/docker-compose.yml`).
-  - It starts with `KLAV_REGISTRATION_MODE=invite`, and the first step after `up` is `docker compose exec klav klav-server invite create --email you@…`.
+  - It starts with `KLAV_REGISTRATION_MODE=invite` and keeps `KLAV_ALLOW_REGISTRATION=false` (§1.1), and the first step after `up` is `docker compose exec klav klav-server invite create --email you@…`.
 - **`linux/arm64` image and binary** (Raspberry Pi 5, Ampere VPSes): only with a native arm64 runner. QEMU emulation would multiply the time of each paid Boat run (ADR 0034). Without that runner, they stay out of this ADR.
 
 #### 5.2 `klav-server` release binaries
@@ -281,6 +282,7 @@ The quota is per account. There is no global ceiling: the risk is that the sum o
     - a `service do` block (`run [opt_bin/"klav-server", "--config", etc/"klav/server.toml"]`, `keep_alive true`, logs under `var/log`). `brew services` uses launchd on macOS and systemd on Linux;
     - `post_install` writes `etc/klav/server.toml` only if it doesn't exist: `listen = 127.0.0.1:8080`, SQLite under `var/"klav"`, `registration_mode = "invite"`;
     - `caveats` give the next two steps: TLS (§5.4) and `klav-server invite create`.
+- **The Homebrew details above** (`service do`, `post_install`, `auto_updates`, `depends_on "rust" => :build`) are the design; layer 4 checks each against Homebrew's current Formula and Cask Cookbooks before writing them.
 - **Every URL names the tag** (`releases/download/vX.Y.Z/…`), never `releases/latest`, so that a `sha256` always matches what it names.
 - **Who updates the tap: Omar, as a release step** (`releasing.md` §2 gains it), with a PR to the tap that bumps the versions and the `sha256` values copied from `SHA256SUMS`.
   - There is no token with write access to the tap in Klav's CI in this version. An automated bump is a credential that can publish code onto people's machines, and it would need its own ADR.
@@ -308,7 +310,7 @@ The quota is per account. There is no global ceiling: the risk is that the sum o
   ```
 
   - Gets and renews the certificate itself, with the domain's `A`/`AAAA` record pointing at the machine and ports 80 and 443 open.
-  - It runs in the foreground. To keep it running, the docs give the equivalent Caddyfile (§3.1) with the distribution's `caddy` service.
+  - To keep it running across reboots, the docs give the equivalent Caddyfile (§3.1) with the distribution's `caddy` service. Layer 4 checks whether `caddy reverse-proxy` stays in the foreground.
   - Caddy adds `X-Forwarded-For`, so `KLAV_TRUST_FORWARDED_FOR=true`, as §3.2 explains. Layer 4 checks it against Caddy's `reverse_proxy` docs.
 - **Both keep the server on `127.0.0.1`,** and both pass paths and query strings unchanged, as agents' signatures need (§3).
 - **The `apps/docs` pages change in the same PR** (ADR 0039): `quick-start.mdx`, `tls-and-reverse-proxy.mdx`, `configuration.mdx` (the new keys) and `index.mdx` (§6, limitations).
@@ -325,18 +327,19 @@ The quota is per account. There is no global ceiling: the risk is that the sum o
 | T243 | Someone with a copy of the database recovers usable codes | Only the labelled digest is stored; 128 bits can't be searched offline. Whoever has the database already controls the server |
 | T244 | Invite errors reveal which emails have accounts | `invite/check` and the invite failures don't read `accounts`, and answer one `403 invite_invalid` for every reason. The `409` of `register/finish` (ADR 0010 §2) is now reachable only with a valid invite for that email, or a batch code |
 | T245 | A batch code leaks (a public video, a forum): strangers take its seats, or squat other people's emails | Batch codes need an expiry and a maximum of uses (Q3); `invite ls` shows how many were used and by which accounts; `invite revoke`. Squatting is residual risk 98 |
-| T246 | An invite sent by email is read by someone else before its owner uses it | Bound to the email, so it only creates that email's account; expires in 30 days; Omar can revoke it and send another. The account the intruder would create is one the owner never set a password for, and the owner notices when the code doesn't work |
+| T246 | An invite sent by email is read by someone else before its owner uses it | Bound to the email, so it only creates that email's account; expires in 30 days. If the intruder uses it first, the account is theirs, with their password: the owner gets `409` with a new invite, and Omar can't remove that account today. It ends in the same squatting as residual risk 98 |
 | T247 | Two registrations spend the last seat at once, or a failed registration spends it | Conditional `UPDATE` and account `INSERT` in one transaction; a `409` rolls back the seat (§1.3) |
 | T248 | Concurrent uploads or writes get past a quota | Every write that adds to an account checks its quota under that account's lock, including vault creation, which starts taking it; pending uploads count from their declaration (§3.2) |
 | T249 | The beta fills the server's volume (seats × quota) and the server stops for everyone | The sizing rule of §3.3 before each wave, and an alarm at 70%. Residual risk 99 |
 | T250 | Someone with write access to the Homebrew tap, or with Omar's GitHub account, publishes a formula or cask that installs other code | URLs pinned to the tag and `sha256` from `SHA256SUMS`; the tap updated only by Omar's PR, with the ADR 0040 ruleset and 2FA; no token for the tap in CI. Residual risk 100 |
 | T251 | An invite code ends up in a log, in a crash report or in shell history | `SecretString` with no `Debug` from the request to the digest; `create` prints it only to stdout; the CLI prompts for it by default and the docs warn about `--invite`. A used or expired code is worthless |
 | T252 | A self-hoster exposes the server without TLS, or to the internet through Tailscale Funnel, while following the new instructions | The docs keep `127.0.0.1` in every example, say Serve is tailnet-only, and advise against Funnel; the clients refuse `http://` outside loopback (ADR 0011) |
+| T253 | A server from before this ADR (a rollback, an older pinned image, an old template) ignores `KLAV_REGISTRATION_MODE=invite` and runs open to anyone | `KLAV_ALLOW_REGISTRATION=false` stays next to it in production and in every shipped configuration, and agrees with `invite` (§1.1); an older binary reads it and stays closed. Removing it is only for `open` |
 
 **New residual risks** (numbered after 97, in §7 of the threat model):
 
-- **98. Squatting an email with a batch code.** Whoever holds a batch code can register an email that isn't theirs and keep its real owner out until email verification exists (§3.5). They read nothing. Omar can't delete that account from the server today; that needs an admin command, which this ADR doesn't add.
-- **99. The quota is per account, not global.** If Omar invites more seats than the sizing rule allows, the volume can fill up. The alarm is the only safeguard.
+- **98. Squatting an email.** Whoever holds a batch code can register an email that isn't theirs, and whoever reads someone else's invite email can register that address before its owner (T246). Either way the real owner is kept out until email verification exists (§3.5). The squatter reads nothing. Omar can't delete that account from the server today; that needs an admin command, which this ADR doesn't add.
+- **99. The quota is per account, not global, and doesn't cover everything.** If Omar invites more seats than the sizing rule allows, the volume can fill up. The audit log and the other per-account rows outside the quotas (§3.3) also keep growing. The alarm is the only safeguard.
 - **100. Homebrew trusts the tap.** Whoever controls the tap repository, or Omar's GitHub account, controls what `brew install` runs. It is the same trust as GitHub Releases and the image on `ghcr.io`, and it doesn't touch the vaults, which stay end-to-end encrypted.
 
 ### 7. Rejected alternatives
@@ -379,7 +382,7 @@ The quota is per account. There is no global ceiling: the risk is that the sum o
   - the `apps/docs` pages listed in §5.4;
   - README, quick start.
 - **Glossary** (`docs/glossary.md` and `glossary.mdx`), in the first PR that uses each term: invite code (código de invitación), registration mode (modo de registro), quota (cuota), batch code (código de grupo), beta.
-- **Threat model:** §5.25 with T242–T252, and residual risks 98–100, when accepted.
+- **Threat model:** §5.25 with T242–T253, and residual risks 98–100, when accepted.
 - **What Omar does, and nobody does for him:**
   - answer Q1–Q7;
   - after layers 1 and 2 ship in a release, change the production variables (§8);
@@ -395,7 +398,7 @@ A `gh stack` stack, one branch per layer. **Layers 1 and 2 can merge before Omar
 |---|---|---|
 | 1 · server | `klav-core::crypto::invite` and its vectors; `klav-proto` types; `registration_mode`; migration 0021; `invite/check` and the invite in `register/*`; `klav-server invite`; the four quotas; the lock in `create_vault`; the invite rate limit; tests in SQLite and Postgres (the last seat raced, rollback on `409`, a quota under concurrency, both keys set, older clients against `invite` mode) | It deploys production on merge: it needs the "safe with older clients" review. With `KLAV_ALLOW_REGISTRATION=false`, nothing changes |
 | 2 · clients | `klav-client` (mode, check, `InviteInvalid`, `QuotaExceeded`); `klav signup` (prompt, `--invite`, `KLAV_INVITE`); `klav-ffi`; Mac app ("Invite code", es/en strings) | Ships in a release (Sparkle) before the flip |
-| — · flip (Omar) | On Railway: remove `KLAV_ALLOW_REGISTRATION`, set `KLAV_REGISTRATION_MODE=invite` and the beta `KLAV_MAX_*`, deploy the staged changes; check `GET /v1/health`; create his first invite and sign up with it from a clean Mac | Only after the layer 2 release is out |
+| — · flip (Omar) | On Railway: keep `KLAV_ALLOW_REGISTRATION=false`, add `KLAV_REGISTRATION_MODE=invite` and the beta `KLAV_MAX_*`, deploy the staged changes; check `GET /v1/health`; create his first invite and sign up with it from a clean Mac | Only after the layer 2 release is out |
 | 3 · site | Waitlist schema v2, `?pending=1`, `mark-invited`; beta copy en/es; `features.md`, `sitio-web.md` §6, "On the way", privacy | After acceptance (ADR 0039 §3) and after the flip: the page doesn't promise invites before they work |
 | 4 · distribution | `klav-server` in the Linux build and the kit; the systemd unit; `docker-compose.yml` with the pinned image, plus `docker-compose.build.yml`; README and `self-hosting.md`/`apps/docs` (quick start, Tailscale Serve, Caddy, the new keys); the Homebrew formulae and cask, written in `deploy/homebrew/` and copied by Omar to the tap | Independent of 1–3 except the config examples (`registration_mode`), so it goes on top of 1. The tap and its first publication are Omar's |
 
@@ -408,7 +411,7 @@ When each layer is finished, its box in `docs/roadmap.md` is ticked in the same 
 | Q1 | Do we open `api.klav.dev` as a free, invite-only beta now? It reverses your launch decision of 2026-11-18 ("self-hosted only from day 0, with a waiting list for the paid plan") and ADR 0028 H4 | **(a) Yes: invite-only beta now; open registration and the 20 USD plan later, with email verification (Recommended)** · (b) No: build `invite` mode only for self-hosters, and `api.klav.dev` stays closed until the paid plan · (c) Only people you pick by hand, with no public invite button on the site |
 | Q2 | Invite code format | **(a) 128 bits: `KLAV-` + 26 Crockford base32 characters (Recommended)** · (b) 80 bits: `KLAV-XXXX-XXXX-XXXX-XXXX` · (c) 60 bits: `KLAV-XXXX-XXXX-XXXX` (as first proposed; secure online only while the rate limit holds, §1.3) |
 | Q3 | Batch codes (no bound email, more than one use) in the first version? | **(a) Yes, but with a mandatory expiry of at most 14 days and at most 50 uses (Recommended)** · (b) No: only codes bound to one email, until email verification · (c) Yes, without limits |
-| Q4 | Beta quotas on `api.klav.dev` | **(a) 250 MiB attachments, 64 MiB items, 5,000 items, 20 vaults, and at most 50 seats in the first wave (Recommended)** · (b) 500 MiB attachments, 128 MiB items, 10,000 items, 50 vaults · (c) 100 MiB attachments, 32 MiB items, 2,000 items, 10 vaults |
+| Q4 | Beta quotas on `api.klav.dev` | **(a) 250 MiB attachments, 64 MiB vault data, 5,000 items, 20 vaults, and at most 50 seats in the first wave (Recommended)** · (b) 500 MiB attachments, 128 MiB vault data, 10,000 items, 50 vaults · (c) 100 MiB attachments, 32 MiB vault data, 2,000 items, 10 vaults |
 | Q5 | What happens to beta accounts when the beta ends | **(a) At least 60 days' notice in the apps and by email, then the 20 USD a year plan or moving to your own server with `klav account set-server`; nothing is deleted without that notice (Recommended)** · (b) Beta accounts stay free for good · (c) The first year of the plan free for beta accounts |
 | Q6 | When `klav-server` binaries and Homebrew ship, and the tap's name | **(a) In v0.10.0, tap `OmarAlex24/homebrew-tap` (`brew install omaralex24/tap/klav-server`), cask `klav` and Linux formula `klav-cli` (Recommended)** · (b) In a v0.9.x patch, same tap · (c) Binaries only, no Homebrew yet |
 | Q7 | Email verification | **(a) Stays deferred until `api.klav.dev` opens without invites or the paid plan starts, whichever is first; bound invites cover the beta (Recommended)** · (b) Required before the beta opens (it delays the beta until transactional email exists) |
