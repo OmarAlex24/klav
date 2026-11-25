@@ -521,12 +521,14 @@ describe("the beta invite on the page (ADR 0048 §4)", () => {
     assert.equal(ES["wl.join"], "Pide una invitación a la beta gratuita");
   });
 
-  test("under the form: free during the beta, 20 USD a year after it with 60 days' notice, set-server, self-hosting free", () => {
+  test("under the form: free during the beta, 20 USD a year after it with 60 days' notice, self-hosting free, and no promise to move the account", () => {
     for (const terms of [english("wl.terms"), ES["wl.terms"]]) {
       assert.ok(terms.includes("<code>api.klav.dev</code>"), terms);
       assert.ok(terms.includes("20 USD"), terms);
       assert.ok(terms.includes("60"), terms);
-      assert.ok(terms.includes("<code>klav account set-server</code>"), terms);
+      // `klav account set-server` only changes the URL of an account the new server
+      // already has; nothing moves an account to an empty server yet (sitio-web.md §6).
+      assert.equal(terms.includes("set-server"), false, terms);
       assert.equal(/href=/.test(terms), false, "no links in the terms");
     }
     assert.match(english("wl.terms"), /free while the beta is invite-only/);

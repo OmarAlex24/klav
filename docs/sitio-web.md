@@ -281,9 +281,8 @@ with this email address, until <date, 30 days from today>:
 3. The docs are at https://docs.klav.dev/.
 
 Our server is free while the beta lasts. When it ends, it becomes a plan of
-20 USD a year, and we'll tell you at least 60 days before. Then you choose:
-the plan, or moving your account to your own server with
-`klav account set-server`. Running your own server stays free.
+20 USD a year, and we'll tell you at least 60 days before you'd pay
+anything. Running your own server stays free.
 
 Just reply to this email if anything doesn't work.
 
@@ -310,9 +309,8 @@ este correo, hasta el <fecha, a 30 días de hoy>:
 3. Los docs están en https://docs.klav.dev/.
 
 Nuestro servidor es gratis mientras dure la beta. Cuando termine pasa a ser un
-plan de 20 USD al año, y te avisamos por lo menos 60 días antes. Entonces
-eliges: el plan, o llevarte tu cuenta a tu propio servidor con
-`klav account set-server`. Montar el tuyo sigue siendo gratis.
+plan de 20 USD al año, y te avisamos por lo menos 60 días antes de cobrarte
+nada. Montar el tuyo sigue siendo gratis.
 
 Si algo no funciona, contesta a este correo.
 
@@ -430,7 +428,7 @@ la página no se mezcla antes.
 | Descargas: la extensión necesita la app de Mac o, en Linux, la línea de comandos | `klavd` y `klav-native-host` vienen en los dos ([releasing.md](releasing.md) §1) |
 | Descargas: el iPhone pide iOS 18, entra a una cuenta creada en la Mac o con la CLI, y sale por una beta pública de TestFlight | [ios.md](ios.md); [publicar-ios.md](publicar-ios.md) |
 | Descargas: el servidor propio con `docker compose up`, SQLite o Postgres, detrás de tu TLS; el nuestro, gratis durante su beta con invitación | [self-hosting.md](self-hosting.md); la beta, [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4 y Q1 |
-| La beta de `api.klav.dev` («Request a free beta invite», la tarjeta «Hosted by us» en `#beta`): gratis mientras sea con invitación; después, un plan de 20 USD al año con al menos 60 días de aviso; `klav account set-server` para llevarse la cuenta; el servidor propio, gratis siempre | [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4, Q1 y Q5 (aceptado el 2026-11-25); el modo `invite` de `klav-server` y el código en `klav signup` y en la app de Mac (capas 1 y 2 del ADR); `klav account set-server`, ADR 0048 Q5 (a). **Hueco:** hoy `set-server` solo cambia la dirección de una cuenta que el servidor nuevo ya tiene ([cli.md](cli.md) §3, `set_server_cmd` en `crates/klav-cli/src/commands/account.rs`), y no hay forma de exportar una cuenta de `api.klav.dev` a un servidor propio vacío: antes de que termine la beta hace falta ese camino, o quitar la frase. Por eso la página no dice «cuando quieras». La página no nombra las cuotas de la beta: dependen de las variables de producción |
+| La beta de `api.klav.dev` («Request a free beta invite», la tarjeta «Hosted by us» en `#beta`): gratis mientras sea con invitación; después, un plan de 20 USD al año con al menos 60 días de aviso; el servidor propio, gratis siempre | [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4, Q1 y Q5 (aceptado el 2026-11-25); el modo `invite` de `klav-server` y el código en `klav signup` y en la app de Mac (capas 1 y 2 del ADR). **Lo que la página no dice:** que la cuenta se pueda llevar a un servidor propio. ADR 0048 Q5 (a) nombra `klav account set-server`, pero hoy solo cambia la dirección de una cuenta que el servidor nuevo ya tiene ([cli.md](cli.md) §3, `set_server_cmd` en `crates/klav-cli/src/commands/account.rs`), y no hay forma de exportar una cuenta de `api.klav.dev` a un servidor propio vacío. Ni la página, ni los correos, ni los docs lo prometen hasta que exista ese camino; hace falta antes de que termine la beta. La página tampoco nombra las cuotas de la beta: dependen de las variables de producción |
 | Las invitaciones salen a mano, de a poco, desde la lista | §3, «Mandar las invitaciones» |
 
 **Próximamente** (sin implementar en `main`). La lista sale de
