@@ -159,6 +159,93 @@ async fn serve_one<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             }
             io.write_all(b"0\r\n\r\n").await?;
         }
+        // A server-sent stream, as the MCP gate sees one (ADR 0036 §7):
+        // the bearer echoed in the first event, split over two chunks of
+        // one line; then a comment every 100 ms until the caller goes away
+        // (at most a minute), and a `WWW-Authenticate` that must never
+        // reach a sandbox.
+        "/v1/sse" => {
+            let value = auth.strip_prefix("Bearer ").unwrap_or(&auth).to_owned();
+            let (a, b) = value.split_at(value.len() / 2);
+            io.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nwww-authenticate: Bearer resource_metadata=\"https://upstream.test/.well-known/oauth-protected-resource\"\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
+            chunk(
+                &mut io,
+                format!("event: message\ndata: {{\"seen\":\"{a}").as_bytes(),
+            )
+            .await?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            chunk(&mut io, format!("{b}\"}}\n\n").as_bytes()).await?;
+            for _ in 0..600 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if chunk(&mut io, b": ping\n\n").await.is_err() {
+                    return Ok(());
+                }
+            }
+            io.write_all(b"0\r\n\r\n").await?;
+        }
+        // A stream that lasts `n` × 200 ms, then ends cleanly.
+        route if route.starts_with("/v1/sse-for/") => {
+            let n: u32 = route["/v1/sse-for/".len()..].parse().unwrap_or(1);
+            io.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream; charset=utf-8\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
+            for i in 0..n {
+                chunk(&mut io, format!("data: {i}\n\n").as_bytes()).await?;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            io.write_all(b"0\r\n\r\n").await?;
+        }
+        // A stream whose second line never ends within the 1 MiB hold.
+        "/v1/sse-long-line" => {
+            io.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
+            chunk(&mut io, b"data: ok\n").await?;
+            let long = vec![b'x'; 600 * 1024];
+            for _ in 0..2 {
+                if chunk(&mut io, &long).await.is_err() {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            return Ok(());
+        }
+        // Headers only after 5 s: a call still waiting on the provider.
+        "/v1/very-slow" => {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            io.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\nslow")
+                .await?;
+        }
+        // A stream that goes quiet for 5 s after its first event.
+        "/v1/sse-quiet" => {
+            io.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
+            chunk(&mut io, b"data: hello\n\n").await?;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            io.write_all(b"0\r\n\r\n").await?;
+        }
+        // Headers at once, the body 2.5 s later: not a stream.
+        "/v1/slow-body" => {
+            io.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\n")
+                .await?;
+            io.flush().await?;
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            io.write_all(b"slow").await?;
+        }
+        // A sign-in challenge (an MCP server asking for OAuth).
+        "/v1/unauthorized" => {
+            io.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Bearer resource_metadata=\"https://upstream.test/.well-known/oauth-protected-resource\"\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
+        }
         "/v1/redirect" => {
             io.write_all(
                 b"HTTP/1.1 302 Found\r\nlocation: http://127.0.0.1:9/steal\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
@@ -245,6 +332,15 @@ async fn serve_one<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     io.flush().await?;
     let _ = io.shutdown().await;
     Ok(())
+}
+
+/// Writes `data` as one chunk of a chunked body, and flushes it.
+async fn chunk<S: tokio::io::AsyncWrite + Unpin>(io: &mut S, data: &[u8]) -> std::io::Result<()> {
+    io.write_all(format!("{:x}\r\n", data.len()).as_bytes())
+        .await?;
+    io.write_all(data).await?;
+    io.write_all(b"\r\n").await?;
+    io.flush().await
 }
 
 fn rule(effect: Effect, scope: Scope) -> Rule {

@@ -11,6 +11,12 @@
 //! that could carry another one is dropped; no redirects, no compressed
 //! answers; and the answer with the value redacted from its headers and
 //! from its body as it streams.
+//!
+//! A `text/event-stream` answer is a stream (ADR 0036 §7, note of
+//! 2026-11-19, the MCP gate): the request timeout covers only its headers,
+//! it may stay open [`STREAM_MAX`] at most and [`STREAM_IDLE`] without a
+//! piece, its redactor emits through each line end, and it is cut when its
+//! sandbox ends or the person pauses the agents.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -35,18 +41,28 @@ use crate::rate::RateLimits;
 
 /// Largest request body the proxy forwards (it is read whole first).
 pub const DEFAULT_MAX_BODY: usize = 10 * 1024 * 1024;
-/// Longest a call to the provider may take, answer included.
+/// Longest a call to the provider may take, answer included. For a stream
+/// (`text/event-stream`), only until its headers: then [`STREAM_MAX`].
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Longest a stream (`text/event-stream`) may stay open, counted from when
+/// its redactor took the value (ADR 0036 §7, note of 2026-11-19). It never
+/// outlives its sandbox either.
+pub const STREAM_MAX: Duration = Duration::from_secs(15 * 60);
+/// Longest a stream waits for the provider's next piece, and for the
+/// caller to take the previous one: [`BODY_IDLE`] for a stream.
+pub const STREAM_IDLE: Duration = Duration::from_secs(2 * 60);
 /// Requests handled at once. Each may hold a request body of up to
 /// `--max-body` in memory, and a redactor with the value until its answer
-/// ends; one over the limit gets `429 klav_rate_limited`.
+/// ends (the request timeout, or [`STREAM_MAX`] for a stream); one over
+/// the limit gets `429 klav_rate_limited`.
 pub const MAX_IN_FLIGHT: usize = 16;
 /// Connections open at once on the local listener; one more waits until
 /// another closes.
 pub const MAX_CONNECTIONS: usize = 64;
 /// Longest the proxy waits for the provider's next piece of an answer, and
 /// for the caller to take the previous one. Past it the answer is cut and
-/// the redactor, which holds the value, is dropped.
+/// the redactor, which holds the value, is dropped. A stream has
+/// [`STREAM_IDLE`] instead.
 pub const BODY_IDLE: Duration = Duration::from_secs(60);
 /// Calls a minute from one sandbox, over all its profiles (ADR 0036 §8).
 pub const SANDBOX_RATE_PER_MINUTE: u32 = 60;
@@ -122,8 +138,12 @@ const DROPPED_RESPONSE_HEADERS: [&str; 8] = [
 ];
 
 /// Headers a sandbox never gets back from the provider: they set a
-/// credential of the provider's own (a session cookie).
-const SANDBOX_DROPPED_RESPONSE_HEADERS: [&str; 2] = ["set-cookie", "set-cookie2"];
+/// credential of the provider's own (a session cookie), or start a sign-in
+/// that would end in one (`WWW-Authenticate`: an MCP client would begin
+/// an OAuth flow with the provider, and get a token that works without the
+/// proxy; ADR 0036 §7, note of 2026-11-19, T148).
+const SANDBOX_DROPPED_RESPONSE_HEADERS: [&str; 3] =
+    ["set-cookie", "set-cookie2", "www-authenticate"];
 
 /// What the proxy remembers of an item between calls: never its value.
 #[derive(Default, Clone)]
@@ -145,6 +165,11 @@ pub struct ProxyState {
     pending: Mutex<HashMap<String, (ApprovalId, i64)>>,
     max_body: usize,
     request_timeout: Duration,
+    /// [`STREAM_MAX`] and [`STREAM_IDLE`] (tests shorten them).
+    stream_limits: std::sync::RwLock<(Duration, Duration)>,
+    /// The calls in flight, to cut when their sandbox ends or the person
+    /// pauses the agents.
+    cuts: Arc<crate::cuts::Cuts>,
     /// The port the listener is bound to: the only one a request's `Host`
     /// may name.
     local_port: u16,
@@ -213,6 +238,8 @@ impl ProxyState {
             pending: Mutex::new(HashMap::new()),
             max_body: DEFAULT_MAX_BODY,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            stream_limits: std::sync::RwLock::new((STREAM_MAX, STREAM_IDLE)),
+            cuts: Arc::new(crate::cuts::Cuts::default()),
             local_port,
             no_local_calls: false,
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
@@ -256,6 +283,62 @@ impl ProxyState {
         };
         self.paused
             .store(paused, std::sync::atomic::Ordering::SeqCst);
+        // Every call in flight, a stream above all, ends with the pause
+        // (ADR 0036 §7, note of 2026-11-19): a new one is refused anyway.
+        if paused {
+            self.cuts.cut_all_paused();
+        }
+    }
+
+    /// The calls in flight.
+    pub(crate) fn cuts(&self) -> &crate::cuts::Cuts {
+        &self.cuts
+    }
+
+    /// Shortens [`STREAM_MAX`] and [`STREAM_IDLE`] (tests).
+    #[cfg(test)]
+    pub(crate) fn set_stream_limits(&self, max: Duration, idle: Duration) {
+        *self
+            .stream_limits
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (max, idle);
+    }
+
+    fn stream_limits(&self) -> (Duration, Duration) {
+        *self
+            .stream_limits
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Cuts the calls in flight that a refusal of the server says are over:
+    /// a sandbox the server bars, or one whose issuer it paused (then every
+    /// live sandbox of that issuer, which the server refuses alike).
+    async fn cut_for(&self, sandbox: Option<klav_core::ids::SandboxId>, e: &ProxyError) {
+        let Some(sandbox) = sandbox else {
+            return;
+        };
+        match e {
+            ProxyError::SandboxRevoked => self.cuts.cut_sandboxes(&[sandbox]),
+            ProxyError::AgentsPaused => {
+                let store = self.sandboxes.store.lock().await;
+                let issuer = store
+                    .sandboxes
+                    .iter()
+                    .find(|s| s.sandbox_id == sandbox)
+                    .map(|s| s.issuer_id);
+                let mut of_issuer: Vec<_> = store
+                    .sandboxes
+                    .iter()
+                    .filter(|s| Some(s.issuer_id) == issuer)
+                    .map(|s| s.sandbox_id)
+                    .collect();
+                drop(store);
+                of_issuer.push(sandbox);
+                self.cuts.pause_sandboxes(&of_issuer);
+            }
+            _ => {}
+        }
     }
 
     /// Keeps its store's epoch and heartbeat in `heartbeats` (its file),
@@ -1087,6 +1170,11 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     let permit = state
         .take_slots(caller.sandbox())
         .ok_or(ProxyError::RateLimited { retry_after: 1 })?;
+    // Registered before the server is asked for the item: an end of the
+    // sandbox or a pause from here on cuts this call, its answer included
+    // (ADR 0036 §7, note of 2026-11-19). One that came before is the
+    // server's refusal, or the check of the sandbox after the access.
+    let cut = state.cuts.register(caller.sandbox());
     let idle = Duration::from_millis(
         state
             .request_body_idle_ms
@@ -1110,7 +1198,13 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
 
     // A refusal comes back narrowed to the path or the method by
     // [`refused`], which logs the same decision it returns.
-    let item = access(state, &profile, &method, path, query, caller.sandbox()).await?;
+    let item = match access(state, &profile, &method, path, query, caller.sandbox()).await {
+        Ok(item) => item,
+        Err(e) => {
+            state.cut_for(caller.sandbox(), &e).await;
+            return Err(e);
+        }
+    };
     #[cfg(test)]
     state.after_access().await;
     // The sandbox may have ended while the server answered: it is checked
@@ -1118,6 +1212,8 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     // It must still be the same sandbox: a key is bound to one, and the
     // server authorised this call for that one (follow-up 1 of the
     // review of #304/#306).
+    // Its end, as a deadline no answer outlives.
+    let mut expiry = None;
     if let Caller::Sandbox { bound, key } = &caller {
         let found = crate::claims::bound(state, key)
             .await
@@ -1129,7 +1225,16 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
         if found.sandbox_id != bound.sandbox_id {
             return Err(ProxyError::SandboxRevoked);
         }
+        let left = found.expires_at.saturating_sub(state.sandboxes().now());
+        expiry = Some(
+            tokio::time::Instant::now() + Duration::from_millis(u64::try_from(left).unwrap_or(0)),
+        );
     }
+    if let Some(reason) = cut.reason() {
+        return Err(cut_error(reason));
+    }
+    // From here the value is in memory: the deadlines count from now.
+    let started = tokio::time::Instant::now();
     let (credential, secret) = profile
         .credential(&item)
         .map_err(|_| ProxyError::NotAllowed(NotAllowed::Policy))?;
@@ -1146,17 +1251,25 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     headers.insert(profile.header.clone(), credential);
     let upstream_method = Method::from_bytes(method.as_bytes())
         .map_err(|_| ProxyError::NotAllowed(NotAllowed::Malformed))?;
-    let sent = state
+    // The request timeout covers the headers here, and the body in
+    // [`respond`] unless the answer is a stream.
+    let request = state
         .client
         .request(upstream_method, url)
         .headers(headers)
         .body(body)
-        .timeout(state.request_timeout)
-        .send()
-        .await;
+        .send();
+    let mut cut = cut;
+    let sent = tokio::select! {
+        biased;
+        reason = cut.cut() => return Err(cut_error(reason)),
+        () = sleep_until_or_never(expiry) => return Err(ProxyError::SandboxExpired),
+        sent = tokio::time::timeout_at(started + state.request_timeout, request) => sent,
+    };
     let res = match sent {
-        Ok(res) => res,
-        Err(e) => return Err(ProxyError::UpstreamBlocked(send_error(&e))),
+        Ok(Ok(res)) => res,
+        Ok(Err(e)) => return Err(ProxyError::UpstreamBlocked(send_error(&e))),
+        Err(_) => return Err(ProxyError::UpstreamBlocked(Blocked::Unreachable)),
     };
     let tally = Tally {
         profile: profile.name.clone(),
@@ -1164,7 +1277,67 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
         partial: 0,
         counts: Arc::clone(&state.counts),
     };
-    respond(res, redactor, tally, permit, caller.sandbox().is_some())
+    let (stream_max, stream_idle) = state.stream_limits();
+    let held = Held {
+        permit,
+        cut,
+        started,
+        expiry,
+        request_timeout: state.request_timeout,
+        stream_max,
+        stream_idle,
+    };
+    respond(res, redactor, tally, held, caller.sandbox().is_some())
+}
+
+/// What a call in flight answers when it is cut before its answer starts.
+fn cut_error(reason: crate::cuts::CutReason) -> ProxyError {
+    match reason {
+        crate::cuts::CutReason::SandboxEnded => ProxyError::SandboxRevoked,
+        crate::cuts::CutReason::Paused => ProxyError::AgentsPaused,
+    }
+}
+
+/// Sleeps until `at`, or forever without one.
+async fn sleep_until_or_never(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// What a call holds until its answer ends, and the limits of that answer.
+pub(crate) struct Held {
+    permit: Slots,
+    cut: crate::cuts::CutHandle,
+    /// When the redactor took the value.
+    started: tokio::time::Instant,
+    /// When its sandbox ends (a call from this machine has none).
+    expiry: Option<tokio::time::Instant>,
+    request_timeout: Duration,
+    stream_max: Duration,
+    stream_idle: Duration,
+}
+
+/// How long an answer's body may take, and how it is cut.
+pub(crate) struct BodyLimits {
+    /// Longest wait for the provider's next piece, and for the caller to
+    /// take the previous one.
+    idle: Duration,
+    /// When the answer is cut, whatever it is doing.
+    deadline: tokio::time::Instant,
+    /// Cuts it when its sandbox ends or the person pauses the agents.
+    cut: Option<crate::cuts::CutHandle>,
+}
+
+/// Whether the answer is a stream: `Content-Type: text/event-stream`, with
+/// or without parameters.
+fn is_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .is_some_and(|t| t.trim().eq_ignore_ascii_case("text/event-stream"))
 }
 
 /// What a request holds until its answer ends.
@@ -1607,12 +1780,14 @@ fn transfer_encoded(headers: &HeaderMap) -> bool {
 }
 
 /// The provider's answer, checked and redacted. A `304` passes with its
-/// headers and no body; any other redirect is blocked.
+/// headers and no body; any other redirect is blocked. A stream
+/// (`text/event-stream`) gets the stream's limits and goes out line by
+/// line.
 fn respond(
     res: reqwest::Response,
     redactor: Redactor,
     mut tally: Tally,
-    permit: Slots,
+    held: Held,
     for_sandbox: bool,
 ) -> Result<Response, ProxyError> {
     let status = res.status();
@@ -1652,12 +1827,36 @@ fn respond(
         headers.append(name.clone(), value);
     }
     let body = if status == reqwest::StatusCode::NOT_MODIFIED {
-        drop((res, redactor, permit));
+        drop((res, redactor, held));
         // Counted and logged apart, never on the way of the answer.
         tokio::spawn(async move { drop(tally) });
         Body::empty()
     } else {
-        redacted_body(res, StreamRedactor::new(redactor), tally, permit)
+        let stream = is_event_stream(res.headers());
+        let (redactor, idle, longest) = if stream {
+            // Each event goes out with the chunk that ends it (step M2).
+            (
+                StreamRedactor::by_lines(redactor),
+                held.stream_idle,
+                held.stream_max,
+            )
+        } else {
+            (
+                StreamRedactor::new(redactor),
+                BODY_IDLE,
+                held.request_timeout,
+            )
+        };
+        let mut deadline = held.started + longest;
+        if let Some(expiry) = held.expiry {
+            deadline = deadline.min(expiry);
+        }
+        let limits = BodyLimits {
+            idle,
+            deadline,
+            cut: Some(held.cut),
+        };
+        redacted_body(res, redactor, tally, held.permit, limits)
     };
     let mut out = Response::new(body);
     *out.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -1666,29 +1865,29 @@ fn respond(
 }
 
 /// The body, chunk by chunk through the redactor, in a task of its own: it
-/// waits at most [`BODY_IDLE`] for the provider's next chunk and for the
-/// caller to take the last one, then cuts the answer and drops the
-/// redactor (which holds the value). A body the redactor cannot hold, one
-/// that breaks, or one the caller does not take in time ends with an
-/// error, never a clean end: hyper then does not finish the chunked body,
-/// so the caller sees a broken transfer, never a short answer that looks
-/// whole, and never an unredacted piece.
+/// waits at most `limits.idle` ([`BODY_IDLE`], or [`STREAM_IDLE`] for a
+/// stream) for the provider's next chunk and for the caller to take the
+/// last one, then cuts the answer and drops the redactor (which holds the
+/// value). It is also cut at `limits.deadline`, when its sandbox ends or
+/// the person pauses the agents, and as soon as the proxy sees the caller
+/// went away (its slots come back then): through the channel, which takes
+/// a half-close, that is when a write to it fails. A body the redactor cannot hold, one that
+/// breaks, one the caller does not take in time, or one cut for any
+/// reason ends with an error, never a clean end: hyper then does not
+/// finish the chunked body, so the caller sees a broken transfer, never a
+/// short answer that looks whole, and never an unredacted piece.
 fn redacted_body(
-    res: reqwest::Response,
-    redactor: StreamRedactor,
-    tally: Tally,
-    permit: Slots,
-) -> Body {
-    redacted_body_within(res, redactor, tally, permit, BODY_IDLE)
-}
-
-fn redacted_body_within(
     mut res: reqwest::Response,
     mut redactor: StreamRedactor,
     tally: Tally,
     permit: Slots,
-    idle: Duration,
+    limits: BodyLimits,
 ) -> Body {
+    let BodyLimits {
+        idle,
+        deadline,
+        cut: mut cut_handle,
+    } = limits;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1);
     // Set only once the last piece is in the channel: a channel that
     // closes without it is a cut answer, whatever was or was not queued.
@@ -1702,25 +1901,60 @@ fn redacted_body_within(
         let mut tally = tally;
         let _permit = permit;
         let tx = tx;
+        let until = tokio::time::sleep_until(deadline);
+        tokio::pin!(until);
         loop {
-            let piece = match tokio::time::timeout(idle, res.chunk()).await {
-                Ok(Ok(Some(chunk))) => match redactor.push(&chunk) {
+            // `None`: cut (the deadline, the sandbox's end, a pause) or the
+            // caller went away. The channel then closes without its last
+            // piece, which the caller reads as a broken answer.
+            let got = tokio::select! {
+                biased;
+                _ = cut_or_never(&mut cut_handle) => None,
+                () = &mut until => None,
+                () = tx.closed() => None,
+                got = tokio::time::timeout(idle, res.chunk()) => Some(got),
+            };
+            let piece = match got {
+                None => Err(None),
+                Some(Ok(Ok(Some(chunk)))) => match redactor.push(&chunk) {
                     Ok(out) => Ok(Bytes::from(out)),
-                    Err(_) => Err(cut()),
+                    Err(_) => Err(Some(cut())),
                 },
-                Ok(Ok(None)) => {
+                Some(Ok(Ok(None))) => {
                     let (last, replaced, partial) = redactor.finish_all();
                     tally.count += replaced as u64;
                     tally.partial += partial as u64;
-                    if tx.send_timeout(Ok(Bytes::from(last)), idle).await.is_ok() {
+                    let sent = tokio::select! {
+                        biased;
+                        _ = cut_or_never(&mut cut_handle) => false,
+                        () = &mut until => false,
+                        sent = tx.send_timeout(Ok(Bytes::from(last)), idle) => sent.is_ok(),
+                    };
+                    if sent {
                         done.store(true, std::sync::atomic::Ordering::Release);
                     }
                     return;
                 }
-                _ => Err(cut()),
+                Some(_) => Err(Some(cut())),
             };
-            let end = piece.is_err();
-            if tx.send_timeout(piece, idle).await.is_err() || end {
+            let (piece, end) = match piece {
+                // Nothing to emit yet (a line not ended, a held tail).
+                Ok(bytes) if bytes.is_empty() => continue,
+                Ok(bytes) => (Ok(bytes), false),
+                Err(Some(e)) => (Err(e), true),
+                Err(None) => {
+                    tally.count += redactor.replaced() as u64;
+                    tally.partial += redactor.partial() as u64;
+                    return;
+                }
+            };
+            let sent = tokio::select! {
+                biased;
+                _ = cut_or_never(&mut cut_handle) => false,
+                () = &mut until => false,
+                sent = tx.send_timeout(piece, idle) => sent.is_ok(),
+            };
+            if !sent || end {
                 tally.count += redactor.replaced() as u64;
                 tally.partial += redactor.partial() as u64;
                 return;
@@ -1739,6 +1973,16 @@ fn redacted_body_within(
             }
         }
     }))
+}
+
+/// Waits until `cut` says the call is cut, or forever without one.
+async fn cut_or_never(cut: &mut Option<crate::cuts::CutHandle>) {
+    match cut {
+        Some(c) => {
+            c.cut().await;
+        }
+        None => std::future::pending().await,
+    }
 }
 
 fn cut() -> std::io::Error {
@@ -2104,15 +2348,221 @@ pub(crate) mod tests {
     }
 
     fn body_of(res: reqwest::Response, idle: Duration) -> Body {
+        let limits = BodyLimits {
+            idle,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(3600),
+            cut: None,
+        };
+        body_with(res, StreamRedactor::new(Redactor::new([SECRET])), limits)
+    }
+
+    const SECRET: &str = "secret-value-0123456789";
+
+    fn body_with(res: reqwest::Response, redactor: StreamRedactor, limits: BodyLimits) -> Body {
         let tally = Tally {
             profile: "p".into(),
             count: 0,
             partial: 0,
             counts: Arc::new(crate::counts::Counts::in_memory()),
         };
-        let permit = Slots::single();
-        let redactor = StreamRedactor::new(Redactor::new(["secret-value-0123456789"]));
-        redacted_body_within(res, redactor, tally, permit, idle)
+        redacted_body(res, redactor, tally, Slots::single(), limits)
+    }
+
+    /// A provider's answer fed piece by piece through the sender, as a
+    /// stream that stays open until the sender drops.
+    fn live_upstream() -> (
+        tokio::sync::mpsc::UnboundedSender<&'static [u8]>,
+        reqwest::Response,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<&'static [u8]>();
+        let frames = futures_util::stream::unfold(rx, |mut rx| async move {
+            let piece = rx.recv().await?;
+            Some((
+                Ok::<_, std::io::Error>(http_body::Frame::data(Bytes::from_static(piece))),
+                rx,
+            ))
+        });
+        let body = http_body_util::StreamBody::new(frames);
+        let res = reqwest::Response::from(axum::http::Response::new(reqwest::Body::wrap(body)));
+        (tx, res)
+    }
+
+    /// The next piece of `body` within `wait`: `None` when none came,
+    /// `Some(Err)` when it broke, `Some(Ok(empty))` when it ended.
+    async fn next_piece(body: &mut Body, wait: Duration) -> Option<Result<Bytes, ()>> {
+        use http_body_util::BodyExt;
+        match tokio::time::timeout(wait, body.frame()).await {
+            Err(_) => None,
+            Ok(None) => Some(Ok(Bytes::new())),
+            Ok(Some(Err(_))) => Some(Err(())),
+            Ok(Some(Ok(frame))) => Some(Ok(frame.into_data().unwrap_or_default())),
+        }
+    }
+
+    fn stream_limits(deadline: Duration, cut: Option<crate::cuts::CutHandle>) -> BodyLimits {
+        BodyLimits {
+            idle: Duration::from_secs(5),
+            deadline: tokio::time::Instant::now() + deadline,
+            cut,
+        }
+    }
+
+    const SHORT: Duration = Duration::from_millis(300);
+
+    /// A stream's event goes out with the chunk that ends it, redacted,
+    /// even with the value split across two chunks of one line; the default
+    /// rule would hold the line's end until the next chunk.
+    #[tokio::test]
+    async fn a_stream_emits_each_line_with_the_chunk_that_ends_it() {
+        let (feed, res) = live_upstream();
+        let redactor = StreamRedactor::by_lines(Redactor::whole_values([SECRET]));
+        let mut body = body_with(res, redactor, stream_limits(Duration::from_secs(30), None));
+        feed.send(b"data: {\"token\":\"secret-val").expect("feed");
+        assert!(
+            next_piece(&mut body, SHORT).await.is_none(),
+            "half a line waits"
+        );
+        feed.send(b"ue-0123456789\"}\n\n").expect("feed");
+        let got = next_piece(&mut body, Duration::from_secs(5))
+            .await
+            .expect("the event")
+            .expect("not broken");
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            format!(
+                "data: {{\"token\":\"{}\"}}\n\n",
+                klav_sdk::actions::REDACTED
+            )
+        );
+        feed.send(b"data: two\r\n\r\n").expect("feed");
+        let got = next_piece(&mut body, Duration::from_secs(5))
+            .await
+            .expect("the second event")
+            .expect("not broken");
+        assert_eq!(&got[..], b"data: two\r\n\r\n");
+        drop(feed);
+        let mut rest = Vec::new();
+        loop {
+            match next_piece(&mut body, Duration::from_secs(5)).await {
+                Some(Ok(b)) if b.is_empty() => break,
+                Some(Ok(b)) => rest.extend_from_slice(&b),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(rest.is_empty(), "nothing held back: {rest:?}");
+    }
+
+    /// A stream line longer than the 1 MiB hold is cut as an error.
+    #[tokio::test]
+    async fn a_stream_line_over_the_hold_cap_is_cut() {
+        static HALF: [u8; klav_sdk::actions::MAX_STREAM_HOLD / 2 + 1] =
+            [b'x'; klav_sdk::actions::MAX_STREAM_HOLD / 2 + 1];
+        let (feed, res) = live_upstream();
+        let redactor = StreamRedactor::by_lines(Redactor::whole_values([SECRET]));
+        let mut body = body_with(res, redactor, stream_limits(Duration::from_secs(30), None));
+        feed.send(b"data: ok\n").expect("feed");
+        assert_eq!(
+            next_piece(&mut body, Duration::from_secs(5)).await,
+            Some(Ok(Bytes::from_static(b"data: ok\n")))
+        );
+        feed.send(&HALF).expect("feed");
+        feed.send(&HALF).expect("feed");
+        assert_eq!(
+            next_piece(&mut body, Duration::from_secs(5)).await,
+            Some(Err(()))
+        );
+    }
+
+    /// The deadline cuts a stream that is still sending, with an error.
+    #[tokio::test]
+    async fn the_deadline_cuts_a_live_stream() {
+        let (feed, res) = live_upstream();
+        let redactor = StreamRedactor::by_lines(Redactor::whole_values([SECRET]));
+        let mut body = body_with(
+            res,
+            redactor,
+            stream_limits(Duration::from_millis(400), None),
+        );
+        let begun = std::time::Instant::now();
+        let mut broke = false;
+        for _ in 0..40 {
+            let _ = feed.send(b"data: tick\n");
+            match next_piece(&mut body, Duration::from_secs(5)).await {
+                Some(Ok(b)) if b.is_empty() => panic!("a clean end"),
+                Some(Ok(_)) => tokio::time::sleep(Duration::from_millis(50)).await,
+                Some(Err(())) => {
+                    broke = true;
+                    break;
+                }
+                None => panic!("stalled"),
+            }
+        }
+        assert!(broke, "never cut");
+        let took = begun.elapsed();
+        assert!(
+            took >= Duration::from_millis(350) && took < Duration::from_secs(2),
+            "{took:?}"
+        );
+    }
+
+    /// A cut (the sandbox ended, a pause) breaks the answer at once, and
+    /// its slot comes back.
+    #[tokio::test]
+    async fn a_cut_breaks_the_answer_at_once() {
+        let cuts = Arc::new(crate::cuts::Cuts::default());
+        let sandbox = klav_core::ids::SandboxId::generate();
+        let (feed, res) = live_upstream();
+        let redactor = StreamRedactor::by_lines(Redactor::whole_values([SECRET]));
+        let limits = stream_limits(Duration::from_secs(60), Some(cuts.register(Some(sandbox))));
+        let mut body = body_with(res, redactor, limits);
+        feed.send(b"data: one\n").expect("feed");
+        assert!(matches!(
+            next_piece(&mut body, Duration::from_secs(5)).await,
+            Some(Ok(_))
+        ));
+        assert_eq!(cuts.open(), 1);
+        cuts.cut_sandboxes(&[sandbox]);
+        assert_eq!(
+            next_piece(&mut body, Duration::from_secs(1)).await,
+            Some(Err(()))
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(cuts.open(), 0, "the task ended and dropped its handle");
+    }
+
+    /// A caller that goes away frees the answer's slot without waiting for
+    /// the idle limit, even while the provider sends nothing.
+    #[tokio::test]
+    async fn a_caller_that_leaves_frees_the_slot_at_once() {
+        let cuts = Arc::new(crate::cuts::Cuts::default());
+        let (_feed, res) = live_upstream();
+        let redactor = StreamRedactor::by_lines(Redactor::whole_values([SECRET]));
+        let limits = BodyLimits {
+            idle: Duration::from_secs(600),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+            cut: Some(cuts.register(None)),
+        };
+        let body = body_with(res, redactor, limits);
+        drop(body);
+        let begun = std::time::Instant::now();
+        while cuts.open() > 0 && begun.elapsed() < Duration::from_secs(2) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(cuts.open(), 0);
+    }
+
+    #[test]
+    fn a_stream_is_told_by_its_content_type() {
+        let ct = |v: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static(v));
+            h
+        };
+        assert!(is_event_stream(&ct("text/event-stream")));
+        assert!(is_event_stream(&ct("Text/Event-Stream; charset=utf-8")));
+        assert!(!is_event_stream(&ct("application/json")));
+        assert!(!is_event_stream(&ct("text/event-streams")));
+        assert!(!is_event_stream(&HeaderMap::new()));
     }
 
     const PIECE: &[u8] = &[b'a'; 4096];

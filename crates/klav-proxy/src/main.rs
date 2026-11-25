@@ -88,7 +88,9 @@ enum Command {
         /// Largest request body, in bytes.
         #[arg(long, default_value_t = DEFAULT_MAX_BODY)]
         max_body: usize,
-        /// Longest call to a provider, in seconds, answer included.
+        /// Longest call to a provider, in seconds, answer included; for a
+        /// stream (`text/event-stream`), its headers only: then it may stay
+        /// open 15 minutes, and 2 minutes without a chunk.
         #[arg(long, default_value_t = DEFAULT_REQUEST_TIMEOUT.as_secs())]
         timeout: u64,
         /// Refuse every profile call on 127.0.0.1 (`403 klav_not_allowed`):

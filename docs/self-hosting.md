@@ -1378,7 +1378,16 @@ In all of them:
   requests (the next receives `429`), and a 60 s timeout per response chunk,
   from the provider or from the caller; after that the proxy drops the value
   and the response ends in an error (the transfer is broken, never appearing
-  complete), just as when the provider cuts it off mid-stream.
+  complete), just as when the provider cuts it off mid-stream. `--timeout`
+  (120 s by default) covers the whole response, body included.
+- **Streams** (`Content-Type: text/event-stream`, the MCP gate of ADR 0036
+  §7): `--timeout` covers only the headers; the stream may then stay open
+  for up to 15 minutes from when the proxy took the value, and is cut after
+  2 minutes without a chunk. Each event goes out with the chunk that ends
+  its line, redacted; a line over 1 MiB cuts the response. An open stream
+  holds its request slot, and is cut with an error when its sandbox ends for
+  any reason or the person pauses the agents ([api.md](api.md) §8.7 and
+  §8.10). The redactor's copy of the value lives as long as the stream.
 - **Mode (a), base URL:** a tool calls
   `http://127.0.0.1:8790/<profile>/<path>` and the proxy sends
   `https://<profile's upstream>/<path>` with the credential in the profile's
@@ -1462,7 +1471,10 @@ Errors carry the `Klav-Error` header and JSON with `error`, `message` and
   0036 §9, layer 7): it returns `klav_approval_pending` immediately.
 - **Per-sandbox rate:** 60 calls per minute across all its profiles, in
   addition to each profile's rate, and 4 of the 16 concurrent requests. A
-  response for a sandbox has `Set-Cookie` stripped ([api.md](api.md) §8.10).
+  response for a sandbox has `Set-Cookie` and `WWW-Authenticate` stripped
+  ([api.md](api.md) §8.10): a sign-in challenge would let an MCP client start
+  an OAuth flow with the provider and get a token that works without the
+  proxy.
   Sandbox limits are also in place: `max_live` per issuer, 30 starts per minute
   per issuer and no starts while 256 ends are waiting for the server
   ([api.md](api.md) §8.9).

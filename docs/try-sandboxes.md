@@ -324,10 +324,10 @@ On the proxy host, `klav sandbox start` with the proxy down, or on another port,
 ## 12. What does not exist yet
 
 - **Mode (b):** `HTTPS_PROXY` with a CA of the sandbox, for tools that can't take a base URL (Railway's CLI).
-- **Mode (c):** the MCP gate (Maple).
+- **Mode (c), tried for real:** the MCP gate (Maple) is built, but has not run in a real sandbox yet: [§15](#15-the-mcp-gate-maple-step-m5) is that test.
 - **Approvals inside the sandbox:** `klav-forward approval wait`, and the proxy holding a call while the person decides. A profile with `--ask` answers `klav_approval_pending` at once.
 - **The apps' panes:** the Mac app has "Active sandboxes" (Development › Sandboxes). Still missing: the iPhone app's pane, the `sandbox_theft` and `sandbox_expiring` pushes, the Mac's local notifications (E5) and its Issuers block.
-- **Presets:** only `northflank` exists (`klav proxy grant ITEM --preset northflank`). `railway` and `maple` need modes (b) and (c). The `northflank` preset hasn't been tried in a Boat sandbox yet, which layer 10 asks for.
+- **Presets:** `northflank` and `maple` exist (`klav proxy grant ITEM --preset northflank|maple`). `railway` needs mode (b). The `northflank` preset hasn't been tried in a Boat sandbox yet, which layer 10 asks for; `maple` is §15.
 - **Packaging:** a Railway template for the proxy, and the proxy on the Mac (LaunchAgent and Tailscale).
 
 ## 13. Clean up
@@ -433,6 +433,30 @@ northflank list projects >/dev/null; echo "$?"
 - **Or the person,** from their device: `klav proxy sandboxes revoke SANDBOX_ID --wait` (§9, step 4), then delete the machine at Boat.
 
 Ending was not exercised in the 2026-11-18 run. Step 9 and the 2026-11-17 run cover what a revoked sandbox answers.
+
+## 15. The MCP gate (Maple), step M5
+
+The last step of the MCP gate (ADR 0036 §7, note of 2026-11-19): an MCP client in a real sandbox reaches Maple's MCP server through the proxy, with the proxy's key and never its own. It measures what the note leaves unchecked. **Not run yet:** steps M2 to M4 were tested only against a fake provider. Run it after [§14](#14-a-daily-sandbox) works, with the same proxy, issuer and template.
+
+**Before:**
+- [ ] **A restricted Maple key:** read-only permissions, expiring within 90 days, in an `api-key` item (decision 2). Not your full key: every MCP call is the same `POST /mcp`, so the key's permissions are the only limit (T226).
+- [ ] **The grant:** `klav proxy grant ITEM --preset maple` (add `--upstream https://api.eu.maple.dev` for the EU host). The note before the profile says the key is the limit; the profile shows `allow DELETE,GET,POST api.maple.dev /mcp` and no `ask` line.
+- [ ] **The issuer** may use it: `klav proxy issuer add ISSUER --profile maple` (with `northflank` too if it already had it).
+- [ ] **The template** has Claude Code or Codex (or both) on the `PATH`, and the daily environment's setup script has the two `maple` lines that `klav sandbox start --profile maple` prints, after the `eval` line.
+
+**In the sandbox:**
+- [ ] `klav sandbox start --profile maple …` printed the two lines, and the setup script ran them: `claude mcp get maple` shows `http://127.0.0.1:8790/maple/mcp` with `Authorization: Bearer klav-placeholder`; `codex mcp get maple` (or `~/.codex/config.toml`) shows the same URL, without a header.
+- [ ] Ask the agent for something read-only ("list my Maple services"): the call works, and `klav log` on the person's device shows `proxy` accesses with `POST api.maple.dev /mcp` and the sandbox.
+- [ ] **No sign-in.** Neither client opened or offered an OAuth sign-in with Maple, and no token of Maple's own landed in the sandbox (`grep -ri maple_ ~/.claude* ~/.codex` finds only the placeholder).
+- [ ] **Codex without the placeholder:** if a `401` or `403` from the proxy (a revoked sandbox, say) makes Codex start a sign-in, write it down: it is the gap the note of 2026-11-25 names.
+
+**What to measure and write down** (the note's "not checked" list):
+- [ ] Whether Maple answers a `POST` with a stream (`text/event-stream`) or with JSON, how long it keeps a stream open, and whether it uses `Mcp-Session-Id` (`klav-proxy` logs each call's status and duration, never its body).
+- [ ] The largest event line Maple sends: under 1 MiB, or the stream is cut.
+- [ ] Whether 60 calls a minute per sandbox and the 4 slots per sandbox are enough for a real session (a `429 klav_rate_limited` in the agent's output says no).
+- [ ] **Cuts:** with a stream open, `klav proxy sandboxes revoke ID` on the person's device cuts it within about 30 s (the proxy's sweep), and `klav agent pause --all` within about 30 s (the grant's refresh). Both show as a broken stream in the client, never a clean end.
+
+Then, and only then, check the mode (c) box in [roadmap.md](roadmap.md).
 
 ## What the 2026-11-17 rehearsal changed
 

@@ -560,7 +560,9 @@ fn issuer_add_and_remove_need_presence_and_pin_what_was_shown() {
 /// `klavd` (`--no-daemon`): the person reads the preset's note and the
 /// final profile before it signs, and the proxy's grant then holds that
 /// profile: GET, PATCH and POST through, DELETE asking, every path of
-/// api.northflank.com. A preset whose mode the proxy lacks grants nothing.
+/// api.northflank.com. The `maple` preset likewise: POST, GET and DELETE
+/// under /mcp of api.maple.dev, none asking. A preset whose mode the proxy
+/// lacks grants nothing.
 #[test]
 fn the_northflank_preset_shows_and_grants_its_profile() {
     let server = ServerProcess::start(900);
@@ -611,8 +613,7 @@ fn the_northflank_preset_shows_and_grants_its_profile() {
     // (exit code 2) that grant nothing.
     for (name, says) in [
         ("railway", "mode (b)"),
-        ("maple", "mode (c)"),
-        ("heroku", "the presets are northflank"),
+        ("heroku", "the presets are northflank, maple"),
     ] {
         let refused = person
             .unlocked(
@@ -663,6 +664,53 @@ fn the_northflank_preset_shows_and_grants_its_profile() {
         assert!(shown.contains(line), "{line:?} in {shown}");
     }
 
+    // The MCP gate's preset (ADR 0036 §7, note of 2026-11-19).
+    person
+        .unlocked(
+            &[
+                "--no-daemon",
+                "item",
+                "add",
+                "api-key",
+                "--title",
+                "Maple",
+                "--secret-stdin",
+                "api_key",
+            ],
+            "maple_ak_0123456789abcdef0123456789\n",
+        )
+        .ok();
+    let out = person
+        .unlocked(
+            &[
+                "--no-daemon",
+                "proxy",
+                "grant",
+                "Maple",
+                "--preset",
+                "maple",
+                "--every-device-is-updated",
+                "--words",
+                &words,
+            ],
+            "",
+        )
+        .ok();
+    let shown = &out.stderr;
+    assert!(!shown.contains("maple_ak_0123456789") && !out.stdout.contains("maple_ak_0123456789"));
+    let note = shown.find("The maple preset").expect("the note");
+    let profile = shown.find("→ profile maple").expect("the profile");
+    assert!(note < profile, "the note comes before the profile: {shown}");
+    for line in [
+        "upstream  https://api.maple.dev",
+        "header    authorization: Bearer <value>",
+        "allow     DELETE,GET,POST api.maple.dev /mcp",
+        "read-only key that expires within 90 days",
+    ] {
+        assert!(shown.contains(line), "{line:?} in {shown}");
+    }
+    assert!(!shown.contains("ask       "), "nothing asks: {shown}");
+
     let after: Value = serde_json::from_str(
         &person
             .unlocked(&["--no-daemon", "proxy", "status", "--json"], "")
@@ -671,7 +719,17 @@ fn the_northflank_preset_shows_and_grants_its_profile() {
     )
     .expect("status json");
     let credentials = after["credentials"].as_array().expect("credentials");
-    assert_eq!(credentials.len(), 1, "{after}");
+    assert_eq!(credentials.len(), 2, "{after}");
+    let maple = credentials
+        .iter()
+        .find(|c| c["profile"]["name"] == "maple")
+        .expect("maple");
+    assert_eq!(maple["profile"]["upstream"], "https://api.maple.dev");
+    assert_eq!(maple["profile"]["prefix"], "Bearer ");
+    let credentials: Vec<&Value> = credentials
+        .iter()
+        .filter(|c| c["profile"]["name"] == "northflank")
+        .collect();
     let profile = &credentials[0]["profile"];
     assert_eq!(profile["name"], "northflank");
     assert_eq!(profile["upstream"], "https://api.northflank.com");

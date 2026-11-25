@@ -1648,6 +1648,15 @@ async fn calls(limits: ChannelLimits) -> Calls {
 
 /// [`calls`], with the profile's rate.
 async fn calls_with(limits: ChannelLimits, rate_per_minute: u32) -> Calls {
+    calls_configured(limits, rate_per_minute, |s| s).await
+}
+
+/// [`calls_with`], with the state changed by `configure` before it serves.
+async fn calls_configured(
+    limits: ChannelLimits,
+    rate_per_minute: u32,
+    configure: impl FnOnce(ProxyState) -> ProxyState,
+) -> Calls {
     let server = ServerProcess::start(900);
     let dir = tempfile::tempdir().expect("tempdir");
     let upstream = crate::e2e_tests::Upstream::start().await;
@@ -1660,7 +1669,7 @@ async fn calls_with(limits: ChannelLimits, rate_per_minute: u32) -> Calls {
     spec.ask_methods = vec!["DELETE".into()];
     let (ana, proxy, mut t3) = setup_with(&server, &dir, spec).await;
     let clock = Arc::new(Manual(AtomicI64::new(real_now())));
-    let (state, port, addr, _) = serve_limited(
+    let (state, port, addr, _) = serve_configured(
         proxy,
         Arc::clone(&clock),
         Sandboxes::path_in(
@@ -1670,6 +1679,7 @@ async fn calls_with(limits: ChannelLimits, rate_per_minute: u32) -> Calls {
         upstream_client(),
         limits,
         None,
+        configure,
     )
     .await;
     let started = issuer_api::start(&mut t3, port, &request("chat-1", &["northflank"]))
@@ -2435,4 +2445,323 @@ async fn a_bound_key_with_a_claimed_sandboxs_secret_is_theft() {
     // The first sandbox goes on.
     c.claimer.send(STATUS_REQUEST).await.expect("send");
     assert_eq!(c.claimer.answer(5 * SECOND).await.map(|a| a.0), Some(200));
+}
+
+// The MCP gate's streams (ADR 0036 §7, note of 2026-11-19, step M3).
+
+/// Reads into `got` until it holds `needle`: `false` if the connection
+/// closed or `wait` passed first.
+async fn read_until(
+    raw: &mut Raw,
+    got: &mut Vec<u8>,
+    needle: &[u8],
+    wait: std::time::Duration,
+) -> bool {
+    use tokio::io::AsyncReadExt;
+    let read = async {
+        let mut buf = [0u8; 4096];
+        loop {
+            if got.windows(needle.len()).any(|w| w == needle) {
+                return true;
+            }
+            match raw.io.read(&mut buf).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+    };
+    tokio::time::timeout(wait, read).await.unwrap_or(false)
+}
+
+/// Reads into `got` until the connection closes: `false` if it was still
+/// open after `wait`.
+async fn read_to_close(raw: &mut Raw, got: &mut Vec<u8>, wait: std::time::Duration) -> bool {
+    use tokio::io::AsyncReadExt;
+    let read = async {
+        let mut buf = [0u8; 4096];
+        loop {
+            match raw.io.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+    };
+    tokio::time::timeout(wait, read).await.is_ok()
+}
+
+/// The sandbox's credential (`setup_with`), which the provider echoes.
+const SANDBOX_VALUE: &str = "token-0123456789";
+
+/// Opens the fake provider's stream through the sandbox's channel, and
+/// reads its head and its first event.
+async fn open_stream(c: &Calls) -> (Raw, Vec<u8>) {
+    let mut raw = Raw::with(&c.key, c.addr).await;
+    raw.send(b"GET /northflank/v1/sse HTTP/1.1\r\nhost: 127.0.0.1:8790\r\n\r\n")
+        .await
+        .expect("send");
+    let mut got = Vec::new();
+    assert!(
+        read_until(&mut raw, &mut got, b"\"}\n\n", 5 * SECOND).await,
+        "the first event: {}",
+        String::from_utf8_lossy(&got)
+    );
+    (raw, got)
+}
+
+/// Waits for every request slot to come back.
+async fn slots_back(c: &Calls) {
+    let begun = std::time::Instant::now();
+    while c.state.free_slots() < crate::proxy::MAX_IN_FLIGHT && begun.elapsed() < 3 * SECOND {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(c.state.free_slots(), crate::proxy::MAX_IN_FLIGHT);
+}
+
+/// A provider's stream reaches a sandbox as it comes, with the injected
+/// bearer replaced even when the provider split it across two chunks of a
+/// line, and without the provider's `WWW-Authenticate`; a program on this
+/// machine still gets that header, as it gets `Set-Cookie`. A sandbox's
+/// non-stream answer loses it too. A caller that leaves a stream the
+/// provider keeps writing frees its slots at the next write.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_reaches_a_sandbox_redacted_and_without_a_sign_in_challenge() {
+    let c = calls(ChannelLimits::default()).await;
+    let (mut raw, mut got) = open_stream(&c).await;
+    let text = String::from_utf8_lossy(&got).to_string();
+    let head = text.to_ascii_lowercase();
+    assert!(head.starts_with("http/1.1 200"), "{text}");
+    assert!(head.contains("content-type: text/event-stream"), "{text}");
+    assert!(!head.contains("www-authenticate"), "{text}");
+    assert!(!head.contains("resource_metadata"), "{text}");
+    assert!(text.contains("event: message\n"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "data: {{\"seen\":\"{}\"}}\n\n",
+            klav_sdk::actions::REDACTED
+        )),
+        "{text}"
+    );
+    assert!(!text.contains(SANDBOX_VALUE), "{text}");
+    // It stays open and goes on.
+    assert!(read_until(&mut raw, &mut got, b": ping\n\n", 5 * SECOND).await);
+    assert_eq!(
+        c.state.free_slots(),
+        crate::proxy::MAX_IN_FLIGHT - 1,
+        "an open stream holds its slot"
+    );
+    drop(raw);
+    slots_back(&c).await;
+
+    // An event goes out with the chunk that ends its line, even when the
+    // provider then goes quiet for 5 s: nothing of it waits for a next
+    // chunk. (A caller that leaves a quiet stream keeps its slot until the
+    // proxy's next write fails, or the idle limit: the channel takes a
+    // half-close, so only a write tells the proxy it went away.)
+    let mut raw = Raw::with(&c.key, c.addr).await;
+    raw.send(b"GET /northflank/v1/sse-quiet HTTP/1.1\r\nhost: 127.0.0.1:8790\r\n\r\n")
+        .await
+        .expect("send");
+    let mut got = Vec::new();
+    assert!(
+        read_until(&mut raw, &mut got, b"data: hello\n\n", SECOND).await,
+        "the event came at once: {}",
+        String::from_utf8_lossy(&got)
+    );
+    drop(raw);
+
+    // A non-stream answer to a sandbox loses the challenge too.
+    let mut raw = Raw::with(&c.key, c.addr).await;
+    raw.send(b"GET /northflank/v1/unauthorized HTTP/1.1\r\nhost: 127.0.0.1:8790\r\n\r\n")
+        .await
+        .expect("send");
+    let head = raw.head(5 * SECOND).await.expect("answer");
+    assert!(head.starts_with("http/1.1 401"), "{head}");
+    assert!(!head.contains("www-authenticate"), "{head}");
+
+    // A program on this machine keeps it, stream or not.
+    let local = reqwest::Client::new();
+    for path in ["/northflank/v1/unauthorized", "/northflank/v1/sse"] {
+        let res = local
+            .get(format!("http://127.0.0.1:{}{path}", c.port))
+            .send()
+            .await
+            .expect("local");
+        assert!(res.headers().contains_key("www-authenticate"), "{path}");
+    }
+}
+
+/// How a sandbox ends in [`an_ended_sandbox_cuts_its_open_stream`].
+#[derive(Debug, Clone, Copy)]
+enum End {
+    /// Its issuer stops it.
+    Stop,
+    /// The person revokes it; the proxy's sweep reads the revocation.
+    Person,
+    /// Its time runs out; the proxy's sweep ends it.
+    Ttl,
+    /// The person pauses every agent; the proxy's refresh learns it.
+    Pause,
+    /// The person pauses its issuer; the proxy learns it from a refused
+    /// call of the sandbox.
+    IssuerPause,
+}
+
+/// An open stream is cut, with an error and at once, when its sandbox ends
+/// for any reason or the person pauses the agents: not at the channel's
+/// next check of the connection (here 10 minutes away).
+async fn an_ended_sandbox_cuts_its_open_stream(end: End) {
+    let mut c = calls(ChannelLimits {
+        bound_recheck: 600 * SECOND,
+        shutdown_grace: 600 * SECOND,
+        ..ChannelLimits::default()
+    })
+    .await;
+    let (mut raw, mut got) = open_stream(&c).await;
+    // Another call, still waiting for the provider's headers.
+    let mut waiting = Raw::with(&c.key, c.addr).await;
+    waiting
+        .send(b"GET /northflank/v1/very-slow HTTP/1.1\r\nhost: 127.0.0.1:8790\r\n\r\n")
+        .await
+        .expect("send");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    match end {
+        End::Stop => {
+            issuer_api::stop(&c.t3, c.port, c.package.sandbox_id)
+                .await
+                .expect("stop");
+        }
+        End::Person => {
+            let proxy = c.state.proxy_id().await;
+            c.ana
+                .revoke_sandboxes(
+                    proxy,
+                    klav_proto::sandbox::RevokeTarget::One(c.package.sandbox_id),
+                )
+                .await
+                .expect("revoke");
+            assert_eq!(sweep(&c.state).await, 1);
+        }
+        End::Ttl => {
+            c.clock.0.fetch_add(
+                i64::try_from(std::time::Duration::from_secs(24 * 3600).as_millis()).expect("ms"),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            assert_eq!(sweep(&c.state).await, 1);
+        }
+        End::Pause => {
+            c.ana.pause_agents(None, 0).await.expect("pause");
+            assert!(c.state.refresh().await.is_err(), "the server refuses it");
+        }
+        End::IssuerPause => {
+            c.ana
+                .pause_agents(Some(c.t3.id()), 0)
+                .await
+                .expect("pause the issuer");
+            c.claimer
+                .send(b"GET /northflank/v1/projects HTTP/1.1\r\nhost: 127.0.0.1:8790\r\n\r\n")
+                .await
+                .expect("send");
+            let (status, body) = c.claimer.answer(5 * SECOND).await.expect("answer");
+            assert_eq!(status, 423, "{body}");
+        }
+    }
+    let begun = std::time::Instant::now();
+    assert!(
+        read_to_close(&mut raw, &mut got, 3 * SECOND).await,
+        "{end:?}: the stream stayed open"
+    );
+    assert!(
+        begun.elapsed() < 2 * SECOND,
+        "{end:?}: {:?}",
+        begun.elapsed()
+    );
+    assert!(
+        !got.ends_with(b"0\r\n\r\n"),
+        "{end:?}: a cut never looks like a clean end"
+    );
+    // The waiting call answers at once, as a pause when it was one.
+    let (status, body) = waiting.answer(2 * SECOND).await.expect("the waiting call");
+    match end {
+        End::Pause | End::IssuerPause => {
+            assert_eq!(status, 423, "{end:?}: {body}");
+            assert!(body.contains("klav_agents_paused"), "{end:?}: {body}");
+        }
+        _ => assert_eq!(status, 401, "{end:?}: {body}"),
+    }
+    slots_back(&c).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_sandbox_cuts_its_open_stream() {
+    an_ended_sandbox_cuts_its_open_stream(End::Stop).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_persons_revocation_cuts_an_open_stream() {
+    an_ended_sandbox_cuts_its_open_stream(End::Person).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandbox_past_its_time_has_its_open_stream_cut() {
+    an_ended_sandbox_cuts_its_open_stream(End::Ttl).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pausing_the_agents_cuts_an_open_stream() {
+    an_ended_sandbox_cuts_its_open_stream(End::Pause).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pausing_the_issuer_cuts_its_sandboxes_open_stream() {
+    an_ended_sandbox_cuts_its_open_stream(End::IssuerPause).await;
+}
+
+/// The request timeout covers a stream's headers only: a stream that
+/// outlives it arrives whole, while a slow non-stream body is cut. A stream
+/// past its own longest life is cut, and so is one with a line over the
+/// redactor's 1 MiB hold; neither ever ends cleanly.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_has_its_own_limits() {
+    let c = calls_configured(ChannelLimits::default(), 1000, |s| {
+        s.with_request_timeout(SECOND)
+    })
+    .await;
+    let local = reqwest::Client::new();
+    let get = |path: &'static str| {
+        local
+            .get(format!("http://127.0.0.1:{}/northflank{path}", c.port))
+            .send()
+    };
+    // 12 events over 2.4 s, past the 1 s timeout.
+    let res = get("/v1/sse-for/12").await.expect("headers in time");
+    let body = res.text().await.expect("a whole stream");
+    assert!(
+        body.contains("data: 0\n\n") && body.ends_with("data: 11\n\n"),
+        "{body}"
+    );
+    // Not a stream: the timeout covers the body too.
+    let res = get("/v1/slow-body").await.expect("headers in time");
+    assert!(res.bytes().await.is_err(), "the slow body is cut");
+    // A line over the hold: cut for its length, not when the provider
+    // leaves 10 s later.
+    let res = get("/v1/sse-long-line").await.expect("headers");
+    let begun = std::time::Instant::now();
+    assert!(res.bytes().await.is_err(), "the long line is cut");
+    assert!(begun.elapsed() < 3 * SECOND, "{:?}", begun.elapsed());
+    // The stream's own longest life.
+    c.state.set_stream_limits(SECOND, crate::proxy::STREAM_IDLE);
+    let res = get("/v1/sse-for/12").await.expect("headers");
+    let begun = std::time::Instant::now();
+    assert!(res.bytes().await.is_err(), "cut at its longest life");
+    assert!(begun.elapsed() < 2 * SECOND, "{:?}", begun.elapsed());
+    // And its idle limit.
+    c.state.set_stream_limits(
+        crate::proxy::STREAM_MAX,
+        std::time::Duration::from_millis(300),
+    );
+    let res = get("/v1/sse-quiet").await.expect("headers");
+    let begun = std::time::Instant::now();
+    assert!(res.bytes().await.is_err(), "cut when it went quiet");
+    assert!(begun.elapsed() < 2 * SECOND, "{:?}", begun.elapsed());
+    slots_back(&c).await;
 }
