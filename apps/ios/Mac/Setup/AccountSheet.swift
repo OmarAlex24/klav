@@ -101,8 +101,12 @@ struct AccountSheet: View {
     /// A sign-up on a server that takes accounts by invite (ADR 0048 §2).
     private var needsInvite: Bool { mode == .signUp && registration == .invite }
 
-    /// The master password is asked only once the invite passed.
-    private var asksPassword: Bool { !needsInvite || inviteChecked }
+    /// The master password is asked once the server said how it takes
+    /// accounts and, on an invite server, once the invite passed: the form
+    /// only grows, it never swaps fields under the person.
+    private var asksPassword: Bool {
+        mode == .signIn || (askingMode == nil && (!needsInvite || inviteChecked))
+    }
 
     private var trimmedInvite: String { invite.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -265,9 +269,12 @@ struct AccountSheet: View {
             return
         }
         askingMode = server
-        // Typing «Use my own server» changes the server on every key.
-        try? await Task.sleep(for: .milliseconds(350))
-        guard !Task.isCancelled else { return }
+        // Typing «Use my own server» changes the server on every key; the
+        // default server is asked at once.
+        if ownServer {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+        }
         let answer = await model.registrationMode(server: server)
         guard !Task.isCancelled, chosenServer == server else { return }
         registration = answer
