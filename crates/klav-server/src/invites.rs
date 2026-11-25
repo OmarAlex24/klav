@@ -194,7 +194,15 @@ pub async fn run(config: &Config, command: Command) -> Result<String, String> {
     result
 }
 
-async fn create_invite(db: &Db, c: Create) -> Result<String, String> {
+async fn create_invite(db: &Db, mut c: Create) -> Result<String, String> {
+    // The same normalization as sign-up, so `register/finish` compares
+    // byte for byte, whoever built `c`.
+    if let Some(raw) = &c.email {
+        c.email = Some(
+            crate::validate::email(raw)
+                .map_err(|_| format!("--email: {raw:?} is not a valid email address"))?,
+        );
+    }
     let code = InviteCode::generate();
     let digest = code
         .digest()
