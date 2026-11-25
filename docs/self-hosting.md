@@ -124,10 +124,19 @@ sudo systemctl daemon-reload && sudo systemctl enable --now klav-server
 
   ```sh
   sudo systemd-run --pipe --wait --quiet \
-    -p DynamicUser=yes -p User=klav -p StateDirectory=klav \
+    -p DynamicUser=yes -p User=klav -p StateDirectory=klav -p StateDirectoryMode=0700 \
     -p EnvironmentFile=-/etc/klav/server.env -E KLAV_CONFIG=/etc/klav/server.toml \
     /usr/local/bin/klav-server invite create --email you@example.com
   ```
+
+  `StateDirectoryMode=0700` matters: without it the second unit sets
+  `/var/lib/private/klav` back to systemd's default 0755.
+- Checked on 2026-11-25 in a Debian 12 container running systemd 252, with an
+  arm64 build of `deploy/linux/Dockerfile` (`registration_mode` removed from
+  the example, since that binary predated it): `systemd-analyze verify` clean,
+  `systemd-analyze security` 1.2 ("OK"), the service as `klav`, the
+  `systemd-run` unit with the same UID writing to `/var/lib/klav`, a root-only
+  0600 `server.env` read by both, and no denied system call in the journal.
 
 **Homebrew (Linux or macOS):** `brew install omaralex24/tap/klav-server`, then
 `brew services start klav-server`. On Linux it installs the release tarball; on
@@ -429,6 +438,11 @@ tailscale serve --bg 8080
 - With `--bg` it "runs persistently in the background until you disable it",
   and resumes after a reboot ([CLI](https://tailscale.com/kb/1242/tailscale-serve)).
   `tailscale serve reset` removes it.
+- **Paths, query strings and events.** With the default mount `/`, Serve's
+  reverse proxy (`httputil.ReverseProxy` with `SetURL` to the target) keeps
+  the path and the query string and passes the `Host`, and Go's reverse
+  proxy flushes `text/event-stream` immediately (Tailscale's source, as
+  below; its docs don't say).
 - **Client IP.** Serve's documentation names only its `Tailscale-User-*`
   identity headers. Its source (`ipn/ipnlocal/serve.go`,
   `addProxyForwardedHeaders`) sets `X-Forwarded-For` to the tailnet address

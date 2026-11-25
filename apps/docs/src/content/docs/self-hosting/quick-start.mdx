@@ -123,7 +123,7 @@ Each release has `klav-server-linux-x86_64.tar.gz`: the server, a hardened syste
 
    ```sh
    sudo systemd-run --pipe --wait --quiet \
-     -p DynamicUser=yes -p User=klav -p StateDirectory=klav \
+     -p DynamicUser=yes -p User=klav -p StateDirectory=klav -p StateDirectoryMode=0700 \
      -p EnvironmentFile=-/etc/klav/server.env -E KLAV_CONFIG=/etc/klav/server.toml \
      /usr/local/bin/klav-server invite create --email you@example.com
    ```

@@ -21,7 +21,7 @@
 # DynamicUser and User=klav shares its user:
 #
 #   sudo systemd-run --pipe --wait --quiet \
-#     -p DynamicUser=yes -p User=klav -p StateDirectory=klav \
+#     -p DynamicUser=yes -p User=klav -p StateDirectory=klav -p StateDirectoryMode=0700 \
 #     -p EnvironmentFile=-/etc/klav/server.env -E KLAV_CONFIG=/etc/klav/server.toml \
 #     /usr/local/bin/klav-server invite create --email you@example.com
 

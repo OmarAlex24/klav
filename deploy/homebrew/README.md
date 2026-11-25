@@ -50,7 +50,7 @@ After the first release that carries `klav-server-linux-x86_64.tar.gz`
 2. **The hashes,** as in "Each release" below, step 2. Then commit and push
    this first version straight to `main`: the ruleset doesn't exist yet.
 
-3. **The ruleset of ADR 0040 §2 (a),** on the default branch: a pull request
+3. **The ruleset of ADR 0040 §1 (a),** on the default branch: a pull request
    required with 0 approvals, squash only, no force push, no deletion, and an
    empty bypass list. The tap has no CI, so it requires no checks:
 
@@ -154,6 +154,13 @@ of the tap:
 - **The cask's `zap`** removes only what the app can rebuild. It leaves
   `~/Library/Application Support/klav`, where the account and the Secret Key
   live: without the emergency kit, that may be the only copy.
+- **The cask's `uninstall`** stops the `dev.klav.klavd` LaunchAgent and quits
+  the app. Neither `uninstall` nor `zap` has been run yet; try both on a test
+  Mac before the first publication. The `/usr/local/bin/klav` link that "Set
+  up this Mac" makes is left behind, pointing nowhere.
+- **Not run yet:** an install of any of the three from a real release, so the
+  macOS source build with Homebrew's current Rust and the Linux paths are
+  first checked by "Each release", step 4.
 - **`klav-cli` after an upgrade:** the browsers' host manifest names
   `klav-native-host` by its real path, which is versioned under Homebrew's
   Cellar, so `klav extension install-host` must run again after
