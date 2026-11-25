@@ -21,12 +21,12 @@ De dónde sale cada afirmación (para revisarla contra el código):
 | La bitácora apunta cada uso de una passkey, sin el sitio | `PersonEvent` en `crates/klav-proto/src/audit.rs`, ADR [0020](decisiones/0020-passkeys.md) §10, [api.md](api.md) §9 |
 | La papelera y las bóvedas borradas se purgan a los 30 días y dejan solo el identificador del elemento | `trash_days` en `crates/klav-server/src/config.rs`: 30 por defecto, y solo cambia con un archivo TOML en `KLAV_CONFIG`, que ni la imagen de Railway (`deploy/railway/Dockerfile`) ni [self-hosting.md](self-hosting.md) §8.1 ponen. `purge_item` en `crates/klav-server/src/purge.rs` |
 | Qué borra el borrado de una cuenta | `ON DELETE CASCADE` desde `accounts` en `crates/klav-server/migrations/`: todas las tablas salvo `server_state`. Los adjuntos del disco, `remove_orphan_files` en `crates/klav-server/src/purge.rs` |
-| La lista de espera guarda correo, idioma y fecha | [sitio-web.md](sitio-web.md) §2 |
+| La lista de espera guarda correo, idioma y fecha y, al mandar la invitación a la beta, cuándo se mandó y una nota opcional | [sitio-web.md](sitio-web.md) §2 y §3 (esquema 2, `mark-invited`) |
 | Avisos de iOS sin contenido | T75 |
 
 ---
 
-**Última actualización:** 20 de noviembre de 2026
+**Última actualización:** 25 de noviembre de 2026
 
 ## Resumen
 
@@ -154,9 +154,11 @@ ni para decidir sobre créditos o seguros.
 
 ## La lista de espera de klav.dev
 
-Si te apuntas a la lista de espera del plan alojado, el sitio guarda tu correo,
-el idioma de la página y la fecha. Nada más: ni IP, ni navegador, ni cookies.
-Solo se usa para avisarte cuando el plan abra. Para darte de baja en cualquier
+Si pides una invitación a la beta de nuestro servidor, el sitio guarda tu
+correo, el idioma de la página y la fecha. Cuando te mandamos la invitación,
+guarda también que te la mandamos y cuándo, y a veces una nota nuestra (por
+ejemplo, «lista de espera»). Nada más: ni IP, ni navegador, ni cookies. Solo se
+usa para mandarte la invitación por correo. Para darte de baja en cualquier
 momento, escribe a `support@klav.dev` desde ese mismo correo.
 
 ## Cuánto tiempo se guardan los datos
@@ -241,7 +243,7 @@ completo está en el repositorio.
 
 # Privacy policy
 
-**Last updated:** November 20, 2026
+**Last updated:** November 25, 2026
 
 ## Summary
 
@@ -362,11 +364,12 @@ insurance decisions.
 
 ## The klav.dev waitlist
 
-If you join the waitlist for the hosted plan, the site stores your email address,
-the language of the page and the date. Nothing else: no IP address, no browser,
-no cookies. It is only used to tell you when the plan opens. To remove your
-address from the waitlist at any time, write to `support@klav.dev` from that
-address.
+If you request an invite to the beta of our server, the site stores your email
+address, the language of the page and the date. Once we send you the invite, it
+also stores that we sent it and when, and sometimes a note of ours (for
+example, "waitlist"). Nothing else: no IP address, no browser, no cookies. It is
+only used to email you the invite. To remove your address from the waitlist at
+any time, write to `support@klav.dev` from that address.
 
 ## How long data is kept
 
