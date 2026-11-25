@@ -460,6 +460,24 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<SecretText>,
     },
+    /// What a change to the local MCP client `name` of the account's proxy
+    /// would sign (ADR 0049 §3.2), without signing or asking for presence.
+    LocalClientPreview {
+        name: String,
+        change: klav_client::proxy_admin::LocalClientChange,
+    },
+    /// Signs a change to the local MCP client `name`. A new token's digest
+    /// comes in `change`, never the token. `base_version` and
+    /// `shown_proxy` are what the preview showed: nothing is signed if
+    /// either changed. Asks for presence.
+    LocalClientChange {
+        name: String,
+        change: klav_client::proxy_admin::LocalClientChange,
+        base_version: u64,
+        shown_proxy: klav_core::ids::AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<SecretText>,
+    },
     /// Takes `item` away from the account's proxy and changes its key
     /// (ADR 0036 §18). Asks for presence.
     ProxyRevoke {

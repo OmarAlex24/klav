@@ -16,11 +16,14 @@
 use klav_core::ids::{AgentId, ItemId};
 use klav_core::model::preferences::{ProxyMode, ProxySetting};
 use klav_core::policy::{
-    DomainPattern, Effect, HttpMethod, PathPrefix, Permission, Policy, Rule, Scope,
+    DomainPattern, Effect, HttpMethod, MAX_TOOL_PATTERN_LEN, MAX_TOOL_PATTERNS_PER_PROFILE,
+    MAX_TOOL_PATTERNS_PER_RULE, MAX_TOOL_RULES_PER_PROFILE, PathPrefix, Permission, Policy, Rule,
+    Scope, ToolPattern,
 };
 use klav_proto::Blob;
 use klav_proto::agent::{
-    AgentStatus, GRANT_PAYLOAD_VERSION_ITEMS, GrantPayload, GrantedItem, ProxyProfile,
+    AgentStatus, GRANT_PAYLOAD_VERSION_ITEMS, GRANT_PAYLOAD_VERSION_MCP, GrantPayload, GrantedItem,
+    LocalClient, McpHeader, McpProfile, ProxyProfile,
 };
 use serde::{Deserialize, Serialize};
 
@@ -132,7 +135,40 @@ pub struct ProxyCredentialSpec {
     /// Most calls per minute.
     #[serde(default)]
     pub rate_per_minute: Option<u32>,
+    /// An MCP profile (ADR 0049 §2): its endpoint, fixed headers and tool
+    /// rules. Absent for every other profile, so a spec without it is the
+    /// bytes an older `klavd` takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpSpec>,
 }
+
+/// What makes a credential an MCP profile (ADR 0049 §2.1, §5.3): the
+/// upstream's MCP endpoint, its fixed headers, and which tools are
+/// allowed, asked for or denied. A tool none of them names is denied and
+/// hidden from `tools/list` (Q3).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpSpec {
+    /// The endpoint's path on the upstream (`/mcp`).
+    pub endpoint: String,
+    /// Fixed, non-secret headers sent on every request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<McpHeader>,
+    /// Tool patterns that go through.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_allow: Vec<String>,
+    /// Tool patterns each call of which asks the person first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_ask: Vec<String>,
+    /// Tool patterns refused (and hidden from the list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_deny: Vec<String>,
+}
+
+/// What a device or a proxy older than the MCP gateway does once the
+/// account turns it on or the proxy holds its first MCP profile (ADR 0049
+/// §9), said before presence.
+pub const OLDER_CLIENTS_MCP: &str = "This is the account's first MCP profile or turns the account's MCP gateway on. Devices with a Klav older than the MCP gateway then fail to load their approvals list and report tampering in `klav log verify` as soon as an MCP tool call is approved or logged, and a klav-proxy older than it refuses the new grant and stops serving every profile until it is updated. Devices do not report their Klav version, so nothing can check this for you: update Klav on every device (apps, CLI and klavd) and klav-proxy first";
 
 /// A rule of the proxy's grant, as the person reads it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,9 +181,20 @@ pub struct ProxyRuleView {
     pub hosts: Vec<String>,
     /// Path prefixes (empty: any).
     pub path_prefixes: Vec<String>,
+    /// The MCP tool patterns it names (ADR 0049 §5.3; empty: none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_tools: Vec<String>,
 }
 
-/// A credential the proxy holds.
+/// A local MCP client the proxy's grant names (ADR 0049 §3.2): never its
+/// token, nor its token's digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalClientView {
+    /// Its name (`claude-code`).
+    pub name: String,
+    /// The MCP profiles it may use.
+    pub profiles: Vec<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyCredentialView {
     /// Item.
@@ -205,6 +252,10 @@ pub struct ProxyStatus {
     /// from a `klavd` older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuers: Option<Vec<ProxyIssuerView>>,
+    /// The local MCP clients the proxy's verified grant names (ADR 0049
+    /// §3.2). Empty when it names none or is not known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_clients: Vec<LocalClientView>,
 }
 
 /// One agent the proxy's verified grant lets start sandboxes. Its ID,
@@ -294,6 +345,20 @@ pub struct ProxyChangeView {
     /// client: none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issuers_keeping: Vec<String>,
+    /// Local MCP clients that lose a profile with this change (ADR 0049
+    /// §3.2): their names. Absent from an older client: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_clients_losing: Vec<String>,
+    /// The account's MCP gateway switch is off and this grant turns it on
+    /// before it signs (ADR 0049 §9). Absent from an older client: no.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turns_mcp_gateway_on: bool,
+    /// This writes an MCP profile while the switch is off or the proxy's
+    /// grant is older than `v: 4`: older devices and proxies break
+    /// ([`OLDER_CLIENTS_MCP`]), so it needs the person's word that every
+    /// device is updated. Absent from an older client: no.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mcp_first: bool,
 }
 
 /// How the proxy's six words are checked on its first credential.
@@ -343,6 +408,11 @@ impl PreparedProxyChange {
         if self.view.first_on_account && !every_device_updated {
             return Err(ClientError::Invalid(format!(
                 "this is the account's first per-item grant. {OLDER_CLIENTS}, then run it again with --every-device-is-updated"
+            )));
+        }
+        if self.view.mcp_first && !every_device_updated {
+            return Err(ClientError::Invalid(format!(
+                "{OLDER_CLIENTS_MCP}, then run it again with --every-device-is-updated"
             )));
         }
         Ok(())
@@ -400,6 +470,29 @@ impl Unlocked {
         .await
     }
 
+    /// Whether the account's MCP gateway switch is on (ADR 0049 §9). An
+    /// older server, which answers `404`, has no gateway: refused with a
+    /// message that says so.
+    pub async fn mcp_gateway_switch(&mut self) -> ClientResult<bool> {
+        let res = self
+            .authed(
+                reqwest::Method::GET,
+                "/v1/account/mcp-gateway",
+                &crate::api::Body::Empty,
+            )
+            .await;
+        match res {
+            Ok(res) => {
+                let switch: klav_proto::agent::McpGatewaySwitch = crate::api::json(res).await?;
+                Ok(switch.mcp_gateway)
+            }
+            Err(ClientError::Api { status: 404, .. }) => Err(ClientError::Invalid(
+                "this Klav server is older than the MCP gateway (ADR 0049): update the server before granting an MCP profile".into(),
+            )),
+            Err(e) => Err(e),
+        }
+    }
+
     /// The account's proxy setting, its agent and what it holds.
     pub async fn proxy_status(&mut self) -> ClientResult<ProxyStatus> {
         self.sync().await?;
@@ -412,6 +505,7 @@ impl Unlocked {
             problems: Vec::new(),
             lost: Vec::new(),
             issuers: None,
+            local_clients: Vec::new(),
         };
         match (setting.mode, setting.agent_id) {
             (ProxyMode::Own, Some(id)) => {
@@ -475,6 +569,16 @@ impl Unlocked {
         }
         if status.mode != ProxyMode::Own || !status.problems.is_empty() {
             status.lost = LOST_WITHOUT_PROXY.iter().map(|s| (*s).to_owned()).collect();
+        }
+        // The local MCP clients (ADR 0049 §3.2), from the grant as verified:
+        // best effort, never a reason for the status to fail.
+        if status.agent.is_some()
+            && let Ok(ProxyGrant {
+                payload: Some(payload),
+                ..
+            }) = self.current_proxy().await
+        {
+            status.local_clients = local_client_views(&payload.local_clients);
         }
         Ok(status)
     }
@@ -647,17 +751,45 @@ impl Unlocked {
             .map(|p| p.issuers.clone())
             .unwrap_or_default();
         let (mut request, dropped) = self.held_request(&grant)?;
+        // As for issuers: a local client keeps an MCP profile replaced
+        // under the same name (ADR 0049 §3.2), so changing tool rules does
+        // not cut the clients connected to it.
+        let clients_before = request.local_clients.clone();
         let replaces = request.items.iter().any(|l| l.item == loc.item);
         strip_item(&mut request, loc.item);
         request.items.push(loc);
         request.profiles.push(profile.clone());
         // A profile replaced under the same name stays the issuers'.
         let losses = keep_issuers(&mut request, issuers_before);
+        request.local_clients = clients_before.clone();
+        keep_local_clients(&mut request);
         request.policy.rules.extend(rules);
         ensure_value_denies(&mut request.policy);
         let mut warnings = Vec::new();
         let agents = self.agents().await?;
         let issuers_losing = issuer_loss_warnings(&losses, &agents, &mut warnings);
+        let local_clients_losing =
+            local_client_loss_warnings(&clients_before, &request.local_clients, &mut warnings);
+        // The MCP gateway (ADR 0049 §9): an MCP profile needs the server's
+        // switch, which this turns on, and a `v: 4` grant, which an older
+        // proxy refuses. Either is the person's word that every device and
+        // the proxy are updated.
+        let (turns_mcp_gateway_on, mcp_first) = if profile.mcp.is_some() {
+            let on = self.mcp_gateway_switch().await?;
+            let proxy_v4 = grant
+                .payload
+                .as_ref()
+                .is_some_and(|p| p.v >= GRANT_PAYLOAD_VERSION_MCP);
+            (!on, !on || !proxy_v4)
+        } else {
+            (false, false)
+        };
+        if mcp_first {
+            warnings.push(OLDER_CLIENTS_MCP.to_owned());
+        }
+        if let Some(mcp) = &spec.mcp {
+            warnings.extend(tool_warnings(mcp));
+        }
         let issuers_keeping = issuers_keeping(&request, &profile.name, &agents);
         if !issuers_keeping.is_empty() {
             warnings.push(format!(
@@ -710,6 +842,9 @@ impl Unlocked {
             reissue_only: false,
             issuers_losing,
             issuers_keeping,
+            local_clients_losing,
+            turns_mcp_gateway_on,
+            mcp_first,
         };
         check_candidate(&grant, &request)?;
         Ok((
@@ -784,6 +919,9 @@ impl Unlocked {
                     reissue_only: true,
                     issuers_losing: Vec::new(),
                     issuers_keeping: Vec::new(),
+                    local_clients_losing: Vec::new(),
+                    turns_mcp_gateway_on: false,
+                    mcp_first: false,
                 },
                 request: ItemGrantRequest::default(),
                 profile: None,
@@ -793,9 +931,12 @@ impl Unlocked {
         // Before any strip, as for a grant.
         let issuers_before = payload.issuers.clone();
         let (mut request, dropped) = self.held_request(&grant)?;
+        let clients_before = request.local_clients.clone();
         strip_item(&mut request, id);
         let losses = keep_issuers(&mut request, issuers_before);
         let mut warnings = Vec::new();
+        let local_clients_losing =
+            local_client_loss_warnings(&clients_before, &request.local_clients, &mut warnings);
         let issuers_losing = if losses.is_empty() {
             Vec::new()
         } else {
@@ -833,6 +974,9 @@ impl Unlocked {
             reissue_only: false,
             issuers_losing,
             issuers_keeping: Vec::new(),
+            local_clients_losing,
+            turns_mcp_gateway_on: false,
+            mcp_first: false,
         };
         check_candidate(&grant, &request)?;
         Ok(PreparedProxyChange {
@@ -868,6 +1012,12 @@ impl Unlocked {
                 gone: Vec::new(),
                 reissue_only: true,
             });
+        }
+        // After presence and before signing: the proxy reads the switch
+        // to send tool claims, and a grant signed first would serve MCP
+        // profiles with tool calls refused until it is on.
+        if view.turns_mcp_gateway_on {
+            self.turn_mcp_gateway_on().await?;
         }
         self.grant_items_at(
             view.agent_id,
@@ -1015,6 +1165,224 @@ impl Unlocked {
     }
 }
 
+/// A change to one local MCP client of the proxy's grant (ADR 0049 §3.2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalClientChange {
+    /// Add the client, or replace its profiles. `token_digest`: the
+    /// digest of a new token, made with the proxy's ID by the caller, who
+    /// keeps the token (none: keep the client's current one).
+    Set {
+        /// The MCP profiles it may use.
+        profiles: Vec<String>,
+        /// `SHA-256(tuple("klav/v1/proxy/local-client", proxy, token))`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token_digest: Option<Blob>,
+    },
+    /// Take the client out of the grant: its token stops working at the
+    /// proxy's next grant refresh.
+    Remove,
+}
+
+/// What a local client change will sign, shown before presence. Never a
+/// token or a digest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalClientChangeView {
+    /// The proxy's agent.
+    pub agent_id: AgentId,
+    /// Its name.
+    pub agent: String,
+    /// The grant version this change starts from.
+    pub base_version: u64,
+    /// The client's name (`claude-code`).
+    pub name: String,
+    /// Its profiles before (absent: a new client).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Vec<String>>,
+    /// Its profiles after (empty: removed).
+    pub profiles: Vec<String>,
+    /// Each of those profiles' MCP endpoint, as signed: the client's URL is
+    /// `http://127.0.0.1:<port>/<profile><endpoint>`.
+    pub endpoints: Vec<(String, String)>,
+    /// A new token is signed: the old one, if any, stops working.
+    pub new_token: bool,
+    /// What the person should know before confirming.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// A local client change checked by [`Unlocked::prepare_local_client`],
+/// ready to sign.
+#[derive(Debug, Clone)]
+pub struct PreparedLocalClientChange {
+    view: LocalClientChangeView,
+    request: ItemGrantRequest,
+    pairing_code: String,
+}
+
+impl PreparedLocalClientChange {
+    /// What it will sign.
+    #[must_use]
+    pub fn view(&self) -> &LocalClientChangeView {
+        &self.view
+    }
+}
+
+impl Unlocked {
+    /// Checks a change to the local MCP client `name` of the account's
+    /// proxy (ADR 0049 §3.2): every profile must be one of the grant's MCP
+    /// profiles. With [`LocalClientChange::Set`] and no digest, the
+    /// client's current token is kept; a new client needs one (a preview
+    /// passes none and gets the same checks).
+    pub async fn prepare_local_client(
+        &mut self,
+        name: &str,
+        change: &LocalClientChange,
+    ) -> ClientResult<PreparedLocalClientChange> {
+        if !klav_core::policy::local_client_name_ok(name) {
+            return Err(ClientError::Invalid(format!(
+                "{name:?} is not a local client name: 1–32 of a-z, 0-9 and -"
+            )));
+        }
+        let grant = self.current_proxy().await?;
+        let Some(payload) = &grant.payload else {
+            return Err(ClientError::Invalid(format!(
+                "the proxy {:?} holds no credentials: grant it an MCP profile first (`klav proxy grant ITEM --profile NAME --mcp-url …`)",
+                grant.name
+            )));
+        };
+        let base_version = payload.version;
+        let (mut request, _) = self.held_request(&grant)?;
+        let before = request
+            .local_clients
+            .iter()
+            .find(|c| c.name == name)
+            .cloned();
+        let mut warnings = Vec::new();
+        let (profiles, new_token) = match change {
+            LocalClientChange::Remove => {
+                if before.is_none() {
+                    return Err(ClientError::NotFound(format!(
+                        "local client {name:?} in the grant of the proxy {:?}",
+                        grant.name
+                    )));
+                }
+                request.local_clients.retain(|c| c.name != name);
+                (Vec::new(), false)
+            }
+            LocalClientChange::Set {
+                profiles,
+                token_digest,
+            } => {
+                let mut wanted: Vec<String> = Vec::new();
+                for p in profiles {
+                    let p = p.trim().to_owned();
+                    if !wanted.contains(&p) {
+                        wanted.push(p);
+                    }
+                }
+                if wanted.is_empty() {
+                    return Err(ClientError::Invalid(
+                        "name the MCP profiles the client may use (--mcp maple)".into(),
+                    ));
+                }
+                for p in &wanted {
+                    if !request
+                        .profiles
+                        .iter()
+                        .any(|q| q.name == *p && q.mcp.is_some())
+                    {
+                        let mcp: Vec<&str> = request
+                            .profiles
+                            .iter()
+                            .filter(|q| q.mcp.is_some())
+                            .map(|q| q.name.as_str())
+                            .collect();
+                        return Err(ClientError::Invalid(format!(
+                            "{p:?} is not an MCP profile of the proxy {:?}{}",
+                            grant.name,
+                            if mcp.is_empty() {
+                                ": it has none yet (`klav proxy grant ITEM --profile NAME --mcp-url …`)".to_owned()
+                            } else {
+                                format!(" (its MCP profiles: {})", mcp.join(", "))
+                            }
+                        )));
+                    }
+                }
+                let digest = match (token_digest, &before) {
+                    (Some(d), _) => d.clone(),
+                    (None, Some(b)) => b.token_digest.clone(),
+                    // A preview of a new client: a stand-in, for the checks.
+                    (None, None) => Blob::new(vec![0u8; 32]),
+                };
+                let client = LocalClient {
+                    name: name.to_owned(),
+                    token_digest: digest,
+                    profiles: wanted.clone(),
+                };
+                match request.local_clients.iter_mut().find(|c| c.name == name) {
+                    Some(existing) => *existing = client,
+                    None => request.local_clients.push(client),
+                }
+                let new_token = token_digest.is_some() || before.is_none();
+                if new_token && before.is_some() {
+                    warnings.push(format!(
+                        "{name} gets a new token: the one in its configuration now stops working at the proxy's next grant refresh (30 s)"
+                    ));
+                }
+                (wanted, new_token)
+            }
+        };
+        let endpoints = profiles
+            .iter()
+            .filter_map(|p| {
+                request
+                    .profiles
+                    .iter()
+                    .find(|q| q.name == *p)
+                    .and_then(|q| q.mcp.as_ref())
+                    .map(|m| (p.clone(), m.endpoint.clone()))
+            })
+            .collect();
+        check_candidate(&grant, &request)?;
+        Ok(PreparedLocalClientChange {
+            view: LocalClientChangeView {
+                agent_id: grant.id,
+                agent: grant.name.clone(),
+                base_version,
+                name: name.to_owned(),
+                before: before.map(|b| b.profiles),
+                profiles,
+                endpoints,
+                new_token,
+                warnings,
+            },
+            request,
+            pairing_code: grant.pairing_code,
+        })
+    }
+
+    /// Signs a change checked by [`Self::prepare_local_client`], if the
+    /// proxy's grant is still the version it was built from.
+    pub async fn commit_local_client(
+        &mut self,
+        prepared: PreparedLocalClientChange,
+    ) -> ClientResult<ItemGrantReport> {
+        let PreparedLocalClientChange {
+            view,
+            request,
+            pairing_code,
+        } = prepared;
+        self.grant_items_at(
+            view.agent_id,
+            request,
+            &pairing_code,
+            Some(view.base_version),
+        )
+        .await
+    }
+}
+
 /// Checks the grant a change would sign, before any presence: the same
 /// checks the signer makes, with a placeholder for each shared key.
 fn check_candidate(grant: &ProxyGrant, request: &ItemGrantRequest) -> ClientResult<()> {
@@ -1075,7 +1443,10 @@ pub fn credential_profile(
         prefix: spec.prefix.clone(),
         upstream: spec.upstream.clone(),
         rate_per_minute: spec.rate_per_minute,
-        mcp: None,
+        mcp: spec.mcp.as_ref().map(|m| McpProfile {
+            endpoint: m.endpoint.clone(),
+            headers: m.headers.clone(),
+        }),
     };
     let (upstream_host, _) = profile.upstream_host().ok_or_else(|| {
         ClientError::Invalid(format!(
@@ -1083,8 +1454,146 @@ pub fn credential_profile(
             spec.upstream
         ))
     })?;
-    let rules = credential_rules(item, &upstream_host, spec)?;
+    let mut rules = credential_rules(item, &upstream_host, spec)?;
+    if let Some(mcp) = &spec.mcp {
+        rules.extend(tool_rules(item, &rules, mcp)?);
+    }
     Ok((profile, rules))
+}
+
+/// The tool rules of an MCP profile (ADR 0049 §5.3): one rule per effect
+/// that has patterns, on the profile's item, host and endpoint, for `POST`
+/// (every `tools/call` is one). The display caps are applied here, so the
+/// sheet shows every pattern it signs: at most
+/// [`MAX_TOOL_PATTERNS_PER_RULE`] per rule, [`MAX_TOOL_PATTERNS_PER_PROFILE`]
+/// in all, each of [`MAX_TOOL_PATTERN_LEN`] bytes at most.
+fn tool_rules(item: ItemId, session: &[Rule], mcp: &McpSpec) -> ClientResult<Vec<Rule>> {
+    let Some(first) = session.first() else {
+        return Ok(Vec::new());
+    };
+    let mut rules = Vec::new();
+    let mut total = 0;
+    for (effect, list, flag) in [
+        (Effect::Allow, &mcp.tools_allow, "--tools-allow"),
+        (Effect::Ask, &mcp.tools_ask, "--tools-ask"),
+        (Effect::Deny, &mcp.tools_deny, "--tools-deny"),
+    ] {
+        let mut patterns: Vec<ToolPattern> = Vec::new();
+        for text in list {
+            let text = text.trim();
+            if text.len() > MAX_TOOL_PATTERN_LEN {
+                return Err(ClientError::Invalid(format!(
+                    "{flag}: a tool pattern takes at most {MAX_TOOL_PATTERN_LEN} bytes, so the confirmation can show it in full"
+                )));
+            }
+            let pattern = ToolPattern::parse(text)
+                .map_err(|e| ClientError::Invalid(format!("{flag}: {e}")))?;
+            if !patterns.contains(&pattern) {
+                patterns.push(pattern);
+            }
+        }
+        if patterns.is_empty() {
+            continue;
+        }
+        if patterns.len() > MAX_TOOL_PATTERNS_PER_RULE {
+            return Err(ClientError::Invalid(format!(
+                "{flag}: at most {MAX_TOOL_PATTERNS_PER_RULE} tool patterns per rule, so the confirmation can show them all: use broader prefixes (get_*)"
+            )));
+        }
+        total += patterns.len();
+        rules.push(Rule {
+            permission: Permission::Proxy,
+            effect,
+            scope: Scope {
+                items: vec![item],
+                domains: first.scope.domains.clone(),
+                methods: vec![
+                    HttpMethod::parse("POST").map_err(|e| ClientError::Invalid(e.to_string()))?,
+                ],
+                path_prefixes: first.scope.path_prefixes.clone(),
+                mcp_tools: patterns,
+                ..Scope::default()
+            },
+            expires_at: None,
+        });
+    }
+    if total > MAX_TOOL_PATTERNS_PER_PROFILE {
+        return Err(ClientError::Invalid(format!(
+            "at most {MAX_TOOL_PATTERNS_PER_PROFILE} tool patterns per MCP profile, so the confirmation can show them all: use broader prefixes (get_*)"
+        )));
+    }
+    if rules.len() > MAX_TOOL_RULES_PER_PROFILE {
+        return Err(ClientError::Invalid(format!(
+            "at most {MAX_TOOL_RULES_PER_PROFILE} tool rules per MCP profile"
+        )));
+    }
+    Ok(rules)
+}
+
+/// What the person should know about an MCP profile's tool rules before
+/// signing (ADR 0049 §5.3).
+pub fn tool_warnings(mcp: &McpSpec) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if mcp.tools_allow.iter().any(|p| p.trim() == "*") {
+        warnings.push(
+            "--tools-allow * lets every tool through, also the ones the MCP server adds later; only --tools-deny and --tools-ask narrow it".to_owned(),
+        );
+    }
+    if mcp.tools_allow.is_empty() && mcp.tools_ask.is_empty() {
+        warnings.push(
+            "no tool is allowed or asked for (--tools-allow, --tools-ask): agents can connect and list nothing, and every tool call is refused".to_owned(),
+        );
+    }
+    warnings
+}
+
+/// The local clients of a grant, as the person reads them.
+fn local_client_views(clients: &[LocalClient]) -> Vec<LocalClientView> {
+    clients
+        .iter()
+        .map(|c| LocalClientView {
+            name: c.name.clone(),
+            profiles: c.profiles.clone(),
+        })
+        .collect()
+}
+
+/// A warning per local client that loses a profile between `before` and
+/// `after`; returns their names.
+fn local_client_loss_warnings(
+    before: &[LocalClient],
+    after: &[LocalClient],
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    for client in before {
+        let kept = after.iter().find(|c| c.name == client.name);
+        let gone: Vec<&str> = client
+            .profiles
+            .iter()
+            .filter(|p| !kept.is_some_and(|k| k.profiles.contains(p)))
+            .map(String::as_str)
+            .collect();
+        if gone.is_empty() {
+            continue;
+        }
+        warnings.push(if kept.is_none() {
+            format!(
+                "the local client {} loses its only MCP profiles ({}) and its token stops working; `klav client disconnect {} --mcp` removes its entries",
+                client.name,
+                gone.join(", "),
+                client.name
+            )
+        } else {
+            format!(
+                "the local client {} loses the MCP profile {}",
+                client.name,
+                gone.join(", ")
+            )
+        });
+        names.push(client.name.clone());
+    }
+    names
 }
 
 /// The rules for one credential: `allow` (or `ask`) for its methods, hosts
@@ -1164,6 +1673,30 @@ fn credential_rules(
             "name the paths the credential may be used on (--path-prefix /v1, or --path-prefix / for every path)".into(),
         ));
     }
+    // An MCP profile reaches its endpoint and nothing else (ADR 0049
+    // §2.1): the endpoint is its one path prefix, shown in full up to
+    // the endpoint's own cap, and nothing asks by method (tools ask).
+    if let Some(mcp) = &spec.mcp {
+        if spec.ask || !asked.is_empty() {
+            return Err(ClientError::Invalid(
+                "an MCP profile asks per tool (--tools-ask), not per method: drop --ask and --ask-method".into(),
+            ));
+        }
+        if spec.path_prefixes.len() != 1 || spec.path_prefixes[0].trim() != mcp.endpoint {
+            return Err(ClientError::Invalid(
+                "an MCP profile's only path is its endpoint (--mcp-url): drop --path-prefix".into(),
+            ));
+        }
+        if mcp.endpoint.len() > klav_proto::agent::MAX_MCP_ENDPOINT
+            || !klav_core::policy::is_canonical_path(&mcp.endpoint)
+            || !shell_safe_path(&mcp.endpoint)
+        {
+            return Err(ClientError::Invalid(format!(
+                "the MCP endpoint must be a canonical path of at most {} bytes, of letters, digits and / . _ - ~ only",
+                klav_proto::agent::MAX_MCP_ENDPOINT
+            )));
+        }
+    }
     let mut paths: Vec<PathPrefix> = spec
         .path_prefixes
         .iter()
@@ -1171,8 +1704,12 @@ fn credential_rules(
         .collect::<ClientResult<_>>()?;
     paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     paths.dedup_by(|a, b| a.as_str() == b.as_str());
-    if paths.len() > MAX_GRANT_PATHS || paths.iter().any(|p| p.as_str().len() > MAX_GRANT_PATH_LEN)
-    {
+    let path_len = if spec.mcp.is_some() {
+        klav_proto::agent::MAX_MCP_ENDPOINT
+    } else {
+        MAX_GRANT_PATH_LEN
+    };
+    if paths.len() > MAX_GRANT_PATHS || paths.iter().any(|p| p.as_str().len() > path_len) {
         return Err(ClientError::Invalid(format!(
             "one credential carries at most {MAX_GRANT_PATHS} path prefixes of {MAX_GRANT_PATH_LEN} characters each, so the confirmation can show them in full: use fewer, broader prefixes"
         )));
@@ -1200,6 +1737,16 @@ fn credential_rules(
         rules.push(rule(Effect::Ask, asked));
     }
     Ok(rules)
+}
+
+/// Whether an MCP endpoint is written only with characters that need no
+/// quoting in a shell line or a URL: `klav sandbox start` and `klav client
+/// connect` put it in both.
+pub fn shell_safe_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'~'))
 }
 
 /// Removes `item` from the request: the item, its profile, and its ID from
@@ -1402,6 +1949,12 @@ fn credential_view(
                 path_prefixes: r
                     .scope
                     .path_prefixes
+                    .iter()
+                    .map(|p| p.as_str().to_owned())
+                    .collect(),
+                mcp_tools: r
+                    .scope
+                    .mcp_tools
                     .iter()
                     .map(|p| p.as_str().to_owned())
                     .collect(),
@@ -1640,5 +2193,158 @@ mod tests {
         assert_eq!(hosting_provider("API.Fly.io."), Some("Fly.io"));
         assert_eq!(hosting_provider("notrailway.com"), None);
         assert_eq!(hosting_provider("api.github.com"), None);
+    }
+
+    fn mcp_spec(allow: &[&str], ask: &[&str], deny: &[&str]) -> ProxyCredentialSpec {
+        let list = |l: &[&str]| l.iter().map(|p| (*p).to_owned()).collect();
+        ProxyCredentialSpec {
+            profile: "maple".into(),
+            upstream: "https://api.maple.dev".into(),
+            header: "authorization".into(),
+            prefix: "Bearer ".into(),
+            methods: vec!["POST".into(), "GET".into(), "DELETE".into()],
+            path_prefixes: vec!["/mcp".into()],
+            mcp: Some(McpSpec {
+                endpoint: "/mcp".into(),
+                headers: Vec::new(),
+                tools_allow: list(allow),
+                tools_ask: list(ask),
+                tools_deny: list(deny),
+            }),
+            ..ProxyCredentialSpec::default()
+        }
+    }
+
+    fn tool_call(item: ItemId, tool: &str) -> Request {
+        Request {
+            mcp_tool: Some(tool.into()),
+            ..call(item, "POST", "api.maple.dev", "/mcp")
+        }
+    }
+
+    /// ADR 0049 §5.3: the session rule never lets a tool call through,
+    /// tool rules do what their effect says, the strictest wins, and a
+    /// tool no rule names is denied.
+    #[test]
+    fn an_mcp_profile_signs_its_tool_rules_and_denies_the_rest() {
+        let item = ItemId::generate();
+        let spec = mcp_spec(
+            &["get_*", "query_logs", "get_*"],
+            &["delete_*"],
+            &["get_api_key"],
+        );
+        let (profile, rules) = credential_profile(item, &spec).unwrap();
+        assert_eq!(
+            profile.mcp,
+            Some(McpProfile {
+                endpoint: "/mcp".into(),
+                headers: Vec::new()
+            })
+        );
+        // The session, then one rule per effect; repeats count once.
+        assert_eq!(rules.len(), 4);
+        assert!(rules[0].scope.mcp_tools.is_empty());
+        assert_eq!(rules[1].scope.mcp_tools.len(), 2);
+        let policy = Policy {
+            rules,
+            expires_at: None,
+        };
+        let effect = |r: &Request| evaluate(&policy, r).effect;
+        assert_eq!(effect(&tool_call(item, "get_dashboard")), Effect::Allow);
+        assert_eq!(effect(&tool_call(item, "query_logs")), Effect::Allow);
+        assert_eq!(effect(&tool_call(item, "delete_dashboard")), Effect::Ask);
+        assert_eq!(effect(&tool_call(item, "get_api_key")), Effect::Deny);
+        assert_eq!(effect(&tool_call(item, "create_api_key")), Effect::Deny);
+        // Case-sensitive: `Get_x` is not `get_*`.
+        assert_eq!(effect(&tool_call(item, "Get_x")), Effect::Deny);
+        // The session itself (initialize, tools/list) goes through.
+        assert_eq!(
+            effect(&call(item, "POST", "api.maple.dev", "/mcp")),
+            Effect::Allow
+        );
+        // And the shape the grant checks: the endpoint only.
+        assert_eq!(
+            effect(&call(item, "GET", "api.maple.dev", "/.well-known/oauth")),
+            Effect::Deny
+        );
+    }
+
+    /// The display caps (ADR 0049 §5.3): every pattern the sheet shows, and
+    /// never more; bad patterns and method asks are refused.
+    #[test]
+    fn tool_rules_keep_to_what_the_sheet_shows() {
+        let item = ItemId::generate();
+        let many = |n: usize, p: &str| (0..n).map(|i| format!("{p}{i}_*")).collect::<Vec<_>>();
+        fn names(v: &[String]) -> Vec<&str> {
+            v.iter().map(String::as_str).collect()
+        }
+        let at_cap = many(MAX_TOOL_PATTERNS_PER_RULE, "a");
+        assert!(credential_profile(item, &mcp_spec(&names(&at_cap), &[], &[])).is_ok());
+        let over = many(MAX_TOOL_PATTERNS_PER_RULE + 1, "a");
+        let err = credential_profile(item, &mcp_spec(&names(&over), &[], &[])).unwrap_err();
+        assert!(err.to_string().contains("per rule"), "{err}");
+        let a = many(MAX_TOOL_PATTERNS_PER_RULE, "a");
+        let b = many(MAX_TOOL_PATTERNS_PER_RULE, "b");
+        let c = many(1, "c");
+        let err =
+            credential_profile(item, &mcp_spec(&names(&a), &names(&b), &names(&c))).unwrap_err();
+        assert!(err.to_string().contains("per MCP profile"), "{err}");
+        let long = format!("{}*", "a".repeat(MAX_TOOL_PATTERN_LEN));
+        let err = credential_profile(item, &mcp_spec(&[&long], &[], &[])).unwrap_err();
+        assert!(err.to_string().contains("at most"), "{err}");
+        for bad in ["*_api_key", "get logs", "get_*_x", "q\u{202e}l", ""] {
+            assert!(
+                credential_profile(item, &mcp_spec(&[bad], &[], &[])).is_err(),
+                "{bad:?}"
+            );
+        }
+        let mut asks = mcp_spec(&["get_*"], &[], &[]);
+        asks.ask_methods = vec!["DELETE".into()];
+        assert!(credential_profile(item, &asks).is_err());
+        let mut other_path = mcp_spec(&["get_*"], &[], &[]);
+        other_path.path_prefixes = vec!["/".into()];
+        assert!(credential_profile(item, &other_path).is_err());
+        let mut shelly = mcp_spec(&["get_*"], &[], &[]);
+        shelly.path_prefixes = vec!["/m$x".into()];
+        shelly.mcp.as_mut().unwrap().endpoint = "/m$x".into();
+        assert!(credential_profile(item, &shelly).is_err());
+    }
+
+    /// A spec without `mcp` serializes as before, so an older `klavd`
+    /// still takes it.
+    #[test]
+    fn a_spec_without_mcp_is_the_bytes_an_older_klavd_takes() {
+        let json = serde_json::to_value(spec()).unwrap();
+        assert!(json.get("mcp").is_none(), "{json}");
+        assert!(tool_warnings(&McpSpec::default())[0].contains("every tool call is refused"));
+        let every = McpSpec {
+            tools_allow: vec!["*".into()],
+            ..McpSpec::default()
+        };
+        assert!(tool_warnings(&every)[0].contains("every tool through"));
+    }
+
+    /// A re-grant keeps the clients on the profiles that stay MCP
+    /// profiles, and says who loses what.
+    #[test]
+    fn local_clients_lose_only_the_profiles_that_go() {
+        let client = |name: &str, profiles: &[&str]| LocalClient {
+            name: name.into(),
+            token_digest: Blob::new(vec![1; 32]),
+            profiles: profiles.iter().map(|p| (*p).to_owned()).collect(),
+        };
+        let before = vec![
+            client("claude-code", &["maple", "linear"]),
+            client("cursor", &["linear"]),
+        ];
+        let after = vec![client("claude-code", &["maple"])];
+        let mut warnings = Vec::new();
+        let names = local_client_loss_warnings(&before, &after, &mut warnings);
+        assert_eq!(names, ["claude-code", "cursor"]);
+        assert!(
+            warnings[0].contains("loses the MCP profile linear"),
+            "{warnings:?}"
+        );
+        assert!(warnings[1].contains("token stops working"), "{warnings:?}");
     }
 }

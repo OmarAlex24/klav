@@ -110,6 +110,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::ProxyRevoke { .. }
         | Request::ProxyIssuerAdd { .. }
         | Request::ProxyIssuerRemove { .. }
+        | Request::LocalClientChange { .. }
         | Request::ResumeAgents { .. }
         | Request::CancelAccountDeletion { .. }
         | Request::ConfirmPresence { .. } => Gate::AlreadyAsks,
@@ -180,6 +181,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::ProxyStatus
         | Request::ProxyGrantPreview { .. }
         | Request::ProxyIssuerPreview { .. }
+        | Request::LocalClientPreview { .. }
         | Request::PauseAgents { .. }
         | Request::AuditLog { .. }
         | Request::VerifyAudit

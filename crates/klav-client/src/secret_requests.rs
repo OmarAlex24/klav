@@ -199,6 +199,7 @@ pub fn proxy_spec_from_proposal(proposal: &ProxyProposal, field: &str) -> ProxyC
         ask: false,
         ask_methods: proposal.ask_methods.clone(),
         rate_per_minute: proposal.rate_per_minute,
+        mcp: None,
     }
 }
 

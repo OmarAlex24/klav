@@ -2185,6 +2185,31 @@ pub struct LogLine {
     /// as it signed it (ADR 0049 §6). Only in its grammar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_client: Option<String>,
+    /// The sandbox a proxied call was for, according to the proxy, as it
+    /// signed it (ADR 0049 §6): who called, where a local client is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<klav_core::ids::SandboxId>,
+}
+
+/// The sandbox an `agent.access` event's signed body names, when its MCP
+/// fields keep their grammars (as [`mcp_of`]).
+fn sandbox_of(e: &AuditEvent) -> Option<klav_core::ids::SandboxId> {
+    let body = e
+        .agent_proof
+        .as_ref()
+        .filter(|_| e.action == "agent.access")
+        .and_then(|p| p.body.as_ref())?;
+    serde_json::from_slice::<AccessRequest>(body.as_bytes())
+        .ok()
+        .filter(|req| {
+            crate::agents::mcp_fields_ok(
+                req.permission,
+                &req.claims,
+                req.local_client.as_deref(),
+                req.sandbox,
+            )
+        })
+        .and_then(|req| req.sandbox)
 }
 
 /// The MCP tool and local client an `agent.access` event's signed body
@@ -2778,6 +2803,7 @@ impl Unlocked {
                 verified: entry.seq <= verified,
                 mcp_tool,
                 local_client,
+                sandbox: sandbox_of(e),
             };
             if filter.keeps(&line) {
                 out.push(line);
@@ -2953,6 +2979,7 @@ mod tests {
             verified: false,
             mcp_tool: None,
             local_client: None,
+            sandbox: None,
         };
         let filter =
             |permissions: Vec<Permission>, outcomes: &[&str], text: Option<&str>| LogFilter {
@@ -4935,6 +4962,7 @@ mod tests {
             sandbox: None,
             local_client: None,
             security,
+            item_id: None,
         };
         assert!(crate::agents::refuse_security_card(&view(None)).is_ok());
         let err = crate::agents::refuse_security_card(&view(Some(

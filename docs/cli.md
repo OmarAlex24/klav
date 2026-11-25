@@ -1183,6 +1183,9 @@ klav client connect <cliente> [--agent NOMBRE] [--no-skill] [--dry-run] [--yes] 
     [--replace | --adopt] [--expect-sha256 HEX] [--key-store auto|keychain|file] [--json]
 klav client disconnect <cliente> [--keep-skill] [--dry-run] [--yes] [--force] [--json]
 klav client restore <cliente> [--force] [--json]
+klav client connect <cliente> --mcp PERFIL,… [--proxy-port 8790] [--dry-run] [--yes] \
+    [--replace] [--json]
+klav client disconnect <cliente> --mcp [PERFIL,…] [--dry-run] [--yes] [--force] [--json]
 ```
 
 Pone (o quita) la entrada `klav` del servidor MCP y la skill en un cliente
@@ -1354,6 +1357,55 @@ hace lo mismo llamando a estos comandos.
   pruebas, que simulan un Mac en un directorio temporal y no deben ver los
   programas de la máquina donde corren, y solo funciona en una compilación
   de depuración: un `klav` de *release* usa siempre `/`.
+
+##### El gateway MCP en un cliente (`--mcp`)
+
+Con `--mcp`, `connect` no toca la entrada `klav`: conecta el cliente a los
+perfiles MCP del proxy de credenciales en este Mac (ADR
+[0049](decisiones/0049-mcp-gateway.md) §3), una entrada por perfil con el
+nombre del perfil, que apunta a `http://127.0.0.1:<puerto>/<perfil><endpoint>`
+con `Authorization: Bearer klc1_…`.
+
+- **El token de cliente local** (`klc1_…`, especificación §13.16) lo crea
+  `klav` con `klav-core` y solo va al archivo del cliente. `klavd` y el
+  servidor reciben su resumen, que se firma en el grant del proxy
+  (`local_clients`, con el nombre del cliente: `claude-code`, `codex`,
+  `cursor` o `vscode`, y sus perfiles). Nunca se imprime: el plan lo muestra
+  como `Bearer klc1_••••••••`. Cada `connect` firma un token nuevo y
+  reescribe las entradas; el anterior deja de servir en el siguiente
+  refresco del proxy (30 s).
+- Primero muestra el plan (archivo, cliente local, perfiles y cada entrada:
+  `add`, `replace` o `replace yours`), luego pregunta `[y/N]` (`--yes` sin
+  terminal), pide Touch ID para firmar el grant y al final escribe, con una
+  copia del archivo en `$KLAV_HOME/client-backups/<cliente>` y sin cambiar
+  nada más del archivo (comentarios, orden, los demás servidores).
+- Se niega con un perfil que no es MCP en el grant del proxy, y con una
+  entrada del mismo nombre que Klav no escribió (`--replace` la sustituye).
+  Una entrada es de Klav si apunta a `http://127.0.0.1:<puerto>/<perfil>/…`
+  y su única credencial es un `Bearer klc1_…`.
+
+| `<cliente>` | Entrada | Cómo la escribe Klav |
+|---|---|---|
+| `claude-code` | `{"type":"http","url":…,"headers":{"Authorization":…}}` | `claude mcp add-json --scope user PERFIL -`, con la entrada en la entrada estándar (nunca en la línea de órdenes); Claude Code no la acepta desde una de sus propias sesiones: hay que correrlo en tu terminal |
+| `codex` | `[mcp_servers.PERFIL]` con `url` y `http_headers` | edición del TOML (su CLI solo toma un *bearer* de una variable de entorno); hay que reiniciarlo |
+| `cursor` | `mcpServers.PERFIL` con `url` y `headers` | edición del archivo |
+| `vscode` | `mcpServers.PERFIL` con `type: http`, `url` y `headers` | edición del archivo |
+
+Claude Desktop y Antigravity no toman estas entradas todavía. Las formas
+salen de la documentación y la ayuda de cada cliente (Claude Code 2.1.331,
+Codex 0.166.0); las pruebas a mano de la capa 7 las comprueban con los
+clientes en marcha (ADR 0049 §14).
+
+- **`disconnect --mcp`** sin perfiles quita al cliente del grant del proxy
+  y borra todas sus entradas del gateway; con perfiles, solo esos (el
+  cliente se queda con los demás y con su token). Firma primero el grant
+  (es lo que corta el token) y después borra las entradas, con copia.
+  Una entrada que Klav no escribió se queda, con un aviso (`--force` la
+  borra).
+- **Lo que no es:** el token es una capacidad sobre el *loopback* de este
+  Mac para los perfiles firmados. Cualquier programa que corra con tu
+  usuario puede leerlo del archivo del cliente (riesgo residual 104): da
+  nombre al que llama y limita perfiles, no separa procesos.
 
 #### La skill (`klav skill`)
 
@@ -1842,6 +1894,7 @@ klav agent resume [<nombre|id> | --all] [--json]
 
 ```sh
 klav approval list [--all] [--json]
+klav approval show <id> [--json]
 klav approval approve <id> [--for 15m | --add-to-task] [-y]
 klav approval deny <id>
 klav approval wait <id> [--timeout 10m] [--agent NOMBRE] [--json]   # el agente
@@ -1851,6 +1904,21 @@ klav approval wait <id> [--timeout 10m] [--agent NOMBRE] [--json]   # el agente
   elemento, el sitio que dice el agente (`SITE (AGENT SAYS)`) y el
   **motivo** que dio.
 - El ID admite sus primeros caracteres (6 o más).
+- **`show`** imprime la tarjeta de una solicitud pendiente sin decidir
+  nada.
+- **Una llamada a una herramienta MCP** (ADR 0049 §5.4): `list` dice
+  `proxy maple · delete_dashboard` en `WANTS` y el llamador en `AGENT`
+  (`klav-proxy (for claude-code)`, o `for sandbox <id>`). La tarjeta añade
+  el llamador («according to the proxy»), el perfil, la herramienta
+  («according to the MCP server») y que los argumentos no se muestran:
+  **aprobar una vez ata estos argumentos exactos** (su resumen), y `--for`
+  deja correr esta herramienta con cualquier argumento hasta que venza; la
+  pregunta `[y/N]` lo repite. El perfil sale del grant del proxy (`MCP` si
+  este dispositivo no lo sabe).
+- **Tarjeta de seguridad:** si la herramienta o el llamador rompen su
+  gramática (algo que el servidor debió rechazar, T260), `list` dice
+  `security` en `STATUS` y la tarjeta solo muestra un texto fijo, nunca el
+  campo: `approve` y `deny` no firman nada y salen con 3.
 - **`approve` y `deny` imprimen la solicitud entera antes de firmar:** el
   agente (nombre y comienzo de su ID), el permiso, el elemento, el sitio y el
   motivo (estos dos marcados «according to the agent», porque los escribe
@@ -1986,6 +2054,15 @@ klav log reset [--yes]
   persona de un agente que se llame `you`, que la tabla muestra como
   `you (agent 1a2b3c4d)`. El servidor ya no deja registrar un agente con
   ese nombre; los que ya lo tenían lo conservan.
+- **Llamadas MCP** (ADR 0049 §6): un acceso del proxy a un perfil MCP se
+  lee `claude-code → maple:query_logs (via proxy, according to the proxy)
+  → allow`: el cliente local o el sandbox (`sandbox 1a2b3c4d`) que firmó el
+  proxy, el perfil y la herramienta. Los mensajes de la sesión (conectarse,
+  listar herramientas) salen como `maple (MCP session: connect, list
+  tools)` y los seguidos del mismo llamador se pliegan en una fila (`×N`):
+  la bitácora no distingue `initialize` de `tools/list`. El perfil sale del
+  grant del proxy; sin él, `mcp:herramienta`. Con `--json`, `mcp_tool`,
+  `local_client` y `sandbox`.
 - **Para quién fue un grant:** un `agent.granted` de la persona dice a qué
   agente: `agent.granted for "release-bot" (1a2b3c4d)`, con el nombre que
   lista el servidor, escapado, y el comienzo del ID; si el servidor ya no
@@ -2176,6 +2253,10 @@ klav proxy grant ELEMENTO --profile NOMBRE --upstream https://HOST[:PUERTO] \
     [--rate POR_MINUTO] [--words "…"] [--every-device-is-updated] [--json]
 klav proxy grant ELEMENTO --preset northflank|maple [cualquier opción de arriba] \
     [--words "…"] [--every-device-is-updated] [--json]
+klav proxy grant ELEMENTO --profile NOMBRE --mcp-url https://HOST[:PUERTO]/RUTA \
+    [--header CABECERA] [--prefix "Bearer "] [--field CAMPO] [--mcp-header NOMBRE:VALOR]… \
+    [--tools-allow PATRÓN,…] [--tools-ask PATRÓN,…] [--tools-deny PATRÓN,…] \
+    [--rate POR_MINUTO] [--words "…"] [--every-device-is-updated] [--json]
 klav proxy revoke ELEMENTO [--json]
 klav proxy issuer add AGENTE --profile PERFIL… --url tls://HOST:PUERTO \
     [--max-ttl 8h] [--max-live 3] [--inject-ask] [--words "…"] \
@@ -2353,6 +2434,55 @@ klav proxy sandboxes revoke ID | --all [--wait] [--json]
     así que avisa siempre con esos hosts.
   - Se arma sobre la versión del grant que mostró: si otro dispositivo lo
     cambió entre medias, no firma y pide repetirlo.
+- **`grant ELEMENTO --mcp-url URL`** concede un **perfil MCP** (ADR
+  [0049](decisiones/0049-mcp-gateway.md) §2 y §5.3): el proxy reenvía solo
+  esa ruta (`POST`, `GET` y `DELETE`), lee el JSON-RPC, quita de
+  `tools/list` las herramientas que ninguna regla permite ni pregunta, y
+  juzga cada `tools/call` por su nombre.
+  - `--mcp-url` se parte en el upstream (`https://HOST[:PUERTO]`) y el
+    *endpoint* (la ruta, de letras, dígitos y `/ . _ - ~`, 64 bytes como
+    mucho): sin consulta. Sin `--header`, la credencial va en
+    `authorization`, y sin `--prefix`, con `Bearer `. No acepta
+    `--upstream`, `--path-prefix`, `--ask` ni `--ask-method`: un perfil MCP
+    pregunta por herramienta, no por método.
+  - `--tools-allow`, `--tools-ask` y `--tools-deny` toman patrones
+    separados por comas o repetidos: un nombre exacto (`query_logs`), un
+    prefijo con un `*` final (`get_*`) o `*` solo (todas, también las que
+    el servidor añada después; la hoja lo marca). Distinguen mayúsculas y no
+    hay sufijos (`*_api_key` no es un patrón). Gana la regla más
+    restrictiva: `--tools-allow 'get_*' --tools-deny get_api_key` niega
+    `get_api_key`. **Una herramienta que ningún patrón nombra se niega y no
+    aparece en la lista del agente** (Q3). Sin `--tools-allow` ni
+    `--tools-ask`, avisa de que toda llamada a una herramienta se negará.
+  - `--mcp-header NOMBRE:VALOR` (hasta 4) añade una cabecera fija y no
+    secreta, como un interruptor de solo lectura del proveedor; nunca una
+    reservada (`authorization`, `cookie`, `mcp-session-id`…).
+  - **La hoja** muestra, antes de Touch ID, el *endpoint*, las cabeceras
+    fijas, la regla de la sesión (conectarse y listar, nunca una llamada a
+    una herramienta) y **cada patrón**, agrupado en `tools allow`, `tools
+    ask` y `tools deny`, más la línea `tools other denied and hidden`. Lleva
+    como mucho 24 patrones por regla, 48 por perfil y 64 bytes por patrón
+    (los topes del ADR §5.3); más se rechaza con un mensaje que pide
+    prefijos más amplios. El diálogo de Touch ID nombra hasta 12 patrones
+    de cada tipo y cuenta el resto.
+  - **El primer perfil MCP** (con el interruptor `mcp_gateway` de la cuenta
+    apagado, o un grant del proxy anterior a `v: 4`) pide
+    `--every-device-is-updated`: los dispositivos y el `klav-proxy` sin el
+    gateway fallan al cargar sus aprobaciones, `klav log verify` informa de
+    una alteración y el proxy viejo rechaza el grant (ADR 0049 §9). Con la
+    confirmación y tras Touch ID, `klav` enciende el interruptor
+    (`POST /v1/account/mcp-gateway`) y después firma el grant. Un servidor
+    anterior al gateway lo rechaza antes de pedir nada.
+  - Volver a conceder el mismo perfil conserva sus clientes locales; si un
+    cambio les quita un perfil, la hoja dice cuáles.
+  - **Los *presets* del gateway** (`maple` con reglas de herramientas,
+    `github`, `cloudflare`, `linear`, `stripe`) se rechazan hasta que cada
+    uno pase su prueba a mano (ADR 0049 §2.3, elección 14); el mensaje dice
+    cómo pasar `--mcp-url` y `--tools-…` a mano. `--preset maple` sin
+    `--mcp-url` sigue siendo la compuerta MCP del ADR 0036, sin cambios.
+  - `status` muestra, en un perfil MCP, la línea `mcp` y las reglas de
+    herramientas; con `--json`, `profile.mcp` y `rules[].mcp_tools`, y
+    `local_clients` (`name`, `profiles`; nunca el token ni su resumen).
 - **`revoke ELEMENTO`** le quita una credencial al proxy y cambia la llave
   del elemento (ADR 0036 §18). Después recuerda rotar el token en su
   proveedor: el proxy lo tuvo en memoria. La última no se quita así: eso es
@@ -2733,6 +2863,18 @@ klav sandbox stop ID | --all [--json]
       URL. El perfil tiene que dejar pasar `POST /mcp` sin aprobación;
       `next` lo recuerda. `klav-forward` no edita la configuración de
       ningún cliente.
+    - **Cualquier perfil MCP** (ADR 0049, capa 5): por cada perfil del
+      sandbox que el proxy lista como perfil MCP (`GET /_klav/sandboxes`
+      trae `mcp: [{profile, endpoint}]`), las mismas dos líneas con su
+      nombre, su variable y su *endpoint*: para `acme-ops` en `/v1/mcp`,
+      `claude mcp add … acme-ops "$KLAV_FORWARD_ACME_OPS_URL/v1/mcp" …` y
+      `codex mcp add acme-ops --url "$KLAV_FORWARD_ACME_OPS_URL/v1/mcp"`.
+      Para `maple` en `/mcp` son las de arriba, byte a byte. Un `maple` que
+      el proxy no lista como MCP (un proxy anterior, o la puerta del ADR
+      0036) sigue llevando las de arriba por su nombre. Un *endpoint* con
+      caracteres que una línea de órdenes leería distinto no da líneas. Si
+      el proxy no contesta la lista, `start` entrega el paquete igual, sin
+      líneas MCP salvo las de `maple`.
 
     Las líneas necesitan un `klav-forward` de esta versión de Klav o
     posterior, el primero con `down --if-other-package`. Con uno anterior,
@@ -2746,7 +2888,7 @@ klav sandbox stop ID | --all [--json]
     su `--ttl` es menor.
   - `--json` da `{sandbox_id, label, profiles, expires_at, setup, next}`,
     con esas líneas en `setup`: tres, más una con el perfil `northflank` y
-    dos con el perfil `maple`.
+    dos por cada perfil MCP (o con el perfil `maple`).
 - **`ls`** lista solo los sandboxes vivos de este emisor, preguntando al
   proxy: ID, etiqueta, perfiles, vencimiento y si ya se reclamó.
 - **`stop`** termina enseguida uno de los suyos, o todos con `--all`

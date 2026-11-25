@@ -194,6 +194,11 @@ async fn grant(ctx: &mut Ctx, args: ProxyGrantArgs) -> CliResult<()> {
             "this is the account's first per-item grant: update every device first (see the warning above), then run it again with --every-device-is-updated{words}",
         )));
     }
+    if preview.mcp_first && !args.every_device_updated {
+        return Err(usage(
+            "this MCP profile needs every device and klav-proxy on a Klav with the MCP gateway (see the warning above): update them first, then run it again with --every-device-is-updated",
+        ));
+    }
     // A convenience: klavd's prompt shows the words of the key it signs
     // for, and that is the check that counts.
     let words = if preview.first {
@@ -794,6 +799,12 @@ fn print_status(status: &ProxyStatus) {
                 output::line(&line);
             }
         }
+        if !status.local_clients.is_empty() {
+            output::line("\nLocal MCP clients (`klav client connect <client> --mcp …`):");
+            for c in &status.local_clients {
+                output::line(&format!("  {}: {}", c.name, c.profiles.join(", ")));
+            }
+        }
     }
     if !status.lost.is_empty() {
         output::line("\nWithout a working proxy, the account does not have:");
@@ -851,6 +862,15 @@ fn credential_lines(credential: &ProxyCredentialView) -> Vec<String> {
                 p.field.as_deref().unwrap_or("value")
             ));
             lines.push(format!("      rate      {} calls/min", p.rate()));
+            if let Some(mcp) = &p.mcp {
+                lines.push(format!(
+                    "      mcp       {}{} (only this path; tools filtered and judged one by one)",
+                    p.upstream, mcp.endpoint
+                ));
+                for h in &mcp.headers {
+                    lines.push(format!("      mcp header {}: {}", h.name, quoted(&h.value)));
+                }
+            }
         }
         None => lines.push(format!("  {title} (no profile)")),
     }
@@ -861,15 +881,63 @@ fn credential_lines(credential: &ProxyCredentialView) -> Vec<String> {
             list.join(",")
         }
     };
-    for rule in &credential.rules {
+    let is_mcp = credential.profile.as_ref().is_some_and(|p| p.mcp.is_some());
+    for rule in credential.rules.iter().filter(|r| r.mcp_tools.is_empty()) {
         lines.push(format!(
-            "      {:<9} {} {} {}",
+            "      {:<9} {} {} {}{}",
             format!("{:?}", rule.effect).to_lowercase(),
             any(&rule.methods),
             rule.hosts.join(","),
-            any(&rule.path_prefixes)
+            any(&rule.path_prefixes),
+            if is_mcp && rule.effect != klav_core::policy::Effect::Deny {
+                "   (the MCP session: connect and list tools, never a tool call)"
+            } else {
+                ""
+            }
         ));
     }
+    lines.extend(tool_lines(credential));
+    lines
+}
+
+/// The tool rules of an MCP profile (ADR 0049 §5.3), every pattern in
+/// full, grouped by allow, ask and deny, and what happens to the rest.
+fn tool_lines(credential: &ProxyCredentialView) -> Vec<String> {
+    use klav_core::policy::Effect;
+    if !credential.profile.as_ref().is_some_and(|p| p.mcp.is_some()) {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    for (effect, label) in [
+        (Effect::Allow, "allow"),
+        (Effect::Ask, "ask"),
+        (Effect::Deny, "deny"),
+    ] {
+        let mut patterns: Vec<String> = credential
+            .rules
+            .iter()
+            .filter(|r| r.effect == effect)
+            .flat_map(|r| r.mcp_tools.iter().cloned())
+            .collect();
+        patterns.dedup();
+        if patterns.is_empty() {
+            continue;
+        }
+        let shown: Vec<String> = patterns
+            .iter()
+            .map(|p| {
+                if p == "*" && effect != Effect::Deny {
+                    "* (EVERY tool, also ones the server adds later)".to_owned()
+                } else {
+                    p.clone()
+                }
+            })
+            .collect();
+        lines.push(format!("      tools {label:<5} {}", shown.join(", ")));
+    }
+    lines.push(
+        "      tools other denied and hidden from the agent's list (no rule names them)".to_owned(),
+    );
     lines
 }
 

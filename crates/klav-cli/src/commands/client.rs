@@ -32,7 +32,13 @@ const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 pub(crate) async fn client_cmd(ctx: &mut Ctx, cmd: ClientCommand) -> CliResult<()> {
     match cmd {
         ClientCommand::List(flag) => list(ctx, &flag),
+        ClientCommand::Connect(args) if !args.mcp.is_empty() => {
+            super::client_mcp::connect(ctx, args).await
+        }
         ClientCommand::Connect(args) => connect(ctx, args).await,
+        ClientCommand::Disconnect(args) if args.mcp.is_some() => {
+            super::client_mcp::disconnect(ctx, args).await
+        }
         ClientCommand::Disconnect(args) => disconnect(ctx, &args),
         ClientCommand::Restore(args) => restore(ctx, &args),
     }
@@ -516,7 +522,7 @@ struct Plan {
 }
 
 /// Asks a yes/no question on the terminal (`false` without one).
-fn ask(question: &str) -> CliResult<bool> {
+pub(super) fn ask(question: &str) -> CliResult<bool> {
     if !std::io::stdin().is_terminal() {
         return Ok(false);
     }
@@ -530,7 +536,7 @@ fn ask(question: &str) -> CliResult<bool> {
     ))
 }
 
-fn client_path(client: ClientId, env: &Env) -> CliResult<PathBuf> {
+pub(super) fn client_path(client: ClientId, env: &Env) -> CliResult<PathBuf> {
     client
         .config_path(env)
         .ok_or_else(|| usage(format!("{} is not available on this system", client.name())))

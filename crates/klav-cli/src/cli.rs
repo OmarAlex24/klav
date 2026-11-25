@@ -171,6 +171,16 @@ pub(crate) struct ClientConnectArgs {
     /// Where a new agent keeps its private key.
     #[arg(long, value_enum, default_value = "auto")]
     pub(crate) key_store: KeyStoreArg,
+    /// Instead of Klav's own MCP server: connect the client to these MCP
+    /// profiles of your credential proxy on this Mac (ADR 0049 §3), one
+    /// entry each (`http://127.0.0.1:8790/<profile>/…`), with a local
+    /// client token signed into the proxy's grant. Comma-separated or
+    /// repeated.
+    #[arg(long = "mcp", value_name = "PROFILE", value_delimiter = ',', conflicts_with_all = ["agent", "no_skill", "adopt", "expect_sha256"])]
+    pub(crate) mcp: Vec<String>,
+    /// The port the credential proxy listens on, on this Mac.
+    #[arg(long, value_name = "PORT", default_value_t = 8790, requires = "mcp")]
+    pub(crate) proxy_port: u16,
     #[command(flatten)]
     pub(crate) json: JsonFlag,
 }
@@ -193,6 +203,11 @@ pub(crate) struct ClientDisconnectArgs {
     /// (a copy of the settings is kept).
     #[arg(long)]
     pub(crate) force: bool,
+    /// Instead of Klav's own MCP server: remove the client's MCP gateway
+    /// entries for these profiles (none named: every one) and take them
+    /// from its local client token in the proxy's grant (ADR 0049 §3.1).
+    #[arg(long = "mcp", value_name = "PROFILE", value_delimiter = ',', num_args = 0.., conflicts_with = "keep_skill")]
+    pub(crate) mcp: Option<Vec<String>>,
     #[command(flatten)]
     pub(crate) json: JsonFlag,
 }
@@ -426,6 +441,14 @@ pub(crate) enum ApprovalCommand {
         /// Do not ask for confirmation after showing the request.
         #[arg(long, short = 'y')]
         yes: bool,
+    },
+    /// Show a pending request's card, deciding nothing: for an MCP tool
+    /// call, the caller, profile and tool (ADR 0049 §5.4).
+    Show {
+        /// Request ID (or its first characters).
+        id: String,
+        #[command(flatten)]
+        json: JsonFlag,
     },
     /// Deny a request.
     Deny {
@@ -1313,7 +1336,10 @@ pub(crate) struct ProxyGrantArgs {
     /// api.maple.dev, none asking; `--upstream https://api.eu.maple.dev`
     /// for the EU host; the key's own permissions are the limit, so use a
     /// read-only one). Each flag you also give replaces that part of it.
-    /// `railway` needs a mode the proxy does not have yet.
+    /// `railway` needs a mode the proxy does not have yet. The MCP
+    /// gateway's presets (`github`, `cloudflare`, `linear`, `stripe`, and
+    /// `maple` with tool rules) are refused until each passes its hand
+    /// test: use `--mcp-url` and `--tools-…` meanwhile.
     #[arg(long, value_name = "NAME")]
     pub(crate) preset: Option<String>,
     /// Profile name: the first segment of the proxy's local URL
@@ -1321,11 +1347,48 @@ pub(crate) struct ProxyGrantArgs {
     #[arg(long, required_unless_present = "preset")]
     pub(crate) profile: Option<String>,
     /// Where requests go: `https://host` or `https://host:port`.
-    #[arg(long, required_unless_present = "preset")]
+    #[arg(long, required_unless_present_any = ["preset", "mcp_url"], conflicts_with = "mcp_url")]
     pub(crate) upstream: Option<String>,
-    /// The header the value goes in (`authorization`).
-    #[arg(long, required_unless_present = "preset")]
+    /// The header the value goes in (`authorization`; with `--mcp-url`,
+    /// `authorization` unless given).
+    #[arg(long, required_unless_present_any = ["preset", "mcp_url"])]
     pub(crate) header: Option<String>,
+    /// An MCP profile (ADR 0049): the remote MCP server's URL,
+    /// `https://host[:port]/path`. The proxy forwards only that path, reads
+    /// the JSON-RPC in it, hides the tools no rule allows or asks for, and
+    /// asks you per tool. Without `--prefix`, `Bearer `.
+    #[arg(long, value_name = "URL", conflicts_with_all = ["path_prefixes", "ask", "ask_methods"])]
+    pub(crate) mcp_url: Option<String>,
+    /// A fixed, non-secret header the MCP server needs (`NAME:VALUE`,
+    /// repeatable, at most 4), such as a read-only switch.
+    #[arg(long = "mcp-header", value_name = "NAME:VALUE", requires = "mcp_url")]
+    pub(crate) mcp_headers: Vec<String>,
+    /// MCP tools that go through: exact names or prefixes ending in `*`
+    /// (`get_*`), comma-separated or repeated. `*` alone is every tool.
+    #[arg(
+        long = "tools-allow",
+        value_name = "PATTERN",
+        value_delimiter = ',',
+        requires = "mcp_url"
+    )]
+    pub(crate) tools_allow: Vec<String>,
+    /// MCP tools each call of which asks you first.
+    #[arg(
+        long = "tools-ask",
+        value_name = "PATTERN",
+        value_delimiter = ',',
+        requires = "mcp_url"
+    )]
+    pub(crate) tools_ask: Vec<String>,
+    /// MCP tools refused (and hidden from the agent's list). Any tool no
+    /// pattern names is refused too.
+    #[arg(
+        long = "tools-deny",
+        value_name = "PATTERN",
+        value_delimiter = ',',
+        requires = "mcp_url"
+    )]
+    pub(crate) tools_deny: Vec<String>,
     /// Text before the value (`"Bearer "`; default: none).
     #[arg(long)]
     pub(crate) prefix: Option<String>,
@@ -1352,7 +1415,10 @@ pub(crate) struct ProxyGrantArgs {
     #[arg(long, value_name = "WORDS")]
     pub(crate) words: Option<String>,
     /// Every device of the account runs a Klav with per-item grants: needed
-    /// for the account's first one, which older devices cannot read.
+    /// for the account's first one, which older devices cannot read. With
+    /// `--mcp-url`, also that every device and klav-proxy run a Klav with
+    /// the MCP gateway: needed for the first MCP profile, which turns the
+    /// account's MCP gateway on.
     #[arg(long = "every-device-is-updated")]
     pub(crate) every_device_updated: bool,
     #[command(flatten)]
