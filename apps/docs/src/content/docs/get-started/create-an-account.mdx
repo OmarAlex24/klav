@@ -56,6 +56,40 @@ Without `--server`, `klav signup` uses klav.dev and says so on its first line: `
 
 `--server` takes `https://` addresses only. Plain `http://` is allowed only for `localhost` and `127.0.0.1`, for testing. You can also set the server with the `KLAV_SERVER` environment variable.
 
+## With an invite code
+
+A server can accept new accounts in one of three ways: open to anyone, by invitation only, or closed. Klav's apps ask the server which one before they ask for your master password. On an open server, nothing changes. On a closed one, they stop and say so. On a server that takes accounts by invitation, you need an invite code from whoever runs it.
+
+An invite code works only for the email address it was made for, and only once (or, for a group code, a set number of times). Klav checks it before it asks for your master password or makes your Secret Key, so a wrong code never leaves a half-made account or an emergency kit behind.
+
+**Mac app:** below your email, the sheet shows "Invite code". Paste the code and choose "Continue". When the code is valid for that email, the master password fields and "Create the account" appear. When it isn't, the sheet says "This invite code isn't valid for this email." and asks for nothing else. "Request an invite" opens klav.dev.
+
+**CLI:** `klav signup` asks for the code after the email, before the password:
+
+```text
+Server: https://klav.example.com (klav.example.com).
+Invite code: KLAV-…
+New master password:
+```
+
+You can type or paste the code there; it shows as you type, so you can check it. You can also pass it with `KLAV_INVITE` or `--invite`:
+
+```sh
+KLAV_INVITE=KLAV-… klav signup --server https://klav.example.com --email you@example.com --emergency-kit ~/Desktop/klav-kit.txt
+```
+
+`--invite` stays in your shell history, so prefer the prompt or `KLAV_INVITE`. With `--password-stdin` there is no prompt, so give the code with one of the two. If the code isn't valid, `klav signup` stops before the password:
+
+```text
+This invite code isn't valid for you@example.com. Check the code, or request one at https://klav.dev.
+```
+
+The message is the same whatever the reason: a wrong code, another email, or a code that was revoked, has expired or has been used up.
+
+## When an account reaches its limits
+
+A server can limit how much each account keeps: how many vaults and items, how much encrypted vault data, and how much space attachments take. Items in the trash count until they are emptied from it. When a change would go over a limit, Klav shows the server's message as it is (which limit, how much is used and the maximum) and saves nothing. Reading, moving to the trash and deleting are never refused.
+
 ## The emergency kit
 
 The emergency kit holds your Secret Key. To sign in on a new device you need the kit and your master password; without both, nobody can recover your account. It looks like this:
