@@ -82,7 +82,7 @@ async fn request_logs_contain_no_headers_queries_or_bodies() {
         c.registration_mode = Some(klav_proto::RegistrationMode::Invite);
     })
     .await;
-    for invite in [code.expose().to_owned(), format!("{MARKER}")] {
+    for invite in [code.expose().to_owned(), MARKER.to_owned()] {
         let res = invite_server
             .post_json(
                 "/v1/auth/invite/check",

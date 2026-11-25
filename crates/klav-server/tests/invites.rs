@@ -78,10 +78,10 @@ async fn health(server: &TestServer) -> Value {
         .get(server.url("/v1/health"))
         .send()
         .await
-        .unwrap()
+        .expect("health request")
         .json()
         .await
-        .unwrap()
+        .expect("health body")
 }
 
 async fn error_body(res: reqwest::Response) -> ErrorBody {
