@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Klav · The agent asks. You decide.</title>
-<meta name="description" content="Klav is the open-source secrets manager for the age of agents. Each agent gets its own identity and permissions, uses your keys without seeing them, and asks you when it needs more. Free to self-host, or 20 USD a year hosted.">
+<meta name="description" content="Klav is the open-source secrets manager for the age of agents. Each agent gets its own identity and permissions, uses your keys without seeing them, and asks you when it needs more. Free to self-host, for good; free on our server during the invite-only beta.">
 <link rel="canonical" href="https://klav.dev/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Klav">
@@ -474,7 +474,8 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
 .plan-list li::before { content: ""; width: 7px; height: 7px; background: var(--tinta); flex: none; transform: translateY(-2px); }
 .plan > .btn { margin-top: auto; align-self: flex-start; }
 
-/* the waitlist (hosted plan) */
+/* the beta invite request (hosted plan); #beta is the card, #waitlist the form */
+.plan-hosted { scroll-margin-top: 96px; }
 .waitlist { margin-top: auto; scroll-margin-top: 96px; }
 .wl-label { display: block; font-size: 14px; color: var(--gris); margin-bottom: 10px; }
 .wl-row { display: flex; gap: 8px; }
@@ -491,6 +492,8 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
 .wl-status.is-error { box-shadow: inset 2px 0 0 var(--rojo); }
 .wl-status.is-done { margin-top: 0; padding: 14px 16px; box-shadow: inset 2px 0 0 var(--tinta); }
 .wl-status:focus { outline: none; }
+.wl-terms { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--linea); font-size: 13.5px; color: var(--gris); }
+.wl-terms code { color: var(--tinta); }
 
 /* ------------------------------------------------------------- footer */
 .foot { margin-top: 120px; border-top: 1px solid var(--linea); }
@@ -636,9 +639,9 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
           <span data-i18n="hero.github">View on GitHub</span>
         </a><!--/open:repo-->
         <!--closed:repo--><a class="btn btn-primary" href="#download" data-i18n="hero.install">Downloads</a><!--/closed:repo-->
-        <a class="btn" href="#waitlist" id="hero-waitlist" data-i18n="hero.waitlist">Join the waitlist</a>
+        <a class="btn" href="#beta" id="hero-waitlist" data-i18n="hero.waitlist">Request a free beta invite</a>
       </div>
-      <p class="hero-note" data-i18n="hero.note">Free on your own server · 20 USD a year on ours</p>
+      <p class="hero-note" data-i18n="hero.note">Free on your own server, for good · Free on ours during the beta</p>
     </div>
 
     <div class="stage-wrap">
@@ -957,7 +960,7 @@ env:
         <li><strong data-i18n="nx.envs">Environments per repository</strong><span data-i18n-html="nx.envsText">Import a <code>.env</code> once, then run with <code>--env production</code>.</span></li>
         <li><strong data-i18n="nx.deployed">Deployed services</strong><span data-i18n="nx.deployedText">Your app on a hosting platform keeps a service ID instead of its secrets, and Klav notices a copied instance.</span></li>
         <li><strong data-i18n="nx.stores">In the stores</strong><span data-i18n="nx.storesText">The extension in the Chrome Web Store and on addons.mozilla.org, and the iPhone app in the App Store.</span></li>
-        <li><strong data-i18n="nx.hosted">Klav’s own server</strong><span data-i18n-html="nx.hostedText">A paid plan, 20 USD a year, so you don’t have to run one. <a href="#waitlist">Join the waitlist</a>.</span></li>
+        <li><strong data-i18n="nx.hosted">Klav’s own server, open to everyone</strong><span data-i18n-html="nx.hostedText">Sign-up without an invite, and a plan of 20 USD a year, once the beta ends. Until then, <a href="#beta">request an invite</a>.</span></li>
       </ul>
     </div>
   </section>
@@ -1021,7 +1024,7 @@ env:
   <!-- ======================================================== download -->
   <section class="wrap section" id="download">
     <h2 class="h2" data-i18n="dl.title">Install it where you work.</h2>
-    <p class="lede" data-i18n-html="dl.lede">Free, for everyone. Your vault lives on a Klav server: one you run yourself, or ours at 20 USD a year, which isn’t open yet; <a href="#waitlist">join the waitlist</a> to hear when it is.</p>
+    <p class="lede" data-i18n-html="dl.lede">Free, for everyone. Your vault lives on a Klav server: one you run yourself, or ours, which is free during its invite-only beta; <a href="#beta">request an invite</a>.</p>
 
     <div class="dl cross">
       <article class="dl-row">
@@ -1124,12 +1127,12 @@ env:
       </article>
     </div>
 
-    <!--open:docs--><p class="dl-next"><span data-i18n="dl.next">What isn’t out yet, like the browser stores, the App Store and our hosted server, is listed in</span> <a href="https://docs.klav.dev/on-the-way/">On the way</a>.</p><!--/open:docs-->
+    <!--open:docs--><p class="dl-next"><span data-i18n="dl.next">What isn’t out yet, like the browser stores, the App Store and open sign-up on our server, is listed in</span> <a href="https://docs.klav.dev/on-the-way/">On the way</a>.</p><!--/open:docs-->
   </section>
 
   <!-- ========================================================= pricing -->
   <section class="wrap section" id="pricing">
-    <h2 class="h2" data-i18n="pr.title">Free on your server. 20 USD a year on ours.</h2>
+    <h2 class="h2" data-i18n="pr.title">Free on your server, for good. Free on ours during the beta.</h2>
     <p class="lede" data-i18n="pr.lede">Same Klav, same encryption. The only difference is who keeps the server running.</p>
 
     <div class="plans">
@@ -1145,9 +1148,9 @@ env:
         <!--open:docs--><a class="btn" href="https://docs.klav.dev/self-hosting/" data-i18n="pr.selfCta">Read the self-hosting guide</a><!--/open:docs-->
       </article>
 
-      <article class="plan plan-hosted">
-        <div class="plan-name"><span data-i18n="pr.hostName">Hosted by us</span><span class="plan-tag" data-i18n="pr.hostTag">Everything included</span></div>
-        <div class="price"><strong>$20</strong><span data-i18n="pr.hostPer">per year</span></div>
+      <article class="plan plan-hosted" id="beta">
+        <div class="plan-name"><span data-i18n="pr.hostName">Hosted by us</span><span class="plan-tag" data-i18n="pr.hostTag">Invite-only beta</span></div>
+        <div class="price"><strong data-i18n="pr.hostPrice">Free</strong><span data-i18n="pr.hostPer">during the beta</span></div>
         <p class="plan-desc" data-i18n="pr.hostDesc">We run the server so you don't have to. Your vault is still encrypted on your devices before it reaches us.</p>
         <ul class="plan-list">
           <li data-i18n="pr.host1">Server, backups and updates, handled</li>
@@ -1155,10 +1158,10 @@ env:
           <li data-i18n="pr.host3">Unlimited agents and devices</li>
         </ul>
         <form class="waitlist" id="waitlist" action="/api/waitlist" method="post" novalidate>
-          <label class="wl-label" for="wl-email" data-i18n="wl.label">Not open yet. Leave your email and we'll write when it opens.</label>
+          <label class="wl-label" for="wl-email" data-i18n="wl.label">Leave your email. We send the invites ourselves, a few at a time.</label>
           <div class="wl-row" id="wl-row">
             <input class="wl-input" id="wl-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required placeholder="you@example.com" data-i18n-placeholder="wl.placeholder" aria-describedby="wl-status">
-            <button class="btn btn-primary" type="submit" id="wl-submit" data-i18n="wl.join">Join the waitlist</button>
+            <button class="btn btn-primary" type="submit" id="wl-submit" data-i18n="wl.join">Request a free beta invite</button>
           </div>
           <!-- Left empty by people; bots that fill every field land here. -->
           <div class="wl-trap" aria-hidden="true">
@@ -1166,6 +1169,7 @@ env:
             <input id="wl-website" name="website" type="text" tabindex="-1" autocomplete="off">
           </div>
           <p class="wl-status" id="wl-status" role="status" aria-live="polite" tabindex="-1" hidden></p>
+          <p class="wl-terms" data-i18n-html="wl.terms">Our server, <code>api.klav.dev</code>, is free while the beta is invite-only. After the beta it becomes a plan of 20 USD a year, and we’ll tell you at least 60 days before you’d pay anything. If you’d rather not, move your account to your own server whenever you like with <code>klav account set-server</code>. Running your own server stays free, for good.</p>
         </form>
       </article>
     </div>
@@ -1265,9 +1269,9 @@ env:
     "hero.title": "<span>El agente pide.</span> <span>Tú decides.</span>",
     "hero.lede": "Klav es el gestor de secretos open source para la era de los agentes. Cada agente tiene su propia identidad y solo los permisos que tú le das. <strong>Usa tus llaves sin verlas</strong>, y cuando necesita más, te lo pide en el iPhone o en la Mac.",
     "hero.github": "Ver en GitHub",
-    "hero.waitlist": "Unirme a la lista",
+    "hero.waitlist": "Pide una invitación a la beta gratuita",
     "hero.install": "Descargas",
-    "hero.note": "Gratis en tu servidor · 20 USD al año en el nuestro",
+    "hero.note": "Gratis en tu servidor, siempre · Gratis en el nuestro mientras dure la beta",
     "req.waiting": "claude-code espera tu permiso",
     "req.title": "Quiere inyectar <strong>Stripe</strong> en <code>npm test</code>",
     "req.why": "«correr las pruebas de cobros»",
@@ -1359,8 +1363,8 @@ env:
     "nx.deployedText": "Tu app en una plataforma de hosting guarda un ID de servicio en vez de sus secretos, y Klav se da cuenta si alguien copia una instancia.",
     "nx.stores": "En las tiendas",
     "nx.storesText": "La extensión en la Chrome Web Store y en addons.mozilla.org, y la app de iPhone en la App Store.",
-    "nx.hosted": "El servidor de Klav",
-    "nx.hostedText": "Un plan de pago, 20 USD al año, para que no tengas que montar uno. <a href=\"#waitlist\">Apúntate a la lista de espera</a>.",
+    "nx.hosted": "El servidor de Klav, abierto a todos",
+    "nx.hostedText": "Registro sin invitación y un plan de 20 USD al año, cuando termine la beta. Mientras tanto, <a href=\"#beta\">pide tu invitación</a>.",
     "ev.title": "También tus contraseñas.",
     "ev.lede": "Contraseñas, passkeys y códigos de un solo uso, cifrados en tus dispositivos antes de llegar al servidor. Tráelos desde Bitwarden, 1Password o tu navegador.",
     "srf.field": "Correo o usuario",
@@ -1375,7 +1379,7 @@ env:
     "srf.otp": "Código de un solo uso",
     "srf.apps": "iPhone y Mac",
     "srf.appsText": "Autollenado de contraseñas, passkeys y códigos en el iPhone, una app en la barra de menús de la Mac, y Face ID o Touch ID para desbloquear.",
-    "pr.title": "Gratis en tu servidor. 20 USD al año en el nuestro.",
+    "pr.title": "Gratis en tu servidor, siempre. Gratis en el nuestro durante la beta.",
     "pr.lede": "El mismo Klav, el mismo cifrado. Solo cambia quién mantiene el servidor encendido.",
     "pr.selfName": "En tu servidor",
     "pr.selfPrice": "Gratis",
@@ -1385,15 +1389,17 @@ env:
     "pr.self3": "Tú te encargas de respaldos, actualizaciones y TLS",
     "pr.selfCta": "Leer la guía para alojarlo",
     "pr.hostName": "Alojado por nosotros",
-    "pr.hostTag": "Todo incluido",
-    "pr.hostPer": "al año",
+    "pr.hostTag": "Beta con invitación",
+    "pr.hostPrice": "Gratis",
+    "pr.hostPer": "durante la beta",
     "pr.hostDesc": "Nosotros mantenemos el servidor para que tú no tengas que hacerlo. Tu bóveda se cifra en tus dispositivos antes de llegarnos.",
     "pr.host1": "Servidor, respaldos y actualizaciones, resueltos",
     "pr.host2": "Aprobaciones con aviso en tu iPhone",
     "pr.host3": "Agentes y dispositivos sin límite",
-    "wl.label": "Todavía no abre. Deja tu correo y te escribimos cuando abra.",
+    "wl.label": "Deja tu correo. Las invitaciones las mandamos nosotros, de a poco.",
     "wl.placeholder": "tu@ejemplo.com",
-    "wl.join": "Unirme a la lista",
+    "wl.join": "Pide una invitación a la beta gratuita",
+    "wl.terms": "Nuestro servidor, <code>api.klav.dev</code>, es gratis mientras la beta sea por invitación. Al terminar pasa a ser un plan de 20 USD al año, y te avisamos por lo menos 60 días antes de cobrarte nada. Si prefieres no pagar, llévate tu cuenta a tu propio servidor cuando quieras con <code>klav account set-server</code>. Montar tu propio servidor sigue siendo gratis, siempre.",
     "ft.license": "Open source. Apache-2.0, el servidor con AGPL-3.0.",
     "ft.licenseSoon": "Open source desde el lanzamiento: Apache-2.0, el servidor con AGPL-3.0.",
     "ft.self": "Alojarlo tú",
@@ -1401,7 +1407,7 @@ env:
     "ft.privacy": "Privacidad",
     "ft.download": "Descargas",
     "dl.title": "Instálalo donde trabajas.",
-    "dl.lede": "Gratis, para todos. Tu bóveda vive en un servidor de Klav: uno que montas tú, o el nuestro, a 20 USD al año, que todavía no abre; <a href=\"#waitlist\">apúntate a la lista</a> y te avisamos.",
+    "dl.lede": "Gratis, para todos. Tu bóveda vive en un servidor de Klav: uno que montas tú, o el nuestro, gratis durante su beta con invitación; <a href=\"#beta\">pide la tuya</a>.",
     "dl.soon": "Próximamente",
     "dl.macName": "App de Mac",
     "dl.macReq": "macOS 15 o más nuevo, Apple silicon",
@@ -1441,7 +1447,7 @@ env:
     "dl.srvText": "Cada app entra a un servidor de Klav, y ese servidor solo guarda datos cifrados. <code>docker compose up</code> con SQLite o Postgres, detrás de tu propio TLS. Tu cuenta la creas ahí con la app de Mac o con la línea de comandos.",
     "dl.srvBtn": "Leer la guía para alojarlo",
     "dl.srvWait": "La guía se publica con los docs.",
-    "dl.next": "Lo que todavía no sale, como las tiendas de los navegadores, la App Store y nuestro servidor alojado, está en",
+    "dl.next": "Lo que todavía no sale, como las tiendas de los navegadores, la App Store y el registro abierto en nuestro servidor, está en",
   };
   // What the illustrations write themselves (they change while they move,
   // so they can't carry data-i18n).
@@ -1472,8 +1478,8 @@ env:
     },
   };
   const META = {
-    en: { title: "Klav · The agent asks. You decide.", price: "$20" },
-    es: { title: "Klav · El agente pide. Tú decides.", price: "20 USD" },
+    en: { title: "Klav · The agent asks. You decide." },
+    es: { title: "Klav · El agente pide. Tú decides." },
   };
   const EN = {};
   document.querySelectorAll("[data-i18n]").forEach((el) => { EN[el.dataset.i18n] = el.textContent; });
@@ -1501,7 +1507,6 @@ env:
       const v = dict[el.dataset.i18nPlaceholder];
       if (v !== undefined) el.placeholder = v;
     });
-    document.querySelector(".plan-hosted .price strong").textContent = META[lang].price;
     onLang.forEach((fn) => fn());
     document.querySelectorAll(".lang button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === lang)));
     try { localStorage.setItem("klav-lang", lang); } catch {}
@@ -1986,15 +1991,15 @@ env:
   // already has, so the page can't be used to check who signed up.
   const WL = {
     en: {
-      sending: "Joining…",
-      done: (e) => `You're on the list. We'll write to ${e} when the hosted plan opens.`,
+      sending: "Sending…",
+      done: (e) => `You're on the list. When your invite is ready, we'll send it to ${e}, with the code and how to sign up.`,
       invalid: "Check the email: it needs an @ and a domain.",
       limited: "Too many tries from here. Wait a few minutes and try again.",
       failed: "The list didn't answer. Try again in a moment.",
     },
     es: {
-      sending: "Apuntando…",
-      done: (e) => `Ya estás en la lista. Te escribiremos a ${e} cuando abra el plan alojado.`,
+      sending: "Enviando…",
+      done: (e) => `Ya estás en la lista. Cuando tu invitación esté lista, te la mandamos a ${e}, con el código y cómo crear tu cuenta.`,
       invalid: "Revisa el correo: le falta la @ o el dominio.",
       limited: "Demasiados intentos desde aquí. Espera unos minutos y vuelve a probar.",
       failed: "La lista no respondió. Vuelve a probar en un momento.",
@@ -2059,12 +2064,12 @@ env:
     if (wl.state === "error") { wl = { state: "idle", error: "", email: "" }; renderWaitlist(); }
   });
 
-  // The hero's "Join the waitlist" goes to the form and puts the cursor in it.
+  // The hero's "Request a free beta invite" goes to the form and puts the cursor in it.
   document.getElementById("hero-waitlist").addEventListener("click", (event) => {
     event.preventDefault();
     form.scrollIntoView({ behavior: reduced.matches ? "auto" : "smooth", block: "center" });
     email.focus({ preventScroll: true });
-    history.replaceState(null, "", "#waitlist");
+    history.replaceState(null, "", "#beta");
   });
 
   // ------------------------------------------------------------ start --

@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 import { createSite, DOWNLOADS, inlineHashes, OPENABLE, openDatabase, parseOpen, renderPage } from "../server.mjs";
 import { ASSETS } from "../../../scripts/release/kit.mjs";
@@ -467,6 +468,73 @@ describe("static files and headers", () => {
     assert.equal((await fetch(`${s.base}/`, { method: "DELETE" })).status, 405);
     const health = await fetch(`${s.base}/healthz`);
     assert.equal(health.status, 200);
+  });
+});
+
+describe("the beta invite on the page (ADR 0048 §4)", () => {
+  const html = readFileSync(join(WEB, "public", "index.html"), "utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  // The Spanish catalog, as the page's own script builds it.
+  const ES = new Function(`${script.slice(script.indexOf("const ES = {"), script.indexOf("const META"))}; return ES;`)();
+  const keys = [...html.matchAll(/data-i18n(?:-html|-placeholder)?="([^"]+)"/g)].map((m) => m[1]);
+  const english = (key) => {
+    // The element that carries the key, up to its own closing tag.
+    const m = html.match(new RegExp(`<(\\w+)\\b[^>]*\\sdata-i18n(?:-html)?="${key.replace(".", "\\.")}"[^>]*>([\\s\\S]*?)</\\1>`));
+    assert.ok(m, key);
+    return m[2];
+  };
+
+  test("the inline script parses, and every translated element has its Spanish string", () => {
+    assert.doesNotThrow(() => new vm.Script(script));
+    assert.deepEqual(keys.filter((key) => typeof ES[key] !== "string"), []);
+  });
+
+  test("#beta and #waitlist each name exactly one element, so old and new links both land on the form", () => {
+    for (const id of ["beta", "waitlist"]) assert.equal(html.match(new RegExp(`\\sid="${id}"`, "g"))?.length, 1, id);
+    assert.match(html, /<article class="plan plan-hosted" id="beta">/);
+    assert.match(html, /<form class="waitlist" id="waitlist" action="\/api\/waitlist"/);
+    // Every in-page link to the request goes to #beta.
+    assert.equal(/href=\\?"#waitlist\\?"/.test(html), false);
+    assert.ok((html.match(/href=\\?"#beta\\?"/g) ?? []).length >= 4);
+  });
+
+  test("the call to action asks for a free beta invite, in both languages", () => {
+    assert.equal(english("hero.waitlist"), "Request a free beta invite");
+    assert.equal(english("wl.join"), "Request a free beta invite");
+    assert.equal(ES["hero.waitlist"], "Pide una invitación a la beta gratuita");
+    assert.equal(ES["wl.join"], "Pide una invitación a la beta gratuita");
+  });
+
+  test("under the form: free during the beta, 20 USD a year after it with 60 days' notice, set-server, self-hosting free", () => {
+    for (const terms of [english("wl.terms"), ES["wl.terms"]]) {
+      assert.ok(terms.includes("<code>api.klav.dev</code>"), terms);
+      assert.ok(terms.includes("20 USD"), terms);
+      assert.ok(terms.includes("60"), terms);
+      assert.ok(terms.includes("<code>klav account set-server</code>"), terms);
+      assert.equal(/href=/.test(terms), false, "no links in the terms");
+    }
+    assert.match(english("wl.terms"), /free while the beta is invite-only/);
+    assert.match(english("wl.terms"), /stays free, for good/);
+    assert.match(ES["wl.terms"], /gratis mientras la beta sea por invitación/);
+    assert.match(ES["wl.terms"], /sigue siendo gratis, siempre/);
+  });
+
+  test("nothing on the page still says the hosted server is closed or only a paid plan", () => {
+    const english = html.replace(/<script>[\s\S]*?<\/script>/, "");
+    for (const stale of ["Join the waitlist", "isn’t open yet", "when it opens", "20 USD a year on ours", "A paid plan", "$20"]) {
+      assert.equal(english.includes(stale), false, stale);
+    }
+    for (const stale of ["Unirme a la lista", "todavía no abre", "cuando abra", "20 USD al año en el nuestro", "Un plan de pago"]) {
+      assert.equal(Object.values(ES).some((v) => v.includes(stale)), false, stale);
+    }
+    assert.equal(/when the hosted plan opens|cuando abra el plan alojado/.test(script), false);
+  });
+
+  test("the form is still email-only, with its honeypot", () => {
+    const form = html.match(/<form class="waitlist"[\s\S]*?<\/form>/)[0];
+    const fields = [...form.matchAll(/<input[^>]*\sname="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(fields, ["email", "website"]);
+    assert.match(form, /<div class="wl-trap" aria-hidden="true">/);
   });
 });
 
