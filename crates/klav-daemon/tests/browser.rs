@@ -297,6 +297,7 @@ async fn account(server: &common::ServerProcess, home: &Home) {
             email: "ana@example.com".into(),
             password: klav_core::crypto::kdf::MasterPassword::new(PASSWORD),
             device_name: "laptop".into(),
+            invite: None,
             device_kind: klav_proto::auth::DeviceKind::Cli,
         },
     )

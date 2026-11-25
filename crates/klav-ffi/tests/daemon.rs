@@ -1348,7 +1348,7 @@ fn a_quota_through_klavd_keeps_the_servers_message() {
     );
     core.lock();
     drop(core);
-    engine.unlock(Some(PASSWORD.into())).expect("unlock");
+    engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
     let login = |title: &str| NewItemInput {
         kind: Kind::Login,
         title: title.into(),

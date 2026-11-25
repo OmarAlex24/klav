@@ -102,6 +102,7 @@ fn account(server: &ServerProcess, home: &std::path::Path) -> (Daemon, Arc<Daemo
         "mac@example.com".into(),
         PASSWORD.into(),
         "Mac de prueba".into(),
+        None,
     )
     .expect("sign up");
     core.lock();
