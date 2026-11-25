@@ -49,6 +49,11 @@ When the UI and the code disagree, prose follows the UI and identifiers are quot
 | alojar tú mismo / autoalojado | self-host / self-hosted | `docs/self-hosting.md` |
 | proxy inverso | reverse proxy | self-hosting.md §3; Caddy or nginx with TLS in front of `klav-server`. Not the credential proxy |
 | registro (de cuentas nuevas) abierto / cerrado | registration open / closed | `allow_registration`, `registration_open` in `/v1/health` |
+| modo de registro | registration mode | ADR 0048 §1.1: `registration_mode` (`open`, `invite`, `closed`) in the server configuration and in `/v1/health` |
+| código de invitación | invite code | ADR 0048 §1.3: `KLAV-` and 26 Crockford base32 characters (128 bits), single-use and bound to one email by default; the server stores only its digest. Error `invite_invalid` |
+| código de grupo | batch code | ADR 0048 Q3: an invite code with no bound email and more than one use (at most 50, expiring within 14 days) |
+| cuota (de la cuenta) | quota | ADR 0048 §3: a per-account ceiling on attachments, vault data, items or vaults (`[limits]`, `KLAV_MAX_*`). Error `quota_exceeded` |
+| beta | beta | ADR 0048: the free, invite-only period of `api.klav.dev`. Not the TestFlight "public beta" (below) |
 | volumen (Docker, Railway) | volume | `klav-data` in `docker-compose.yml`; mounted at `/data` |
 | verificación de salud | health check | `klav-server healthcheck`, `/v1/health` |
 | límite de peticiones | rate limit / limit per IP address | `[rate_limit]` in the server's configuration; `429` with `Retry-After` |

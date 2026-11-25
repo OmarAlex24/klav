@@ -1,6 +1,6 @@
 # 0048 · Invite-only free beta on `api.klav.dev`, per-account quotas, the waitlist as the invite queue, and installing Klav without Docker
 
-- Status: proposed
+- Status: accepted (2026-11-25). Omar answered (a), the recommended option, to all seven questions (Q1–Q7) on 2026-11-25; see "Open questions for Omar".
 - Date: 2026-11-24
 - Amends: ADR [0028](0028-servidor-por-defecto-klav-dev.md) §3 and its answer H4 (when registration opens on `api.klav.dev`); brings forward part of phase 8 (ADR [0010](0010-decisiones-fase-3-y-plan-alojado.md) §2 and the roadmap); and, if Omar answers Q1 with (a), replaces his launch decision of 2026-11-18 ("self-hosted only from day 0, with a waiting list for the paid plan") and the note of 2026-11-13 that `api.klav.dev` "does not open for free".
 
@@ -247,7 +247,7 @@ The quota is per account. There is no global ceiling: the risk is that the sum o
   - The call to action becomes "Request a free beta invite" / «Pide una invitación a la beta gratuita».
   - Under it, plainly: the hosted server is free during the beta, it will be a 20 USD a year plan after it (with the notice of Q5), and self-hosting is free forever.
   - The form stays email-only.
-  - **This copy can't ship while this ADR is `proposed`.** ADR 0039 §3 only lets the site name what is in `main` or accepted. Layer 3 changes, in the same PR: the page, `features.md` (the hosted plan moves from "decided, not built" to the beta), `sitio-web.md` §6, "On the way" in `apps/docs`, and the privacy page (`privacidad.md` and `public/privacy`), which gains "whether and when we sent you an invite, and a note".
+  - **This copy couldn't ship while this ADR was `proposed`.** ADR 0039 §3 only lets the site name what is in `main` or accepted. Layer 3 changes, in the same PR: the page, `features.md` (the hosted plan moves from "decided, not built" to the beta), `sitio-web.md` §6, "On the way" in `apps/docs`, and the privacy page (`privacidad.md` and `public/privacy`), which gains "whether and when we sent you an invite, and a note".
 
 ### 5. Installing without Docker or a Rust toolchain
 
@@ -406,12 +406,14 @@ When each layer is finished, its box in `docs/roadmap.md` is ticked in the same 
 
 ## Open questions for Omar
 
-| # | Question | Options |
-|---|---|---|
-| Q1 | Do we open `api.klav.dev` as a free, invite-only beta now? It reverses your launch decision of 2026-11-18 ("self-hosted only from day 0, with a waiting list for the paid plan") and ADR 0028 H4 | **(a) Yes: invite-only beta now; open registration and the 20 USD plan later, with email verification (Recommended)** · (b) No: build `invite` mode only for self-hosters, and `api.klav.dev` stays closed until the paid plan · (c) Only people you pick by hand, with no public invite button on the site |
-| Q2 | Invite code format | **(a) 128 bits: `KLAV-` + 26 Crockford base32 characters (Recommended)** · (b) 80 bits: `KLAV-XXXX-XXXX-XXXX-XXXX` · (c) 60 bits: `KLAV-XXXX-XXXX-XXXX` (as first proposed; secure online only while the rate limit holds, §1.3) |
-| Q3 | Batch codes (no bound email, more than one use) in the first version? | **(a) Yes, but with a mandatory expiry of at most 14 days and at most 50 uses (Recommended)** · (b) No: only codes bound to one email, until email verification · (c) Yes, without limits |
-| Q4 | Beta quotas on `api.klav.dev` | **(a) 250 MiB attachments, 64 MiB vault data, 5,000 items, 20 vaults, and at most 50 seats in the first wave (Recommended)** · (b) 500 MiB attachments, 128 MiB vault data, 10,000 items, 50 vaults · (c) 100 MiB attachments, 32 MiB vault data, 2,000 items, 10 vaults |
-| Q5 | What happens to beta accounts when the beta ends | **(a) At least 60 days' notice in the apps and by email, then the 20 USD a year plan or moving to your own server with `klav account set-server`; nothing is deleted without that notice (Recommended)** · (b) Beta accounts stay free for good · (c) The first year of the plan free for beta accounts |
-| Q6 | When `klav-server` binaries and Homebrew ship, and the tap's name | **(a) In v0.10.0, tap `OmarAlex24/homebrew-tap` (`brew install omaralex24/tap/klav-server`), cask `klav` and Linux formula `klav-cli` (Recommended)** · (b) In a v0.9.x patch, same tap · (c) Binaries only, no Homebrew yet |
-| Q7 | Email verification | **(a) Stays deferred until `api.klav.dev` opens without invites or the paid plan starts, whichever is first; bound invites cover the beta (Recommended)** · (b) Required before the beta opens (it delays the beta until transactional email exists) |
+**Answered on 2026-11-25:** Omar chose **(a)**, the recommended option, for every question, Q1 to Q7. The "Answer" column records it.
+
+| # | Question | Options | Answer (2026-11-25) |
+|---|---|---|---|
+| Q1 | Do we open `api.klav.dev` as a free, invite-only beta now? It reverses your launch decision of 2026-11-18 ("self-hosted only from day 0, with a waiting list for the paid plan") and ADR 0028 H4 | **(a) Yes: invite-only beta now; open registration and the 20 USD plan later, with email verification (Recommended)** · (b) No: build `invite` mode only for self-hosters, and `api.klav.dev` stays closed until the paid plan · (c) Only people you pick by hand, with no public invite button on the site | (a) |
+| Q2 | Invite code format | **(a) 128 bits: `KLAV-` + 26 Crockford base32 characters (Recommended)** · (b) 80 bits: `KLAV-XXXX-XXXX-XXXX-XXXX` · (c) 60 bits: `KLAV-XXXX-XXXX-XXXX` (as first proposed; secure online only while the rate limit holds, §1.3) | (a) |
+| Q3 | Batch codes (no bound email, more than one use) in the first version? | **(a) Yes, but with a mandatory expiry of at most 14 days and at most 50 uses (Recommended)** · (b) No: only codes bound to one email, until email verification · (c) Yes, without limits | (a) |
+| Q4 | Beta quotas on `api.klav.dev` | **(a) 250 MiB attachments, 64 MiB vault data, 5,000 items, 20 vaults, and at most 50 seats in the first wave (Recommended)** · (b) 500 MiB attachments, 128 MiB vault data, 10,000 items, 50 vaults · (c) 100 MiB attachments, 32 MiB vault data, 2,000 items, 10 vaults | (a) |
+| Q5 | What happens to beta accounts when the beta ends | **(a) At least 60 days' notice in the apps and by email, then the 20 USD a year plan or moving to your own server with `klav account set-server`; nothing is deleted without that notice (Recommended)** · (b) Beta accounts stay free for good · (c) The first year of the plan free for beta accounts | (a) |
+| Q6 | When `klav-server` binaries and Homebrew ship, and the tap's name | **(a) In v0.10.0, tap `OmarAlex24/homebrew-tap` (`brew install omaralex24/tap/klav-server`), cask `klav` and Linux formula `klav-cli` (Recommended)** · (b) In a v0.9.x patch, same tap · (c) Binaries only, no Homebrew yet | (a) |
+| Q7 | Email verification | **(a) Stays deferred until `api.klav.dev` opens without invites or the paid plan starts, whichever is first; bound invites cover the beta (Recommended)** · (b) Required before the beta opens (it delays the beta until transactional email exists) | (a) |
