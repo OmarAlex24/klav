@@ -953,7 +953,7 @@ catch-all: a new operation doesn't compile without its row.
 | Declares | `hold` | Below |
 | Agent's proof | `agent_passkey_arm`, `agent_passkey_use`, `agent_rotate_*`, `browser_fill` | As today: the agent's own signed request or grant, no value of the person's |
 | Browser channel | `browser_tab`, `extension_reply`, `extension_presence` | As today; `browser_tab` follows P25 (below) |
-| No value | Everything else, also `view` without `reveal`, `sandbox_list_checked` and the settings without `window` | As today |
+| No value | Everything else, also `view` without `reveal`, `sandbox_list_checked`, `agent_labels`, `set_agent_label`, `set_project_repos` and the settings without `window` | As today |
 
 **Windows.** A window belongs to one key: the peer's terminal session, its
 parent process (macOS, a peer with no terminal), or the connection
