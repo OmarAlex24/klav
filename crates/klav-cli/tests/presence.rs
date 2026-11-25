@@ -1,6 +1,6 @@
 //! Presence through the CLI (ADR 0041, layer 3), end to end with the
-//! master password: a test `klavd` started with `--presence-gate` and
-//! Touch ID off, in its own temporary home, and `klav` in a
+//! master password: a test `klavd` (the gate is always on since layer 6)
+//! with Touch ID off, in its own temporary home, and `klav` in a
 //! pseudo-terminal (`script`) or with no controlling terminal at all.
 //!
 //! On Linux CI this is the path people take: no Touch ID, so `klavd`
@@ -266,7 +266,7 @@ fn with_the_gate_on_values_ask_for_the_master_password_on_the_terminal() {
         r#"{"v":1,"window":"unlocked"}"#,
     )
     .expect("passkeys.json");
-    let klavd = Klavd::start(&device, root.path(), true);
+    let klavd = Klavd::start(&device, root.path());
 
     // Locked: the setting doesn't show, and the CLI says how to unlock.
     let locked = detached(&device, &["presence", "window"], "").err();
@@ -723,7 +723,7 @@ fn a_typed_unlock_opens_the_window_its_question_names() {
     let root = tempfile::tempdir().expect("tempdir");
     let device = Device::new(root.path(), "home");
     account(&server, &device);
-    let klavd = Klavd::start(&device, root.path(), true);
+    let klavd = Klavd::start(&device, root.path());
 
     // The first unlock since klavd started.
     let mut first = Terminal::open(
@@ -799,70 +799,6 @@ fn a_typed_unlock_opens_the_window_its_question_names() {
     assert_eq!(text.matches(VALUE).count(), 1, "{text}");
     assert!(!text.contains(PASSWORD), "{text}");
     drop(later);
-    drop(klavd);
-}
-
-#[test]
-fn without_the_gate_the_cli_does_what_it_did() {
-    let server = ServerProcess::start(900);
-    let root = tempfile::tempdir().expect("tempdir");
-    let device = Device::new(root.path(), "home");
-    account(&server, &device);
-    let klavd = Klavd::start(&device, root.path(), false);
-
-    let unlock = detached(
-        &device,
-        &["--password-stdin", "unlock"],
-        &format!("{PASSWORD}\n"),
-    )
-    .ok();
-    assert!(
-        unlock.stderr.contains(&format!(
-            "Unlocked with password (klavd, pid {})",
-            klavd.pid()
-        )),
-        "{}",
-        unlock.stderr
-    );
-    for args in [
-        &["presence", "window"][..],
-        &["presence", "window", "always"][..],
-    ] {
-        let off = detached(&device, args, "").err();
-        assert_eq!(off.code, 1);
-        assert!(
-            off.stderr.contains("the presence gate is off"),
-            "{}",
-            off.stderr
-        );
-    }
-
-    // A value with no prompt, from a terminal or without one; `unlock`
-    // from a terminal says what it said before.
-    let value = detached(&device, &["item", "get", REFERENCE, "--reveal"], "").ok();
-    assert_eq!(value.stdout.trim(), VALUE);
-    let term = Terminal::open(
-        &device,
-        root.path(),
-        &format!(
-            "{}; {}",
-            klav_line(&format!("item get {REFERENCE} --reveal")),
-            klav_line("unlock")
-        ),
-    );
-    assert_eq!(term.exits(2), vec![0, 0], "{}", term.text());
-    let text = term.text();
-    assert!(!text.contains("Master password"), "{text}");
-    assert!(text.contains(VALUE), "{text}");
-    assert!(
-        text.contains(&format!(
-            "Unlocked with password (klavd, pid {})",
-            klavd.pid()
-        )),
-        "{text}"
-    );
-    assert!(!text.contains("already unlocked"), "{text}");
-    drop(term);
     drop(klavd);
 }
 

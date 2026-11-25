@@ -739,8 +739,10 @@ pub enum Request {
     /// with the extension attached ([`BrowserTab`]). Works locked.
     BrowserTab,
     /// Types an agent's values into that tab, if it is still on `host`
-    /// (ADR 0017). The values never come back. Works locked: the agent
-    /// brings the values, decrypted under its own grant.
+    /// (ADR 0017). The values never come back. The agent brings the
+    /// values, decrypted under its own grant, but the connection's
+    /// presence needs the unlocked session (ADR 0041 §3.1): locked, it
+    /// answers `locked`, after a pause's `agents_paused`.
     BrowserFill {
         /// [`BrowserTab::tab`].
         tab: String,

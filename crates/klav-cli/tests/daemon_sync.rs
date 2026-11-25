@@ -85,7 +85,6 @@ async fn reads_answer_at_once_and_a_rollback_found_later_warns_on_every_read() {
             touch_id: false,
             sync_after: SYNC_AFTER,
             build: None,
-            presence_gate: false,
         },
         async {
             let _ = stopped.await;

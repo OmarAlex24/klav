@@ -1,12 +1,16 @@
 //! Agents filling through the extension: `klavd` relays `browser_tab` and
 //! `browser_fill` to an attached extension (here, a fake one on the socket)
-//! and the agent gets field names back, never values.
+//! and the agent gets field names back, never values. A fill needs the
+//! unlocked session and, once per connection, the person's presence in
+//! Klav's frame (ADR 0041 §3.1): the fake answers it with the master
+//! password.
 
 mod common;
 
 use std::time::Duration;
 
 use klav_client::Home;
+use klav_client::ops::SecretText;
 use klav_daemon::client::DaemonClient;
 use klav_daemon::protocol::{BrowserTab, ErrorCode, Request};
 use klav_daemon::{Config, serve};
@@ -15,10 +19,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
+const PASSWORD: &str = "correct horse battery staple";
+
 struct FakeExtension {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     next: u64,
+    /// Requests whose answers [`FakeExtension::line`] skips: the master
+    /// passwords [`FakeExtension::answer`] typed for the presence gate.
+    skip: Vec<u64>,
 }
 
 impl FakeExtension {
@@ -31,6 +40,7 @@ impl FakeExtension {
             reader: BufReader::new(read),
             writer,
             next: 1,
+            skip: Vec::new(),
         };
         ext.send(json!({ "op": "extension_attach", "browser": browser }))
             .await;
@@ -47,18 +57,59 @@ impl FakeExtension {
         self.writer.write_all(&bytes).await.expect("write");
     }
 
+    /// The next line, past the answers to the master passwords typed for
+    /// the presence gate.
     async fn line(&mut self) -> Value {
-        let mut line = String::new();
-        tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
-            .await
-            .expect("in time")
-            .expect("read");
-        serde_json::from_str(&line).expect("json line")
+        loop {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
+                .await
+                .expect("in time")
+                .expect("read");
+            let line: Value = serde_json::from_str(&line).expect("json line");
+            let answered = line["id"]
+                .as_u64()
+                .filter(|_| line.get("event").is_none())
+                .and_then(|id| self.skip.iter().position(|s| *s == id));
+            match answered {
+                Some(at) => {
+                    assert!(line.get("ok").is_some(), "presence: {line}");
+                    self.skip.remove(at);
+                }
+                None => return line,
+            }
+        }
     }
 
-    /// Waits for an event and answers it with `answer(event)`.
-    async fn answer(&mut self, answer: impl FnOnce(&Value) -> Value) -> Value {
+    /// Answers the presence gate's `presence` event, the next line, with
+    /// the master password.
+    async fn presence(&mut self) {
         let line = self.line().await;
+        assert_eq!(line["event"]["kind"], "presence", "{line}");
+        self.type_password(&line["event"]).await;
+    }
+
+    /// The master password for `event`, as the person types it in Klav's
+    /// frame; its answer is skipped.
+    async fn type_password(&mut self, event: &Value) {
+        self.skip.push(self.next);
+        self.send(json!({
+            "op": "extension_presence",
+            "event": event["id"],
+            "password": PASSWORD,
+        }))
+        .await;
+    }
+
+    /// Waits for an event and answers it with `answer(event)`. The
+    /// presence gate's `presence` event before it, if any, gets the master
+    /// password, as the person types it in Klav's frame.
+    async fn answer(&mut self, answer: impl FnOnce(&Value) -> Value) -> Value {
+        let mut line = self.line().await;
+        if line["event"]["kind"] == "presence" {
+            self.type_password(&line["event"]).await;
+            line = self.line().await;
+        }
         let event = line["event"].clone();
         assert!(event.is_object(), "expected an event, got {line}");
         let id = event["id"].as_u64().expect("event id");
@@ -76,13 +127,14 @@ impl FakeExtension {
 async fn agents_fill_the_active_tab_through_the_extension() {
     let dir = tempfile::tempdir().expect("tempdir");
     let home = Home::at(dir.path().join("home"));
+    let server = common::ServerProcess::start(900);
+    account(&server, &home).await;
     let config = Config {
         home: home.clone(),
         idle_lock: Duration::from_secs(60),
         touch_id: false,
         sync_after: klav_daemon::SYNC_AFTER,
         build: None,
-        presence_gate: false,
     };
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let daemon = tokio::spawn(serve(config, async {
@@ -98,6 +150,7 @@ async fn agents_fill_the_active_tab_through_the_extension() {
         .expect_err("no browser");
     assert_eq!(err.code, ErrorCode::NotFound);
     assert!(err.message.contains("extension"), "{}", err.message);
+    unlock(&mut agent).await;
 
     let mut chrome = FakeExtension::attach(&home, "Chrome").await;
     let mut firefox = FakeExtension::attach(&home, "Firefox").await;
@@ -147,11 +200,21 @@ async fn agents_fill_the_active_tab_through_the_extension() {
         let report = agent.call::<Value>(fill).await.map(|(r, _)| r);
         (agent, report)
     });
+    // With two attached, Chrome must be the one with the focus before it is
+    // asked for presence (ADR 0041 §3.1, P25), and again before the fill.
+    let unfocused = |_: &Value| json!({ "ok": { "tab_id": 7, "url": "https://example.org/", "focused": false } });
+    let focused = |_: &Value| json!({ "ok": { "tab_id": 3, "url": "https://github.com/login", "focused": true } });
+    // `klavd` asks the newest first, one at a time.
+    firefox.answer(unfocused).await;
+    chrome.answer(focused).await;
+    chrome.presence().await;
+    firefox.answer(unfocused).await;
+    chrome.answer(focused).await;
     let event = chrome
         .answer(|event| {
             json!({ "ok": {
                 "url": "https://github.com/login?token=MARKER-token",
-                "filled": event["fields"].as_array().expect("fields").iter()
+                "filled": event["fields"].as_array().unwrap_or_else(|| panic!("a fill: {event}")).iter()
                     .map(|f| f["name"].clone()).collect::<Vec<_>>()
             } })
         })
@@ -181,6 +244,10 @@ async fn agents_fill_the_active_tab_through_the_extension() {
         submit: false,
     };
     let ask = tokio::spawn(async move { agent.call::<Value>(fill).await.map(|(r, _)| r) });
+    // The connection's presence holds until the lock; the focus is asked
+    // before every fill.
+    firefox.answer(unfocused).await;
+    chrome.answer(focused).await;
     chrome
         .answer(|_| {
             json!({ "error": { "code": "denied", "message": "the tab is now on evil.example" } })
@@ -221,6 +288,34 @@ async fn agents_fill_the_active_tab_through_the_extension() {
     daemon.await.expect("join").expect("serve");
 }
 
+/// An account in `home`, for `klavd` to unlock.
+async fn account(server: &common::ServerProcess, home: &Home) {
+    let (unlocked, _kit) = klav_client::signup(
+        home,
+        klav_client::SignupRequest {
+            server: server.url.clone(),
+            email: "ana@example.com".into(),
+            password: klav_core::crypto::kdf::MasterPassword::new(PASSWORD),
+            device_name: "laptop".into(),
+            device_kind: klav_proto::auth::DeviceKind::Cli,
+        },
+    )
+    .await
+    .expect("sign-up");
+    drop(unlocked);
+}
+
+async fn unlock(client: &mut DaemonClient) {
+    client
+        .call::<Value>(Request::Unlock {
+            password: Some(SecretText::new(PASSWORD)),
+            passkey_flow: false,
+        })
+        .await
+        .expect("unlock");
+}
+
+/// `klavd` in `dir`, with no account: locked for good.
 async fn start(dir: &std::path::Path) -> (Home, tokio::sync::oneshot::Sender<()>) {
     let home = Home::at(dir.join("home"));
     let config = Config {
@@ -229,7 +324,6 @@ async fn start(dir: &std::path::Path) -> (Home, tokio::sync::oneshot::Sender<()>
         touch_id: false,
         sync_after: klav_daemon::SYNC_AFTER,
         build: None,
-        presence_gate: false,
     };
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let daemon = tokio::spawn(serve(config, async {
@@ -245,7 +339,7 @@ async fn start(dir: &std::path::Path) -> (Home, tokio::sync::oneshot::Sender<()>
 /// `klavd` that stopped first fails at once. It looks for the socket file
 /// and does not connect: `klavd` numbers its connections, a tab's ID starts
 /// with its extension's number, and these tests name tabs of the first
-/// connection ("1.3"), which a probe would take.
+/// connection ("1.3", or "2.3" after an unlock), which a probe would take.
 async fn wait_until_listening(home: &Home, daemon: &tokio::task::JoinHandle<Result<(), String>>) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     while !home.socket_path().exists() {
@@ -257,6 +351,24 @@ async fn wait_until_listening(home: &Home, daemon: &tokio::task::JoinHandle<Resu
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// `klavd` in `dir` with an account, unlocked by the first connection:
+/// the next one, the extension's, is number 2, so its tabs are "2.<id>".
+async fn start_unlocked(
+    dir: &std::path::Path,
+) -> (
+    Home,
+    tokio::sync::oneshot::Sender<()>,
+    common::ServerProcess,
+) {
+    let server = common::ServerProcess::start(900);
+    let home = Home::at(dir.join("home"));
+    account(&server, &home).await;
+    let (home, stop) = start(dir).await;
+    let mut person = DaemonClient::connect(&home).await.expect("klavd");
+    unlock(&mut person).await;
+    (home, stop, server)
 }
 
 fn fill(tab: &str, agent: &str, reason: &str, value: &str) -> Request {
@@ -281,14 +393,14 @@ fn fill(tab: &str, agent: &str, reason: &str, value: &str) -> Request {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_agents_name_and_reason_are_cleaned_before_the_page_sees_them() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (home, _stop) = start(dir.path()).await;
+    let (home, _stop, _server) = start_unlocked(dir.path()).await;
     let mut chrome = FakeExtension::attach(&home, "Chrome").await;
     let mut agent = DaemonClient::connect(&home).await.expect("klavd");
     let long = "x".repeat(500);
     let name = format!("Klav\u{202E}nimda\n{long}");
     let ask = tokio::spawn(async move {
         agent
-            .call::<Value>(fill("1.3", &name, "check\u{200B} CI\r\nnow", "pw"))
+            .call::<Value>(fill("2.3", &name, "check\u{200B} CI\r\nnow", "pw"))
             .await
             .map(|(r, _)| r)
     });
@@ -302,7 +414,7 @@ async fn the_agents_name_and_reason_are_cleaned_before_the_page_sees_them() {
 
     // A host that is not one is refused before reaching the page.
     let mut agent = DaemonClient::connect(&home).await.expect("klavd");
-    let mut bad = fill("1.3", "a", "r", "pw");
+    let mut bad = fill("2.3", "a", "r", "pw");
     if let Request::BrowserFill { host, .. } = &mut bad {
         *host = "evil.example/<script>".into();
     }
@@ -311,12 +423,22 @@ async fn the_agents_name_and_reason_are_cleaned_before_the_page_sees_them() {
 }
 
 /// An extension that stops reading does not hold agents' requests: it is
-/// disconnected after a few seconds.
+/// disconnected after a few seconds. It answers the presence gate and one
+/// fill first, so the values reach it.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_extension_that_stops_reading_is_disconnected() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (home, _stop) = start(dir.path()).await;
-    let stuck = FakeExtension::attach(&home, "Stuck").await;
+    let (home, _stop, _server) = start_unlocked(dir.path()).await;
+    let mut stuck = FakeExtension::attach(&home, "Stuck").await;
+    let first = {
+        let home = home.clone();
+        tokio::spawn(async move {
+            let mut agent = DaemonClient::connect(&home).await.expect("klavd");
+            agent.call::<Value>(fill("2.1", "a", "r", "pw")).await
+        })
+    };
+    stuck.answer(|_| json!({ "ok": { "filled": [] } })).await;
+    first.await.expect("task").expect("filled");
     let big = "v".repeat(256 * 1024);
     let mut asks = Vec::new();
     for _ in 0..48 {
@@ -325,7 +447,7 @@ async fn an_extension_that_stops_reading_is_disconnected() {
         asks.push(tokio::spawn(async move {
             let mut agent = DaemonClient::connect(&home).await.expect("klavd");
             agent
-                .call::<Value>(fill("1.1", "a", "r", &big))
+                .call::<Value>(fill("2.1", "a", "r", &big))
                 .await
                 .map(|(r, _)| r)
         }));

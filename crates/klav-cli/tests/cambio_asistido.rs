@@ -58,6 +58,9 @@ struct FakeExtension {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
     next: u64,
+    /// Requests whose answers [`FakeExtension::line`] skips: the master
+    /// passwords [`FakeExtension::answer`] typed for the presence gate.
+    skip: Vec<u64>,
 }
 
 impl FakeExtension {
@@ -70,6 +73,7 @@ impl FakeExtension {
             reader: BufReader::new(read),
             writer,
             next: 1,
+            skip: Vec::new(),
         };
         ext.send(json!({ "op": "extension_attach", "browser": "Chrome" }))
             .await;
@@ -86,18 +90,46 @@ impl FakeExtension {
         self.writer.write_all(&bytes).await.expect("write");
     }
 
+    /// The next line, past the answers to the master passwords typed for
+    /// the presence gate.
     async fn line(&mut self) -> Value {
-        let mut line = String::new();
-        tokio::time::timeout(Duration::from_secs(30), self.reader.read_line(&mut line))
-            .await
-            .expect("in time")
-            .expect("read");
-        serde_json::from_str(&line).expect("json line")
+        loop {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(30), self.reader.read_line(&mut line))
+                .await
+                .expect("in time")
+                .expect("read");
+            let line: Value = serde_json::from_str(&line).expect("json line");
+            let answered = line["id"]
+                .as_u64()
+                .filter(|_| line.get("event").is_none())
+                .and_then(|id| self.skip.iter().position(|s| *s == id));
+            match answered {
+                Some(at) => {
+                    assert!(line.get("ok").is_some(), "presence: {line}");
+                    self.skip.remove(at);
+                }
+                None => return line,
+            }
+        }
     }
 
     /// Waits for an event of `kind` and answers it with `answer(event)`.
+    /// The presence gate's `presence` event before it, if any, gets the
+    /// master password, as the person types it in Klav's frame (ADR 0041
+    /// §3.1).
     async fn answer(&mut self, kind: &str, answer: impl FnOnce(&Value) -> Value) -> Value {
-        let line = self.line().await;
+        let mut line = self.line().await;
+        if kind != "presence" && line["event"]["kind"] == "presence" {
+            self.skip.push(self.next);
+            self.send(json!({
+                "op": "extension_presence",
+                "event": line["event"]["id"],
+                "password": common::PASSWORD,
+            }))
+            .await;
+            line = self.line().await;
+        }
         let event = line["event"].clone();
         assert_eq!(event["kind"], kind, "expected a {kind} event, got {line}");
         let id = event["id"].as_u64().expect("event id");
@@ -229,7 +261,7 @@ fn password(person: &Device) -> String {
 fn password_of(person: &Device, title: &str) -> String {
     let view = json_of(
         &person
-            .run(&["item", "get", title, "--reveal", "--json"], "")
+            .in_terminal(None, &["item", "get", title, "--reveal", "--json"], "")
             .ok(),
     );
     view["fields"]
@@ -498,7 +530,7 @@ async fn an_agent_changes_a_password_without_seeing_it() {
     assert_eq!(after["pending"], false, "{after}");
     assert_eq!(after["entries"][0]["unconfirmed"], true, "{after}");
     let kept = person
-        .run(&["item", "history", "Bank", "--reveal", "0"], "")
+        .in_terminal(None, &["item", "history", "Bank", "--reveal", "0"], "")
         .ok();
     assert!(kept.stdout.contains(&second), "the refused one is kept");
 
@@ -586,7 +618,7 @@ async fn gated_klavd(w: &World) -> common::Klavd {
     w.person.run(&["lock", "--stop"], "").ok();
     let socket = w.person.home.join("klavd.sock");
     assert!(common::wait_until(30, || !socket.exists()), "klavd stopped");
-    let klavd = common::Klavd::start(&w.person, w.root.path(), true);
+    let klavd = common::Klavd::start(&w.person, w.root.path());
     unlock(&Home::at(&w.person.home)).await;
     klavd
 }

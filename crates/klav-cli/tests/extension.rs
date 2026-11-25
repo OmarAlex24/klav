@@ -5,8 +5,9 @@
 mod common;
 
 use common::{Device, ServerProcess, mode};
+use klav_client::ops::SecretText;
 use klav_daemon::client::DaemonClient;
-use klav_daemon::protocol::{ErrorCode, Request};
+use klav_daemon::protocol::{ErrorBody, ErrorCode, Request};
 use serde_json::Value;
 
 const PASSWORD: &str = "MARKER-ext-pass";
@@ -18,6 +19,24 @@ impl Drop for StopDaemon<'_> {
     fn drop(&mut self) {
         let _ = self.0.run(&["lock", "--stop"], "");
     }
+}
+
+/// `request` with the presence gate (ADR 0041): the first value on a key
+/// gets `presence_required`, and the master password sent again on the
+/// same connection answers it, as the extension's frame does.
+async fn with_presence(
+    client: &mut DaemonClient,
+    request: impl Fn(Option<SecretText>) -> Request,
+) -> Result<Value, ErrorBody> {
+    let asked = client
+        .call::<Value>(request(None))
+        .await
+        .expect_err("the gate asks first");
+    assert_eq!(asked.code, ErrorCode::PresenceRequired, "{asked:?}");
+    client
+        .call::<Value>(request(Some(SecretText::new(common::PASSWORD))))
+        .await
+        .map(|(v, _)| v)
 }
 
 #[test]
@@ -442,16 +461,15 @@ async fn klavd_suggests_and_fills_only_matching_sites() {
         assert_eq!(s["logins"].as_array().map_or(0, Vec::len), 0, "{url}");
     }
 
-    let (values, _): (Value, _) = client
-        .call(Request::Autofill {
-            item: github.clone(),
-            url: "https://github.com/login".into(),
-            part: klav_client::fill::FillPart::All,
-            chosen: false,
-            password: None,
-        })
-        .await
-        .expect("autofill");
+    let values = with_presence(&mut client, |password| Request::Autofill {
+        item: github.clone(),
+        url: "https://github.com/login".into(),
+        part: klav_client::fill::FillPart::All,
+        chosen: false,
+        password,
+    })
+    .await
+    .expect("autofill");
     let names: Vec<&str> = values["fields"]
         .as_array()
         .expect("fields")
@@ -609,16 +627,15 @@ async fn klavd_orders_by_relation_and_fills_a_parent_only_when_chosen() {
 
     // Without the person's pick (a fill without a click, or anything that
     // is not the menu or the popup), the parent page gets nothing.
-    let refused = client
-        .call::<Value>(Request::Autofill {
-            item: zeta.clone(),
-            url: "https://1password.com/login".into(),
-            part: klav_client::fill::FillPart::All,
-            chosen: false,
-            password: None,
-        })
-        .await
-        .expect_err("refused");
+    let refused = with_presence(&mut client, |password| Request::Autofill {
+        item: zeta.clone(),
+        url: "https://1password.com/login".into(),
+        part: klav_client::fill::FillPart::All,
+        chosen: false,
+        password,
+    })
+    .await
+    .expect_err("refused");
     assert_eq!(refused.code, ErrorCode::Denied);
     assert!(!refused.message.contains(PASSWORD));
     // Chosen, it fills.
@@ -659,7 +676,6 @@ async fn klavd_orders_by_relation_and_fills_a_parent_only_when_chosen() {
 /// passkey's site.
 #[tokio::test(flavor = "multi_thread")]
 async fn klavd_creates_and_signs_with_passkeys() {
-    use klav_client::ops::SecretText;
     use klav_client::passkeys::{PasskeyCreateOutcome, PasskeyCreateRequest};
 
     let server = ServerProcess::start(900);
@@ -884,13 +900,14 @@ async fn klavd_creates_and_signs_with_passkeys() {
     assert_eq!(err.code, ErrorCode::Locked);
 }
 
-/// The passkey verification window (ADR 0020 §8), with Touch ID off: every
-/// verification is the master password. «Always» asks on every use except
-/// the one Klav's passkey frame unlocked for; loosening needs the password;
-/// a longer window covers later uses; locking closes it.
+/// The passkey verification window (ADR 0020 §8, ADR 0041 §2.5), with
+/// Touch ID off: every verification is the master password. «Always» asks
+/// on every use except the one Klav's passkey frame unlocked for; loosening needs the password and opens nothing; the next
+/// verification opens the window for this connection's key; tightening
+/// needs nothing; locking closes it. The setting is sealed local data,
+/// never the old `passkeys.json`.
 #[tokio::test(flavor = "multi_thread")]
 async fn klavd_passkey_verification_window() {
-    use klav_client::ops::SecretText;
     use klav_client::passkeys::{PasskeyCreateOutcome, PasskeyCreateRequest};
     use klav_daemon::protocol::DaemonStatus;
     use klav_daemon::uv::Window;
@@ -977,6 +994,15 @@ async fn klavd_passkey_verification_window() {
         .await
         .expect("loosen");
     assert_eq!(set["window"], "unlocked");
+    // Loosening opens nothing: the next use asks, and its verification
+    // covers the uses after it.
+    assert!(!status(&mut client).await.passkey_verified);
+    let err = client.call::<Value>(get(None)).await.expect_err("asks");
+    assert_eq!(err.code, ErrorCode::BiometryUnavailable);
+    client
+        .call::<Value>(get(password()))
+        .await
+        .expect("with the password");
     assert!(status(&mut client).await.passkey_verified);
     for _ in 0..2 {
         client
@@ -984,12 +1010,12 @@ async fn klavd_passkey_verification_window() {
             .await
             .expect("within the window");
     }
-    // Saved on disk, local to this home (not synced).
-    let saved = std::fs::read_to_string(device.home.join("passkeys.json")).expect("passkeys.json");
-    assert!(saved.contains("\"unlocked\""), "{saved}");
+    // Sealed in klavd's local data, local to this home (not synced).
+    assert!(device.home.join("passkey-window.bin").exists());
+    assert!(!device.home.join("passkeys.json").exists());
 
     // Tightening needs nothing. «Every 5 min» still counts the password
-    // that loosened it a moment ago.
+    // of a moment ago.
     client
         .call::<Value>(uv(Window::FiveMinutes, None))
         .await
@@ -1022,16 +1048,7 @@ async fn klavd_passkey_verification_window() {
     unlock(&mut client, false).await;
     assert!(!status(&mut client).await.passkey_verified);
 
-    // «While unlocked»: the unlock counts until the lock, which closes it.
-    client
-        .call::<Value>(uv(Window::Unlocked, password()))
-        .await
-        .expect("loosen");
-    unlock(&mut client, false).await;
-    client
-        .call::<Value>(get(None))
-        .await
-        .expect("the unlock counts");
+    // The lock closes it.
     client.call::<Value>(Request::Lock).await.expect("lock");
     let s = status(&mut client).await;
     assert_eq!((s.unlocked, s.passkey_verified), (false, false));

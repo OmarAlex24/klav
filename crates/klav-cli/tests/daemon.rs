@@ -58,7 +58,8 @@ fn the_daemon_keeps_the_account_unlocked_until_idle() {
         )
         .ok();
     let got = device
-        .run(
+        .in_terminal(
+            None,
             &[
                 "item",
                 "get",
@@ -70,7 +71,8 @@ fn the_daemon_keeps_the_account_unlocked_until_idle() {
         .ok();
     assert_eq!(got.stdout.trim(), "MARKER-daemon-secret");
     let ran = device
-        .run(
+        .in_terminal(
+            None,
             &[
                 "run",
                 "-e",
@@ -101,7 +103,9 @@ fn the_daemon_keeps_the_account_unlocked_until_idle() {
     let entries = history(&device);
     assert_eq!(entries.as_array().map(Vec::len), Some(1), "{entries}");
     assert_eq!(entries[0]["host"], "github.com");
-    let shown = device.run(&["generated", "show", "0"], "").ok();
+    let shown = device
+        .in_terminal(None, &["generated", "show", "0"], "")
+        .ok();
     assert_eq!(shown.stdout.trim(), password);
     assert!(
         wait_until(30, || history(&device)[0]["pending"] == false),
@@ -141,7 +145,7 @@ fn the_daemon_keeps_the_account_unlocked_until_idle() {
     assert_eq!(previous["entries"].as_array().map(Vec::len), Some(1));
     assert_eq!(previous["entries"][0]["field"], "password");
     let revealed = device
-        .run(&["item", "history", "GitHub", "--reveal", "0"], "")
+        .in_terminal(None, &["item", "history", "GitHub", "--reveal", "0"], "")
         .ok();
     assert_eq!(revealed.stdout.trim(), password);
     let removed = device.run(&["generated", "rm", "--all"], "").ok();

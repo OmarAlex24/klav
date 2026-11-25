@@ -1,7 +1,7 @@
 //! The presence gate through the socket (ADR 0041, layer 2), with Touch
 //! ID off so the master password stands in for it: what each gated
 //! operation answers, the window the unlock opens, the sealed settings,
-//! the old passkey file, and that with the gate off nothing changes.
+//! and the old passkey file. The gate is always on since layer 6.
 //!
 //! Each test talks over one connection: where this process has no
 //! terminal (CI on Linux), its window key is the connection, and a new
@@ -58,14 +58,13 @@ impl Drop for Daemon {
     }
 }
 
-async fn daemon(home: &Home, presence_gate: bool) -> Daemon {
+async fn daemon(home: &Home) -> Daemon {
     let config = Config {
         home: home.clone(),
         idle_lock: Duration::from_secs(600),
         touch_id: false,
         sync_after: klav_daemon::SYNC_AFTER,
         build: None,
-        presence_gate,
     };
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(serve(config, async {
@@ -148,22 +147,6 @@ async fn code(c: &Conn, request: Request) -> ErrorCode {
     call::<Value>(c, request).await.expect_err("refused").code
 }
 
-/// One raw line to `klavd` and its raw answer, as an older client reads it.
-async fn raw(home: &Home, request: &str) -> Value {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    let mut stream = tokio::net::UnixStream::connect(home.socket_path())
-        .await
-        .expect("klavd");
-    let line = format!("{{\"v\":1,\"id\":1,\"request\":{request}}}\n");
-    stream.write_all(line.as_bytes()).await.expect("write");
-    let mut answer = String::new();
-    tokio::io::BufReader::new(stream)
-        .read_line(&mut answer)
-        .await
-        .expect("read");
-    serde_json::from_str(&answer).expect("json")
-}
-
 /// Every operation of §3's «window» row.
 /// One request per operation of the window row, each naming something that
 /// exists: an instant of the generator history (`created_at`) and a
@@ -208,7 +191,7 @@ async fn with_the_gate_on_values_follow_the_window_and_the_sealed_setting() {
     account(&server, &home).await;
     // A passkey setting from before the gate: only checked for, then gone.
     std::fs::write(home.file("passkeys.json"), br#"{"window":"unlocked"}"#).unwrap();
-    let _klavd = daemon(&home, true).await;
+    let _klavd = daemon(&home).await;
     let c = conn(&home).await;
 
     // Locked: both settings say `locked`, and `status` leaves the passkey
@@ -406,77 +389,11 @@ async fn with_the_gate_on_values_follow_the_window_and_the_sealed_setting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn with_the_gate_off_nothing_changes() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().expect("tempdir");
-    let home = Home::at(dir.path().join("home"));
-    account(&server, &home).await;
-    let _klavd = daemon(&home, false).await;
-    let c = conn(&home).await;
-
-    let (s, warnings) = unlock(&c).await;
-    assert!(s.unlocked && !s.already_unlocked);
-    assert!(warnings.is_empty(), "{warnings:?}");
-    // The passkey setting is the old file, readable while locked.
-    call::<Value>(
-        &c,
-        Request::PasskeyUv {
-            window: Some(Window::FiveMinutes),
-            password: Some(SecretText::new(PASSWORD)),
-        },
-    )
-    .await
-    .expect("passkey setting");
-    assert!(home.file("passkeys.json").exists());
-    lock(&c).await;
-    assert_eq!(status(&c).await.passkey_uv, Some(Window::FiveMinutes));
-    let (_, warnings) = unlock(&c).await;
-    assert!(warnings.is_empty(), "{warnings:?}");
-    assert!(home.file("passkeys.json").exists());
-    assert!(!home.file("presence.bin").exists());
-    // Values need nothing new.
-    call::<Value>(&c, view(None)).await.expect("value");
-    // The new operations are not there.
-    assert_eq!(
-        code(
-            &c,
-            Request::PresenceWindow {
-                window: None,
-                password: None
-            }
-        )
-        .await,
-        ErrorCode::NotSupported
-    );
-    assert_eq!(code(&c, Request::Hold).await, ErrorCode::NotSupported);
-    // A second unlock is answered as before.
-    let (s, _) = unlock(&c).await;
-    assert!(s.unlocked && !s.already_unlocked);
-    // On the wire, as an older client reads it: no new field anywhere.
-    let status = raw(&home, r#"{"op":"status"}"#).await;
-    assert_eq!(status["ok"]["passkey_uv"], "5m");
-    assert!(status["ok"].get("already_unlocked").is_none(), "{status}");
-    let refused = raw(
-        &home,
-        r#"{"op":"view","query":"nothing here","reveal":true}"#,
-    )
-    .await;
-    assert_eq!(refused["error"]["code"], "not_found", "{refused}");
-    assert!(refused["error"].get("presence").is_none(), "{refused}");
-    lock(&c).await;
-    let locked = raw(&home, r#"{"op":"view","query":"GitHub","reveal":true}"#).await;
-    assert_eq!(locked["error"]["code"], "locked", "{locked}");
-    assert!(locked["error"].get("presence").is_none(), "{locked}");
-    let status = raw(&home, r#"{"op":"status"}"#).await;
-    assert_eq!(status["ok"]["passkey_uv"], "5m", "{status}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_socket_renamed_and_replaced_stops_klavd() {
     let dir = tempfile::tempdir().expect("tempdir");
     let home = Home::at(dir.path().join("home"));
     home.ensure().expect("home");
-    let mut klavd = daemon(&home, false).await;
+    let mut klavd = daemon(&home).await;
     let socket = home.socket_path();
     std::fs::rename(&socket, dir.path().join("moved.sock")).unwrap();
     let relay = tokio::net::UnixListener::bind(&socket).expect("a relay binds the path");

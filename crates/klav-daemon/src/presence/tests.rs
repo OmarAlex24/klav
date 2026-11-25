@@ -938,25 +938,20 @@ fn a_panic_during_touch_id_leaves_no_prompt_open() {
 #[test]
 fn one_password_check_at_a_time_and_a_panic_frees_it() {
     let one = OnePassword::default();
-    let inner = one.one(true, || {
+    let inner = one.one(|| {
         assert!(one.running());
-        Ok(one.one(true, || Ok(())).unwrap_err().code)
+        Ok(one.one(|| Ok(())).unwrap_err().code)
     });
     assert_eq!(inner.unwrap(), ErrorCode::PresenceBusy);
-    // With the gate off, a code older clients know.
-    let off = one.one(false, || Ok(one.one(false, || Ok(())).unwrap_err().code));
-    assert_eq!(off.unwrap(), ErrorCode::Conflict);
     assert!(!one.running());
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        one.one::<()>(true, || panic!("Argon2id panicked"))
+        one.one::<()>(|| panic!("Argon2id panicked"))
     }));
     assert!(unwound.is_err());
     assert!(!one.running());
     // No session to check against: no proof.
     assert_eq!(
-        one.check(true, None, SecretText::new(RIGHT))
-            .unwrap_err()
-            .code,
+        one.check(None, SecretText::new(RIGHT)).unwrap_err().code,
         ErrorCode::WrongCredentials
     );
 }

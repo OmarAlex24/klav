@@ -48,7 +48,6 @@ async fn daemon_syncing_after(
         touch_id: false,
         sync_after,
         build: None,
-        presence_gate: false,
     };
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let daemon = tokio::spawn(serve(config, async {

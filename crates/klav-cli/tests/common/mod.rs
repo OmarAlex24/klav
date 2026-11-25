@@ -6,6 +6,7 @@
 pub mod browser;
 pub mod mcp;
 pub mod server;
+pub mod terminal;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -225,12 +226,12 @@ impl Device {
 }
 
 /// A test `klavd` for one home, stopped by its pid when the test ends,
-/// also when it fails. `gate` starts it with `--presence-gate` (ADR 0041);
-/// Touch ID is always off.
+/// also when it fails. Its presence gate is on, as every `klavd`'s is since
+/// ADR 0041's layer 6; Touch ID is always off.
 pub struct Klavd(std::process::Child);
 
 impl Klavd {
-    pub fn start(device: &Device, root: &Path, gate: bool) -> Self {
+    pub fn start(device: &Device, root: &Path) -> Self {
         let mut cmd = Command::new(built_binary("klavd"));
         cmd.current_dir(root)
             .env("KLAV_HOME", &device.home)
@@ -243,9 +244,6 @@ impl Klavd {
                 std::fs::File::create(root.join("klavd-test.log"))
                     .map_or(Stdio::null(), Stdio::from),
             );
-        if gate {
-            cmd.arg("--presence-gate");
-        }
         let klavd = Klavd(cmd.spawn().expect("start klavd"));
         let socket = device.home.join("klavd.sock");
         assert!(

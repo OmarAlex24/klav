@@ -1,9 +1,10 @@
 //! Presence before `klavd` hands out a value (ADR 0041, layer 3): the
-//! CLI's side of the gate that `klavd --presence-gate` turns on.
+//! CLI's side of `klavd`'s gate, on since layer 6.
 //!
 //! - **Whether the gate is on** comes from `status` (`presence`), which the
-//!   CLI reads anyway before it uses `klavd`. A `klavd` that sends none has
-//!   the gate off or is older, and the CLI does what it did before.
+//!   CLI reads anyway before it uses `klavd`. A `klavd` that sends none is
+//!   older than layer 2, or of layers 2–5 with the gate off, and the CLI
+//!   does what it did before.
 //! - **Who asks.** With Touch ID, `klavd` shows the dialog itself and the
 //!   request waits for it; just before, `klavd` sends a notice and the CLI
 //!   prints its terminal's name (Omar's decision 2 of 2026-11-19). Without

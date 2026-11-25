@@ -50,7 +50,7 @@ export type ErrorCode =
   | "timeout"
   // The page covers, hides or moves the frame where the choice was made (T62).
   | "covered"
-  // The presence gate (ADR 0041, `--presence-gate`): the master password
+  // The presence gate (ADR 0041, on since layer 6): the master password
   // is needed (`presence` says what it grants), another check is running,
   // or more than one browser is attached and not exactly one is in front.
   | "presence_required"

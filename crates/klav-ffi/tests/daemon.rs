@@ -49,7 +49,6 @@ impl Daemon {
                 touch_id: false,
                 sync_after: klav_daemon::SYNC_AFTER,
                 build: None,
-                presence_gate: false,
             };
             let _ = rt.block_on(klav_daemon::serve(config, async {
                 let _ = stopped.await;
@@ -242,9 +241,15 @@ fn the_mac_app_works_through_klavd() {
             .all(|f| f.value.as_deref() != Some(SECRET)),
         "item() must not carry secret values"
     );
+    // The first value after the unlock asks (ADR 0041, decision 4): the
+    // app sends the master password again on the same connection.
+    assert!(matches!(
+        engine.field_value(created.id.clone(), "password".into()),
+        Err(KlavError::PresenceRequired { .. })
+    ));
     assert_eq!(
         engine
-            .field_value(created.id.clone(), "password".into())
+            .field_value_with_password(created.id.clone(), "password".into(), PASSWORD.into())
             .expect("reveal"),
         SECRET
     );
@@ -857,9 +862,13 @@ fn the_mac_app_asks_to_delete_the_account_and_klavd_learns_it() {
     let history = engine.generator_history().expect("history");
     assert_eq!(history.len(), 1);
     assert!(history[0].pending, "never uploaded");
+    assert!(matches!(
+        engine.generated_value(history[0].created_at),
+        Err(KlavError::PresenceRequired { .. })
+    ));
     assert_eq!(
         engine
-            .generated_value(history[0].created_at)
+            .generated_value_with_password(history[0].created_at, PASSWORD.into())
             .expect("copy it"),
         "generated offline"
     );

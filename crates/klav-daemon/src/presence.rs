@@ -15,8 +15,8 @@
 //! Locking drops everything but the declarations, which go when their
 //! connection closes or the setting moves to Always.
 //!
-//! The gate is off unless `klavd` starts with `--presence-gate` (§7): then
-//! every operation behaves exactly as before this layer.
+//! The gate is always on since layer 6 (§7); layers 2–5 built it behind a
+//! hidden `--presence-gate` flag, which is gone.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -526,7 +526,6 @@ pub(crate) struct Device<'a> {
     pub(crate) touch_id: bool,
     pub(crate) check: Option<&'a PasswordCheck>,
     pub(crate) passwords: &'a OnePassword,
-    pub(crate) gate: bool,
 }
 
 impl Verify for Device<'_> {
@@ -545,16 +544,14 @@ impl Verify for Device<'_> {
     }
 
     fn password(&self, password: SecretText) -> Result<(), ErrorBody> {
-        self.passwords.check(self.gate, self.check, password)
+        self.passwords.check(self.check, password)
     }
 }
 
 /// One master-password check at a time in `klavd` (finding 1 of the second
 /// layer-2 review): each wrong password costs an Argon2id run with a large
 /// memory setting on its own thread, so a second check while one runs is
-/// answered at once instead of starting another. The answer is
-/// `presence_busy` with the gate on, and `conflict`, which older clients
-/// know, with it off (the ADR's own choice; Still open).
+/// answered at once instead of starting another, with `presence_busy`.
 #[derive(Debug, Default)]
 pub(crate) struct OnePassword(std::sync::atomic::AtomicBool);
 
@@ -564,11 +561,10 @@ impl OnePassword {
     /// when there is no session to check it against.
     pub(crate) fn check(
         &self,
-        gate: bool,
         check: Option<&PasswordCheck>,
         password: SecretText,
     ) -> Result<(), ErrorBody> {
-        self.one(gate, || {
+        self.one(|| {
             let Some(check) = check else {
                 return Err(crate::server::error_body(
                     &klav_client::ClientError::WrongCredentials,
@@ -584,7 +580,6 @@ impl OnePassword {
     /// once (nobody waits, so nothing piles up behind a slow one).
     pub(crate) fn one<T>(
         &self,
-        gate: bool,
         check: impl FnOnce() -> Result<T, ErrorBody>,
     ) -> Result<T, ErrorBody> {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -600,17 +595,7 @@ impl OnePassword {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err(if gate {
-                busy()
-            } else {
-                ErrorBody {
-                    code: ErrorCode::Conflict,
-                    message: "klavd is checking another master password: try again in a moment"
-                        .into(),
-                    paused: None,
-                    presence: None,
-                }
-            });
+            return Err(busy());
         }
         let _running = Running(&self.0);
         check()

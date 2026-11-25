@@ -210,15 +210,14 @@ impl Drop for Daemon {
 
 /// A test `klavd` for `home`, with the fake Touch ID. Each connection takes
 /// the next of `keys`.
-async fn daemon(home: &Home, gate: bool, fake: &Arc<Fake>, keys: &[Key], hold: bool) -> Daemon {
-    daemon_with(home, gate, fake, keys, hold, BeforePrompt::default()).await
+async fn daemon(home: &Home, fake: &Arc<Fake>, keys: &[Key], hold: bool) -> Daemon {
+    daemon_with(home, fake, keys, hold, BeforePrompt::default()).await
 }
 
 /// [`daemon`], with the pause before a prompt the test sets through
 /// `before_prompt` ([`pause_before_prompt`]).
 async fn daemon_with(
     home: &Home,
-    gate: bool,
     fake: &Arc<Fake>,
     keys: &[Key],
     hold: bool,
@@ -226,7 +225,6 @@ async fn daemon_with(
 ) -> Daemon {
     daemon_seams(
         home,
-        gate,
         fake,
         keys,
         hold,
@@ -240,7 +238,6 @@ async fn daemon_with(
 /// too.
 async fn daemon_seams(
     home: &Home,
-    gate: bool,
     fake: &Arc<Fake>,
     keys: &[Key],
     hold: bool,
@@ -254,7 +251,6 @@ async fn daemon_seams(
         touch_id: true,
         sync_after: crate::SYNC_AFTER,
         build: None,
-        presence_gate: gate,
     };
     let seams = TestSeams {
         keys: Mutex::new(keys.iter().copied().collect()),
@@ -475,7 +471,7 @@ async fn a_password_for_swapped_files_is_no_presence_with_the_gate_on() {
     let (person, scratch) = two_accounts(&server, dir.path()).await;
     // Touch ID can't be shown: the password is the verification.
     let fake = Fake::new(false);
-    let _klavd = daemon(&person, true, &fake, &[session(40)], false).await;
+    let _klavd = daemon(&person, &fake, &[session(40)], false).await;
     let c = conn(&person).await;
     call::<DaemonStatus>(&c, unlock(Some(PERSON)))
         .await
@@ -527,59 +523,6 @@ async fn a_password_for_swapped_files_is_no_presence_with_the_gate_on() {
     assert_eq!(fake.asked(), 0, "no Touch ID was shown");
 }
 
-/// The same with the gate off, where the password check of an operation
-/// that already asks and an `unlock` with the password while unlocked are
-/// live today.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_password_for_swapped_files_is_no_presence_with_the_gate_off() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().unwrap();
-    let (person, scratch) = two_accounts(&server, dir.path()).await;
-    let fake = Fake::new(false);
-    let _klavd = daemon(&person, false, &fake, &[], false).await;
-    let c = conn(&person).await;
-    // The gate off: `status` says nothing of it, locked or not (layer 3's
-    // review: the CLI reads the gate from there).
-    let s: DaemonStatus = call(&c, Request::Status).await.expect("status");
-    assert_eq!(s.presence, None);
-    call::<DaemonStatus>(&c, unlock(Some(PERSON)))
-        .await
-        .expect("unlock");
-    let s: DaemonStatus = call(&c, Request::Status).await.expect("status");
-    assert_eq!(s.presence, None);
-
-    let aside = dir.path().join("aside");
-    swap(&person, &scratch, &aside);
-    assert_eq!(
-        code(&c, cancel_deletion(Some(THEIRS))).await,
-        ErrorCode::WrongCredentials
-    );
-    assert_eq!(
-        code(&c, unlock(Some(THEIRS))).await,
-        ErrorCode::WrongCredentials
-    );
-    assert_eq!(
-        code(
-            &c,
-            Request::PasskeyUv {
-                window: Some(Window::Unlocked),
-                password: secret(Some(THEIRS)),
-            }
-        )
-        .await,
-        ErrorCode::WrongCredentials
-    );
-    for name in FILES {
-        std::fs::remove_file(person.file(name)).unwrap();
-    }
-    put_back(&person, &aside);
-    call::<Value>(&c, cancel_deletion(Some(PERSON)))
-        .await
-        .expect("cancel");
-    let s: DaemonStatus = call(&c, unlock(Some(PERSON))).await.expect("unlock");
-    assert!(s.unlocked && !s.already_unlocked);
-}
-
 /// Where Touch ID is available, a password that comes along is the
 /// verification and no dialog shows; a wrong one grants nothing.
 #[tokio::test(flavor = "multi_thread")]
@@ -589,7 +532,7 @@ async fn a_password_brought_where_touch_id_is_available_shows_no_dialog() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40)], false).await;
     let c = conn(&home).await;
     call::<DaemonStatus>(&c, unlock(Some(PERSON)))
         .await
@@ -632,7 +575,7 @@ async fn another_key_is_told_already_unlocked_and_gets_no_window() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     // The first unlock since klavd started opens no window (Omar's
@@ -675,7 +618,7 @@ async fn the_passkey_window_is_per_key_through_the_socket() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -725,7 +668,7 @@ async fn a_second_unlock_while_the_unlock_prompt_is_open_is_busy() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let (open, release) = fake.hold_next();
@@ -760,7 +703,7 @@ async fn a_waiting_unlock_is_busy_once_the_unlock_prompt_opens() {
     let fake = Fake::new(true);
     let seam = BeforePrompt::default();
     let keys = [session(40), session(41)];
-    let _klavd = daemon_with(&home, true, &fake, &keys, false, Arc::clone(&seam)).await;
+    let _klavd = daemon_with(&home, &fake, &keys, false, Arc::clone(&seam)).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let (reached, go) = pause_before_prompt(&seam);
@@ -799,7 +742,7 @@ async fn no_prompt_waits_behind_a_dialog_that_holds_the_session() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -844,7 +787,7 @@ async fn a_prompt_waiting_for_the_session_is_busy_once_a_dialog_opens() {
     let fake = Fake::new(true);
     let seam = BeforePrompt::default();
     let keys = [session(40), session(41), session(42)];
-    let _klavd = daemon_with(&home, true, &fake, &keys, false, Arc::clone(&seam)).await;
+    let _klavd = daemon_with(&home, &fake, &keys, false, Arc::clone(&seam)).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let c = conn(&home).await;
@@ -893,7 +836,7 @@ async fn a_value_under_an_open_window_still_waits_for_the_session() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     // a's second unlock opened a's window (5 minutes, the default): the
@@ -931,7 +874,7 @@ async fn every_prompt_waits_for_none_while_another_is_open() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -972,40 +915,6 @@ async fn every_prompt_waits_for_none_while_another_is_open() {
     assert_eq!(fake.asked(), 2);
 }
 
-/// With the gate off, the operations that already ask keep showing their
-/// dialogs as before: nothing waits or is busy.
-#[tokio::test(flavor = "multi_thread")]
-async fn with_the_gate_off_prompts_are_not_busy() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().unwrap();
-    let home = Home::at(dir.path().join("home"));
-    account(&server, &home, "ana@example.com", PERSON).await;
-    let fake = Fake::new(true);
-    let _klavd = daemon(&home, false, &fake, &[], false).await;
-    let a = conn(&home).await;
-    let b = conn(&home).await;
-    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
-        .await
-        .expect("unlock");
-    let (open, release) = fake.hold_next();
-    let first = {
-        let a = Arc::clone(&a);
-        tokio::spawn(async move { call::<Value>(&a, cancel_deletion(None)).await })
-    };
-    opened(open).await;
-    at_once(call::<Value>(
-        &b,
-        Request::ConfirmPresence {
-            purpose: crate::protocol::PresencePurpose::DeleteAccount,
-        },
-    ))
-    .await
-    .expect("not busy with the gate off");
-    release.send(()).unwrap();
-    first.await.unwrap().expect("cancel");
-    assert_eq!(fake.asked(), 2);
-}
-
 // ------------------------------------------------------------ settings
 
 /// One setting change at a time (finding 3 of the second layer-2 review):
@@ -1019,7 +928,7 @@ async fn a_setting_change_while_another_runs_is_busy() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -1083,7 +992,7 @@ async fn other_verifications_on_a_declared_connection_do_not_hold_it() {
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
     let keys = [session(40), Key::Connection(0), Key::Connection(0)];
-    let _klavd = daemon(&home, true, &fake, &keys, true).await;
+    let _klavd = daemon(&home, &fake, &keys, true).await;
     let person = conn(&home).await;
     let app = conn(&home).await;
     let other = conn(&home).await;
@@ -1145,7 +1054,7 @@ async fn a_password_grants_only_what_its_ask_said() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let other = conn(&home).await;
     unlock_shown(&a, PERSON).await.expect("unlock");
@@ -1242,7 +1151,7 @@ async fn a_notice_goes_before_the_dialog_only_to_a_request_that_asked() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40)], false).await;
     let a = conn(&home).await;
     unlock_shown(&a, PERSON).await.expect("unlock");
     call::<Value>(&a, presence_window(Some(Window::Always), None))
@@ -1297,7 +1206,7 @@ async fn a_password_unlock_opens_only_what_its_question_said() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40); 6], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40); 6], false).await;
     {
         let a = conn(&home).await;
         let unlock_with = |shown: Option<Window>| {
@@ -1372,7 +1281,6 @@ async fn a_setting_changed_between_the_passes_leaves_an_ask_the_resend_answers()
     let keys = [session(40), session(41)];
     let _klavd = daemon_seams(
         &home,
-        true,
         &fake,
         &keys,
         false,
@@ -1475,7 +1383,7 @@ async fn a_query_that_names_no_single_item_is_refused_before_any_ask() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -1572,7 +1480,7 @@ async fn an_item_renamed_while_its_dialog_is_open_is_not_handed_out() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let program = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -1659,7 +1567,7 @@ async fn a_conflict_opens_no_window() {
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
     let keys = [session(40), session(41), session(42)];
-    let _klavd = daemon(&home, true, &fake, &keys, false).await;
+    let _klavd = daemon(&home, &fake, &keys, false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let program = conn(&home).await;
@@ -1747,7 +1655,7 @@ async fn an_untyped_unlock_is_no_passkey_verification_with_the_gate_on() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(false);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     unlock_shown(&a, PERSON).await.expect("unlock");
@@ -1810,35 +1718,6 @@ async fn an_untyped_unlock_is_no_passkey_verification_with_the_gate_on() {
     call::<Value>(&a, view(None)).await.expect("a's window");
 }
 
-/// With the gate off nothing changes: `untyped` is ignored, and a password
-/// unlock is the passkey verification, as before this layer.
-#[tokio::test(flavor = "multi_thread")]
-async fn with_the_gate_off_an_untyped_unlock_is_a_passkey_verification_as_before() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().unwrap();
-    let home = Home::at(dir.path().join("home"));
-    account(&server, &home, "ana@example.com", PERSON).await;
-    let fake = Fake::new(false);
-    let _klavd = daemon(&home, false, &fake, &[], false).await;
-    let a = conn(&home).await;
-    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
-        .await
-        .expect("unlock");
-    call::<Value>(
-        &a,
-        Request::PasskeyUv {
-            window: Some(Window::FiveMinutes),
-            password: secret(Some(PERSON)),
-        },
-    )
-    .await
-    .expect("loosen");
-    call::<DaemonStatus>(&a, Request::Lock).await.expect("lock");
-    let s = unlock_with(&a, PERSON, None, true).await.expect("unlock");
-    assert!(s.presence.is_none(), "the gate is off");
-    assert!(passkey_verified(&a).await);
-}
-
 /// With the setting on Always, the value's dialog names who asks, as the
 /// dialogs that open a window do (Omar's decision C of 2026-11-19): the
 /// terminal, so the CLI's "Touch ID for the terminal …" line has something
@@ -1852,7 +1731,7 @@ async fn the_always_dialog_names_who_asks() {
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
     let keys = [session(40), Key::Connection(0)];
-    let _klavd = daemon(&home, true, &fake, &keys, false).await;
+    let _klavd = daemon(&home, &fake, &keys, false).await;
     let terminal = conn(&home).await;
     let connection = conn(&home).await;
     call::<DaemonStatus>(&terminal, unlock(Some(PERSON)))
@@ -1939,7 +1818,7 @@ async fn an_item_edited_while_its_dialog_is_open_is_not_handed_out() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let program = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -2035,7 +1914,7 @@ async fn a_new_version_synced_during_the_dialog_is_not_handed_out() {
     .await
     .expect("another device");
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let program = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -2122,7 +2001,7 @@ async fn a_resolve_whose_items_change_while_it_asks_hands_out_nothing() {
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
     let keys = [session(40), session(41), session(42)];
-    let _klavd = daemon(&home, true, &fake, &keys, false).await;
+    let _klavd = daemon(&home, &fake, &keys, false).await;
     let a = conn(&home).await;
     let b = conn(&home).await;
     let program = conn(&home).await;
@@ -2298,7 +2177,7 @@ async fn a_generated_value_whose_entry_goes_while_it_asks_hands_out_nothing() {
     let home = Home::at(dir.path().join("home"));
     account(&server, &home, "ana@example.com", PERSON).await;
     let fake = Fake::new(true);
-    let _klavd = daemon(&home, true, &fake, &[session(40), session(41)], false).await;
+    let _klavd = daemon(&home, &fake, &[session(40), session(41)], false).await;
     let a = conn(&home).await;
     let program = conn(&home).await;
     call::<DaemonStatus>(&a, unlock(Some(PERSON)))
@@ -2557,7 +2436,6 @@ async fn an_extension_connection_asks_once_until_klav_locks() {
     let fake = Fake::new(true);
     let _klavd = daemon(
         &home,
-        true,
         &fake,
         &[browser_parent(), session(1), session(2)],
         false,
@@ -2619,7 +2497,6 @@ async fn on_always_every_agent_event_asks_and_a_cancel_fills_nothing() {
     let fake = Fake::new(true);
     let _klavd = daemon(
         &home,
-        true,
         &fake,
         &[browser_parent(), session(1), session(2)],
         false,
@@ -2682,7 +2559,6 @@ async fn without_touch_id_the_frame_asks_on_the_connection_that_gets_the_fill() 
     let fake = Fake::new(false);
     let _klavd = daemon(
         &home,
-        true,
         &fake,
         &[
             Key::Connection(0),
@@ -2803,7 +2679,6 @@ async fn with_two_browsers_only_the_one_in_front_gets_values() {
     let fake = Fake::new(true);
     let _klavd = daemon(
         &home,
-        true,
         &fake,
         &[browser_parent(), browser_parent(), session(1), session(2)],
         false,

@@ -4,12 +4,13 @@
 //! password only on the connection that got `presence_required` (own choice
 //! 32). A password unlock sends `shown` (own choice 34).
 //!
-//! Two kinds of test. Against a real `klavd`, in this process, with
-//! `--presence-gate` on and off, Touch ID off: what `klavd` checks (a
-//! password resent anywhere else would not be). Against a scripted `klavd`
-//! on the socket: exactly what the engine sends and on which connection,
-//! and the answers a real one can't be made to give here (an older
-//! `klavd`, `already_unlocked` from another key, busy answers).
+//! Two kinds of test. Against a real `klavd`, in this process, with the
+//! gate on (always, since layer 6) and Touch ID off: what `klavd` checks
+//! (a password resent anywhere else would not be). Against a scripted
+//! `klavd` on the socket: exactly what the engine sends and on which
+//! connection, and the answers a real one can't be made to give here (an
+//! older `klavd` without the gate, `already_unlocked` from another key,
+//! busy answers).
 //!
 //! Nothing touches the real `KLAV_HOME`: every home is a temporary
 //! directory, deleted at the end.
@@ -43,7 +44,7 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn start(home: &std::path::Path, presence_gate: bool) -> Self {
+    fn start(home: &std::path::Path) -> Self {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let home = klav_client::Home::at(home);
         let thread = std::thread::spawn(move || {
@@ -58,7 +59,6 @@ impl Daemon {
                 touch_id: false,
                 sync_after: klav_daemon::SYNC_AFTER,
                 build: None,
-                presence_gate,
             };
             let _ = rt.block_on(klav_daemon::serve(config, async {
                 let _ = stopped.await;
@@ -95,11 +95,7 @@ fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
 
 /// An account in `home`, signed up by the app's process and let go, and
 /// a `klavd` on it: the app's engine, locked.
-fn account(
-    server: &ServerProcess,
-    home: &std::path::Path,
-    gate: bool,
-) -> (Daemon, Arc<DaemonEngine>) {
+fn account(server: &ServerProcess, home: &std::path::Path) -> (Daemon, Arc<DaemonEngine>) {
     let core = KlavCore::new(home.display().to_string()).expect("core");
     core.sign_up(
         server.url.clone(),
@@ -110,7 +106,7 @@ fn account(
     .expect("sign up");
     core.lock();
     drop(core);
-    let daemon = Daemon::start(home, gate);
+    let daemon = Daemon::start(home);
     let engine = DaemonEngine::new(home.display().to_string()).expect("engine");
     wait_until("klavd", || engine.status().running);
     (daemon, engine)
@@ -154,7 +150,7 @@ fn with_the_gate_on_the_app_answers_presence_on_the_connection_that_asked() {
     let home = dir.path().join("klav");
     // An old passkey setting from before the gate (ADR 0041 §2.4, Q-N3).
     std::fs::create_dir_all(&home).expect("home");
-    let (_daemon, engine) = account(&server, &home, true);
+    let (_daemon, engine) = account(&server, &home);
     std::fs::write(home.join("passkeys.json"), r#"{"v":1,"window":"unlocked"}"#)
         .expect("old setting");
 
@@ -365,46 +361,6 @@ fn with_the_gate_on_the_app_answers_presence_on_the_connection_that_asked() {
     // `shutdown` drops the long connection first.
     engine.shutdown().expect("shutdown");
     assert!(!engine.held_connection().connected);
-}
-
-#[test]
-fn with_the_gate_off_nothing_asks_and_the_setting_is_not_offered() {
-    let server = ServerProcess::start(900);
-    let dir = tempfile::tempdir().expect("tempdir");
-    let home = dir.path().join("klav");
-    let (_daemon, engine) = account(&server, &home, false);
-    assert!(!engine.status().presence_gate);
-    let question = engine.unlock_question().expect("question");
-    assert!(!question.gate);
-    assert_eq!(engine.held_connection().hold, HoldState::NotSupported);
-    let outcome = engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
-    assert!(!outcome.already_unlocked && !outcome.passkey_setting_reset);
-    let item = engine.create_item(login("GitHub")).expect("create");
-    assert_eq!(
-        engine
-            .field_value(item.id.clone(), "password".into())
-            .expect("value"),
-        SECRET
-    );
-    // A password the engine wasn't asked for is never sent.
-    assert_eq!(
-        engine
-            .field_value_with_password(item.id.clone(), "password".into(), "anything".into())
-            .expect("value"),
-        SECRET
-    );
-    assert!(matches!(
-        engine.presence_window(),
-        Err(KlavError::NotSupported { .. })
-    ));
-    assert!(matches!(
-        engine.set_presence_window(PresenceSetting::WhileUnlocked, None),
-        Err(KlavError::NotSupported { .. })
-    ));
-    // A Touch ID unlock opens a new long connection, declared first.
-    let generation = engine.held_connection().generation;
-    let _ = engine.unlock(None, None);
-    assert_eq!(engine.held_connection().generation, generation + 1);
 }
 
 // ---------------------------------------------------------------------------
