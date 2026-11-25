@@ -70,22 +70,38 @@ pub(crate) async fn log_cmd(ctx: &mut Ctx, args: LogArgs) -> CliResult<()> {
     }
     let total = lines.len();
     lines.truncate(args.limit);
-    let rows: Vec<Vec<String>> = lines
-        .iter()
-        .map(|l| {
-            vec![
-                format_utc(l.at),
-                who(l),
-                action(l),
-                l.item
-                    .clone()
-                    .or_else(|| l.item_id.map(|i| i.to_string()))
-                    .unwrap_or_default(),
-                l.reason.clone().unwrap_or_default(),
-                l.alerts.join(","),
-            ]
-        })
-        .collect();
+    let profiles = mcp_profiles(ctx, &lines).await;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    // MCP session messages (connect, tool lists) of one caller fold into
+    // one row (ADR 0049 §6): `×N` says how many.
+    let mut folded: Option<(String, usize)> = None;
+    for l in &lines {
+        let what = mcp_what(l, &profiles).unwrap_or_else(|| action(l));
+        let session = l.mcp_tool.is_none() && what.contains(SESSION);
+        let key = format!("{}|{what}", who(l));
+        if session
+            && let Some((last, n)) = &mut folded
+            && *last == key
+        {
+            *n += 1;
+            if let Some(row) = rows.last_mut() {
+                row[2] = format!("{what} ×{n}");
+            }
+            continue;
+        }
+        folded = session.then(|| (key, 1));
+        rows.push(vec![
+            format_utc(l.at),
+            who(l),
+            what,
+            l.item
+                .clone()
+                .or_else(|| l.item_id.map(|i| i.to_string()))
+                .unwrap_or_default(),
+            l.reason.clone().unwrap_or_default(),
+            l.alerts.join(","),
+        ]);
+    }
     output::table(&["WHEN", "WHO", "WHAT", "ITEM", "REASON", "ALERTS"], &rows);
     if total > lines.len() {
         output::info(&format!(
@@ -124,6 +140,73 @@ fn who(l: &LogLine) -> String {
         }
         _ => l.actor.clone(),
     }
+}
+
+/// What a folded MCP session row says.
+const SESSION: &str = "(MCP session: connect, list tools)";
+
+/// The MCP profiles of the account's proxy, by item (ADR 0049 §6), when
+/// some line is a proxied call: best effort, from `klav proxy status`.
+async fn mcp_profiles(
+    ctx: &mut Ctx,
+    lines: &[LogLine],
+) -> std::collections::HashMap<klav_core::ids::ItemId, String> {
+    let mut out = std::collections::HashMap::new();
+    if !lines
+        .iter()
+        .any(|l| l.permission.as_deref() == Some("proxy"))
+    {
+        return out;
+    }
+    if let Ok(status) = super::proxy::status(ctx).await {
+        for c in status.credentials {
+            if let Some(p) = c.profile.filter(|p| p.mcp.is_some()) {
+                out.insert(c.item_id, p.name);
+            }
+        }
+    }
+    out
+}
+
+/// A proxied MCP call (ADR 0049 §6): `claude-code → maple:query_logs (via
+/// proxy, according to the proxy) → allow`, or a session message of an MCP
+/// profile. The caller is the local client or the sandbox the proxy
+/// signed; the tool is the MCP server's name, which the tool grammar keeps
+/// to `A-Z a-z 0-9 _ - .`.
+fn mcp_what(
+    l: &LogLine,
+    profiles: &std::collections::HashMap<klav_core::ids::ItemId, String>,
+) -> Option<String> {
+    if l.permission.as_deref() != Some("proxy") {
+        return None;
+    }
+    let profile = l.item_id.and_then(|i| profiles.get(&i));
+    if l.mcp_tool.is_none() && profile.is_none() {
+        return None;
+    }
+    let caller = match (&l.local_client, l.sandbox) {
+        (Some(c), _) => Some(c.clone()),
+        (None, Some(s)) => {
+            let id = s.to_string();
+            Some(format!("sandbox {}", &id[..8.min(id.len())]))
+        }
+        _ => None,
+    };
+    let target = match (&l.mcp_tool, profile) {
+        (Some(tool), Some(p)) => format!("{p}:{tool}"),
+        (Some(tool), None) => format!("mcp:{tool}"),
+        (None, Some(p)) => format!("{p} {SESSION}"),
+        (None, None) => return None,
+    };
+    let mut text = match caller {
+        Some(c) => format!("{c} → {target} (via proxy, according to the proxy)"),
+        None => format!("{target} (via proxy)"),
+    };
+    if let Some(o) = &l.outcome {
+        text.push_str(" → ");
+        text.push_str(o);
+    }
+    Some(text)
 }
 
 /// `agent.access fill → allow`.
@@ -340,7 +423,7 @@ mod tests {
     use klav_client::audit::LogLine;
     use klav_core::ids::AgentId;
 
-    use super::action;
+    use super::{SESSION, action, mcp_what};
 
     fn line(action: &str, by_agent: bool, agent_name: Option<&str>) -> LogLine {
         LogLine {
@@ -366,6 +449,7 @@ mod tests {
             verified: false,
             mcp_tool: None,
             local_client: None,
+            sandbox: None,
         }
     }
 
@@ -403,5 +487,41 @@ mod tests {
         let mut end = line("sandbox.revoked", true, Some("klav-proxy"));
         end.outcome = Some("theft".into());
         assert_eq!(action(&end), "sandbox.revoked → theft");
+    }
+
+    /// ADR 0049 §6: a tool call reads `caller → profile:tool (via proxy,
+    /// according to the proxy)`, a sandbox by its short ID, and the
+    /// session messages of an MCP profile as one folded kind of row.
+    #[test]
+    fn mcp_calls_read_as_caller_profile_and_tool() {
+        let item = klav_core::ids::ItemId::generate();
+        let profiles: std::collections::HashMap<_, _> = [(item, "maple".to_owned())].into();
+        let mut l = line("agent.access", true, Some("klav-proxy"));
+        l.permission = Some("proxy".into());
+        l.outcome = Some("allow".into());
+        l.item_id = Some(item);
+        l.mcp_tool = Some("query_logs".into());
+        l.local_client = Some("claude-code".into());
+        assert_eq!(
+            mcp_what(&l, &profiles).unwrap(),
+            "claude-code → maple:query_logs (via proxy, according to the proxy) → allow"
+        );
+        let sandbox = klav_core::ids::SandboxId::generate();
+        l.local_client = None;
+        l.sandbox = Some(sandbox);
+        let text = mcp_what(&l, &profiles).unwrap();
+        assert!(
+            text.starts_with(&format!(
+                "sandbox {} → maple:query_logs",
+                &sandbox.to_string()[..8]
+            )),
+            "{text}"
+        );
+        l.mcp_tool = None;
+        assert!(mcp_what(&l, &profiles).unwrap().contains(SESSION));
+        // Not an MCP profile, and no tool: the plain line.
+        assert!(mcp_what(&l, &Default::default()).is_none());
+        l.permission = Some("fill".into());
+        assert!(mcp_what(&l, &profiles).is_none());
     }
 }

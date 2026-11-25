@@ -141,11 +141,51 @@ fn servers(root: &CstRootNode, container: &str) -> Result<Option<CstObject>, Mal
 
 /// The `klav` member of `container`, as JSON.
 pub(crate) fn entry(text: &str, container: &str) -> Result<Option<Value>, Malformed> {
+    member(text, container, KEY)
+}
+
+/// The member `key` of `container`, as JSON (ADR 0049 §3.1: the MCP
+/// gateway's entries are named after their profiles).
+pub(crate) fn member(text: &str, container: &str, key: &str) -> Result<Option<Value>, Malformed> {
     let root = parse_settings(text, container)?;
     Ok(servers(&root, container)?
-        .and_then(|s| s.get(KEY))
+        .and_then(|s| s.get(key))
         .and_then(|p| p.value())
         .map(|v| to_value(&v)))
+}
+
+/// `text` with the member `key` of `container` set to `value`, as
+/// [`set_entry`] does for `klav`.
+pub(crate) fn set_member(
+    text: &str,
+    container: &str,
+    key: &str,
+    value: &Value,
+) -> Result<String, Malformed> {
+    set_input(text, container, key, value_input(value))
+}
+
+/// `text` without the member `key` of `container`.
+pub(crate) fn remove_member(text: &str, container: &str, key: &str) -> Result<String, Malformed> {
+    let root = parse_settings(text, container)?;
+    if let Some(prop) = servers(&root, container)?.and_then(|s| s.get(key)) {
+        prop.remove();
+    }
+    Ok(root.to_string())
+}
+
+/// A JSON value as CST input.
+fn value_input(value: &Value) -> CstInputValue {
+    match value {
+        Value::Null => CstInputValue::Null,
+        Value::Bool(b) => CstInputValue::Bool(*b),
+        Value::Number(n) => CstInputValue::Number(n.to_string()),
+        Value::String(s) => CstInputValue::String(s.clone()),
+        Value::Array(a) => CstInputValue::Array(a.iter().map(value_input).collect()),
+        Value::Object(o) => {
+            CstInputValue::Object(o.iter().map(|(k, v)| (k.clone(), value_input(v))).collect())
+        }
+    }
 }
 
 /// A whole JSON settings text as a value (for read-only checks of managed
@@ -159,26 +199,34 @@ pub(crate) fn value(text: &str) -> Result<Value, Malformed> {
 /// there, else appended to `container` (created at the end of the root
 /// object if missing).
 pub(crate) fn set_entry(text: &str, container: &str, entry: &Entry) -> Result<String, Malformed> {
+    set_input(text, container, KEY, to_input(entry))
+}
+
+fn set_input(
+    text: &str,
+    container: &str,
+    key: &str,
+    input: CstInputValue,
+) -> Result<String, Malformed> {
     let root = parse_settings(text, container)?;
     let new_file = root.value().is_none();
     let object = match root_object(&root)? {
         Some(o) => o,
         None => root.object_value_or_set(),
     };
-    let input = to_input(entry);
     match object.get(container) {
         None => {
-            object.append(container, CstInputValue::Object(vec![(KEY.into(), input)]));
+            object.append(container, CstInputValue::Object(vec![(key.into(), input)]));
         }
         Some(prop) => {
             let servers = prop
                 .value()
                 .and_then(|v| v.as_object())
                 .ok_or_else(|| not_an_object(&format!("`{container}`")))?;
-            match servers.get(KEY) {
+            match servers.get(key) {
                 Some(existing) => existing.set_value(input),
                 None => {
-                    servers.append(KEY, input);
+                    servers.append(key, input);
                 }
             }
         }
@@ -203,6 +251,16 @@ pub(crate) fn remove_entry(text: &str, container: &str) -> Result<String, Malfor
 /// `klav` member: every other key of the root and of `container` is the
 /// same, byte for byte.
 pub(crate) fn only_klav_changed(before: &str, after: &str, container: &str) -> Result<(), String> {
+    only_member_changed(before, after, container, KEY)
+}
+
+/// [`only_klav_changed`] for the member `key`.
+pub(crate) fn only_member_changed(
+    before: &str,
+    after: &str,
+    container: &str,
+    key: &str,
+) -> Result<(), String> {
     let before = parse_settings(before, container).map_err(|e| format!("before: {e}"))?;
     let after = parse_settings(after, container)
         .map_err(|e| format!("the file Klav wrote is not valid: {e}"))?;
@@ -219,7 +277,7 @@ pub(crate) fn only_klav_changed(before: &str, after: &str, container: &str) -> R
             .filter_map(|p| {
                 let name = p.decoded_name()?;
                 let skip = if inner {
-                    name == KEY
+                    name == key
                 } else {
                     name == container
                 };

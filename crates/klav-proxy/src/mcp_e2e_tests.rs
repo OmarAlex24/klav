@@ -1425,3 +1425,317 @@ async fn sandboxes_through_the_mcp_gateway() {
     let verified = ana.verify_audit().await.expect("klav log verify");
     assert!(verified.events > 0);
 }
+
+/// ADR 0049, layer 5, end to end: the person's client grants an MCP
+/// profile from a [`klav_client::proxy_admin::McpSpec`] (what `klav proxy
+/// grant --mcp-url --tools-…` builds), which needs the person's word that
+/// every device is updated and turns the account's switch on; signs a
+/// local client token's digest (`klav client connect --mcp`); a tool
+/// call then passes, an `ask` names its caller and item, the log says who
+/// called which tool, and removing the client stops its token.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_persons_client_grants_mcp_profiles_and_local_clients() {
+    use klav_client::proxy_admin::{LocalClientChange, McpSpec, PairingCheck, ProxyCredentialSpec};
+
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fake = FakeMcp::start().await;
+    let (mut ana, _) = signup(
+        &Home::at(dir.path().join("laptop")),
+        SignupRequest {
+            server: server.url.clone(),
+            email: EMAIL.into(),
+            password: MasterPassword::new("correct horse battery staple"),
+            device_name: "laptop".into(),
+            device_kind: klav_proto::auth::DeviceKind::Cli,
+            invite: None,
+        },
+    )
+    .await
+    .expect("sign-up");
+    add(&mut ana, "Maple", TOKEN).await;
+    add(&mut ana, "Plain", "plain_0123456789abcdef").await;
+    let home = Home::at(dir.path().join("proxy"));
+    let report = init(InitOptions {
+        home: home.clone(),
+        name: "klav-proxy".into(),
+        server: server.url.clone(),
+        email: EMAIL.into(),
+        key_store: KeyStoreChoice::File,
+        key_file: None,
+        env: StartEnv::default(),
+    })
+    .await
+    .expect("init");
+    let proxy_id: klav_core::ids::AgentId = report.agent_id.parse().expect("id");
+    let prepared = ana
+        .prepare_proxy_use(Some("klav-proxy"))
+        .await
+        .expect("use");
+    ana.commit_proxy_use(prepared).await.expect("use");
+    let list = |l: &[&str]| l.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+    // A plain profile first: no MCP, no switch, nothing of `v: 4`.
+    let plain = ProxyCredentialSpec {
+        profile: "plain".into(),
+        upstream: fake.origin(),
+        header: "authorization".into(),
+        prefix: "Bearer ".into(),
+        methods: list(&["GET"]),
+        path_prefixes: list(&["/v1"]),
+        ..ProxyCredentialSpec::default()
+    };
+    let prepared = ana
+        .prepare_proxy_grant("Plain", &plain, PairingCheck::InPrompt)
+        .await
+        .expect("plain");
+    assert!(!prepared.view().mcp_first && !prepared.view().turns_mcp_gateway_on);
+    prepared.require_updated_devices(true).expect("ack");
+    assert!(
+        ana.commit_proxy_change(prepared)
+            .await
+            .expect("grant")
+            .granted
+    );
+
+    let spec = ProxyCredentialSpec {
+        profile: "maple".into(),
+        upstream: fake.origin(),
+        header: "authorization".into(),
+        prefix: "Bearer ".into(),
+        methods: list(&["POST", "GET", "DELETE"]),
+        path_prefixes: list(&["/mcp"]),
+        rate_per_minute: Some(1000),
+        mcp: Some(McpSpec {
+            endpoint: "/mcp".into(),
+            headers: Vec::new(),
+            tools_allow: list(&["query_*", "get_*"]),
+            tools_ask: list(&["delete_*"]),
+            tools_deny: list(&["create_api_key"]),
+        }),
+        ..ProxyCredentialSpec::default()
+    };
+    // 1. The first MCP profile: the switch is off, so the sheet warns and
+    // nothing is signed without the person's word.
+    let prepared = ana
+        .prepare_proxy_grant("Maple", &spec, PairingCheck::InPrompt)
+        .await
+        .expect("prepare");
+    let view = prepared.view().clone();
+    assert!(view.turns_mcp_gateway_on && view.mcp_first);
+    assert!(
+        view.warnings
+            .iter()
+            .any(|w| w.contains("older than the MCP gateway")),
+        "{:?}",
+        view.warnings
+    );
+    let rules = &view.credential.as_ref().expect("credential").rules;
+    assert_eq!(
+        rules.iter().map(|r| r.mcp_tools.len()).collect::<Vec<_>>(),
+        [0, 2, 1, 1]
+    );
+    let err = prepared
+        .require_updated_devices(false)
+        .expect_err("needs the word");
+    assert!(
+        err.to_string().contains("--every-device-is-updated"),
+        "{err}"
+    );
+    prepared.require_updated_devices(true).expect("ack");
+    assert!(
+        ana.commit_proxy_change(prepared)
+            .await
+            .expect("grant")
+            .granted
+    );
+    assert!(ana.mcp_gateway_switch().await.expect("switch"));
+    // A re-grant with the switch on and a `v: 4` grant asks nothing more.
+    let again = ana
+        .preview_proxy_grant("Maple", &spec)
+        .await
+        .expect("preview");
+    assert!(!again.mcp_first && !again.turns_mcp_gateway_on);
+
+    // 2. A local client: a profile that is not MCP is refused; the token
+    // stays here, only its digest is signed.
+    let err = ana
+        .prepare_local_client(
+            "claude-code",
+            &LocalClientChange::Set {
+                profiles: list(&["plain"]),
+                token_digest: None,
+            },
+        )
+        .await
+        .expect_err("not an MCP profile");
+    assert!(err.to_string().contains("is not an MCP profile"), "{err}");
+    let token = LocalClientToken::generate();
+    let digest = Blob::new(token.digest(proxy_id).expect("digest").to_vec());
+    let prepared = ana
+        .prepare_local_client(
+            "claude-code",
+            &LocalClientChange::Set {
+                profiles: list(&["maple"]),
+                token_digest: Some(digest),
+            },
+        )
+        .await
+        .expect("client");
+    assert_eq!(
+        prepared.view().endpoints,
+        [("maple".to_owned(), "/mcp".to_owned())]
+    );
+    assert!(prepared.view().new_token && prepared.view().before.is_none());
+    assert!(
+        !serde_json::to_string(prepared.view())
+            .expect("json")
+            .contains("klc1_")
+    );
+    let base = prepared.view().base_version;
+    assert!(
+        ana.commit_local_client(prepared)
+            .await
+            .expect("sign")
+            .granted
+    );
+    let status = ana.proxy_status().await.expect("status");
+    assert_eq!(status.local_clients.len(), 1);
+    assert_eq!(status.local_clients[0].name, "claude-code");
+    // A change prepared on an older grant is never signed over a newer one.
+    let stale = ana
+        .prepare_local_client(
+            "cursor",
+            &LocalClientChange::Set {
+                profiles: list(&["maple"]),
+                token_digest: Some(Blob::new(vec![7; 32])),
+            },
+        )
+        .await
+        .expect("cursor");
+    assert!(stale.view().base_version > base);
+    let keep = ana
+        .prepare_local_client(
+            "claude-code",
+            &LocalClientChange::Set {
+                profiles: list(&["maple"]),
+                token_digest: None,
+            },
+        )
+        .await
+        .expect("keep");
+    assert!(!keep.view().new_token, "no digest: the token is kept");
+    assert!(ana.commit_local_client(keep).await.expect("sign").granted);
+    let refused = ana.commit_local_client(stale).await;
+    assert!(
+        !refused.as_ref().is_ok_and(|r| r.granted),
+        "a stale change was signed"
+    );
+    let status = ana.proxy_status().await.expect("status");
+    assert_eq!(status.local_clients.len(), 1, "cursor never got in");
+
+    // 3. The proxy serves it: a tool call passes, a denied one does not,
+    // an `ask` names the caller and the item.
+    let agent = load(&home, "klav-proxy", &StartEnv::default()).expect("load proxy");
+    let session = klav_sdk::Session::open(agent).await.expect("session");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr: SocketAddr = listener.local_addr().expect("addr");
+    let state = Arc::new(ProxyState::new(
+        session,
+        test_client(fake.port),
+        addr.port(),
+    ));
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let listener = crate::listener::Limited::new(listener, crate::proxy::MAX_CONNECTIONS);
+        let _ = axum::serve(listener, router(served)).await;
+    });
+    state.refresh().await.expect("refresh");
+    assert!(state.mcp_gateway());
+    let c = Client {
+        base: format!("http://{addr}"),
+        http: reqwest::Client::builder().no_proxy().build().expect("http"),
+    };
+    let init_body = format!(
+        r#"{{"jsonrpc":"2.0","id":0,"method":"initialize","params":{{"protocolVersion":"{VERSION}","capabilities":{{}},"clientInfo":{{"name":"t","version":"1"}}}}}}"#
+    );
+    let a = c.rpc(&token, None, init_body.clone()).await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    let sid = a.session().expect("session");
+    let a = c
+        .rpc(&token, Some(&sid), call(1, "query_logs", r#"{"q":"x"}"#))
+        .await;
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    assert!(a.json()["result"].is_object(), "{}", a.body);
+    let a = c
+        .rpc(&token, Some(&sid), call(2, "create_api_key", "{}"))
+        .await;
+    assert_eq!(a.rpc_error(), "klav_not_allowed");
+    let a = c
+        .rpc(
+            &token,
+            Some(&sid),
+            call(3, "delete_dashboard", r#"{"id":"d"}"#),
+        )
+        .await;
+    assert_eq!(a.rpc_error(), "klav_approval_pending");
+    let id = a.json()["error"]["data"]["approval_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let view = pending_approval(&mut ana, &id).await;
+    assert_eq!(view.mcp_tool.as_deref(), Some("delete_dashboard"));
+    assert_eq!(view.local_client.as_deref(), Some("claude-code"));
+    assert!(view.security.is_none());
+    let maple_item = ana.find_item("Maple").expect("maple").item;
+    assert_eq!(view.item_id, Some(maple_item));
+    ana.decide_approval(view.id, false, None, &view.request_digest)
+        .await
+        .expect("deny");
+
+    // 4. The log says who called which tool, and the sandbox is absent.
+    let lines = ana
+        .audit_log(&klav_client::audit::LogFilter::default())
+        .await
+        .expect("klav log");
+    let called = lines
+        .iter()
+        .find(|l| l.mcp_tool.as_deref() == Some("query_logs"))
+        .expect("a tool line");
+    assert_eq!(called.local_client.as_deref(), Some("claude-code"));
+    assert_eq!(called.item_id, Some(maple_item));
+    assert_eq!(called.sandbox, None);
+    ana.verify_audit().await.expect("klav log verify");
+
+    // 5. Removing the client: its token stops at the next refresh.
+    let prepared = ana
+        .prepare_local_client("claude-code", &LocalClientChange::Remove)
+        .await
+        .expect("remove");
+    assert_eq!(
+        prepared.view().before.as_deref(),
+        Some(&["maple".to_owned()][..])
+    );
+    assert!(prepared.view().profiles.is_empty());
+    assert!(
+        ana.commit_local_client(prepared)
+            .await
+            .expect("sign")
+            .granted
+    );
+    state.refresh().await.expect("refresh");
+    let a = c.rpc(&token, None, init_body).await;
+    assert_eq!(
+        (a.status, a.klav_error()),
+        (StatusCode::UNAUTHORIZED, "klav_local_client_unknown")
+    );
+    let err = ana
+        .prepare_local_client("claude-code", &LocalClientChange::Remove)
+        .await
+        .expect_err("gone");
+    assert!(
+        matches!(err, klav_client::ClientError::NotFound(_)),
+        "{err}"
+    );
+}

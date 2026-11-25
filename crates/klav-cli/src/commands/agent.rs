@@ -1261,14 +1261,22 @@ pub(crate) async fn approval_cmd(ctx: &mut Ctx, cmd: ApprovalCommand) -> CliResu
                 output::info("No requests waiting.");
                 return Ok(());
             }
+            let profiles = mcp_profiles(ctx, &list).await;
             let rows: Vec<Vec<String>> = list
                 .iter()
                 .map(|a| {
                     vec![
                         a.id.to_string(),
-                        a.status.as_str().to_owned(),
-                        a.agent.clone(),
-                        klav_sdk::session::permission_name(a.permission),
+                        if a.security.is_some() {
+                            "security".to_owned()
+                        } else {
+                            a.status.as_str().to_owned()
+                        },
+                        match caller(a) {
+                            Some(c) => format!("{} (for {c})", a.agent),
+                            None => a.agent.clone(),
+                        },
+                        wants(a, &profiles),
                         a.target.clone(),
                         a.domain.clone().unwrap_or_default(),
                         a.reason.clone(),
@@ -1307,21 +1315,39 @@ pub(crate) async fn approval_cmd(ctx: &mut Ctx, cmd: ApprovalCommand) -> CliResu
             yes,
         } => {
             let view = pending_approval(ctx, &id).await?;
-            print_approval(&view);
+            let profiles = mcp_profiles(ctx, std::slice::from_ref(&view)).await;
+            print_approval(&view, &profiles);
+            refuse_security(&view)?;
             if add_to_task {
                 confirm_approval("Add it to the task and approve it once?", yes)?;
                 return add_approval_to_task(ctx, &view).await;
             }
-            let question = match lease {
-                Some(d) => format!("Approve it for {} min?", d.as_secs() / 60),
-                None => "Approve it once?".to_owned(),
+            let question = match (lease, view.mcp_tool.is_some()) {
+                (Some(d), true) => format!(
+                    "Approve this tool for {} min, with any arguments?",
+                    d.as_secs() / 60
+                ),
+                (Some(d), false) => format!("Approve it for {} min?", d.as_secs() / 60),
+                (None, true) => "Approve this call once, with these arguments only?".to_owned(),
+                (None, false) => "Approve it once?".to_owned(),
             };
             confirm_approval(&question, yes)?;
             decide(ctx, &view, true, lease).await
         }
+        ApprovalCommand::Show { id, json } => {
+            let view = pending_approval(ctx, &id).await?;
+            if json.json {
+                return output::json(&view);
+            }
+            let profiles = mcp_profiles(ctx, std::slice::from_ref(&view)).await;
+            print_approval(&view, &profiles);
+            Ok(())
+        }
         ApprovalCommand::Deny { id } => {
             let view = pending_approval(ctx, &id).await?;
-            print_approval(&view);
+            let profiles = mcp_profiles(ctx, std::slice::from_ref(&view)).await;
+            print_approval(&view, &profiles);
+            refuse_security(&view)?;
             decide(ctx, &view, false, None).await
         }
         ApprovalCommand::Wait {
@@ -1345,31 +1371,122 @@ async fn pending_approval(ctx: &mut Ctx, wanted: &str) -> CliResult<ApprovalView
     })
 }
 
+/// The MCP profiles of the account's proxy, by item (ADR 0049 §5.4), when
+/// some approval names a tool: best effort, from `klav proxy status`.
+async fn mcp_profiles(
+    ctx: &mut Ctx,
+    list: &[ApprovalView],
+) -> std::collections::HashMap<klav_core::ids::ItemId, String> {
+    let mut out = std::collections::HashMap::new();
+    if !list.iter().any(|a| a.mcp_tool.is_some()) {
+        return out;
+    }
+    if let Ok(status) = super::proxy::status(ctx).await {
+        for c in status.credentials {
+            if let Some(p) = c.profile.filter(|p| p.mcp.is_some()) {
+                out.insert(c.item_id, p.name);
+            }
+        }
+    }
+    out
+}
+
+/// Who a proxied call is for, according to the proxy: the local client,
+/// or the sandbox (ADR 0049 §5.4).
+fn caller(a: &ApprovalView) -> Option<String> {
+    match (&a.local_client, a.sandbox) {
+        (Some(c), _) => Some(c.clone()),
+        (None, Some(s)) => Some(format!("sandbox {s}")),
+        _ => None,
+    }
+}
+
+/// `proxy maple · query_logs` for an MCP tool call; the permission
+/// otherwise.
+fn wants(
+    a: &ApprovalView,
+    profiles: &std::collections::HashMap<klav_core::ids::ItemId, String>,
+) -> String {
+    let permission = klav_sdk::session::permission_name(a.permission);
+    match &a.mcp_tool {
+        Some(tool) => format!("{permission} {} · {tool}", profile_of(a, profiles)),
+        None => permission,
+    }
+}
+
+/// The MCP profile of an approval's item, or `MCP` when not known here.
+fn profile_of(
+    a: &ApprovalView,
+    profiles: &std::collections::HashMap<klav_core::ids::ItemId, String>,
+) -> String {
+    a.item_id
+        .and_then(|i| profiles.get(&i).cloned())
+        .unwrap_or_else(|| "MCP".to_owned())
+}
+
+/// Nothing is decided on a security card (ADR 0049 §5.4): it was printed.
+fn refuse_security(a: &ApprovalView) -> CliResult<()> {
+    match &a.security {
+        Some(card) => Err(CliError::Client(klav_client::ClientError::Security(
+            card.clone(),
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The whole request before deciding (ADR 0030 §5): what the agent says
 /// (reason, site) is labelled as such.
-fn print_approval(a: &ApprovalView) {
+fn print_approval(
+    a: &ApprovalView,
+    profiles: &std::collections::HashMap<klav_core::ids::ItemId, String>,
+) {
+    for line in approval_lines(a, profiles) {
+        output::line(&line);
+    }
+}
+
+/// The card's lines. An MCP tool call (ADR 0049 §5.4) adds the caller,
+/// the profile, the tool and what "once" and `--for` bind; a request whose
+/// MCP fields break their grammars shows only the fixed security text
+/// (T260), never the fields.
+fn approval_lines(
+    a: &ApprovalView,
+    profiles: &std::collections::HashMap<klav_core::ids::ItemId, String>,
+) -> Vec<String> {
     let id = a.agent_id.to_string();
-    output::line(&format!("Request {}", a.id));
-    output::line(&format!(
-        "  agent:   {}  ({}…)",
-        a.agent,
-        id.get(..8).unwrap_or(&id)
-    ));
-    output::line(&format!(
+    let mut lines = vec![format!("Request {}", a.id)];
+    let agent = format!("  agent:   {}  ({}…)", a.agent, id.get(..8).unwrap_or(&id));
+    if let Some(card) = &a.security {
+        lines.push(format!("  SECURITY: {card}"));
+        lines.push(agent);
+        return lines;
+    }
+    lines.push(agent);
+    if let Some(c) = caller(a) {
+        lines.push(format!("  caller:  {c}   (according to the proxy)"));
+    }
+    lines.push(format!(
         "  wants:   {}",
         klav_sdk::session::permission_name(a.permission)
     ));
-    output::line(&format!("  on:      {}", a.target));
-    match &a.domain {
-        Some(site) => output::line(&format!("  site:    {site}   (according to the agent)")),
-        None => output::line("  site:    none given"),
+    if let Some(tool) = &a.mcp_tool {
+        lines.push(format!("  profile: {}", profile_of(a, profiles)));
+        lines.push(format!("  tool:    {tool}   (according to the MCP server)"));
+        lines.push(
+            "  args:    not shown. Approving once binds these exact arguments; --for lets this tool run with any arguments for that long".to_owned(),
+        );
     }
-    output::line(&format!(
+    lines.push(format!("  on:      {}", a.target));
+    lines.push(match &a.domain {
+        Some(site) => format!("  site:    {site}   (according to the agent)"),
+        None => "  site:    none given".to_owned(),
+    });
+    lines.push(format!(
         "  reason:  {}   (according to the agent)",
         a.reason
     ));
     if let Some(task) = &a.task {
-        output::line(&format!(
+        lines.push(format!(
             "  task:    outside its running task «{}» (until {}){}",
             task.task,
             crate::time::format_utc(task.expires_at),
@@ -1380,10 +1497,11 @@ fn print_approval(a: &ApprovalView) {
             }
         ));
     }
-    output::line(&format!(
+    lines.push(format!(
         "  decide:  before {}",
         crate::time::format_utc(a.expires_at)
     ));
+    lines
 }
 
 /// Asks on the terminal before signing; `--yes` or no terminal skip it
@@ -1550,7 +1668,9 @@ fn skipped_text(skipped: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{revocation_left_text, skipped_text};
+    use super::{
+        ApprovalView, approval_lines, refuse_security, revocation_left_text, skipped_text, wants,
+    };
     use klav_client::revoke::PendingRevocation;
 
     fn left(projects: &[&str], items: usize, without_key_change: bool) -> PendingRevocation {
@@ -1654,5 +1774,71 @@ mod tests {
             text.contains("Personal/Old: the project was deleted"),
             "{text}"
         );
+    }
+
+    fn mcp_view(security: Option<String>) -> ApprovalView {
+        ApprovalView {
+            id: klav_core::ids::ApprovalId::generate(),
+            status: klav_proto::agent::ApprovalStatus::Pending,
+            agent_id: klav_core::ids::AgentId::generate(),
+            agent: "klav-proxy".into(),
+            permission: klav_core::policy::Permission::Proxy,
+            target: "klav://Personal/General/Maple".into(),
+            target_name: Some("Maple".into()),
+            reason: "credential proxy call".into(),
+            domain: Some("api.maple.dev".into()),
+            created_at: 0,
+            expires_at: 0,
+            lease_until: None,
+            task: None,
+            request_digest: String::new(),
+            mcp_tool: Some("delete_dashboard".into()),
+            sandbox: None,
+            local_client: Some("claude-code".into()),
+            security,
+            item_id: Some(klav_core::ids::ItemId::from_bytes([3; 16])),
+        }
+    }
+
+    /// ADR 0049 §5.4: an MCP card names the caller, profile and tool, each
+    /// with whose word it is, and what "once" and `--for` bind; a security
+    /// card shows only its fixed text and can never be decided.
+    #[test]
+    fn an_mcp_approval_card_says_caller_profile_and_tool() {
+        let profiles: std::collections::HashMap<_, _> = [(
+            klav_core::ids::ItemId::from_bytes([3; 16]),
+            "maple".to_owned(),
+        )]
+        .into();
+        let view = mcp_view(None);
+        let lines = approval_lines(&view, &profiles);
+        for shown in [
+            "  caller:  claude-code   (according to the proxy)",
+            "  profile: maple",
+            "  tool:    delete_dashboard   (according to the MCP server)",
+            "Approving once binds these exact arguments",
+        ] {
+            assert!(
+                lines.iter().any(|l| l.contains(shown)),
+                "{shown}: {lines:?}"
+            );
+        }
+        assert_eq!(wants(&view, &profiles), "proxy maple · delete_dashboard");
+        assert_eq!(
+            wants(&view, &Default::default()),
+            "proxy MCP · delete_dashboard"
+        );
+        assert!(refuse_security(&view).is_ok());
+
+        let card = mcp_view(Some(klav_client::agents::MCP_SECURITY_CARD.into()));
+        let lines = approval_lines(&card, &profiles);
+        assert!(lines[1].starts_with("  SECURITY: "), "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("delete_dashboard") || l.contains("claude-code")),
+            "{lines:?}"
+        );
+        assert!(refuse_security(&card).is_err());
     }
 }

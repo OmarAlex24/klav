@@ -1333,7 +1333,7 @@ ADR [0036](decisiones/0036-sandboxes-de-agentes.md) §4, E1.3 y E3.3. No es una 
 | Método y ruta | Cuerpo | Respuesta |
 |---|---|---|
 | `POST /_klav/sandboxes` | `{ label, profiles, ttl_secs? }` | `200 { sandbox_id, secret, expires_at }` (`Cache-Control: no-store`) |
-| `GET /_klav/sandboxes` | — | `200 { sandboxes: [ { sandbox_id, label, profiles, issued_at, expires_at, claimed } ] }`, solo los del emisor que firma |
+| `GET /_klav/sandboxes` | — | `200 { sandboxes: [ { sandbox_id, label, profiles, issued_at, expires_at, claimed } ], mcp: [ { profile, endpoint } ] }`, solo los del emisor que firma; `mcp` (ADR 0049, capa 5) son los perfiles MCP del proxy que el emisor puede dar, con su *endpoint*, para las líneas de `klav sandbox start`. Un proxy anterior no lo manda y un `klav` anterior lo ignora |
 | `POST /_klav/sandboxes/{id}/stop` | — | `200 { logged }`: `logged` dice si el servidor ya tiene el fin |
 
 - **Firma:** un agente que el grant del proxy no lista recibe el mismo `401 klav_not_allowed` que una firma mala, así que nadie sin llave averigua quién es emisor; la marca de tiempo a ±5 min del reloj del proxy y no anterior a su arranque (los *nonces* vistos viven en memoria, así que una petición firmada antes de un reinicio no vale); cada *nonce* una sola vez por emisor, guardado solo tras comprobar la firma, y como mucho 4096 a la vez y 1024 de un mismo emisor, para que uno solo no llene la memoria de los demás (`429 klav_rate_limited` si no cabe otro). Cuerpo de 4 KiB como mucho.

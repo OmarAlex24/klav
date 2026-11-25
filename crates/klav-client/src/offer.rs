@@ -840,6 +840,7 @@ mod tests {
             verified: false,
             mcp_tool: None,
             local_client: None,
+            sandbox: None,
         }
     }
 

@@ -316,6 +316,9 @@ pub(crate) enum Prompt<'a> {
         /// Sandbox issuers that keep the profile this writes, under these
         /// rules.
         issuers_keeping: usize,
+        /// An MCP profile (ADR 0049 §5.3): its endpoint and tool rules,
+        /// and whether this turns the account's MCP gateway on.
+        mcp: Option<&'a McpShown>,
     },
     /// Take `item` away from the credential proxy `agent`; that many
     /// sandbox issuers lose a profile.
@@ -347,6 +350,13 @@ pub(crate) enum Prompt<'a> {
     },
     /// Stop `issuer` from starting sandboxes through `proxy`.
     ProxyIssuerRemove { issuer: &'a str, proxy: &'a str },
+    /// Let the local MCP client `client` use `profiles` through the
+    /// credential proxy `proxy` (ADR 0049 §3.2); none: take it away.
+    LocalClient {
+        client: &'a str,
+        proxy: &'a str,
+        profiles: &'a [String],
+    },
     /// Ask to delete the account (ADR 0037 §1, §7.3).
     DeleteAccount,
     /// Cancel the deletion of the account, which brings the agents back
@@ -675,6 +685,7 @@ impl Prompt<'_> {
                     first_on_account,
                     issuers_losing,
                     issuers_keeping,
+                    mcp,
                 },
                 lang,
             ) => proxy_grant(
@@ -693,6 +704,7 @@ impl Prompt<'_> {
                 words,
                 first_on_account,
                 (issuers_losing, issuers_keeping),
+                mcp,
             ),
             (
                 Prompt::ProxyIssuerAdd {
@@ -721,6 +733,37 @@ impl Prompt<'_> {
                 inject_ask,
                 first_on_account,
             ),
+            (
+                Prompt::LocalClient {
+                    client,
+                    proxy,
+                    profiles,
+                },
+                lang,
+            ) => match (profiles.is_empty(), lang) {
+                (true, Lang::En) => format!(
+                    "stop the MCP client {} on this Mac from using your credential proxy {}",
+                    name(client),
+                    name(proxy)
+                ),
+                (true, Lang::Es) => format!(
+                    "impedir que el cliente MCP {} de esta Mac use tu proxy de credenciales {}",
+                    name(client),
+                    name(proxy)
+                ),
+                (false, Lang::En) => format!(
+                    "let the MCP client {} on this Mac use {} through your credential proxy {}, with a new or kept local token",
+                    name(client),
+                    tools(profiles, lang),
+                    name(proxy)
+                ),
+                (false, Lang::Es) => format!(
+                    "dejar que el cliente MCP {} de esta Mac use {} con tu proxy de credenciales {}, con un token local nuevo o el que tiene",
+                    name(client),
+                    tools(profiles, lang),
+                    name(proxy)
+                ),
+            },
             (Prompt::ProxyIssuerRemove { issuer, proxy }, Lang::En) => format!(
                 "stop {} from starting sandboxes through your credential proxy {}",
                 name(issuer),
@@ -1027,6 +1070,98 @@ fn request(lang: Lang, agent: &str, permission: Permission, target: Option<Strin
     }
 }
 
+/// What an MCP profile's grant signs about tools (ADR 0049 §5.3), for the
+/// presence dialog.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct McpShown {
+    /// The endpoint, the only path it reaches.
+    pub(crate) endpoint: String,
+    /// Patterns allowed, asked for and denied.
+    pub(crate) allow: Vec<String>,
+    pub(crate) ask: Vec<String>,
+    pub(crate) deny: Vec<String>,
+    /// This turns the account's MCP gateway on, or is the proxy's first
+    /// MCP profile: older devices and proxies break.
+    pub(crate) first: bool,
+}
+
+/// Most tool patterns of one effect the dialog names; the rest are
+/// counted (the CLI's sheet showed every one before presence).
+const MAX_DIALOG_TOOLS: usize = 12;
+
+/// `get_*, list_* and 3 more`: tool patterns, which the tool grammar keeps
+/// to `A-Z a-z 0-9 _ - . *`, so nothing in them needs cleaning.
+fn tools(list: &[String], lang: Lang) -> String {
+    let shown: Vec<String> = list
+        .iter()
+        .take(MAX_DIALOG_TOOLS)
+        .map(|p| clean(p, MAX_RULE_PIECE))
+        .collect();
+    let more = list.len().saturating_sub(MAX_DIALOG_TOOLS);
+    match (more, lang) {
+        (0, _) => shown.join(", "),
+        (n, Lang::En) => format!("{} and {n} more", shown.join(", ")),
+        (n, Lang::Es) => format!("{} y {n} más", shown.join(", ")),
+    }
+}
+
+/// The tool part of an MCP grant's dialog.
+fn mcp_part(lang: Lang, mcp: &McpShown) -> String {
+    let every = mcp.allow.iter().any(|p| p == "*");
+    let mut parts = Vec::new();
+    match lang {
+        Lang::En => {
+            if every {
+                parts.push("EVERY tool allowed".to_owned());
+            }
+            if !mcp.allow.is_empty() {
+                parts.push(format!("tools allowed: {}", tools(&mcp.allow, lang)));
+            }
+            if !mcp.ask.is_empty() {
+                parts.push(format!("asking you first for: {}", tools(&mcp.ask, lang)));
+            }
+            if !mcp.deny.is_empty() {
+                parts.push(format!("denied: {}", tools(&mcp.deny, lang)));
+            }
+            let mut text = format!(
+                ". MCP server at {}; {}; every other tool is denied and hidden",
+                clean(&mcp.endpoint, MAX_RULE_PIECE),
+                parts.join("; ")
+            );
+            if mcp.first {
+                text.push_str(". This turns your account's MCP gateway on: devices and klav-proxy without the latest Klav fail their approvals and log checks");
+            }
+            text
+        }
+        Lang::Es => {
+            if every {
+                parts.push("TODAS las herramientas permitidas".to_owned());
+            }
+            if !mcp.allow.is_empty() {
+                parts.push(format!(
+                    "herramientas permitidas: {}",
+                    tools(&mcp.allow, lang)
+                ));
+            }
+            if !mcp.ask.is_empty() {
+                parts.push(format!("preguntándote antes: {}", tools(&mcp.ask, lang)));
+            }
+            if !mcp.deny.is_empty() {
+                parts.push(format!("negadas: {}", tools(&mcp.deny, lang)));
+            }
+            let mut text = format!(
+                ". Servidor MCP en {}; {}; cualquier otra herramienta queda negada y oculta",
+                clean(&mcp.endpoint, MAX_RULE_PIECE),
+                parts.join("; ")
+            );
+            if mcp.first {
+                text.push_str(". Esto enciende el gateway MCP de tu cuenta: los dispositivos y el klav-proxy sin la última versión de Klav fallan al cargar aprobaciones y al verificar el registro");
+            }
+            text
+        }
+    }
+}
+
 /// What a proxy grant lets the proxy do with one credential.
 struct ProxyRules<'a> {
     host: &'a str,
@@ -1155,6 +1290,7 @@ fn proxy_grant(
     words: Option<&str>,
     first_on_account: bool,
     (issuers_losing, issuers_keeping): (usize, usize),
+    mcp: Option<&McpShown>,
 ) -> String {
     let join = |list: &[String]| {
         list.iter()
@@ -1208,9 +1344,11 @@ fn proxy_grant(
                 ),
                 None => format!("let your credential proxy {agent}"),
             };
-            let mut text = format!(
-                "{who} use {item} with {host}{how}: {methods}, on {paths}. The agent never sees its value"
-            );
+            let mut text = format!("{who} use {item} with {host}{how}: {methods}, on {paths}");
+            if let Some(mcp) = mcp {
+                text.push_str(&mcp_part(lang, mcp));
+            }
+            text.push_str(". The agent never sees its value");
             text.push_str(&issuers_lose(lang, issuers_losing));
             text.push_str(&issuers_keep(lang, issuers_keeping));
             if first_on_account {
@@ -1225,9 +1363,11 @@ fn proxy_grant(
                 ),
                 None => format!("dejar que tu proxy de credenciales {agent}"),
             };
-            let mut text = format!(
-                "{who} use {item} con {host}{how}: {methods}, en {paths}. El agente nunca ve su valor"
-            );
+            let mut text = format!("{who} use {item} con {host}{how}: {methods}, en {paths}");
+            if let Some(mcp) = mcp {
+                text.push_str(&mcp_part(lang, mcp));
+            }
+            text.push_str(". El agente nunca ve su valor");
             text.push_str(&issuers_lose(lang, issuers_losing));
             text.push_str(&issuers_keep(lang, issuers_keeping));
             if first_on_account {
@@ -1866,6 +2006,7 @@ mod tests {
             first_on_account,
             issuers_losing: 0,
             issuers_keeping: 0,
+            mcp: None,
         };
         let v1 = ["/v1/projects".to_owned()];
         let narrow = grant(nf, &get, &[], &v1, None, false);
@@ -1903,6 +2044,7 @@ mod tests {
             first_on_account: false,
             issuers_losing: 0,
             issuers_keeping: 0,
+            mcp: None,
         };
         assert_eq!(
             unusual.reason(Lang::En, None),
@@ -1999,6 +2141,7 @@ mod tests {
             first_on_account: false,
             issuers_losing: 0,
             issuers_keeping: 0,
+            mcp: None,
         };
         assert!(!tricky.reason(Lang::En, None).contains('\u{202E}'));
         assert_eq!(
@@ -2137,6 +2280,7 @@ mod tests {
                 first_on_account,
                 issuers_losing: issuers,
                 issuers_keeping: issuers,
+                mcp: None,
             };
             // The longest source in each language.
             (
@@ -2175,6 +2319,7 @@ mod tests {
             first_on_account: false,
             issuers_losing: losing,
             issuers_keeping: keeping,
+            mcp: None,
         };
         let base_en = "let your credential proxy “klav-proxy” use “Northflank” (in “Personal/Infra”) with api.northflank.com: GET, on /v1. The agent never sees its value";
         let base_es = "dejar que tu proxy de credenciales «klav-proxy» use «Northflank» (en «Personal/Infra») con api.northflank.com: GET, en /v1. El agente nunca ve su valor";

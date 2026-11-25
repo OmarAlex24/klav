@@ -2430,6 +2430,7 @@ fn person_write(request: &Request) -> bool {
             | Request::ProxyRevoke { .. }
             | Request::ProxyIssuerAdd { .. }
             | Request::ProxyIssuerRemove { .. }
+            | Request::LocalClientChange { .. }
             | Request::ResumeAgents { .. }
             | Request::DenyAgent { .. }
             | Request::AgentRotateConfirm { .. }
@@ -2473,6 +2474,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ProxyStatus
         | Request::ProxyGrantPreview { .. }
         | Request::ProxyIssuerPreview { .. }
+        | Request::LocalClientPreview { .. }
         | Request::AuditLog { .. }
         | Request::AuditStatus
         | Request::ItemActivity { .. }
@@ -2531,6 +2533,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ProxyRevoke { .. }
         | Request::ProxyIssuerAdd { .. }
         | Request::ProxyIssuerRemove { .. }
+        | Request::LocalClientChange { .. }
         | Request::PauseAgents { .. }
         | Request::ResumeAgents { .. }
         | Request::ConfirmPresence { .. }
@@ -3611,6 +3614,7 @@ fn will_ask(state: &State, request: &Request, caller: Option<&Caller>) -> bool {
         | Request::ProxyRevoke { password, .. }
         | Request::ProxyIssuerAdd { password, .. }
         | Request::ProxyIssuerRemove { password, .. }
+        | Request::LocalClientChange { password, .. }
         | Request::ResumeAgents { password, .. }
         | Request::CancelAccountDeletion { password } => password.is_none(),
         Request::PasskeyGet { password, .. } | Request::PasskeyCreate { password, .. } => {
@@ -4741,6 +4745,37 @@ async fn dispatch(
             )?;
             ok(u.commit_issuer_change(prepared).await.map_err(e)?, warnings)
         }
+        Request::LocalClientPreview { name, change } => {
+            let prepared = u.prepare_local_client(&name, &change).await.map_err(e)?;
+            ok(prepared.view(), warnings)
+        }
+        Request::LocalClientChange {
+            name,
+            change,
+            base_version,
+            shown_proxy,
+            password,
+        } => {
+            let prepared = u.prepare_local_client(&name, &change).await.map_err(e)?;
+            let view = prepared.view();
+            if view.base_version != base_version || view.agent_id != shown_proxy {
+                return Err(e(ClientError::Invalid(format!(
+                    "the grant of the proxy {:?} changed since it was shown; run it again",
+                    view.agent
+                ))));
+            }
+            let mut warnings = warnings;
+            warnings.extend(view.warnings.iter().cloned());
+            confirm(
+                Prompt::LocalClient {
+                    client: &view.name,
+                    proxy: &view.agent,
+                    profiles: &view.profiles,
+                },
+                password,
+            )?;
+            ok(u.commit_local_client(prepared).await.map_err(e)?, warnings)
+        }
         Request::ProxyRevoke { item, password } => {
             let prepared = u.prepare_proxy_revoke(&item).await.map_err(e)?;
             let view = prepared.view();
@@ -5617,6 +5652,7 @@ mod tests {
             methods: methods.iter().map(|m| (*m).to_owned()).collect(),
             hosts: vec!["api.example.com".into()],
             path_prefixes: paths.iter().map(|p| (*p).to_owned()).collect(),
+            mcp_tools: Vec::new(),
         };
         let mut view = ProxyChangeView {
             agent_id: AgentId::from_bytes([1; 16]),
@@ -5646,6 +5682,9 @@ mod tests {
             reissue_only: false,
             issuers_losing: Vec::new(),
             issuers_keeping: Vec::new(),
+            local_clients_losing: Vec::new(),
+            turns_mcp_gateway_on: false,
+            mcp_first: false,
         };
         let shown = GrantShown::of(&view);
         assert_eq!(
@@ -6002,6 +6041,8 @@ struct GrantShown {
     allowed: Vec<String>,
     asked: Vec<String>,
     paths: Vec<String>,
+    /// An MCP profile's endpoint and tool rules (ADR 0049 §5.3).
+    mcp: Option<crate::prompt::McpShown>,
 }
 
 impl GrantShown {
@@ -6012,7 +6053,22 @@ impl GrantShown {
             return shown;
         };
         let mut hosts = Vec::new();
+        let mut mcp = crate::prompt::McpShown {
+            first: view.mcp_first,
+            ..Default::default()
+        };
         for rule in &credential.rules {
+            // A tool rule says which tools, not which methods: an `ask` on
+            // tools does not make every `POST` ask (ADR 0049 §5.3).
+            if !rule.mcp_tools.is_empty() {
+                let into = match rule.effect {
+                    Effect::Allow => &mut mcp.allow,
+                    Effect::Ask => &mut mcp.ask,
+                    Effect::Deny => &mut mcp.deny,
+                };
+                into.extend(rule.mcp_tools.iter().cloned());
+                continue;
+            }
             let into = match rule.effect {
                 Effect::Allow => &mut shown.allowed,
                 Effect::Ask => &mut shown.asked,
@@ -6042,6 +6098,13 @@ impl GrantShown {
                 .filter(|port| *port != 443);
             shown.header = Some(profile.header.clone()).filter(|h| h != "authorization");
             shown.field = profile.field.clone();
+            if let Some(m) = &profile.mcp {
+                mcp.endpoint = m.endpoint.clone();
+                for list in [&mut mcp.allow, &mut mcp.ask, &mut mcp.deny] {
+                    list.dedup();
+                }
+                shown.mcp = Some(mcp);
+            }
         }
         shown
     }
@@ -6073,6 +6136,7 @@ fn grant_prompt<'a>(
         first_on_account: view.first_on_account,
         issuers_losing: view.issuers_losing.len(),
         issuers_keeping: keeping,
+        mcp: shown.mcp.as_ref(),
     }
 }
 

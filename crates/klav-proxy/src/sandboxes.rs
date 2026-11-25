@@ -932,7 +932,21 @@ pub async fn list(State(state): State<Arc<ProxyState>>, req: Request) -> Respons
                 claimed: s.claimed_at.is_some(),
             })
             .collect();
-        Ok::<_, IssuerError>(Json(json!({ "sandboxes": mine })).into_response())
+        // The MCP profiles this issuer's sandboxes may use, with their
+        // endpoints (ADR 0049, layer 5): `klav sandbox start` writes their
+        // client setup lines from it. A field an older `klav` ignores.
+        let mcp: Vec<serde_json::Value> = state
+            .profiles()
+            .all()
+            .into_iter()
+            .filter(|p| issuer.profiles.contains(&p.name))
+            .filter_map(|p| {
+                p.mcp
+                    .as_ref()
+                    .map(|m| json!({ "profile": p.name, "endpoint": m.endpoint }))
+            })
+            .collect();
+        Ok::<_, IssuerError>(Json(json!({ "sandboxes": mine, "mcp": mcp })).into_response())
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
 }

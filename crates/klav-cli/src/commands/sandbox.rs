@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use klav_core::ids::SandboxId;
 use klav_sdk::Agent;
-use klav_sdk::sandbox::{self, LiveSandbox, SandboxError, StartRequest};
+use klav_sdk::sandbox::{self, LiveSandbox, McpEndpoint, SandboxError, StartRequest};
 use klav_sdk::secret_file::SecretFile;
 use klav_sdk::{Redactor, StreamRedactor};
 use nix::sys::signal::{Signal, kill};
@@ -102,22 +102,73 @@ pub(crate) const MAPLE_SETUP: [&str; 2] = [
 ];
 
 /// The setup lines for a sandbox with `profiles`: [`SETUP`], then
-/// [`NORTHFLANK_SETUP`] only when `northflank` is among them, and
-/// [`MAPLE_SETUP`] only when `maple` is.
-fn setup_lines(profiles: &[String]) -> Vec<String> {
+/// [`NORTHFLANK_SETUP`] only when `northflank` is among them, then the MCP
+/// client lines of each MCP profile (ADR 0049, layer 5): `mcp` lists the
+/// profiles the proxy says are MCP profiles, with their endpoints. A
+/// `maple` profile the proxy does not list (an older proxy, or the MCP
+/// gate of ADR 0036) gets [`MAPLE_SETUP`] by name, as before; for `maple`
+/// at `/mcp` the generic lines are [`MAPLE_SETUP`], byte for byte.
+fn setup_lines(profiles: &[String], mcp: &[McpEndpoint]) -> Vec<String> {
     let mut lines: Vec<String> = SETUP.iter().map(|l| (*l).to_owned()).collect();
     if profiles.iter().any(|p| p == NORTHFLANK_PROFILE) {
         lines.push(NORTHFLANK_SETUP.to_owned());
     }
-    if profiles.iter().any(|p| p == MAPLE_PROFILE) {
-        lines.extend(MAPLE_SETUP.iter().map(|l| (*l).to_owned()));
+    for profile in profiles {
+        match mcp_endpoint(profile, mcp) {
+            Some(endpoint) => lines.extend(mcp_setup(profile, endpoint)),
+            None if profile == MAPLE_PROFILE => {
+                lines.extend(MAPLE_SETUP.iter().map(|l| (*l).to_owned()));
+            }
+            None => {}
+        }
     }
     lines
 }
 
+/// `profile`'s MCP endpoint, when the proxy lists it as an MCP profile and
+/// both are safe to put in a shell line as they are.
+fn mcp_endpoint<'a>(profile: &str, mcp: &'a [McpEndpoint]) -> Option<&'a str> {
+    mcp.iter()
+        .find(|m| m.profile == profile)
+        .filter(|m| {
+            klav_forward_variable(profile).is_some()
+                && klav_client::proxy_admin::shell_safe_path(&m.endpoint)
+        })
+        .map(|m| m.endpoint.as_str())
+}
+
+/// `KLAV_FORWARD_<PROFILE>_URL`, as `klav-forward env` names it: upper
+/// case, `-` as `_`. Only for names of `a-z 0-9 -`.
+fn klav_forward_variable(profile: &str) -> Option<String> {
+    let ok = !profile.is_empty()
+        && profile
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    ok.then(|| {
+        format!(
+            "KLAV_FORWARD_{}_URL",
+            profile.to_ascii_uppercase().replace('-', "_")
+        )
+    })
+}
+
+/// The two client lines of an MCP profile, as [`MAPLE_SETUP`] for any
+/// profile and endpoint.
+fn mcp_setup(profile: &str, endpoint: &str) -> [String; 2] {
+    let var = klav_forward_variable(profile).unwrap_or_default();
+    [
+        format!(
+            "if command -v claude >/dev/null 2>&1; then claude mcp remove --scope user {profile} >/dev/null 2>&1 || true; claude mcp add --transport http --scope user {profile} \"${var}{endpoint}\" --header \"Authorization: Bearer klav-placeholder\"; fi"
+        ),
+        format!(
+            "if command -v codex >/dev/null 2>&1; then codex mcp add {profile} --url \"${var}{endpoint}\"; fi"
+        ),
+    ]
+}
+
 /// `start`'s next step. With the `northflank` line, also what it needs
 /// from the profile the person signed.
-fn start_next(id: SandboxId, profiles: &[String]) -> String {
+fn start_next(id: SandboxId, profiles: &[String], mcp: &[McpEndpoint]) -> String {
     let mut next = format!(
         "Put the setup lines in the sandbox's setup script as they are. When the work is done, run `klav sandbox stop {id}` and delete the sandbox at the provider. Unclaimed, it ends {INACTIVITY} after it starts, or at its expiry if that comes first."
     );
@@ -127,9 +178,23 @@ fn start_next(id: SandboxId, profiles: &[String]) -> String {
             " The `northflank login` line needs the `northflank` profile to allow `{method} {path}` without an approval step."
         ));
     }
-    if profiles.iter().any(|p| p == MAPLE_PROFILE) {
+    let listed: Vec<(&str, &str)> = profiles
+        .iter()
+        .filter_map(|p| mcp_endpoint(p, mcp).map(|e| (p.as_str(), e)))
+        .collect();
+    if listed.is_empty() && profiles.iter().any(|p| p == MAPLE_PROFILE) {
         next.push_str(&format!(
             " The `maple` lines point Claude Code and Codex, where installed, at Maple's MCP server through the proxy (`$KLAV_FORWARD_MAPLE_URL{MAPLE_MCP_PATH}`); another MCP client takes that URL too. They need the `maple` profile to allow `POST {MAPLE_MCP_PATH}` without an approval step."
+        ));
+    } else if !listed.is_empty() {
+        let urls: Vec<String> = listed
+            .iter()
+            .map(|(p, e)| format!("`${}{e}`", klav_forward_variable(p).unwrap_or_default()))
+            .collect();
+        next.push_str(&format!(
+            " The MCP lines point Claude Code and Codex, where installed, at {} through the proxy ({}); another MCP client takes those URLs too. Tool calls follow each profile's tool rules: a tool no rule names is refused and hidden.",
+            listed.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", "),
+            urls.join(", ")
         ));
     }
     next
@@ -389,13 +454,18 @@ async fn start_cmd(ctx: &Ctx, args: SandboxStartArgs) -> CliResult<()> {
             format!("before the package was handed out; {ended}"),
         ));
     }
-    let next = start_next(id, &args.profiles);
+    // Which of its profiles are MCP profiles: best effort, so an older
+    // proxy or a failed list still hands the package out.
+    let mcp = sandbox::mcp_endpoints(&agent, args.target.proxy_port)
+        .await
+        .unwrap_or_default();
+    let next = start_next(id, &args.profiles, &mcp);
     let view = StartedView {
         sandbox_id: id,
         label: &args.label,
         profiles: &args.profiles,
         expires_at: started.expires_at,
-        setup: setup_lines(&args.profiles),
+        setup: setup_lines(&args.profiles, &mcp),
         next: next.clone(),
     };
 
@@ -793,21 +863,21 @@ mod tests {
             &["maple"],
         ] {
             assert_eq!(
-                setup_lines(&profiles(without))[..3],
+                setup_lines(&profiles(without), &[])[..3],
                 plain[..],
                 "{without:?}"
             );
             assert!(
-                !setup_lines(&profiles(without))
+                !setup_lines(&profiles(without), &[])
                     .iter()
                     .any(|l| l.contains("northflank login")),
                 "{without:?}"
             );
-            let next = start_next(SandboxId::generate(), &profiles(without));
+            let next = start_next(SandboxId::generate(), &profiles(without), &[]);
             assert!(!next.contains("northflank"), "{next}");
         }
         for with in [&["northflank"][..], &["railway", "northflank"]] {
-            let lines = setup_lines(&profiles(with));
+            let lines = setup_lines(&profiles(with), &[]);
             assert_eq!(lines.len(), 4, "{lines:?}");
             assert_eq!(lines[..3], plain[..]);
             assert_eq!(
@@ -819,7 +889,7 @@ mod tests {
                 "the line reads what the eval line sets"
             );
             assert!(!lines[3].contains("127.0.0.1") && !lines[3].contains(":8790"));
-            let next = start_next(SandboxId::generate(), &profiles(with));
+            let next = start_next(SandboxId::generate(), &profiles(with), &[]);
             assert!(next.contains("GET /v1/login"), "{next}");
         }
     }
@@ -831,12 +901,12 @@ mod tests {
     fn the_maple_lines_come_only_with_its_profile() {
         let plain: Vec<String> = SETUP.iter().map(|l| (*l).to_owned()).collect();
         for without in [&[][..], &["northflank"], &["maple-eu"], &["Maple"]] {
-            let lines = setup_lines(&profiles(without));
+            let lines = setup_lines(&profiles(without), &[]);
             assert!(!lines.iter().any(|l| l.contains("mcp add")), "{without:?}");
-            let next = start_next(SandboxId::generate(), &profiles(without));
+            let next = start_next(SandboxId::generate(), &profiles(without), &[]);
             assert!(!next.contains("maple"), "{next}");
         }
-        let lines = setup_lines(&profiles(&["maple"]));
+        let lines = setup_lines(&profiles(&["maple"]), &[]);
         assert_eq!(lines[..3], plain[..]);
         assert_eq!(lines[3..], MAPLE_SETUP[..]);
         assert_eq!(
@@ -859,11 +929,11 @@ mod tests {
             );
         }
         // Both profiles: northflank's line, then maple's.
-        let both = setup_lines(&profiles(&["maple", "northflank"]));
+        let both = setup_lines(&profiles(&["maple", "northflank"]), &[]);
         assert_eq!(both.len(), 6);
         assert!(both[3].starts_with("northflank login"));
         assert_eq!(both[4..], MAPLE_SETUP[..]);
-        let next = start_next(SandboxId::generate(), &profiles(&["maple"]));
+        let next = start_next(SandboxId::generate(), &profiles(&["maple"]), &[]);
         assert!(
             next.contains("POST /mcp") && next.contains("$KLAV_FORWARD_MAPLE_URL/mcp"),
             "{next}"
@@ -875,7 +945,7 @@ mod tests {
     /// them depends on the sandbox, its package or the environment.
     #[test]
     fn the_setup_lines_never_hold_a_secret() {
-        let lines = setup_lines(&profiles(&["railway", "northflank", "maple"]));
+        let lines = setup_lines(&profiles(&["railway", "northflank", "maple"]), &[]);
         for line in &lines {
             assert!(!line.contains(PACKAGE_ENV), "{line}");
             assert!(!line.contains("ksb1_"), "{line}");
@@ -896,7 +966,44 @@ mod tests {
         // profile names alone.
         assert_eq!(
             lines,
-            setup_lines(&profiles(&["railway", "northflank", "maple"]))
+            setup_lines(&profiles(&["railway", "northflank", "maple"]), &[])
         );
+    }
+
+    /// Any MCP profile the proxy lists gets the client lines, with its own
+    /// variable and endpoint; `maple` at `/mcp` gets [`MAPLE_SETUP`] byte
+    /// for byte; an endpoint or name a shell would read differently gets
+    /// none (ADR 0049, layer 5).
+    #[test]
+    fn every_mcp_profile_the_proxy_lists_gets_its_client_lines() {
+        let mcp = |p: &str, e: &str| McpEndpoint {
+            profile: p.into(),
+            endpoint: e.into(),
+        };
+        let listed = [mcp("maple", "/mcp"), mcp("acme-ops", "/v1/mcp")];
+        let lines = setup_lines(&profiles(&["acme-ops", "maple"]), &listed);
+        assert_eq!(lines.len(), 3 + 4);
+        assert_eq!(
+            lines[3],
+            "if command -v claude >/dev/null 2>&1; then claude mcp remove --scope user acme-ops >/dev/null 2>&1 || true; claude mcp add --transport http --scope user acme-ops \"$KLAV_FORWARD_ACME_OPS_URL/v1/mcp\" --header \"Authorization: Bearer klav-placeholder\"; fi"
+        );
+        assert_eq!(
+            lines[4],
+            "if command -v codex >/dev/null 2>&1; then codex mcp add acme-ops --url \"$KLAV_FORWARD_ACME_OPS_URL/v1/mcp\"; fi"
+        );
+        assert_eq!(lines[5..], MAPLE_SETUP[..]);
+        let next = start_next(SandboxId::generate(), &profiles(&["acme-ops"]), &listed);
+        assert!(
+            next.contains("at acme-ops through the proxy (`$KLAV_FORWARD_ACME_OPS_URL/v1/mcp`)"),
+            "{next}"
+        );
+        // A profile the proxy does not list as MCP: no lines.
+        let plain = setup_lines(&profiles(&["acme-ops"]), &[]);
+        assert_eq!(plain.len(), 3);
+        // Not shell-safe: no lines rather than a line a shell reads wrong.
+        for bad in ["/m$(id)", "/m cp", "/m\"x"] {
+            let lines = setup_lines(&profiles(&["acme-ops"]), &[mcp("acme-ops", bad)]);
+            assert_eq!(lines.len(), 3, "{bad}");
+        }
     }
 }

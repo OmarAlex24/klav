@@ -91,13 +91,71 @@ fn not_a_table() -> Malformed {
 
 /// `[mcp_servers.klav]`, as JSON.
 pub(crate) fn entry(text: &str) -> Result<Option<Value>, Malformed> {
+    member(text, KEY)
+}
+
+/// `[mcp_servers.<key>]`, as JSON.
+pub(crate) fn member(text: &str, key: &str) -> Result<Option<Value>, Malformed> {
     let (_, body) = split(text)?;
     let doc = parse(&body)?;
     let Some(servers) = doc.get(SERVERS) else {
         return Ok(None);
     };
     let servers = servers.as_table_like().ok_or_else(not_a_table)?;
-    Ok(servers.get(KEY).map(item_value))
+    Ok(servers.get(key).map(item_value))
+}
+
+/// `text` with `[mcp_servers.<key>]` set to a Streamable HTTP server at
+/// `url` with fixed `headers` (Codex's `url` and `http_headers`, ADR 0049
+/// §3.1; checked with `codex mcp list --json`, Codex 0.166.0).
+pub(crate) fn set_http_member(
+    text: &str,
+    key: &str,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<String, Malformed> {
+    let (layout, body) = split(text)?;
+    let mut doc = parse(&body)?;
+    if !doc.contains_key(SERVERS) {
+        let mut servers = Table::new();
+        servers.set_implicit(true);
+        doc.insert(SERVERS, Item::Table(servers));
+    }
+    let servers = doc
+        .get_mut(SERVERS)
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(not_a_table)?;
+    let mut table = Table::new();
+    table.insert("url", toml_edit::value(url));
+    let mut fixed = InlineTable::new();
+    for (k, v) in headers {
+        fixed.insert(k, v.as_str().into());
+    }
+    table.insert("http_headers", toml_edit::value(fixed));
+    match servers.get_mut(key) {
+        Some(existing) if existing.is_table() => {
+            let position = existing.as_table().and_then(Table::position);
+            if let Some(p) = position {
+                table.set_position(Some(p));
+            }
+            *existing = Item::Table(table);
+        }
+        Some(existing) => *existing = Item::Table(table),
+        None => {
+            servers.insert(key, Item::Table(table));
+        }
+    }
+    Ok(join(layout, &doc.to_string()))
+}
+
+/// `text` without `[mcp_servers.<key>]`.
+pub(crate) fn remove_member(text: &str, key: &str) -> Result<String, Malformed> {
+    let (layout, body) = split(text)?;
+    let mut doc = parse(&body)?;
+    if let Some(servers) = doc.get_mut(SERVERS).and_then(Item::as_table_like_mut) {
+        servers.remove(key);
+    }
+    Ok(join(layout, &doc.to_string()))
 }
 
 /// `text` with `[mcp_servers.klav]` set to `entry`.

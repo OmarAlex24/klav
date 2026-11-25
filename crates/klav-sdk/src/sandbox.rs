@@ -343,6 +343,31 @@ pub async fn list(agent: &Agent, port: u16) -> Result<Vec<LiveSandbox>, SandboxE
     Ok(answer.sandboxes)
 }
 
+/// An MCP profile this issuer's sandboxes may use, and its endpoint, as
+/// the proxy lists it (ADR 0049, layer 5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpEndpoint {
+    /// The profile.
+    pub profile: String,
+    /// Its MCP endpoint on the upstream (`/mcp`).
+    pub endpoint: String,
+}
+
+/// The MCP profiles this issuer's sandboxes may use at the proxy on
+/// `port`, with their endpoints. A proxy older than the MCP gateway lists
+/// none.
+pub async fn mcp_endpoints(agent: &Agent, port: u16) -> Result<Vec<McpEndpoint>, SandboxError> {
+    #[derive(Deserialize)]
+    struct Answer {
+        #[serde(default)]
+        mcp: Vec<McpEndpoint>,
+    }
+    let bytes = call(agent, port, Method::GET, API, &[]).await?;
+    let answer: Answer = serde_json::from_slice(&bytes)
+        .map_err(|_| ClientError::Network("the proxy's list is malformed".into()))?;
+    Ok(answer.mcp)
+}
+
 /// Stops one of this issuer's sandboxes. Returns whether the Klav server
 /// already logged the end (otherwise the proxy sends it when it can).
 ///

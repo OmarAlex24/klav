@@ -769,6 +769,10 @@ pub struct ApprovalView {
     /// the offending field, and nothing can be approved or denied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<String>,
+    /// The item the request is about, when it names one: which of the
+    /// proxy's profiles a tool call goes through (ADR 0049 §5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<klav_core::ids::ItemId>,
 }
 
 /// The fixed text of an approval whose MCP fields break their grammars
@@ -934,6 +938,7 @@ impl Unlocked {
                     .and_then(|c| c.local_client.clone())
                     .filter(|_| mcp_ok),
                 security: (!mcp_ok).then(|| MCP_SECURITY_CARD.to_owned()),
+                item_id: request.item_id,
             },
             request,
         ))

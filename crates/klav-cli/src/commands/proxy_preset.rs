@@ -6,9 +6,12 @@
 //! `klavd` or the server changes: a profile made with a preset is the one
 //! the same explicit flags make.
 
-use klav_client::proxy_admin::{MAX_GRANT_METHODS, ProxyCredentialSpec, credential_profile};
+use klav_client::proxy_admin::{
+    MAX_GRANT_METHODS, McpSpec, ProxyCredentialSpec, credential_profile,
+};
 use klav_core::ids::ItemId;
 use klav_core::policy::Effect;
+use klav_proto::agent::McpHeader;
 
 use super::sandbox::{MAPLE_MCP_PATH, MAPLE_PROFILE, NORTHFLANK_PROFILE};
 use crate::cli::ProxyGrantArgs;
@@ -119,8 +122,111 @@ impl Preset {
             ask: false,
             ask_methods: list(self.ask_methods),
             rate_per_minute: None,
+            mcp: None,
         }
     }
+}
+
+/// The MCP gateway's presets (ADR 0049 §2.3), as data: what each one's
+/// hand test must confirm before it ships. Until then `--preset NAME` with
+/// tool rules is refused, and the person passes `--mcp-url` and the
+/// `--tools-…` options instead (ADR 0049 §13, choice 14). `maple` alone
+/// stays the MCP gate preset of ADR 0036 above, byte for byte.
+pub(crate) const GATEWAY_PRESETS: &[(&str, &str)] = &[
+    (
+        "maple",
+        "api.maple.dev/mcp, a restricted key as a bearer, and its tool names",
+    ),
+    (
+        "github",
+        "whether its remote server takes a fine-grained token as a bearer, and its read-only header",
+    ),
+    (
+        "cloudflare",
+        "which of Cloudflare's MCP servers take an API token rather than OAuth only",
+    ),
+    (
+        "linear",
+        "whether a personal API key works, or the server is OAuth-only",
+    ),
+    ("stripe", "whether a restricted key works as a bearer"),
+];
+
+/// The refusal of a gateway preset not hand-tested yet.
+fn untested_gateway_preset(name: &str, what: &str) -> crate::error::CliError {
+    usage(format!(
+        "the {name} preset of the MCP gateway ships only after its hand test confirms {what} (ADR 0049 §2.3): nothing was granted. Meanwhile, name the server and its tool rules yourself: `klav proxy grant ITEM --profile {name} --mcp-url https://HOST/PATH --tools-allow 'get_*,list_*' --tools-ask 'create_*' --tools-deny …`, and check the vendor's endpoint, auth and tool names first"
+    ))
+}
+
+/// `https://host[:port]/path` → (`https://host[:port]`, `/path`).
+fn split_mcp_url(url: &str) -> CliResult<(String, String)> {
+    let bad = || {
+        usage(format!(
+            "--mcp-url {url:?}: write it as https://host[:port]/path, the MCP server's endpoint, without a query"
+        ))
+    };
+    let rest = url.trim().strip_prefix("https://").ok_or_else(bad)?;
+    let slash = rest.find('/').ok_or_else(bad)?;
+    let (host, path) = rest.split_at(slash);
+    if host.is_empty() || path.len() < 2 || path.contains(['?', '#']) {
+        return Err(bad());
+    }
+    Ok((format!("https://{host}"), path.to_owned()))
+}
+
+/// `NAME:VALUE` → a fixed MCP header (checked when the grant is).
+fn mcp_header(text: &str) -> CliResult<McpHeader> {
+    let (name, value) = text.split_once(':').ok_or_else(|| {
+        usage(format!(
+            "--mcp-header {text:?}: write it as NAME:VALUE (x-read-only:true)"
+        ))
+    })?;
+    Ok(McpHeader {
+        name: name.trim().to_ascii_lowercase(),
+        value: value.trim().to_owned(),
+    })
+}
+
+/// The spec of `--mcp-url` (ADR 0049 §2.2): the flags alone, with an MCP
+/// server's defaults where one is missing.
+fn mcp_spec(args: &ProxyGrantArgs, url: &str) -> CliResult<ProxyCredentialSpec> {
+    let (upstream, endpoint) = split_mcp_url(url)?;
+    let profile = args
+        .profile
+        .clone()
+        .ok_or_else(|| usage("--profile is required with --mcp-url"))?;
+    let methods = if args.methods.is_empty() {
+        vec!["POST".into(), "GET".into(), "DELETE".into()]
+    } else {
+        args.methods.clone()
+    };
+    Ok(ProxyCredentialSpec {
+        profile,
+        upstream,
+        header: args
+            .header
+            .clone()
+            .unwrap_or_else(|| "authorization".into()),
+        prefix: args.prefix.clone().unwrap_or_else(|| "Bearer ".into()),
+        field: args.field.clone(),
+        methods,
+        path_prefixes: vec![endpoint.clone()],
+        ask: false,
+        ask_methods: Vec::new(),
+        rate_per_minute: args.rate,
+        mcp: Some(McpSpec {
+            endpoint,
+            headers: args
+                .mcp_headers
+                .iter()
+                .map(|h| mcp_header(h))
+                .collect::<CliResult<_>>()?,
+            tools_allow: args.tools_allow.clone(),
+            tools_ask: args.tools_ask.clone(),
+            tools_deny: args.tools_deny.clone(),
+        }),
+    })
 }
 
 /// What the person reads before the profile, derived from the spec that
@@ -210,6 +316,21 @@ fn preset(name: &str) -> CliResult<&'static Preset> {
 pub(crate) fn grant_spec(
     args: &ProxyGrantArgs,
 ) -> CliResult<(ProxyCredentialSpec, Option<String>)> {
+    // The gateway's presets: refused until hand-tested (ADR 0049 §2.3).
+    // `maple` alone, without `--mcp-url`, is ADR 0036's MCP gate.
+    if let Some(name) = &args.preset {
+        let wanted = name.trim().to_ascii_lowercase();
+        if let Some((name, what)) = GATEWAY_PRESETS
+            .iter()
+            .find(|(n, _)| *n == wanted)
+            .filter(|(n, _)| args.mcp_url.is_some() || !PRESETS.iter().any(|p| p.name == *n))
+        {
+            return Err(untested_gateway_preset(name, what));
+        }
+    }
+    if let Some(url) = &args.mcp_url {
+        return Ok((mcp_spec(args, url)?, None));
+    }
     let preset = args.preset.as_deref().map(preset).transpose()?;
     let text = |given: &Option<String>, from: fn(&Preset) -> &'static str, flag: &str| {
         given
@@ -241,6 +362,7 @@ pub(crate) fn grant_spec(
         ask: args.ask,
         ask_methods: list(&args.ask_methods, |p| p.ask_methods),
         rate_per_minute: args.rate,
+        mcp: None,
     };
     let Some(preset) = preset else {
         return Ok((spec, None));
@@ -688,5 +810,97 @@ mod tests {
             n,
             "The northflank preset, changed by your flags: the profile below is what you sign."
         );
+    }
+
+    /// ADR 0049 §2.3: the gateway's presets are refused until hand-tested,
+    /// with a message that says how to pass `--mcp-url` and `--tools-…`;
+    /// `maple` alone stays ADR 0036's MCP gate.
+    #[test]
+    fn gateway_presets_are_refused_until_hand_tested() {
+        for name in ["github", "cloudflare", "linear", "stripe"] {
+            let m = refused(&["--preset", name]);
+            assert!(m.contains("hand test") && m.contains("--mcp-url"), "{m}");
+            assert!(m.contains("--tools-allow"), "{m}");
+        }
+        let m = refused(&[
+            "--preset",
+            "maple",
+            "--profile",
+            "maple",
+            "--mcp-url",
+            "https://api.maple.dev/mcp",
+            "--tools-allow",
+            "get_*",
+        ]);
+        assert!(m.contains("the maple preset of the MCP gateway"), "{m}");
+        assert!(spec(&["--preset", "maple"]).mcp.is_none());
+    }
+
+    /// `--mcp-url` splits into the upstream and the endpoint, with an MCP
+    /// server's defaults, and `--tools-…` become the tool lists.
+    #[test]
+    fn the_mcp_url_and_tool_flags_make_an_mcp_spec() {
+        let s = spec(&[
+            "--profile",
+            "acme",
+            "--mcp-url",
+            "https://mcp.acme.dev:8443/v1/mcp",
+            "--tools-allow",
+            "get_*,list_*",
+            "--tools-ask",
+            "create_*",
+            "--tools-deny",
+            "create_api_key",
+            "--mcp-header",
+            "X-Read-Only: true",
+        ]);
+        assert_eq!(s.upstream, "https://mcp.acme.dev:8443");
+        assert_eq!(s.path_prefixes, ["/v1/mcp"]);
+        assert_eq!(s.methods, ["POST", "GET", "DELETE"]);
+        assert_eq!(
+            (s.header.as_str(), s.prefix.as_str()),
+            ("authorization", "Bearer ")
+        );
+        let mcp = s.mcp.expect("mcp");
+        assert_eq!(mcp.endpoint, "/v1/mcp");
+        assert_eq!(mcp.tools_allow, ["get_*", "list_*"]);
+        assert_eq!(mcp.tools_ask, ["create_*"]);
+        assert_eq!(mcp.tools_deny, ["create_api_key"]);
+        assert_eq!(mcp.headers[0].name, "x-read-only");
+        assert_eq!(mcp.headers[0].value, "true");
+        for bad in [
+            "http://h/mcp",
+            "https://h",
+            "https://h/",
+            "https://h/mcp?x=1",
+        ] {
+            let m = refused(&["--profile", "acme", "--mcp-url", bad]);
+            assert!(m.contains("--mcp-url"), "{bad}: {m}");
+        }
+        // Tool flags need an MCP URL; the URL takes no method asks.
+        let argv = [
+            "klav",
+            "proxy",
+            "grant",
+            "X",
+            "--preset",
+            "northflank",
+            "--tools-allow",
+            "a",
+        ];
+        assert!(Cli::try_parse_from(argv).is_err());
+        let argv = [
+            "klav",
+            "proxy",
+            "grant",
+            "X",
+            "--profile",
+            "p",
+            "--mcp-url",
+            "https://h/mcp",
+            "--ask-method",
+            "DELETE",
+        ];
+        assert!(Cli::try_parse_from(argv).is_err());
     }
 }
