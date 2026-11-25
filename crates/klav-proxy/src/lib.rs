@@ -16,11 +16,13 @@
 pub mod app;
 pub mod channel;
 pub mod claims;
+pub mod cli;
 pub mod counts;
 mod cuts;
 pub mod errors;
 pub mod heartbeat;
 pub mod listener;
+pub mod local;
 pub mod mcp;
 pub mod memory;
 pub mod net;
@@ -38,6 +40,8 @@ mod e2e_tests;
 mod forward_e2e_tests;
 #[cfg(test)]
 mod local_calls_e2e_tests;
+#[cfg(test)]
+mod local_socket_e2e_tests;
 #[cfg(test)]
 mod locked_e2e_tests;
 #[cfg(test)]

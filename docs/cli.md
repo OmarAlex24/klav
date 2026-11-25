@@ -2201,9 +2201,15 @@ klav-proxy [--home DIR] [--name klav-proxy] init --email ana@example.com \
     [--server URL] [--key-store file|keychain] [--key-file PATH] [--json]
 klav-proxy [--home DIR] [--name klav-proxy] serve [--port 8790] \
     [--max-body BYTES] [--timeout SEGUNDOS] [--channel HOST:PUERTO] \
-    [--no-local-calls]
+    [--no-local-calls] [--control-socket RUTA | --no-control-socket] \
+    [--if-registered]
 klav-proxy [--home DIR] [--name klav-proxy] status [--json]
 ```
+
+El binario `klav` también es `klav-proxy` cuando arranca con ese nombre
+(su `argv[0]`): así lo corre el *LaunchAgent* de la app de Mac, sin un
+ayudante propio (ADR 0036, capa 11; [macos.md](macos.md) §11). Los mismos
+comandos y opciones.
 
 - `init` registra el proxy como agente e imprime las **6 palabras**. La
   persona lo nombra proxy de la cuenta con `klav proxy use own` y lo
@@ -2222,6 +2228,18 @@ klav-proxy [--home DIR] [--name klav-proxy] status [--json]
   o no se sabe, y que `--port` mueve este (o `klav-forward up --port`, el
   reenviador). El puerto por defecto no cambia: un `serve` que ya escucha
   en 8790 sigue igual.
+- **El *socket* local** (ADR 0036 E3.5, capa 11): `serve` escucha además
+  en `<home>/agents/<nombre>.sock`, modo 0600, solo para un proceso del
+  mismo uid, con dos operaciones en líneas JSON (`sandboxes` y `revoke`,
+  [api.md](api.md) §8.14): la lista en vivo y revocar sin firma. Si no
+  puede abrir esa ruta (más de 103 bytes en macOS, otro `klav-proxy` que
+  ya contesta en ella), sirve sin él y lo dice en el log. `--control-socket
+  RUTA` lo pone en otra ruta (y entonces no poder abrirla para `serve`), y
+  `--no-control-socket` lo quita.
+- `--if-registered` sale con `0` sin servir si no hay un proxy registrado
+  con ese nombre en `--home`, o si otro `klav-proxy` ya contesta en su
+  *socket* local. Es lo que usa el *LaunchAgent* de la app de Mac, para que
+  `launchd` no lo vuelva a arrancar en bucle.
 - `status` muestra el estado del proxy, sus 6 palabras y sus perfiles
   (nombre, upstream, cabecera y ritmo). Nunca un valor.
 - Los tres se niegan a seguir con `KLAV_AGENT_KEY`, `SSL_CERT_FILE` o
@@ -2264,6 +2282,9 @@ klav proxy issuer add AGENTE --profile PERFIL… --url tls://HOST:PUERTO \
 klav proxy issuer remove AGENTE [--json]
 klav proxy sandboxes [--ended] [--json]
 klav proxy sandboxes revoke ID | --all [--wait] [--json]
+klav proxy local status [--json]
+klav proxy local revoke ID | --all [--json]
+klav proxy local init --email CORREO [--server URL] [--json]
 ```
 
 - **`status`** muestra el ajuste de la cuenta (el elemento `preferences`,
@@ -2724,6 +2745,38 @@ también de los revocados. Solo actualizar el dispositivo lo arregla.
 Las versiones anteriores al elemento `preferences` lo saltan con un aviso
 de que no se descifra, en cada comando, y no saben qué agente es el
 proxy.
+
+#### `klav proxy local`: el proxy de este equipo (ADR 0036 E3.5, capa 11)
+
+Hablan con el `klav-proxy` que corre en este equipo, como el mismo
+usuario, por su *socket* local (`<KLAV_HOME>/agents/klav-proxy.sock`). No
+pasan por `klavd` ni necesitan la bóveda abierta: funcionan con Klav
+bloqueado (E2.3).
+
+- **`status`**: el ID del proxy, su puerto en `127.0.0.1`, si sirve también
+  un canal para sandboxes, sus perfiles MCP con su URL local, y sus
+  sandboxes vivos con la conexión real de cada uno («connected», «waiting
+  for its claim» o hace cuánto se vio). La etiqueta va entre comillas y
+  «as its issuer says», sin caracteres ocultos (T136, T157). `--json` da la
+  respuesta del *socket* tal cual. Nunca un valor, un resumen de un secreto
+  ni una llave.
+- **`revoke ID | --all`**: termina al momento uno de sus sandboxes vivos
+  (el ID entero o sus primeros 8 caracteres) o todos, sin Touch ID ni
+  desbloquear. El proxy deja de servirlo, corta sus llamadas en curso y
+  registra `sandbox.revoked` con el motivo `person_local`; espera como mucho
+  5 s a que el servidor lo tome y dice si lo tiene (`logged`). Si no, el
+  proxy lo manda en sus barridos siguientes y mientras tanto no sirve ese
+  sandbox. «Todos» son los vivos en ese momento: un arranque que todavía
+  espera al servidor queda fuera. Es de la persona: un agente nunca lo
+  corre (el *socket* acepta a cualquier proceso del mismo usuario, riesgo
+  residual 64).
+- **`init`**: registra un proxy para este equipo, como `klav-proxy init`
+  con el nombre `klav-proxy` y este `KLAV_HOME` (la llave en
+  `<KLAV_HOME>/agents/klav-proxy.key`, 0600), corriendo este mismo binario
+  como `klav-proxy`. Imprime las 6 palabras; después, `klav proxy use own
+  klav-proxy` y `klav proxy grant`.
+- Sin un proxy que conteste: sale con `1` y el código `klav_local_proxy_not_running`
+  («No credential proxy runs on this machine.»), con qué hacer.
 
 ### 10.2 `klav sandbox`: lo que hace el emisor
 

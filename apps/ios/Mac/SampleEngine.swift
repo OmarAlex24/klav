@@ -26,6 +26,12 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     private var secretRequestList: [SecretRequestItem] = []
     /// The account's MCP gateway switch (ADR 0049 §9).
     private var mcpGatewayOn = UserDefaults.standard.string(forKey: "KlavSampleMcp") != "off"
+    /// The proxy on this Mac (ADR 0036 E3.5): `-KlavSampleLocalProxy on`
+    /// runs one with the sample's live sandboxes; the tests set it.
+    var localProxyState: LocalProxyState = UserDefaults.standard.string(forKey: "KlavSampleLocalProxy") == "on"
+        ? .running(info: SandboxSamples.localProxy) : .notRunning(registered: false)
+    /// What `localProxyRevoke` was asked, in order (`all` for every one).
+    private(set) var localRevokeCalls: [String] = []
     private var agentList: [AgentItem]
     private var breachCheck = false
     private let touchID: Bool
@@ -1733,6 +1739,21 @@ final class SampleSystem: MacSystem, @unchecked Sendable {
         state = .notRegistered
     }
     func restartAgent() throws { mutex.lock(); restarts += 1; mutex.unlock() }
+
+    /// The proxy's LaunchAgent (ADR 0036, layer 11): a flag too.
+    private var proxyState: AgentState = .notRegistered
+    /// What registering the proxy's agent leaves; `.notFound` for a build
+    /// without its plist.
+    var proxyRegistersAs: AgentState = .enabled
+    private(set) var proxyRestarts = 0
+    func proxyAgentState() -> AgentState { mutex.lock(); defer { mutex.unlock() }; return proxyState }
+    func registerProxyAgent() throws {
+        mutex.lock(); defer { mutex.unlock() }
+        if proxyRegistersAs == .notFound { throw SetupError.failed("no plist") }
+        proxyState = proxyRegistersAs
+    }
+    func unregisterProxyAgent() throws { mutex.lock(); proxyState = .notRegistered; mutex.unlock() }
+    func restartProxyAgent() throws { mutex.lock(); proxyRestarts += 1; mutex.unlock() }
     /// Times System Settings › Login Items was opened.
     private(set) var loginItemsOpened = 0
     func openLoginItems() { mutex.lock(); loginItemsOpened += 1; mutex.unlock() }
@@ -1894,6 +1915,52 @@ enum SampleSafety {
 extension MacModel {
     static func sample(_ engine: SampleEngine) -> MacModel {
         MacModel(engine: engine, accounts: SampleAccounts(engine: engine))
+    }
+}
+
+// MARK: - The proxy on this Mac (ADR 0036 E3.5, layer 11)
+
+extension SampleEngine {
+    /// Locked or not: the socket never goes through klavd.
+    func localProxy() -> LocalProxyState {
+        mutex.lock(); defer { mutex.unlock() }
+        return localProxyState
+    }
+
+    func localProxyRevoke(sandboxId: String?) throws -> LocalRevokeInfo {
+        mutex.lock(); defer { mutex.unlock() }
+        localRevokeCalls.append(sandboxId ?? "all")
+        guard case .running(var info) = localProxyState else {
+            throw KlavError.NotFound(message: "No credential proxy runs on this Mac.")
+        }
+        let ended = info.sandboxes.filter { sandboxId == nil || $0.sandboxId == sandboxId }.map(\.sandboxId)
+        if let sandboxId, ended.isEmpty {
+            throw KlavError.NotFound(message: "this proxy has no live sandbox with that ID: \(sandboxId)")
+        }
+        info.sandboxes.removeAll { ended.contains($0.sandboxId) }
+        localProxyState = .running(info: info)
+        return LocalRevokeInfo(revoked: ended, logged: true)
+    }
+}
+
+extension SandboxSamples {
+    /// The account's proxy, running on this Mac, with two live sandboxes.
+    static var localProxy: LocalProxyInfo {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        return LocalProxyInfo(
+            proxyId: proxy, port: 8790, localCalls: true, channel: true, mcpGateway: true,
+            mcpProfiles: ["maple"],
+            sandboxes: [
+                LocalSandboxInfo(sandboxId: "ad1e2f3a-4b5c-4d6e-7f8a-9b0c1d2e3f4a", issuerId: t3code,
+                                 label: "chat-123", profiles: ["northflank", "maple"],
+                                 issuedMs: now - 3_600_000, expiresMs: now + 6 * 3_600_000,
+                                 claimed: true, connected: true, lastSeenMs: now - 60_000),
+                LocalSandboxInfo(sandboxId: "b7c8d9e0-1f2a-4b3c-8d4e-5f6a7b8c9d0e", issuerId: t3code,
+                                 label: "chat-124", profiles: ["northflank"],
+                                 issuedMs: now - 600_000, expiresMs: now + 7 * 3_600_000,
+                                 claimed: false, connected: false, lastSeenMs: nil),
+            ],
+            unsentEnds: 0)
     }
 }
 

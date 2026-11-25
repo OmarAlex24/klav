@@ -939,7 +939,7 @@ async fn a_stop_takes_effect_while_a_start_waits_for_the_server() {
 /// the person's device: the `all` the server builds is the list the
 /// verifier rebuilds from the chain (an ended sandbox out, one the person
 /// revoked and the proxy has not ended in), and a `person` end verifies.
-/// `person_local` is still refused by the server (review of #341, 1).
+/// `person_local` has its own test (`local_socket_e2e_tests`).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_persons_revocations_verify_on_the_persons_device() {
     use klav_proto::sandbox::{
@@ -989,34 +989,6 @@ async fn the_persons_revocations_verify_on_the_persons_device() {
     ana.verify_audit()
         .await
         .expect("the revocations verify before the proxy answers");
-
-    // `person_local` (the proxy's own socket) is refused, and nothing is
-    // logged: only the proxy's key signs it, and released verifiers reject
-    // it.
-    let before = ana
-        .audit_log(&klav_client::audit::LogFilter::default())
-        .await
-        .expect("log")
-        .len();
-    let refused = state
-        .post_signed(
-            &sandbox_path(other, SUFFIX_REVOKED),
-            &SandboxRevoked::new(SandboxEnd::PersonLocal),
-        )
-        .await
-        .expect_err("person_local is refused");
-    assert!(
-        matches!(refused, klav_client::ClientError::Api { status: 400, .. }),
-        "{refused:?}"
-    );
-    assert_eq!(
-        ana.audit_log(&klav_client::audit::LogFilter::default())
-            .await
-            .expect("log")
-            .len(),
-        before,
-        "nothing logged"
-    );
 
     // The proxy answers with `person`: the first revocation's `at` for
     // one, the `all`'s for the other.
@@ -1294,6 +1266,7 @@ async fn the_proxy_ends_revoked_sandboxes_before_it_serves() {
         max_body: crate::proxy::DEFAULT_MAX_BODY,
         request_timeout: crate::proxy::DEFAULT_REQUEST_TIMEOUT,
         no_local_calls: false,
+        control_socket: crate::app::ControlSocket::Off,
         env: StartEnv::from_lookup(|_| None),
     };
     // Runs a bound proxy; the stop is the sender.

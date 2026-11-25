@@ -358,7 +358,13 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
         )
         .ok();
 
-    // The proxy, in this process, with the real startup path.
+    // The proxy, in this process, with the real startup path, and its
+    // local socket where the person's `klav proxy local` looks (layer 11).
+    let socket = klav_client::local_proxy::socket_path(
+        &Home::at(&person.home),
+        klav_client::local_proxy::DEFAULT_NAME,
+    );
+    std::fs::create_dir_all(socket.parent().expect("agents dir")).expect("agents dir");
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let bound = runtime
         .block_on(klav_proxy::app::bind(klav_proxy::app::ServeOptions {
@@ -369,6 +375,7 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
             max_body: klav_proxy::proxy::DEFAULT_MAX_BODY,
             request_timeout: Duration::from_secs(30),
             no_local_calls: false,
+            control_socket: klav_proxy::app::ControlSocket::At(socket),
             env: klav_proxy::app::StartEnv::default(),
         }))
         .expect("proxy");
@@ -1754,4 +1761,97 @@ fn a_sandbox_revoke_with_a_bad_scope_is_a_bad_request_on_the_socket() {
     reader.read_line(&mut answer).expect("answer");
     let answer: Value = serde_json::from_str(&answer).expect("answer json");
     assert!(answer.get("ok").is_some(), "{answer}");
+}
+
+/// The proxy on this machine (ADR 0036 E3.5, layer 11): with `klavd`
+/// locked, `klav proxy local status` lists the live sandboxes and
+/// `klav proxy local revoke` ends one by its first 8 characters, then all,
+/// through the proxy's socket; the issuer's list is empty after, and the
+/// person's verified log has the two `person_local` ends.
+#[test]
+fn the_person_revokes_through_the_local_socket_while_locked() {
+    let server = ServerProcess::start(900);
+    let root = tempfile::tempdir().expect("tempdir");
+    let Setup {
+        runtime: _runtime,
+        port,
+        person,
+        issuer,
+        _stop,
+    } = person_proxy_and_issuer(root.path(), &server);
+    let work = tempfile::tempdir().expect("work");
+    let mut ids = Vec::new();
+    for label in ["chat-1", "chat-2"] {
+        let pkg = work.path().join(label);
+        let out = issuer
+            .run(
+                &[
+                    "sandbox",
+                    "start",
+                    "--label",
+                    label,
+                    "--profile",
+                    "railway",
+                    "--proxy-port",
+                    &port,
+                    "--package-file",
+                    pkg.to_str().expect("path"),
+                    "--json",
+                ],
+                "",
+            )
+            .ok();
+        let started: Value = serde_json::from_str(&out.stdout).expect("start json");
+        ids.push(started["sandbox_id"].as_str().expect("id").to_owned());
+    }
+    person.run(&["lock"], "").ok();
+
+    let out = person.run(&["proxy", "local", "status", "--json"], "").ok();
+    never_the_package(&out);
+    let listed: Value = serde_json::from_str(&out.stdout).expect("status json");
+    assert_eq!(listed["port"].to_string(), port, "{listed}");
+    let mut got: Vec<&str> = listed["sandboxes"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|r| r["sandbox_id"].as_str().unwrap_or(""))
+        .collect();
+    got.sort_unstable();
+    let mut want: Vec<&str> = ids.iter().map(String::as_str).collect();
+    want.sort_unstable();
+    assert_eq!(got, want, "{listed}");
+    let table = person.run(&["proxy", "local", "status"], "").ok();
+    assert!(
+        table.stdout.contains("\"chat-1\" (as its issuer says)"),
+        "{}",
+        table.stdout
+    );
+
+    let out = person
+        .run(&["proxy", "local", "revoke", &ids[0][..8], "--json"], "")
+        .ok();
+    let revoked: Value = serde_json::from_str(&out.stdout).expect("revoke json");
+    assert_eq!(revoked["revoked"], serde_json::json!([ids[0]]), "{revoked}");
+    assert_eq!(revoked["logged"], true, "{revoked}");
+    let out = person.run(&["proxy", "local", "revoke", "--all"], "").ok();
+    assert!(
+        out.stdout.starts_with("Revoked 1 sandbox on this machine"),
+        "{}",
+        out.stdout
+    );
+    let missing = person.run(&["proxy", "local", "revoke", &ids[0]], "").err();
+    assert!(
+        missing.stderr.contains("no live sandbox with that ID"),
+        "{}",
+        missing.stderr
+    );
+    assert!(live(&issuer, &port).is_empty());
+
+    let log = person.unlocked(&["log", "--json"], "").ok();
+    assert_eq!(
+        log.stdout.matches("\"person_local\"").count(),
+        2,
+        "{}",
+        log.stdout
+    );
 }

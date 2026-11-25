@@ -31,6 +31,7 @@ klav-daemon = { path = "crates/klav-daemon" }
 klav-touchid = { path = "crates/klav-touchid" }
 klav-sdk = { path = "crates/klav-sdk" }
 klav-forward = { path = "crates/klav-forward" }
+klav-proxy = { path = "crates/klav-proxy" }
 
 # Lighter debug info: line tables are enough for test backtraces in our
 # crates, and dependencies need none. Keeps target/ several times smaller.

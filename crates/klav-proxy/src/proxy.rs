@@ -464,6 +464,12 @@ impl ProxyState {
         &self.sandboxes
     }
 
+    /// Whether it serves profile calls on its loopback listener (not with
+    /// `--no-local-calls`).
+    pub(crate) fn serves_local_calls(&self) -> bool {
+        !self.no_local_calls
+    }
+
     /// The port of the local listener.
     pub(crate) fn local_port(&self) -> u16 {
         self.local_port

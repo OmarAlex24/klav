@@ -521,6 +521,7 @@ async fn serve_options_carry_the_flag() {
             max_body: crate::proxy::DEFAULT_MAX_BODY,
             request_timeout: crate::proxy::DEFAULT_REQUEST_TIMEOUT,
             no_local_calls,
+            control_socket: crate::app::ControlSocket::Off,
             env: StartEnv::from_lookup(|_| None),
         })
         .await
@@ -609,6 +610,7 @@ async fn status_shows_what_serve_turned_on_in_its_memory() {
         max_body: crate::proxy::DEFAULT_MAX_BODY,
         request_timeout: crate::proxy::DEFAULT_REQUEST_TIMEOUT,
         no_local_calls: false,
+        control_socket: crate::app::ControlSocket::Off,
         env: StartEnv::from_lookup(|_| None),
     };
     let failed = crate::app::serve_until(

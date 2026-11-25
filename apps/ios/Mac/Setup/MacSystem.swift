@@ -100,6 +100,14 @@ protocol MacSystem: Sendable {
     func unregisterApp() throws
     /// Starts the LaunchAgent's `klavd` again (`launchctl kickstart -k`).
     func restartAgent() throws
+    /// The credential proxy's LaunchAgent (ADR 0036, layer 11):
+    /// `klav-proxy serve --if-registered`, run by the bundle's `klav`
+    /// (`dev.klav.proxy.plist`). Same states as `klavd`'s.
+    func proxyAgentState() -> AgentState
+    func registerProxyAgent() throws
+    func unregisterProxyAgent() throws
+    /// Starts the proxy again (`launchctl kickstart -k`), after an update.
+    func restartProxyAgent() throws
     func openLoginItems()
     /// Runs `command` with `/bin/sh` as root, after macOS asks for an
     /// administrator's password. Throws `SetupError.cancelled` when the
@@ -164,8 +172,20 @@ struct LiveSystem: MacSystem {
         }
     }
 
-    func restartAgent() throws {
-        let target = "gui/\(getuid())/\(Self.agentLabel)"
+    func restartAgent() throws { try kickstart(Self.agentLabel) }
+
+    static let proxyPlist = "dev.klav.proxy.plist"
+    static let proxyLabel = "dev.klav.proxy"
+
+    private var proxyService: SMAppService { SMAppService.agent(plistName: Self.proxyPlist) }
+
+    func proxyAgentState() -> AgentState { Self.state(of: proxyService) }
+    func registerProxyAgent() throws { try proxyService.register() }
+    func unregisterProxyAgent() throws { try proxyService.unregister() }
+    func restartProxyAgent() throws { try kickstart(Self.proxyLabel) }
+
+    private func kickstart(_ label: String) throws {
+        let target = "gui/\(getuid())/\(label)"
         let result = try run(URL(fileURLWithPath: "/bin/launchctl"), ["kickstart", "-k", target], environment: [:])
         guard result.status == 0 else { throw SetupError.failed(result.errors) }
     }

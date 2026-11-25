@@ -59,6 +59,14 @@ struct SandboxesPane: View {
                 try? await Task.sleep(for: .seconds(60))
             }
         }
+        // The proxy on this Mac (E3.5): its live connections, more often,
+        // through its local socket.
+        .task(id: model.generation) {
+            while !Task.isCancelled {
+                await model.loadLocalProxy()
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
         .sheet(isPresented: $model.revokingAllSandboxes, onDismiss: { model.revokeAllFor = nil }) {
             RevokeAllSandboxesSheet()
                 .environmentObject(model)
@@ -81,7 +89,8 @@ struct SandboxesPane: View {
         if board.paused {
             PausedLine().padding(.bottom, 16)
         }
-        ProxyBlock(board: board)
+        ProxyBlock(board: board, onThisMac: model.localProxyBoard.onThisMac)
+        LocalProxyRow().padding(.top, 12)
         ForEach(board.warnings, id: \.self) { warning in
             Notice(text: AgentText.line(warning, max: 300), tone: .info).padding(.top, 12)
         }
@@ -178,6 +187,8 @@ struct SandboxesPane: View {
 /// proxy: what is lost and how to set one, in the terminal.
 private struct ProxyBlock: View {
     let board: SandboxBoard
+    /// The account's proxy runs on this Mac (E4).
+    var onThisMac = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -202,6 +213,12 @@ private struct ProxyBlock: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("Credential proxy").font(.ui(12)).foregroundStyle(Palette.gris)
             Spacer(minLength: 8)
+            if onThisMac {
+                Text(verbatim: LocalProxyWords.onThisMac)
+                    .font(.ui(11, .medium)).foregroundStyle(Palette.tinta)
+                    .padding(.horizontal, 6).frame(height: 20)
+                    .overlay(Rectangle().strokeBorder(Palette.linea, lineWidth: 1))
+            }
             if board.paused {
                 Text("Paused")
                     .font(.ui(11, .medium)).foregroundStyle(Palette.cobalto)
@@ -433,9 +450,13 @@ private struct SandboxRow: View {
                                 .font(.ui(12)).foregroundStyle(Palette.gris)
                         }
                     }
-                    if let connection = SandboxWords.connection(sandbox, proxy: board.proxy, paused: board.paused,
-                                                                 now: board.now, readMs: board.readMs,
-                                                                 stale: board.stale) {
+                    if live, !board.paused, let now = model.localProxyBoard.connected(sandbox.sandboxId) {
+                        // The proxy on this Mac says it now (E3.5).
+                        Text(verbatim: LocalProxyWords.connection(now))
+                            .font(.ui(12)).foregroundStyle(now ? Palette.cobalto : Palette.gris)
+                    } else if let connection = SandboxWords.connection(sandbox, proxy: board.proxy,
+                                                                        paused: board.paused, now: board.now,
+                                                                        readMs: board.readMs, stale: board.stale) {
                         Text(verbatim: connection).font(.ui(12)).foregroundStyle(Palette.gris)
                     }
                 }
@@ -473,6 +494,15 @@ private struct SandboxRow: View {
         busy = true
         do {
             _ = try await model.revokeSandbox(sandbox)
+        } catch KlavError.Locked where model.localProxyBoard.onThisMac
+                                        && model.localProxyBoard.holds(sandbox.sandboxId) {
+            // Klav locked meanwhile: the proxy on this Mac revokes it with
+            // no signature (E2.3).
+            do {
+                model.say(try await model.revokeLocally(sandbox.sandboxId))
+            } catch {
+                model.say(SandboxWords.failure(error), error: true)
+            }
         } catch {
             model.say(SandboxWords.failure(error), error: true)
         }

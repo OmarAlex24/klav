@@ -184,6 +184,7 @@ fn a_revoked_proxys_sandboxes_reach_proxy_revoked() {
             max_body: klav_proxy::proxy::DEFAULT_MAX_BODY,
             request_timeout: std::time::Duration::from_secs(30),
             no_local_calls: false,
+            control_socket: klav_proxy::app::ControlSocket::Off,
             env: klav_proxy::app::StartEnv::default(),
         }))
         .expect("proxy");

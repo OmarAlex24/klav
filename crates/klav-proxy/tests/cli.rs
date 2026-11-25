@@ -159,3 +159,33 @@ fn version() {
         .count();
     assert_eq!(found, 1, "{marker:?}");
 }
+
+/// The Mac app's LaunchAgent (ADR 0036, layer 11): with no proxy
+/// registered here, `serve --if-registered` exits 0 at once, so launchd
+/// does not start it again; without the flag it fails as before.
+#[test]
+fn serve_if_registered_exits_zero_with_no_registration() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = proxy_with(None)
+        .arg("--home")
+        .arg(dir.path())
+        .args(["serve", "--if-registered", "--port", "0"])
+        .output()
+        .expect("run klav-proxy");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = proxy_with(None)
+        .arg("--home")
+        .arg(dir.path())
+        .args(["serve", "--port", "0"])
+        .output()
+        .expect("run klav-proxy");
+    assert!(!out.status.success());
+    assert!(
+        !dir.path().join("agents/klav-proxy.sock").exists(),
+        "no socket left behind"
+    );
+}

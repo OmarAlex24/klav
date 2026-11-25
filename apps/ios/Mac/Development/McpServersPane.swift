@@ -32,6 +32,7 @@ struct McpServersPane: View {
             }
         }
         .task(id: model.generation) { await load() }
+        .task(id: model.generation) { await model.loadLocalProxy() }
         .sheet(isPresented: $model.turningOnMcpGateway) {
             TurnOnGatewaySheet { await load() }
                 .environmentObject(model)
@@ -50,6 +51,11 @@ struct McpServersPane: View {
 
     @ViewBuilder
     private func content(_ info: McpServersInfo) -> some View {
+        // Local clients reach these servers only through the proxy on this
+        // Mac (ADR 0049 §3.1): whether it runs, and Start or Stop.
+        if info.proxy != nil {
+            LocalProxyRow().padding(.bottom, 20)
+        }
         switch info.gatewayOn {
         case nil:
             Notice(text: String(localized: "This Klav server is older than the MCP gateway. Update the server to use MCP servers through your proxy."))
@@ -142,6 +148,7 @@ private struct GatewayOff: View {
 /// One MCP server: its name and where it lives, the URL for a client on
 /// this Mac, its rules in lanes, and who may use it.
 private struct ServerBlock: View {
+    @EnvironmentObject private var model: MacModel
     let server: McpServerInfo
 
     var body: some View {
@@ -185,13 +192,13 @@ private struct ServerBlock: View {
             Text("On this Mac")
                 .font(.ui(12)).foregroundStyle(Palette.gris)
                 .frame(width: 92, alignment: .leading)
-            Text(verbatim: server.localUrl)
+            Text(verbatim: model.localProxyBoard.localUrl(server.localUrl, profile: server.profile))
                 .font(.mono(12.5)).foregroundStyle(Palette.tinta)
                 .textSelection(.enabled)
                 .lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
             SmallAction(title: "Copy", label: String(localized: "Copy the URL of \(server.profile)")) {
-                Clipboard.copy(server.localUrl)
+                Clipboard.copy(model.localProxyBoard.localUrl(server.localUrl, profile: server.profile))
             }
             .fixedSize()
         }
