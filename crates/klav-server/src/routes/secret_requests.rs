@@ -812,6 +812,7 @@ mod tests {
                 profiles: vec![],
                 issuers: vec![],
                 sandbox: None,
+                local_clients: Vec::new(),
             };
             let grant_bytes = serde_json::to_vec(&grant_payload).unwrap();
             let grant_sig = sign_grant(
@@ -881,6 +882,7 @@ mod tests {
                 profiles: vec![],
                 issuers: vec![],
                 sandbox: None,
+                local_clients: Vec::new(),
             };
             let grant_bytes = serde_json::to_vec(&grant_payload).unwrap();
             let grant_sig = sign_grant(

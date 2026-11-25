@@ -386,6 +386,7 @@ fn profile(name: &str, item: ItemId, upstream: String, rate: u32) -> ProxyProfil
         prefix: "Bearer ".into(),
         upstream,
         rate_per_minute: Some(rate),
+        mcp: None,
     }
 }
 
@@ -514,6 +515,7 @@ async fn mode_a_end_to_end() {
                 expires_at: None,
             },
             issuers: Vec::new(),
+            local_clients: Vec::new(),
         },
         &report.pairing_code,
     )

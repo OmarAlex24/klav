@@ -1,0 +1,225 @@
+{
+  "cases": [
+    {
+      "agent_id": "61ccbdf6e73d7a8a754dec9080d753d5",
+      "name": "token-zeros",
+      "token": "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "token_bytes": "0000000000000000000000000000000000000000000000000000000000000000",
+      "token_digest": "38739528806898a8d37ef93f918d8862b627ffaf008fafadd146713fae7fb10b"
+    },
+    {
+      "agent_id": "61ccbdf6e73d7a8a754dec9080d753d5",
+      "name": "token-pseudo-random",
+      "token": "klc1_AdkZOMxYt786gd7gc923rNCFXeuYncYcJUvzUN0anXX3",
+      "token_bytes": "d91938cc58b7bf3a81dee073ddb7acd0855deb989dc61c254bf350dd1a9d75f7",
+      "token_digest": "d3e263b46e11c41d838082781bfb263451201048c9fcbb3ef4a66e2d02194844"
+    },
+    {
+      "invalid": [
+        "",
+        "klc1_",
+        "klc2_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "KLC1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "klc1_AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+A",
+        " klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      ],
+      "name": "tokens-rejected"
+    },
+    {
+      "agent_id": "61ccbdf6e73d7a8a754dec9080d753d5",
+      "item_id": "62ee05262de14d921c6c77b76f3c0435",
+      "mcp_args": "slSgXn8UkeJq02L-paDsofFC1x4IHENhVuJiNVOoyjg",
+      "mcp_args_hex": "b254a05e7f1491e26ad362fea5a0eca1f142d71e081c436156e2623553a8ca38",
+      "name": "args",
+      "raw_arguments": "{\"query\":\"error\", \"limit\":10}",
+      "tool": "query_logs"
+    },
+    {
+      "agent_id": "61ccbdf6e73d7a8a754dec9080d753d5",
+      "item_id": "62ee05262de14d921c6c77b76f3c0435",
+      "mcp_args": "ExQb7RX_-iG3ocmBSk5K_OicMey3fId9LzkafGmoUqM",
+      "mcp_args_hex": "13141bed15fffa21b7a1c9814a4e4afce89c31ecb77c877d2f391a7c69a852a3",
+      "name": "args-reordered",
+      "raw_arguments": "{\"limit\":10,\"query\":\"error\"}",
+      "tool": "query_logs"
+    },
+    {
+      "agent_id": "61ccbdf6e73d7a8a754dec9080d753d5",
+      "item_id": "62ee05262de14d921c6c77b76f3c0435",
+      "mcp_args": "SREnXjzP6pIW_yTb6Z_vV_Ustp6TNbxQw9fX8MNeQ0E",
+      "mcp_args_hex": "4911275e3ccfea9216ff24dbe99fef57f52cb69e9335bc50c3d7d7f0c35e4341",
+      "name": "args-absent",
+      "raw_arguments": "",
+      "tool": "query_logs"
+    },
+    {
+      "invalid_patterns": [
+        "",
+        "**",
+        "*get",
+        "get_**",
+        "*_api_key",
+        "ge*t",
+        " get_*",
+        "get *",
+        "quéry"
+      ],
+      "matches": {
+        "*": [
+          "get_logs",
+          "get_",
+          "Get_logs",
+          "forget_logs",
+          "query_logs",
+          "query_logs2"
+        ],
+        "G*": [
+          "Get_logs"
+        ],
+        "get_*": [
+          "get_logs",
+          "get_"
+        ],
+        "query_logs": [
+          "query_logs"
+        ]
+      },
+      "name": "patterns",
+      "patterns": [
+        "get_*",
+        "query_logs",
+        "*",
+        "G*"
+      ],
+      "tools": [
+        "get_logs",
+        "get_",
+        "Get_logs",
+        "forget_logs",
+        "query_logs",
+        "query_logs2",
+        "bad name",
+        ""
+      ]
+    },
+    {
+      "effects": [
+        "allow",
+        "allow",
+        "allow",
+        "ask",
+        "deny",
+        "deny",
+        "deny",
+        "deny",
+        "deny",
+        "deny"
+      ],
+      "item_id": "62ee05262de14d921c6c77b76f3c0435",
+      "name": "evaluation",
+      "policy": {
+        "rules": [
+          {
+            "effect": "allow",
+            "permission": "proxy",
+            "scope": {
+              "domains": [
+                "api.maple.dev"
+              ],
+              "items": [
+                "62ee0526-2de1-4d92-1c6c-77b76f3c0435"
+              ],
+              "methods": [
+                "POST",
+                "GET",
+                "DELETE"
+              ],
+              "path_prefixes": [
+                "/mcp"
+              ]
+            }
+          },
+          {
+            "effect": "allow",
+            "permission": "proxy",
+            "scope": {
+              "domains": [
+                "api.maple.dev"
+              ],
+              "items": [
+                "62ee0526-2de1-4d92-1c6c-77b76f3c0435"
+              ],
+              "mcp_tools": [
+                "get_*",
+                "list_*",
+                "query_*"
+              ],
+              "path_prefixes": [
+                "/mcp"
+              ]
+            }
+          },
+          {
+            "effect": "ask",
+            "permission": "proxy",
+            "scope": {
+              "domains": [
+                "api.maple.dev"
+              ],
+              "items": [
+                "62ee0526-2de1-4d92-1c6c-77b76f3c0435"
+              ],
+              "mcp_tools": [
+                "create_*",
+                "update_*",
+                "delete_*"
+              ],
+              "path_prefixes": [
+                "/mcp"
+              ]
+            }
+          },
+          {
+            "effect": "deny",
+            "permission": "proxy",
+            "scope": {
+              "domains": [
+                "api.maple.dev"
+              ],
+              "items": [
+                "62ee0526-2de1-4d92-1c6c-77b76f3c0435"
+              ],
+              "mcp_tools": [
+                "create_api_key",
+                "get_api_key"
+              ],
+              "path_prefixes": [
+                "/mcp"
+              ]
+            }
+          }
+        ]
+      },
+      "tools": [
+        null,
+        "query_logs",
+        "get_dashboard",
+        "delete_dashboard",
+        "get_api_key",
+        "create_api_key",
+        "run_query",
+        "Get_logs",
+        "DeleteService",
+        "get logs"
+      ]
+    }
+  ],
+  "description": "MCP gateway (ADR 0049): local client tokens (klc1_) and their digest, the argument digest, tool patterns and how a tool call is evaluated",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §13.16"
+}

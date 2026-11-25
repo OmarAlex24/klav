@@ -93,6 +93,7 @@ impl Session {
                 method: Some(call.method.to_owned()),
                 path: Some(call.path.to_owned()),
                 now: now_secs(),
+                mcp_tool: None,
             },
         )
     }
@@ -131,11 +132,14 @@ impl Session {
                 domain: Some(call.host.to_owned()),
                 method: Some(call.method.to_owned()),
                 path: Some(call.path.to_owned()),
+                mcp_tool: None,
+                mcp_args: None,
             },
             approval_id: None,
             task_id: None,
             include_attachments: false,
             sandbox: call.sandbox,
+            local_client: None,
         };
         let bytes =
             serde_json::to_vec(&body).map_err(|e| ClientError::Invalid(format!("request: {e}")))?;

@@ -207,6 +207,7 @@ async fn start(
         reason: &reason,
         attachments: &[],
         sandbox: None,
+        local_client: None,
     };
     let task = match checked(
         &state,
@@ -308,6 +309,7 @@ async fn finish(
         reason: &reason,
         attachments: &[],
         sandbox: None,
+        local_client: None,
     };
     let kind = match to {
         RotationStatus::Confirmed => "rotate.confirmed",

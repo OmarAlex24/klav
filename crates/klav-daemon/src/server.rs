@@ -5669,6 +5669,7 @@ mod tests {
                 prefix: "Bearer ".into(),
                 upstream: upstream.into(),
                 rate_per_minute: None,
+                mcp: None,
             };
         let credential = view.credential.as_mut().expect("credential");
         credential.profile = Some(profile("https://api.example.com", "authorization", None));

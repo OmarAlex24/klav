@@ -119,6 +119,11 @@ pub const GRANT_PAYLOAD_VERSION_ITEMS: u32 = 2;
 /// `issuers` on the credential proxy's grant, `sandbox` on an issuer's.
 /// A superset of version 2. Older runtimes and servers reject it.
 pub const GRANT_PAYLOAD_VERSION_SANDBOXES: u32 = 3;
+/// Version of the grant payload with the MCP gateway (ADR 0049 §2.1): MCP
+/// profiles (`ProxyProfile::mcp`), rules with `mcp_tools` and the proxy's
+/// `local_clients`. A superset of version 3. Older runtimes and servers
+/// reject it: they fail closed.
+pub const GRANT_PAYLOAD_VERSION_MCP: u32 = 4;
 
 /// What an agent may do (the signed part of a grant).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +161,30 @@ pub struct GrantPayload {
     /// its proxy and the person has not made it an issuer of the new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<IssuerGrant>,
+    /// On the credential proxy's grant (`v: 4`, ADR 0049 §3.2): the MCP
+    /// clients on the person's Mac that may use its MCP profiles through
+    /// the loopback listener, each with its token's digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_clients: Vec<LocalClient>,
+}
+
+/// Most local clients one proxy's grant may carry.
+pub const MAX_LOCAL_CLIENTS: usize = 16;
+
+/// An MCP client on the person's Mac, as the account signed it into the
+/// proxy's grant (ADR 0049 §3.2). The proxy names the caller to the server
+/// with `name` only after the caller's bearer token matches `token_digest`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalClient {
+    /// The person's label (`claude-code`, `cursor`): 1–32 of `a-z 0-9 -`
+    /// ([`klav_core::policy::local_client_name_ok`]).
+    pub name: String,
+    /// `SHA-256(tuple("klav/v1/proxy/local-client", agent_id(16), token(32)))`
+    /// with the proxy's ID (32 bytes, spec §13.16). Never the token.
+    pub token_digest: Blob,
+    /// Names of this grant's MCP profiles the client may use.
+    pub profiles: Vec<String>,
 }
 
 /// Longest TTL an issuer may get or give (ADR 0036 §4, like a task).
@@ -264,6 +293,12 @@ pub const MAX_PROFILE_HEADER: usize = 64;
 pub const MAX_PROFILE_PREFIX: usize = 64;
 /// Longest field name of a profile.
 pub const MAX_PROFILE_FIELD: usize = 64;
+/// Longest MCP endpoint path (ADR 0049 §2.1).
+pub const MAX_MCP_ENDPOINT: usize = 64;
+/// Most fixed headers an MCP profile may carry.
+pub const MAX_MCP_HEADERS: usize = 4;
+/// Longest value of an MCP profile's fixed header.
+pub const MAX_MCP_HEADER_VALUE: usize = 128;
 /// Calls per minute of a profile without `rate_per_minute` (ADR 0036 §8).
 pub const DEFAULT_PROFILE_RATE: u32 = 60;
 /// Most calls per minute a profile may allow.
@@ -285,6 +320,60 @@ const RESERVED_HEADERS: [&str; 12] = [
     "proxy-authorization",
     "proxy-connection",
 ];
+
+/// Headers an MCP profile's fixed headers may not set, beyond
+/// [`RESERVED_HEADERS`]: credentials, and the ones the MCP transport and
+/// the proxy handle themselves (ADR 0049 §2.1, §2.4, §5.1).
+const RESERVED_MCP_HEADERS: [&str; 11] = [
+    "authorization",
+    "cookie",
+    "www-authenticate",
+    "mcp-session-id",
+    "mcp-protocol-version",
+    "last-event-id",
+    "content-type",
+    "content-encoding",
+    "accept",
+    "accept-encoding",
+    "origin",
+];
+
+/// Whether `name` is a lower-case header name a profile may set: 1–64 of
+/// `a-z 0-9 -`, none of [`RESERVED_HEADERS`], not `klav-…` or `proxy-…`.
+fn settable_header(name: &str) -> bool {
+    (1..=MAX_PROFILE_HEADER).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !RESERVED_HEADERS.contains(&name)
+        && !name.starts_with("klav-")
+        && !name.starts_with("proxy-")
+}
+
+/// What makes a profile an MCP profile (ADR 0049 §2.1): the upstream's MCP
+/// endpoint, which the proxy reads, checks and filters, and the fixed
+/// headers the person signed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpProfile {
+    /// The endpoint's path on `upstream`, canonical
+    /// ([`klav_core::policy::is_canonical_path`]), at most 64 bytes. The
+    /// profile forwards only this exact path.
+    pub endpoint: String,
+    /// At most 4 fixed, non-secret headers sent on every request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<McpHeader>,
+}
+
+/// One fixed header of an MCP profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpHeader {
+    /// Lower-case name.
+    pub name: String,
+    /// Printable ASCII, at most 128 bytes.
+    pub value: String,
+}
 
 /// A recipe signed by the account (ADR 0036 §2): which item's value goes
 /// in which header, and where requests through it go. The hosts, methods
@@ -315,6 +404,10 @@ pub struct ProxyProfile {
     /// [`DEFAULT_PROFILE_RATE`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_per_minute: Option<u32>,
+    /// An MCP profile (`v: 4`, ADR 0049 §2.1): the proxy reads, checks and
+    /// filters the JSON-RPC on `endpoint` and forwards nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpProfile>,
 }
 
 impl ProxyProfile {
@@ -335,15 +428,7 @@ impl ProxyProfile {
                 self.name
             ));
         }
-        let header_ok = (1..=MAX_PROFILE_HEADER).contains(&self.header.len())
-            && self
-                .header
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            && !RESERVED_HEADERS.contains(&self.header.as_str())
-            && !self.header.starts_with("klav-")
-            && !self.header.starts_with("proxy-");
-        if !header_ok {
+        if !settable_header(&self.header) {
             return Err(format!(
                 "profile {}: header {:?} is not a lower-case header name the proxy may set",
                 self.name, self.header
@@ -378,6 +463,47 @@ impl ProxyProfile {
                 "profile {}: rate_per_minute must be 1–{MAX_PROFILE_RATE}",
                 self.name
             ));
+        }
+        if let Some(mcp) = &self.mcp {
+            self.check_mcp(mcp)?;
+        }
+        Ok(())
+    }
+
+    fn check_mcp(&self, mcp: &McpProfile) -> Result<(), String> {
+        if mcp.endpoint.len() > MAX_MCP_ENDPOINT
+            || !klav_core::policy::is_canonical_path(&mcp.endpoint)
+        {
+            return Err(format!(
+                "profile {}: the MCP endpoint must be a canonical path of at most {MAX_MCP_ENDPOINT} bytes",
+                self.name
+            ));
+        }
+        if mcp.headers.len() > MAX_MCP_HEADERS {
+            return Err(format!(
+                "profile {}: at most {MAX_MCP_HEADERS} fixed MCP headers",
+                self.name
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for h in &mcp.headers {
+            let name_ok = settable_header(&h.name)
+                && !RESERVED_MCP_HEADERS.contains(&h.name.as_str())
+                && h.name != self.header;
+            if !name_ok || !seen.insert(h.name.as_str()) {
+                return Err(format!(
+                    "profile {}: fixed MCP header {:?} is reserved, repeated or not a lower-case header name",
+                    self.name, h.name
+                ));
+            }
+            if h.value.len() > MAX_MCP_HEADER_VALUE
+                || !h.value.bytes().all(|b| (0x20..0x7f).contains(&b))
+            {
+                return Err(format!(
+                    "profile {}: the value of MCP header {} must be printable ASCII, at most {MAX_MCP_HEADER_VALUE} bytes",
+                    self.name, h.name
+                ));
+            }
         }
         Ok(())
     }
@@ -420,6 +546,11 @@ impl GrantPayload {
     /// allow for it. A later format may allow it; older runtimes then
     /// reject the duplicate, which fails closed.
     pub fn check_format(&self) -> Result<(), String> {
+        if self.v < GRANT_PAYLOAD_VERSION_MCP && self.uses_mcp() {
+            return Err(
+                "a grant with MCP profiles, tool rules or local clients must be version 4".into(),
+            );
+        }
         match self.v {
             GRANT_PAYLOAD_VERSION => {
                 if !self.items.is_empty() || !self.profiles.is_empty() || self.policy.needs_v2() {
@@ -447,6 +578,15 @@ impl GrantPayload {
                 if self.issuers.is_empty() && self.sandbox.is_none() {
                     return Err(
                         "a version 3 grant carries sandbox issuers or a sandbox proxy".into(),
+                    );
+                }
+                self.check_sandboxes()?;
+            }
+            GRANT_PAYLOAD_VERSION_MCP => {
+                if !self.uses_mcp() {
+                    return Err(
+                        "a version 4 grant carries MCP profiles, tool rules or local clients"
+                            .into(),
                     );
                 }
                 self.check_sandboxes()?;
@@ -502,8 +642,112 @@ impl GrantPayload {
                     profile.name
                 ));
             }
+            if let Some(mcp) = &profile.mcp {
+                let endpoint = self.policy.rules.iter().any(|r| {
+                    r.permission == Permission::Proxy
+                        && r.effect != klav_core::policy::Effect::Deny
+                        && r.scope.items.contains(&profile.item_id)
+                        && r.scope.domains.iter().any(|d| d.matches(&host))
+                        && r.scope
+                            .path_prefixes
+                            .iter()
+                            .any(|p| p.matches(&mcp.endpoint))
+                });
+                if !endpoint {
+                    return Err(format!(
+                        "profile {}: no proxy rule lets its item reach its MCP endpoint {} on {host}",
+                        profile.name, mcp.endpoint
+                    ));
+                }
+            }
+        }
+        self.check_mcp()
+    }
+
+    /// Whether the payload uses anything of `v: 4` (ADR 0049 §2.1).
+    pub fn uses_mcp(&self) -> bool {
+        self.profiles.iter().any(|p| p.mcp.is_some())
+            || self.policy.needs_v4()
+            || !self.local_clients.is_empty()
+    }
+
+    /// The `v: 4` rules: tool rules only on MCP profiles' items, and local
+    /// clients only on a proxy's grant, each with a valid name, a 32-byte
+    /// digest, and one or more of its MCP profiles; names and digests
+    /// unique.
+    fn check_mcp(&self) -> Result<(), String> {
+        let mcp_items: std::collections::HashSet<ItemId> = self
+            .profiles
+            .iter()
+            .filter(|p| p.mcp.is_some())
+            .map(|p| p.item_id)
+            .collect();
+        for rule in self.policy.rules.iter().filter(|r| r.scope.uses_mcp()) {
+            if rule.scope.items.is_empty()
+                || !rule.scope.items.iter().all(|i| mcp_items.contains(i))
+            {
+                return Err(
+                    "a rule with MCP tools names only items of MCP profiles, and at least one"
+                        .into(),
+                );
+            }
+        }
+        if self.local_clients.is_empty() {
+            return Ok(());
+        }
+        if self.profiles.is_empty() {
+            return Err("only a grant with profiles (a credential proxy) has local clients".into());
+        }
+        if self.local_clients.len() > MAX_LOCAL_CLIENTS {
+            return Err(format!("at most {MAX_LOCAL_CLIENTS} local clients"));
+        }
+        let mcp_profiles: std::collections::HashSet<&str> = self
+            .profiles
+            .iter()
+            .filter(|p| p.mcp.is_some())
+            .map(|p| p.name.as_str())
+            .collect();
+        let mut names = std::collections::HashSet::new();
+        let mut digests = std::collections::HashSet::new();
+        for client in &self.local_clients {
+            if !klav_core::policy::local_client_name_ok(&client.name)
+                || !names.insert(client.name.as_str())
+            {
+                return Err(format!(
+                    "local client {:?}: 1–32 of a-z, 0-9 and -, and not twice",
+                    client.name
+                ));
+            }
+            if client.token_digest.as_bytes().len() != 32
+                || !digests.insert(client.token_digest.as_bytes())
+            {
+                return Err(format!(
+                    "local client {}: the token digest is 32 bytes and not another client's",
+                    client.name
+                ));
+            }
+            if client.profiles.is_empty() {
+                return Err(format!("local client {}: no profiles", client.name));
+            }
+            let mut seen = std::collections::HashSet::new();
+            for name in &client.profiles {
+                if !mcp_profiles.contains(name.as_str()) || !seen.insert(name.as_str()) {
+                    return Err(format!(
+                        "local client {}: profile {name} is not an MCP profile of this grant or appears twice",
+                        client.name
+                    ));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// The local client `name` of this grant that may use `profile`, if
+    /// any: what the server checks `AccessRequest::local_client` against.
+    pub fn local_client_for(&self, name: &str, profile: &str) -> Option<&LocalClient> {
+        self.local_clients
+            .iter()
+            .find(|c| c.name == name && c.profiles.iter().any(|p| p == profile))
     }
 
     /// The `v: 3` rules: issuers only on a grant with profiles, each a
@@ -577,16 +821,20 @@ impl GrantPayload {
 
     /// The `v` to write when re-signing a grant that had `previous`: what
     /// it carries now, never lowering 2 to 1 (older clients already read
-    /// it as 2), and 3 only while it carries `issuers` or `sandbox`.
+    /// it as 2), 3 only while it carries `issuers` or `sandbox`, and 4 only
+    /// while it carries something of the MCP gateway.
     pub fn version_after(&self, previous: u32) -> u32 {
         self.needed_version()
             .max(previous.min(GRANT_PAYLOAD_VERSION_ITEMS))
     }
 
-    /// The `v` this payload needs: 3 with sandbox issuers or a sandbox
-    /// proxy, 2 with items, profiles or proxy rules, else 1.
+    /// The `v` this payload needs: 4 with anything of the MCP gateway, 3
+    /// with sandbox issuers or a sandbox proxy, 2 with items, profiles or
+    /// proxy rules, else 1.
     pub fn needed_version(&self) -> u32 {
-        if !self.issuers.is_empty() || self.sandbox.is_some() {
+        if self.uses_mcp() {
+            GRANT_PAYLOAD_VERSION_MCP
+        } else if !self.issuers.is_empty() || self.sandbox.is_some() {
             GRANT_PAYLOAD_VERSION_SANDBOXES
         } else if !self.items.is_empty() || !self.profiles.is_empty() || self.policy.needs_v2() {
             GRANT_PAYLOAD_VERSION_ITEMS
@@ -796,6 +1044,12 @@ pub struct AgentMe {
     /// E3.3, Q-C). Older servers never send it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gone_issuers: Vec<AgentId>,
+    /// `true` while the account's `mcp_gateway` switch is on (ADR 0049 §9):
+    /// the runtime may send MCP claims and `local_client`. Absent while it
+    /// is off, so the answer stays what it was. Older servers never send
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_gateway: Option<bool>,
 }
 
 // ------------------------------------------------------------- access ----
@@ -858,6 +1112,16 @@ pub struct Claims {
     /// or a header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// The tool of an MCP `tools/call` (`proxy`, ADR 0049 §5.4), in the
+    /// tool grammar ([`klav_core::policy::tool_name_ok`]). Only while the
+    /// account's `mcp_gateway` switch is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tool: Option<String>,
+    /// The digest of that call's arguments (32 bytes, base64url without
+    /// padding, spec §13.16), with `mcp_tool` only. The server never sees
+    /// the arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_args: Option<String>,
 }
 
 /// `POST /v1/agent/access`: use an item (`list` for its metadata, `fill`,
@@ -892,6 +1156,13 @@ pub struct AccessRequest {
     /// `claims`, so approvals, which carry the claims, do not change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<klav_core::ids::SandboxId>,
+    /// With `proxy` on an MCP profile: the local client on the person's
+    /// Mac the call is for (ADR 0049 §3.2), named by the proxy after its
+    /// token matched. The server takes it only if the proxy's grant has
+    /// that client for that profile, and only while the account's
+    /// `mcp_gateway` switch is on. Outside `claims`, like `sandbox`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_client: Option<String>,
 }
 
 /// Largest total ciphertext of the attachments one `access` delivers to an
@@ -1165,6 +1436,48 @@ pub struct ApprovalRequest {
     pub grant_version: u64,
     /// When it was asked (Unix ms).
     pub requested_at: i64,
+    /// Who the proxied call is for, according to the proxy: its sandbox or
+    /// its local client (ADR 0049 §5.4). Only while the account's
+    /// `mcp_gateway` switch is on; absent otherwise, so every other
+    /// request's bytes stay what they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<ApprovalCaller>,
+}
+
+/// Who a proxied call is for, as the person signs it (ADR 0049 §5.4):
+/// exactly one of the two.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalCaller {
+    /// A sandbox of the proxy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_id: Option<klav_core::ids::SandboxId>,
+    /// A local client on the person's Mac.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_client: Option<String>,
+}
+
+impl ApprovalCaller {
+    /// Exactly one caller, and a local client's name in its grammar.
+    pub fn is_well_formed(&self) -> bool {
+        match (&self.sandbox_id, &self.local_client) {
+            (Some(_), None) => true,
+            (None, Some(name)) => klav_core::policy::local_client_name_ok(name),
+            _ => false,
+        }
+    }
+}
+
+/// `GET /v1/account/mcp-gateway` and `POST /v1/account/mcp-gateway` (ADR
+/// 0049 §9): the account's switch. `POST` turns it on, and nothing turns it
+/// off. An older server answers `404`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpGatewaySwitch {
+    /// Whether the switch is on.
+    pub mcp_gateway: bool,
+    /// When it was turned on (Unix ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
 }
 
 /// An approval request as stored.
@@ -1443,5 +1756,172 @@ mod tests {
         two.profiles.push(other);
         let err = two.check_format().expect_err("one profile per item");
         assert!(err.contains("one profile per item"), "{err}");
+    }
+
+    /// The `v: 2` vector made an MCP profile (ADR 0049 §2.1): endpoint,
+    /// one tool rule and one local client. Version 4, and only 4.
+    fn mcp_grant() -> GrantPayload {
+        let mut payload = vector();
+        payload.profiles[0].mcp = Some(McpProfile {
+            endpoint: "/graphql".into(),
+            headers: vec![McpHeader {
+                name: "x-mcp-toolsets".into(),
+                value: "logs,traces".into(),
+            }],
+        });
+        let mut tools = payload.policy.rules[0].clone();
+        tools.scope.methods.clear();
+        tools.scope.mcp_tools = vec!["get_*".parse().unwrap(), "query_logs".parse().unwrap()];
+        payload.policy.rules.push(tools);
+        payload.local_clients = vec![LocalClient {
+            name: "claude-code".into(),
+            token_digest: Blob::new(vec![7; 32]),
+            profiles: vec![payload.profiles[0].name.clone()],
+        }];
+        payload.v = payload.needed_version();
+        payload
+    }
+
+    #[test]
+    fn an_mcp_grant_is_version_4_and_round_trips() {
+        let payload = mcp_grant();
+        assert_eq!(payload.v, GRANT_PAYLOAD_VERSION_MCP);
+        payload.check_format().expect("valid v4");
+        let json = serde_json::to_vec(&payload).unwrap();
+        let back: GrantPayload = serde_json::from_slice(&json).unwrap();
+        assert_eq!(back, payload);
+        assert_eq!(serde_json::to_vec(&back).unwrap(), json);
+        assert!(
+            payload
+                .local_client_for("claude-code", &payload.profiles[0].name)
+                .is_some()
+        );
+        assert!(
+            payload
+                .local_client_for("cursor", &payload.profiles[0].name)
+                .is_none()
+        );
+        // Anything of v4 under an older `v` fails closed, and a v4 without
+        // it is refused too.
+        for v in [1, 2, 3] {
+            let mut older = payload.clone();
+            older.v = v;
+            assert!(older.check_format().is_err(), "v{v}");
+        }
+        let mut bare = vector();
+        bare.v = GRANT_PAYLOAD_VERSION_MCP;
+        assert!(bare.check_format().is_err());
+        // Without the MCP parts it goes back to 2, never below.
+        let mut plain = payload.clone();
+        plain.profiles[0].mcp = None;
+        plain.local_clients.clear();
+        plain.policy.rules.pop();
+        assert_eq!(
+            plain.version_after(GRANT_PAYLOAD_VERSION_MCP),
+            GRANT_PAYLOAD_VERSION_ITEMS
+        );
+        // A v2 grant never names `mcp`, `mcp_tools` or `local_clients`.
+        let json = serde_json::to_string(&vector()).unwrap();
+        assert!(
+            !json.contains("mcp") && !json.contains("local_clients"),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn mcp_profiles_tool_rules_and_local_clients_follow_their_rules() {
+        let bad = |edit: &dyn Fn(&mut GrantPayload)| {
+            let mut payload = mcp_grant();
+            edit(&mut payload);
+            payload.check_format().is_err()
+        };
+        // The endpoint: canonical, at most 64 bytes, reachable by a rule.
+        for endpoint in [
+            "graphql",
+            "/a/../b",
+            "/x%2F",
+            &format!("/{}", "a".repeat(64)),
+            "/other",
+        ] {
+            assert!(
+                bad(&|p| p.profiles[0].mcp.as_mut().unwrap().endpoint = endpoint.into()),
+                "{endpoint}"
+            );
+        }
+        // Fixed headers: at most 4, settable, not reserved, printable.
+        for name in [
+            "authorization",
+            "cookie",
+            "mcp-session-id",
+            "host",
+            "klav-x",
+            "X-Up",
+            "content-type",
+        ] {
+            assert!(
+                bad(&|p| p.profiles[0].mcp.as_mut().unwrap().headers[0].name = name.into()),
+                "{name}"
+            );
+        }
+        assert!(bad(
+            &|p| p.profiles[0].mcp.as_mut().unwrap().headers[0].value = "a\r\nb".into()
+        ));
+        assert!(bad(
+            &|p| p.profiles[0].mcp.as_mut().unwrap().headers[0].value = "a".repeat(129)
+        ));
+        assert!(bad(&|p| {
+            let h = p.profiles[0].mcp.as_ref().unwrap().headers[0].clone();
+            p.profiles[0].mcp.as_mut().unwrap().headers.push(h);
+        }));
+        assert!(bad(&|p| {
+            let h = &mut p.profiles[0].mcp.as_mut().unwrap().headers;
+            for n in 0..4 {
+                h.push(McpHeader {
+                    name: format!("x-h{n}"),
+                    value: "v".into(),
+                });
+            }
+        }));
+        // Tool rules only on MCP profiles' items.
+        assert!(bad(&|p| p.profiles[0].mcp = None));
+        assert!(bad(&|p| p
+            .policy
+            .rules
+            .last_mut()
+            .unwrap()
+            .scope
+            .items
+            .clear()));
+        // Local clients: grammar, digest, profiles, uniqueness.
+        for name in ["", "Claude", "claude code", &"a".repeat(33)] {
+            assert!(bad(&|p| p.local_clients[0].name = name.into()), "{name:?}");
+        }
+        assert!(bad(
+            &|p| p.local_clients[0].token_digest = Blob::new(vec![7; 31])
+        ));
+        assert!(bad(&|p| p.local_clients[0].profiles.clear()));
+        assert!(bad(&|p| p.local_clients[0].profiles = vec!["nope".into()]));
+        assert!(bad(&|p| {
+            let c = p.local_clients[0].clone();
+            p.local_clients.push(c);
+        }));
+        assert!(
+            bad(&|p| {
+                let mut c = p.local_clients[0].clone();
+                c.name = "cursor".into();
+                p.local_clients.push(c);
+            }),
+            "two clients with one digest"
+        );
+        assert!(bad(&|p| {
+            let name = p.profiles[0].name.clone();
+            p.local_clients[0].profiles = vec![name.clone(), name];
+        }));
+        // A client may hold only MCP profiles.
+        assert!(bad(&|p| {
+            p.local_clients[0].profiles = vec![p.profiles[0].name.clone()];
+            p.profiles[0].mcp = None;
+            p.policy.rules.pop();
+        }));
     }
 }

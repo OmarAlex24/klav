@@ -2282,6 +2282,14 @@ fn files() -> Vec<VectorFile> {
             check: secret_key_check,
         },
         VectorFile {
+            name: "mcp-gateway",
+            description: "MCP gateway (ADR 0049): local client tokens (klc1_) and their digest, the argument digest, tool patterns and how a tool call is evaluated",
+            spec: "§13.16",
+            inputs: mcp_inputs,
+            compute: mcp_compute,
+            check: mcp_check,
+        },
+        VectorFile {
             name: "invite",
             description: "Invite codes: canonical spelling, other spellings, digest and codes to reject (ADR 0048)",
             spec: "§4.7",
@@ -3141,6 +3149,206 @@ fn agent_check(case: &Value) {
         &sig("audit_head_signature"),
     )
     .expect("audit head");
+}
+
+// ------------------------------------------------------------- mcp gateway --
+
+/// The policy of ADR 0049 §5.3's example: the session rule (methods, no
+/// tools), `allow`, `ask` and `deny` tool rules on one item and endpoint.
+fn mcp_policy() -> crate::policy::Policy {
+    use crate::policy::{Effect, Policy, Rule, Scope};
+    let item = ItemId::from_bytes(det::<16>("mcp item"));
+    let base = Scope {
+        items: vec![item],
+        domains: vec!["api.maple.dev".parse().expect("host")],
+        path_prefixes: vec!["/mcp".parse().expect("prefix")],
+        ..Scope::default()
+    };
+    let rule = |effect, methods: &[&str], tools: &[&str]| Rule {
+        permission: Permission::Proxy,
+        effect,
+        scope: Scope {
+            methods: methods.iter().map(|m| m.parse().expect("method")).collect(),
+            mcp_tools: tools.iter().map(|t| t.parse().expect("pattern")).collect(),
+            ..base.clone()
+        },
+        expires_at: None,
+    };
+    Policy {
+        rules: vec![
+            rule(Effect::Allow, &["POST", "GET", "DELETE"], &[]),
+            rule(Effect::Allow, &[], &["get_*", "list_*", "query_*"]),
+            rule(Effect::Ask, &[], &["create_*", "update_*", "delete_*"]),
+            rule(Effect::Deny, &[], &["create_api_key", "get_api_key"]),
+        ],
+        expires_at: None,
+    }
+}
+
+fn mcp_inputs() -> Vec<Value> {
+    let agent = hx(&det::<16>("mcp proxy"));
+    let item = hx(&det::<16>("mcp item"));
+    vec![
+        json!({"name": "token-zeros", "agent_id": agent, "token_bytes": hx(&[0u8; 32])}),
+        json!({"name": "token-pseudo-random", "agent_id": agent, "token_bytes": hx(&det::<32>("mcp token"))}),
+        json!({
+            "name": "tokens-rejected",
+            "invalid": [
+                "",
+                "klc1_",
+                "klc2_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "KLC1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "klc1_AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+A",
+                " klc1_AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ],
+        }),
+        json!({
+            "name": "args",
+            "agent_id": agent, "item_id": item, "tool": "query_logs",
+            "raw_arguments": "{\"query\":\"error\", \"limit\":10}",
+        }),
+        json!({
+            "name": "args-reordered",
+            "agent_id": agent, "item_id": item, "tool": "query_logs",
+            "raw_arguments": "{\"limit\":10,\"query\":\"error\"}",
+        }),
+        json!({
+            "name": "args-absent",
+            "agent_id": agent, "item_id": item, "tool": "query_logs",
+            "raw_arguments": "",
+        }),
+        json!({
+            "name": "patterns",
+            "patterns": ["get_*", "query_logs", "*", "G*"],
+            "tools": ["get_logs", "get_", "Get_logs", "forget_logs", "query_logs", "query_logs2", "bad name", ""],
+            "invalid_patterns": ["", "**", "*get", "get_**", "*_api_key", "ge*t", " get_*", "get *", "quéry"],
+        }),
+        json!({
+            "name": "evaluation",
+            "policy": serde_json::to_value(mcp_policy()).expect("policy"),
+            "item_id": item,
+            "tools": [null, "query_logs", "get_dashboard", "delete_dashboard", "get_api_key", "create_api_key", "run_query", "Get_logs", "DeleteService", "get logs"],
+        }),
+    ]
+}
+
+fn mcp_compute(case: &Value) -> Value {
+    use super::mcp::{LocalClientToken, digest_text, local_client_digest, mcp_args_digest};
+    if case.get("invalid").is_some() {
+        return json!({});
+    }
+    if case.get("token_bytes").is_some() {
+        let agent = AgentId::from_bytes(array::<16>(case, "agent_id"));
+        let bytes = array::<32>(case, "token_bytes");
+        return json!({
+            "token": LocalClientToken::from_bytes(&bytes).expose(),
+            "token_digest": hx(&local_client_digest(agent, &bytes)),
+        });
+    }
+    if case.get("raw_arguments").is_some() {
+        let agent = AgentId::from_bytes(array::<16>(case, "agent_id"));
+        let item = ItemId::from_bytes(array::<16>(case, "item_id"));
+        let digest = mcp_args_digest(
+            agent,
+            item,
+            text(case, "tool"),
+            text(case, "raw_arguments").as_bytes(),
+        );
+        return json!({"mcp_args_hex": hx(&digest), "mcp_args": digest_text(&digest)});
+    }
+    if case.get("patterns").is_some() {
+        let tools: Vec<&str> = case["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|t| t.as_str().expect("tool"))
+            .collect();
+        let matches: serde_json::Map<String, Value> = case["patterns"]
+            .as_array()
+            .expect("patterns")
+            .iter()
+            .map(|p| {
+                let p = p.as_str().expect("pattern");
+                let pattern: crate::policy::ToolPattern = p.parse().expect("valid pattern");
+                let hit: Vec<&str> = tools
+                    .iter()
+                    .copied()
+                    .filter(|t| pattern.matches(t))
+                    .collect();
+                (p.to_owned(), json!(hit))
+            })
+            .collect();
+        return json!({"matches": matches});
+    }
+    // Evaluation.
+    let policy: crate::policy::Policy =
+        serde_json::from_value(case["policy"].clone()).expect("policy");
+    let item = ItemId::from_bytes(array::<16>(case, "item_id"));
+    let effects: Vec<Value> = case["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|t| {
+            let request = crate::policy::Request {
+                permission: Permission::Proxy,
+                vault: crate::policy::Target {
+                    id: VaultId::from_bytes([1; 16]),
+                    name: String::new(),
+                },
+                project: crate::policy::Target {
+                    id: ProjectId::from_bytes([2; 16]),
+                    name: String::new(),
+                },
+                tags: Vec::new(),
+                domain: Some("api.maple.dev".into()),
+                item: Some(item),
+                method: Some("POST".into()),
+                path: Some("/mcp".into()),
+                mcp_tool: t.as_str().map(str::to_owned),
+                now: 0,
+            };
+            serde_json::to_value(crate::policy::evaluate(&policy, &request).effect).expect("effect")
+        })
+        .collect();
+    json!({"effects": effects})
+}
+
+fn mcp_check(case: &Value) {
+    use super::mcp::LocalClientToken;
+    if let Some(invalid) = case.get("invalid") {
+        for t in invalid.as_array().expect("invalid") {
+            let t = t.as_str().expect("string");
+            assert!(LocalClientToken::new(t).bytes().is_err(), "accepted {t:?}");
+        }
+        return;
+    }
+    if case.get("token_bytes").is_some() {
+        let agent = AgentId::from_bytes(array::<16>(case, "agent_id"));
+        let token = LocalClientToken::new(text(case, "token"));
+        assert_eq!(
+            *token.bytes().expect("parses"),
+            array::<32>(case, "token_bytes")
+        );
+        assert!(token.matches(agent, &bytes(case, "token_digest")));
+        return;
+    }
+    if case.get("raw_arguments").is_some() {
+        assert!(super::mcp::digest_text_ok(text(case, "mcp_args")));
+        return;
+    }
+    if let Some(invalid) = case.get("invalid_patterns") {
+        for p in invalid.as_array().expect("invalid patterns") {
+            let p = p.as_str().expect("string");
+            assert!(
+                p.parse::<crate::policy::ToolPattern>().is_err(),
+                "accepted {p:?}"
+            );
+        }
+    }
 }
 
 // ------------------------------------------------------------------ invite --

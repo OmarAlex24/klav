@@ -347,6 +347,7 @@ fn asked(item: ItemId, host: &str, task: TaskId) -> AccessRequest {
         task_id: Some(task),
         include_attachments: false,
         sandbox: None,
+        local_client: None,
     }
 }
 

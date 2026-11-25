@@ -69,6 +69,10 @@ pub enum ErrorCode {
     /// (attachments, vault data, items or vaults). The message names the
     /// limit, how much is used and the maximum (403, ADR 0048 §3.2).
     QuotaExceeded,
+    /// The request carries MCP claims (`claims.mcp_tool`, `claims.mcp_args`)
+    /// or `local_client`, and the account's `mcp_gateway` switch is off
+    /// (400, ADR 0049 §9).
+    McpGatewayOff,
 }
 
 /// Body of every non-2xx JSON response.

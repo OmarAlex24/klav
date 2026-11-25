@@ -115,6 +115,7 @@ async fn proxied(session: &Session, item: ItemId) -> Result<Item, ClientError> {
                 task_id: None,
                 include_attachments: false,
                 sandbox: None,
+                local_client: None,
             }),
         )
         .await?;
@@ -608,6 +609,7 @@ async fn running_a_revoke_again_finishes_the_other_holders_reissue() {
                 profiles: Vec::new(),
                 policy,
                 issuers: Vec::new(),
+                local_clients: Vec::new(),
             },
             &ci.pairing_code(),
         )

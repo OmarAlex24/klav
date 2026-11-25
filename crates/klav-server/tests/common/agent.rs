@@ -358,6 +358,7 @@ impl TestServer {
             profiles: Vec::new(),
             issuers: Vec::new(),
             sandbox: None,
+            local_clients: Vec::new(),
         };
         let bytes = serde_json::to_vec(&payload).expect("test helper");
         let signature = agent::sign_grant(
@@ -413,6 +414,7 @@ impl TestServer {
             profiles,
             issuers: Vec::new(),
             sandbox: None,
+            local_clients: Vec::new(),
         };
         Self::sign_payload(session, agent, &payload)
     }

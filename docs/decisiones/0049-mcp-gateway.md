@@ -1,11 +1,11 @@
 # 0049 · MCP gateway: remote MCP servers through `klav-proxy`, with per-tool rules signed in the grant, filtered `tools/list`, tool-level approvals and audit, for sandboxes and for the agents on the person's Mac
 
-- Status: proposed
+- Status: accepted (2026-11-25)
 - Date: 2026-11-25
-- Amends, if accepted:
+- Amends:
   - [ADR 0036](0036-sandboxes-de-agentes.md) §7, Omar's decision 3 of the note of 2026-11-19 ("per-tool approval is not designed now; it would need a new field in the signed rule, its own ADR and a round of device updates"). This is that ADR.
   - Threat T226 (the MCP gate cannot tell one tool from another).
-  - [ADR 0006](0006-semantica-de-politicas.md), narrowly and only if Q3 is answered (a): a new policy dimension, `mcp_tools`, that a rule without it cannot use to allow a tool call (§5.3).
+  - [ADR 0006](0006-semantica-de-politicas.md), narrowly (Q3 was answered (a)): a new policy dimension, `mcp_tools`, that a rule without it cannot use to allow a tool call (§5.3).
 - Builds on and does not replace: mode (c) of ADR 0036 §7 and its steps M2–M5 (stream limits, the `maple` preset), the memory layer of [ADR 0044](0044-proxy-key-at-rest.md), and the approval card machinery of [ADR 0041](0041-presence-for-values-and-the-inject-card.md) §5.3.
 
 ## Context
@@ -387,7 +387,7 @@ Each layer is a PR of a stack, with its tests, its roadmap box and, where it app
 
 0. **Prerequisites, not part of this stack:** ADR 0044 layer 1 (the proxy's memory); ADR 0036 mode (c) M2–M5 (stream limits, the `maple` preset, the hand test); and, for local agents only, the Mac proxy as a LaunchAgent.
 1. **Docs:** this ADR accepted, threat model §5.26 (T254–T266, risks 101–105, T226 amended), glossary terms, spec §13.4, §13.16 (`klc1_`) and §2.3, roadmap section.
-2. **`klav-core` and `klav-proto`:** `ToolPattern`, `Scope.mcp_tools`, `Request.mcp_tool` with the deny-only rule (Q3), `check_proxy`, `ProxyProfile.mcp`, grant `v: 4`, `local_clients`, the two claims and `local_client`; `docs/vectores/mcp-tools.json` (pattern matching, evaluation, `mcp_args`).
+2. **`klav-core` and `klav-proto`:** `ToolPattern`, `Scope.mcp_tools`, `Request.mcp_tool` with the deny-only rule (Q3), `check_proxy`, `ProxyProfile.mcp`, grant `v: 4`, `local_clients`, the two claims and `local_client`; `docs/vectores/mcp-gateway.json` (§10: `klc1_`, pattern matching, evaluation, `mcp_args`).
 3. **`klav-server`:**
    - the `mcp_gateway` switch and `400 mcp_gateway_off`;
    - the claims in `target_key`, and the lease key;
@@ -406,7 +406,46 @@ Each layer is a PR of a stack, with its tests, its roadmap box and, where it app
 7. **Hand tests:** Maple from Claude Code on the Mac and from a Boat sandbox, then one preset per PR as each passes. Each test marks its preset's box.
 8. **Sealed arguments** (`0x27`), after ADR 0041 §5.3's route, column and hiding exist.
 
-## Open questions for Omar
+## Omar's answers (2026-11-25)
+Omar accepted this ADR on 2026-11-25 and chose the recommended option, **(a)**, in all six questions:
+
+| Question | Answer |
+|---|---|
+| Q1. One URL per server or an aggregator | (a) One URL per server, written by `klav client connect`; no aggregator planned |
+| Q2. Which local agent is calling | (a) One local client token per client (`klc1_`), its digest signed into the proxy's grant |
+| Q3. A tool no rule names | (a) Denied and hidden; a rule without `mcp_tools` can only deny a tool call |
+| Q4. Resources, prompts, completions | (a) Refused in v1 with a JSON-RPC error |
+| Q5. OAuth-only servers | (a) Out of v1; their own ADR after the gateway ships |
+| Q6. What an `ask` card shows | (a) Caller, profile and tool, "once" bound to the argument digest; sealed arguments in a later layer |
+
+## Implementation notes (layers 1–3, 2026-11-25)
+What layers 1–3 fixed that the text above leaves open. Each can be overturned before the layer that depends on it ships.
+
+1. **`mcp_args` bytes (§5.4).** `lp(tool)` is read as the tuple's own field: `tuple(label, agent_id, item_id, tool, raw_arguments)`, every field length-prefixed once (spec §2.3), not a second prefix inside a field. Its text form has one spelling, and the server refuses any other. Spec §13.16 and `mcp-gateway.json` freeze it.
+2. **The approval keys (§5.4).** The gateway's part of `target_key` is one fixed-slot nested array after method, path and sandbox, `["mcp", tool, args, local_client]`, with `""` for an absent slot. It can't be read as the sandbox's string slot, and keys without the gateway's fields stay byte for byte what they were. The lease key is the same with `args` empty. It's stored in a new nullable column, `approvals.lease_key` (migration 0022), used only by leases. A named approve-once decision for other arguments gets `409`.
+3. **`caller` (§5.4).** While the switch is on, it is on every approval whose call names a sandbox or a local client, not only tool calls. While it is off, no approval carries it.
+4. **The switch (§9).** It is `accounts.mcp_gateway_at`, set by `POST /v1/account/mcp-gateway` in the person's session; `GET` reads it, and an older server answers `404`. Turning it on writes no audit event (§6: no new audit action). The precondition, "update every device first", is the client's sheet (layer 5).
+5. **What the server refuses before it evaluates or logs (`400`):**
+   - the gateway's fields while the switch is off (`mcp_gateway_off`);
+   - the fields on anything but `proxy`, and `mcp_tool` without `mcp_args` or the other way round;
+   - a tool or client name outside its grammar, or `mcp_args` that isn't a digest;
+   - a sandbox and a local client in one call;
+   - a path over 64 bytes with any of the fields, which keeps the keys within the approvals' indexes;
+   - a `local_client` the proxy's grant doesn't have for that item's MCP profile.
+
+   None of these is ever logged. `klav log verify` and the approval card check every one but the last, which needs the grant, and treat a logged one as tampering.
+6. **No default lets a tool through.** A tool call with no rule for its permission is `deny` (`Reason::OutOfScope`), even for permissions that allow by default. A tool named on any permission but `proxy`, or outside the grammar, is unjudgeable: only `deny` rules apply.
+7. **Format details (§2.1, §3.2).**
+   - `mcp.headers` are `{name, value}`. Besides the reserved headers of ADR 0036, an MCP header can't be `authorization`, `cookie`, `www-authenticate`, `mcp-session-id`, `mcp-protocol-version`, `last-event-id`, `content-type`, `content-encoding`, `accept`, `accept-encoding` or `origin`.
+   - The endpoint must be reached by a non-deny `proxy` rule whose path prefix covers it.
+   - At most 16 `local_clients` per grant.
+   - Rules with `mcp_tools` name only MCP profiles' items, and at least one.
+   - The display caps (§5.3) are constants in `klav-core` (`MAX_TOOL_PATTERNS_PER_RULE` and the rest) that only the signing sheet applies, so the hand tests can raise them without a server release.
+8. **The proxy until layer 4.** A `klav-proxy` built from layers 1–3 reads a `v: 4` grant but serves none of its MCP profiles. Served as a plain mode (a) profile, the session rule would let every tool through.
+9. **The device's check (§5.4).** `approval_view` keeps a request whose tool or caller breaks its grammar as a `security` card. Its fixed text never repeats the offending field. Nothing on it can be approved or denied, and no "add to the task" either. The approvals list still loads.
+10. **Glossary.** The terms are in `docs/glossary.md`. They go into the public glossary when the gateway ships (ADR 0039 §3).
+
+## Open questions for Omar (answered above)
 **Q1. One URL per MCP server, or one aggregated endpoint?**
 - **(a) One URL per server** (`/maple/mcp`, `/cloudflare/mcp`), written by `klav client connect` in one command; no aggregator planned (Recommended).
 - (b) One `/mcp` that merges and namespaces every granted server.

@@ -22,9 +22,9 @@ use klav_proto::Blob;
 use klav_proto::agent::{
     AccessGranted, AccessRequest, AgentAsk, AgentAsked, AgentAttachment, AgentCreateItem,
     AgentItems, AgentProjectItems, AgentTrashItem, AgentTrashed, AgentUpdateItem, AgentWritten,
-    ApprovalInfo, ApprovalRequest, ApprovalStatus, Claims, GrantPayload,
-    MAX_AGENT_ATTACHMENTS_BYTES, MAX_APPROVAL_WAIT_SECS, MAX_REASON, PasskeyAccess,
-    PendingApproval, PersonVersion,
+    ApprovalCaller, ApprovalInfo, ApprovalRequest, ApprovalStatus, Claims, GrantPayload,
+    LocalClient, MAX_AGENT_ATTACHMENTS_BYTES, MAX_APPROVAL_WAIT_SECS, MAX_REASON, PasskeyAccess,
+    PendingApproval, PersonVersion, ProxyProfile,
 };
 use klav_proto::audit::{ActorKind, AuditEvent};
 use klav_proto::task::TaskStatus;
@@ -76,6 +76,10 @@ pub(crate) struct Grant {
     /// Items granted one by one (ADR 0036 §2), with the vault and project
     /// they were in when the grant was signed. Only `proxy` reaches them.
     pub(crate) items: HashMap<ItemId, (VaultId, ProjectId)>,
+    /// The credential proxy's profiles (ADR 0036 §2), MCP ones included.
+    pub(crate) profiles: Vec<ProxyProfile>,
+    /// The credential proxy's local clients (ADR 0049 §3.2).
+    pub(crate) local_clients: Vec<LocalClient>,
 }
 
 impl Grant {
@@ -119,7 +123,25 @@ pub(crate) async fn grant_of(state: &AppState, agent: AgentId) -> ApiResult<Gran
             .iter()
             .map(|i| (i.item_id, (i.vault_id, i.project_id)))
             .collect(),
+        profiles: payload.profiles,
+        local_clients: payload.local_clients,
     })
+}
+
+impl Grant {
+    /// Whether the proxy's grant lets local client `name` use the MCP
+    /// profile of `item` (ADR 0049 §3.2): what the server checks
+    /// `AccessRequest::local_client` against.
+    fn local_client_may_use(&self, name: &str, item: ItemId) -> bool {
+        self.profiles
+            .iter()
+            .filter(|p| p.item_id == item && p.mcp.is_some())
+            .any(|p| {
+                self.local_clients
+                    .iter()
+                    .any(|c| c.name == name && c.profiles.contains(&p.name))
+            })
+    }
 }
 
 /// `reason` is mandatory for agents: non-empty, at most [`MAX_REASON`]
@@ -192,6 +214,7 @@ pub(crate) fn check_http_claims(permission: Permission, claims: &Claims) -> ApiR
 ///   signed format still accept `"`, so nothing already signed changes.
 pub(crate) fn check_claims(permission: Permission, claims: &Claims) -> ApiResult<()> {
     check_http_claims(permission, claims)?;
+    check_mcp_claims(permission, claims, None, None)?;
     if let Some(domain) = &claims.domain
         && klav_core::policy::normalize_host(domain).as_deref() != Some(domain.as_str())
     {
@@ -240,6 +263,84 @@ pub(crate) fn check_claims(permission: Permission, claims: &Claims) -> ApiResult
     Ok(())
 }
 
+/// Whether a request carries anything of the MCP gateway (ADR 0049 §9):
+/// the two tool claims or a local client.
+pub(crate) fn uses_mcp_gateway(claims: &Claims, local_client: Option<&str>) -> bool {
+    claims.mcp_tool.is_some() || claims.mcp_args.is_some() || local_client.is_some()
+}
+
+/// The MCP gateway's fields (ADR 0049 §5.4, T260) are refused (`400`)
+/// before anything is evaluated, stored or logged, unless:
+///
+/// * they come with `proxy` only, and `mcp_tool` and `mcp_args` together;
+/// * `mcp_tool` is in the tool grammar ([`policy::tool_name_ok`]) and
+///   `local_client` in the client grammar ([`policy::local_client_name_ok`]),
+///   so no approval card or audit line ever holds anything else;
+/// * `mcp_args` is the text form of a 32-byte digest, with one spelling;
+/// * the path is at most [`klav_proto::agent::MAX_MCP_ENDPOINT`] bytes (an
+///   MCP endpoint), which keeps the approval's keys within the index;
+/// * a call is for a sandbox or a local client, never both.
+///
+/// The account's switch is checked before this, by the route.
+pub(crate) fn check_mcp_claims(
+    permission: Permission,
+    claims: &Claims,
+    local_client: Option<&str>,
+    sandbox: Option<klav_core::ids::SandboxId>,
+) -> ApiResult<()> {
+    if !uses_mcp_gateway(claims, local_client) {
+        return Ok(());
+    }
+    if permission != Permission::Proxy {
+        return Err(ApiError::bad_request(
+            "claims.mcp_tool, claims.mcp_args and local_client are only for proxy",
+        ));
+    }
+    if claims.mcp_tool.is_some() != claims.mcp_args.is_some() {
+        return Err(ApiError::bad_request(
+            "claims.mcp_tool and claims.mcp_args go together",
+        ));
+    }
+    if claims
+        .mcp_tool
+        .as_deref()
+        .is_some_and(|tool| !policy::tool_name_ok(tool))
+    {
+        return Err(ApiError::bad_request(
+            "claims.mcp_tool must be 1–128 of A-Z, a-z, 0-9, _, - and .",
+        ));
+    }
+    if claims
+        .mcp_args
+        .as_deref()
+        .is_some_and(|args| !klav_core::crypto::mcp::digest_text_ok(args))
+    {
+        return Err(ApiError::bad_request(
+            "claims.mcp_args must be a 32-byte digest in base64url without padding",
+        ));
+    }
+    if local_client.is_some_and(|name| !policy::local_client_name_ok(name)) {
+        return Err(ApiError::bad_request(
+            "local_client must be 1–32 of a-z, 0-9 and -",
+        ));
+    }
+    if local_client.is_some() && sandbox.is_some() {
+        return Err(ApiError::bad_request(
+            "a proxied call is for a sandbox or a local client, not both",
+        ));
+    }
+    if claims
+        .path
+        .as_deref()
+        .is_some_and(|path| path.len() > klav_proto::agent::MAX_MCP_ENDPOINT)
+    {
+        return Err(ApiError::bad_request(
+            "an MCP call's path is its profile's endpoint: at most 64 bytes",
+        ));
+    }
+    Ok(())
+}
+
 fn now_secs(now_ms: i64) -> u64 {
     u64::try_from(now_ms / 1000).unwrap_or(0)
 }
@@ -256,6 +357,9 @@ pub(crate) struct Action<'a> {
     pub(crate) attachments: &'a [AttachmentId],
     /// The sandbox a proxied call is for (ADR 0036 E3.3), if any.
     pub(crate) sandbox: Option<klav_core::ids::SandboxId>,
+    /// The local client a proxied call is for (ADR 0049 §3.2), if any,
+    /// already checked against the proxy's grant.
+    pub(crate) local_client: Option<&'a str>,
 }
 
 /// Outcome of [`gate`].
@@ -292,6 +396,7 @@ fn policy_request(action: &Action<'_>, now: i64) -> policy::Request {
         item: action.item,
         method: action.claims.method.clone(),
         path: action.claims.path.clone(),
+        mcp_tool: action.claims.mcp_tool.clone(),
         now: now_secs(now),
     }
 }
@@ -330,7 +435,49 @@ pub(crate) fn target_key(grant_version: u64, action: &Action<'_>) -> String {
     {
         parts.push(sandbox.to_string().into());
     }
+    if let Some(mcp) = mcp_key_part(action, true)
+        && let Some(parts) = key.as_array_mut()
+    {
+        parts.push(mcp);
+    }
     key.to_string()
+}
+
+/// The MCP gateway's part of an approval's keys (ADR 0049 §5.4), after
+/// method, path and sandbox: one nested array with fixed slots, `["mcp",
+/// tool, args, local client]` (`""` for an absent one), so it never reads
+/// as a sandbox or another position. `None` for a request without the
+/// gateway's fields, whose keys stay what they always were. Without
+/// `with_args`, the lease key's part: the same tool with any arguments.
+fn mcp_key_part(action: &Action<'_>, with_args: bool) -> Option<serde_json::Value> {
+    if !uses_mcp_gateway(action.claims, action.local_client) {
+        return None;
+    }
+    let args = if with_args {
+        action.claims.mcp_args.as_deref().unwrap_or_default()
+    } else {
+        ""
+    };
+    Some(serde_json::json!([
+        "mcp",
+        action.claims.mcp_tool.as_deref().unwrap_or_default(),
+        args,
+        action.local_client.unwrap_or_default(),
+    ]))
+}
+
+/// The key a lease («for a while») on an MCP tool call also serves (ADR
+/// 0049 §5.4, T261): the target key without the argument digest, so the
+/// same tool with any arguments, for the same caller. `None` for every
+/// request without a tool: its approvals serve their target key only.
+pub(crate) fn lease_key(grant_version: u64, action: &Action<'_>) -> Option<String> {
+    action.claims.mcp_tool.as_ref()?;
+    let full = target_key(grant_version, action);
+    let mut key: serde_json::Value = serde_json::from_str(&full).ok()?;
+    let parts = key.as_array_mut()?;
+    parts.pop();
+    parts.push(mcp_key_part(action, false)?);
+    Some(key.to_string())
 }
 
 /// The live task that covers `action` (ADR 0021 §4), if any. With `only`,
@@ -421,8 +568,9 @@ pub(crate) async fn gate(
         ))),
         Effect::Ask => {
             let key = target_key(grant.version, action);
+            let lease = lease_key(grant.version, action);
             if let Some(id) = approval_id {
-                use_approval(state, auth, grant, &key, id, now).await?;
+                use_approval(state, auth, grant, &key, lease.as_deref(), id, now).await?;
                 return Ok(Gate::Allow {
                     approval: Some(id),
                     task: None,
@@ -437,14 +585,27 @@ pub(crate) async fn gate(
                     task: Some(task),
                 });
             }
-            if let Some(id) = reuse_approved(state, auth, &key, now, probe).await? {
+            if let Some(id) =
+                reuse_approved(state, auth, &key, lease.as_deref(), now, probe).await?
+            {
                 return Ok(Gate::Allow {
                     approval: Some(id),
                     task: None,
                 });
             }
             Ok(Gate::Pending(
-                ask(state, auth, grant, action, &key, kind, task_id, now).await?,
+                ask(
+                    state,
+                    auth,
+                    grant,
+                    action,
+                    &key,
+                    lease.as_deref(),
+                    kind,
+                    task_id,
+                    now,
+                )
+                .await?,
             ))
         }
     }
@@ -660,9 +821,29 @@ async fn reuse_approved(
     state: &AppState,
     auth: &AgentAuth,
     key: &str,
+    lease: Option<&str>,
     now: i64,
     probe: bool,
 ) -> ApiResult<Option<ApprovalId>> {
+    // An MCP tool call: a running lease on the same tool, whatever its
+    // arguments (ADR 0049 §5.4). Never an approve-once decision, which
+    // binds its arguments through the target key below.
+    if let Some(lease) = lease {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM approvals \
+             WHERE agent_id = $1 AND lease_key = $2 AND status = $3 AND task_id IS NULL \
+             AND lease_until > $4 ORDER BY decided_at LIMIT 1",
+        )
+        .bind(auth.agent_id.to_string())
+        .bind(lease)
+        .bind(ApprovalStatus::Approved.as_str())
+        .bind(now)
+        .fetch_optional(&state.db().pool)
+        .await?;
+        if let Some(id) = id {
+            return Ok(Some(path_id(&id)?));
+        }
+    }
     let rows = sqlx::query(
         "SELECT id, lease_until FROM approvals \
          WHERE agent_id = $1 AND target_key = $2 AND status = $3 AND task_id IS NULL \
@@ -698,17 +879,19 @@ async fn reuse_approved(
 /// Uses an approval the agent named: it must be this agent's, for the same
 /// target under the current grant, approved, and either leased until later
 /// or approved once, less than [`ONCE_WINDOW_MS`] ago and not used yet.
+#[allow(clippy::too_many_arguments)]
 async fn use_approval(
     state: &AppState,
     auth: &AgentAuth,
     grant: &Grant,
     key: &str,
+    lease: Option<&str>,
     id: ApprovalId,
     now: i64,
 ) -> ApiResult<()> {
     let row = sqlx::query(
         "SELECT status, expires_at, target_key, grant_version, decided_at, lease_until, used_at, \
-         task_id FROM approvals WHERE id = $1 AND agent_id = $2",
+         task_id, lease_key FROM approvals WHERE id = $1 AND agent_id = $2",
     )
     .bind(id.to_string())
     .bind(auth.agent_id.to_string())
@@ -720,7 +903,12 @@ async fn use_approval(
             "the grant changed since the approval: ask again",
         ));
     }
-    if row.try_get::<Option<String>, _>("target_key")?.as_deref() != Some(key) {
+    // The same tool with other arguments: only a lease on the tool serves
+    // it (ADR 0049 §5.4), checked below once the status is known.
+    let other_args = row.try_get::<Option<String>, _>("target_key")?.as_deref() != Some(key);
+    if other_args
+        && (lease.is_none() || row.try_get::<Option<String>, _>("lease_key")?.as_deref() != lease)
+    {
         return Err(ApiError::bad_request(
             "approval_id is for another action, item or site",
         ));
@@ -766,6 +954,11 @@ async fn use_approval(
     }
     if lease != 0 {
         return Err(ApiError::conflict("the approval's lease ended: ask again"));
+    }
+    if other_args {
+        return Err(ApiError::conflict(
+            "the approval was once, for other arguments of this tool: ask again",
+        ));
     }
     if row.try_get::<Option<i64>, _>("used_at")?.is_some() {
         return Err(ApiError::conflict(
@@ -822,6 +1015,7 @@ async fn ask(
     grant: &Grant,
     action: &Action<'_>,
     key: &str,
+    lease: Option<&str>,
     kind: &str,
     task_id: Option<TaskId>,
     now: i64,
@@ -880,6 +1074,18 @@ async fn ask(
             retry_after_secs: 60,
         });
     }
+    // Who the call is for, under the person's signature (ADR 0049 §5.4),
+    // only while the account's switch is on: otherwise the request's bytes
+    // stay what older devices read.
+    let caller = match (action.sandbox, action.local_client) {
+        (None, None) => None,
+        (sandbox, local) => crate::routes::account::mcp_gateway_since(&mut *tx, auth.account_id)
+            .await?
+            .map(|_| ApprovalCaller {
+                sandbox_id: sandbox,
+                local_client: local.map(str::to_owned),
+            }),
+    };
     let request = ApprovalRequest {
         v: 1,
         approval_id: id,
@@ -893,14 +1099,16 @@ async fn ask(
         claims: action.claims.clone(),
         grant_version: grant.version,
         requested_at: now,
+        caller,
     };
     let bytes = serde_json::to_vec(&request)
         .map_err(|e| ApiError::Internal(format!("approval request: {e}")))?;
     let expires_at = now + APPROVAL_TTL_MS;
     let inserted = sqlx::query(
         "INSERT INTO approvals (id, account_id, agent_id, status, permission, vault_id, \
-         project_id, item_id, request, grant_version, created_at, expires_at, target_key) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+         project_id, item_id, request, grant_version, created_at, expires_at, target_key, \
+         lease_key) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(id.to_string())
     .bind(auth.account_id.to_string())
@@ -915,6 +1123,7 @@ async fn ask(
     .bind(now)
     .bind(expires_at)
     .bind(key)
+    .bind(lease)
     .execute(&mut *tx)
     .await;
     match inserted {
@@ -959,6 +1168,7 @@ async fn list_items(State(state): State<AppState>, auth: AgentAuth) -> ApiResult
             reason: "",
             attachments: &[],
             sandbox: None,
+            local_client: None,
         };
         let decision = policy::evaluate_upper_bound(&grant.policy, &policy_request(&action, now));
         if decision.effect != Effect::Allow {
@@ -1176,6 +1386,7 @@ async fn passkey_access(
         reason,
         attachments: &[],
         sandbox: None,
+        local_client: None,
     };
     match checked(
         state,
@@ -1224,6 +1435,23 @@ async fn access(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Res
     // A proxied call says where it goes; nothing else names a method or a
     // path (ADR 0036 §2). `checked` runs the same check for every route.
     check_http_claims(req.permission, &req.claims)?;
+    // The MCP gateway's fields only while the account's switch is on (ADR
+    // 0049 §9), and only in their grammars: refused before anything is
+    // evaluated or logged. Without them, nothing here reads the switch.
+    if uses_mcp_gateway(&req.claims, req.local_client.as_deref()) {
+        if crate::routes::account::mcp_gateway_since(&state.db().pool, auth.account_id)
+            .await?
+            .is_none()
+        {
+            return Err(ApiError::mcp_gateway_off());
+        }
+        check_mcp_claims(
+            req.permission,
+            &req.claims,
+            req.local_client.as_deref(),
+            req.sandbox,
+        )?;
+    }
     // A header value, never a file (ADR 0036 §2).
     if req.permission == Permission::Proxy && req.include_attachments {
         return Err(ApiError::bad_request("proxy never takes attachments"));
@@ -1254,6 +1482,15 @@ async fn access(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Res
         tx.commit().await?;
     }
     let grant = load_grant(&state, &auth).await?;
+    // A local client the proxy's grant does not have for this item's MCP
+    // profile is refused (`400`), never evaluated or logged (ADR 0049 §3.2).
+    if let Some(name) = req.local_client.as_deref()
+        && !grant.local_client_may_use(name, req.item_id)
+    {
+        return Err(ApiError::bad_request(
+            "local_client is not a local client of this proxy's grant for this item's MCP profile",
+        ));
+    }
     let item = if req.permission == Permission::Proxy {
         granted_proxy_item(&state, &grant, req.item_id).await?
     } else {
@@ -1277,6 +1514,7 @@ async fn access(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Res
         reason: &reason,
         attachments: &delivered,
         sandbox: req.sandbox,
+        local_client: req.local_client.as_deref(),
     };
     // `rotate` is used through `klavd` and its own route (ADR 0022), never
     // by handing the item to the agent: outside a task it is denied (and
@@ -1389,6 +1627,7 @@ async fn create_item(State(state): State<AppState>, auth: AgentAuth) -> ApiResul
         reason: &reason,
         attachments: &[],
         sandbox: None,
+        local_client: None,
     };
     match checked(
         &state,
@@ -1451,6 +1690,7 @@ async fn update_item(
         reason: &reason,
         attachments: &[],
         sandbox: None,
+        local_client: None,
     };
     match checked(
         &state,
@@ -1506,6 +1746,7 @@ async fn trash_item(
         reason: &reason,
         attachments: &[],
         sandbox: None,
+        local_client: None,
     };
     match checked(
         &state,
@@ -1577,6 +1818,7 @@ async fn ask_first(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<
         reason: &reason,
         attachments: &[],
         sandbox: None,
+        local_client: None,
     };
     match checked(
         &state,
@@ -1680,6 +1922,7 @@ mod tests {
             domain: Some("Backboard.Railway.app".into()),
             method: Some("POST".into()),
             path: Some("/graphql".into()),
+            ..Claims::default()
         };
         let action = |sandbox| Action {
             permission: Permission::Proxy,
@@ -1690,6 +1933,7 @@ mod tests {
             reason: "",
             attachments: &[],
             sandbox,
+            local_client: None,
         };
         let before = format!(
             r#"[3,"proxy","{vault}","{project}","{item}","backboard.railway.app","POST","/graphql"]"#
@@ -1717,6 +1961,174 @@ mod tests {
         assert_eq!(
             target_key(3, &list),
             format!(r#"[3,"list","{vault}","{project}","{item}",""]"#)
+        );
+    }
+
+    /// ADR 0049 §5.4: keys without the gateway's fields are what they
+    /// were; with them, one fixed-slot part after the sandbox. «Once» binds
+    /// the arguments, a lease only the tool, and no caller's key serves
+    /// another caller.
+    #[test]
+    fn mcp_keys_bind_the_tool_the_arguments_and_the_caller() {
+        let (vault, project, item) = (
+            VaultId::generate(),
+            ProjectId::generate(),
+            ItemId::generate(),
+        );
+        let digest = |b: u8| klav_core::crypto::mcp::digest_text(&[b; 32]);
+        let claims = |tool: Option<&str>, args: Option<String>| Claims {
+            domain: Some("api.maple.dev".into()),
+            method: Some("POST".into()),
+            path: Some("/mcp".into()),
+            mcp_tool: tool.map(str::to_owned),
+            mcp_args: args,
+            ..Claims::default()
+        };
+        let key = |c: &Claims, sandbox, local_client| {
+            let action = Action {
+                permission: Permission::Proxy,
+                vault,
+                project,
+                item: Some(item),
+                claims: c,
+                reason: "",
+                attachments: &[],
+                sandbox,
+                local_client,
+            };
+            (target_key(7, &action), lease_key(7, &action))
+        };
+        let base =
+            format!(r#"[7,"proxy","{vault}","{project}","{item}","api.maple.dev","POST","/mcp""#);
+        // No tool, no client: as before, and no lease key.
+        let session = claims(None, None);
+        assert_eq!(key(&session, None, None), (format!("{base}]"), None));
+        // A tool call.
+        let a1 = claims(Some("deploy"), Some(digest(1)));
+        let a2 = claims(Some("deploy"), Some(digest(2)));
+        let (t1, l1) = key(&a1, None, None);
+        let (t2, l2) = key(&a2, None, None);
+        assert_eq!(
+            t1,
+            format!(r#"{base},["mcp","deploy","{}",""]]"#, digest(1))
+        );
+        assert_eq!(
+            l1.as_deref(),
+            Some(&*format!(r#"{base},["mcp","deploy","",""]]"#))
+        );
+        assert_ne!(t1, t2, "once binds the arguments");
+        assert_eq!(l1, l2, "a lease covers any arguments of the tool");
+        assert_ne!(
+            key(&claims(Some("deploy2"), Some(digest(1))), None, None).1,
+            l1
+        );
+        // Callers never share a key.
+        let sandbox = klav_core::ids::SandboxId::generate();
+        let by_sandbox = key(&a1, Some(sandbox), None);
+        let by_client = key(&a1, None, Some("cursor"));
+        let by_other = key(&a1, None, Some("claude-code"));
+        let keys = [&t1, &by_sandbox.0, &by_client.0, &by_other.0];
+        let leases = [&l1, &by_sandbox.1, &by_client.1, &by_other.1];
+        for i in 0..4 {
+            for j in 0..4 {
+                if i != j {
+                    assert_ne!(keys[i], keys[j]);
+                    assert_ne!(leases[i], leases[j]);
+                }
+            }
+            assert_ne!(Some(keys[i]), leases[i].as_ref());
+        }
+        assert!(by_sandbox.0.contains(&format!(r#""{sandbox}",["mcp""#)));
+        // A local client without a tool (initialize, tools/list): its own
+        // target key, no lease key.
+        let (t, l) = key(&session, None, Some("cursor"));
+        assert_eq!(t, format!(r#"{base},["mcp","","","cursor"]]"#));
+        assert_eq!(l, None);
+        // A sandbox ID spelled as a tool cannot collide: the gateway's part
+        // is an array, never a string slot.
+        let tool_like = claims(Some(&sandbox.to_string()), Some(digest(1)));
+        assert_ne!(key(&tool_like, None, None).0, by_sandbox.0);
+    }
+
+    #[test]
+    fn the_gateways_fields_are_checked_before_anything() {
+        let ok = Claims {
+            domain: Some("api.maple.dev".into()),
+            method: Some("POST".into()),
+            path: Some("/mcp".into()),
+            mcp_tool: Some("query_logs".into()),
+            mcp_args: Some(klav_core::crypto::mcp::digest_text(&[3; 32])),
+            ..Claims::default()
+        };
+        let check = |c: &Claims, p, local: Option<&str>, sandbox| {
+            check_mcp_claims(p, c, local, sandbox).is_ok()
+        };
+        assert!(check(&ok, Permission::Proxy, None, None));
+        assert!(check(&ok, Permission::Proxy, Some("claude-code"), None));
+        assert!(check(&Claims::default(), Permission::Inject, None, None));
+        // Only proxy.
+        assert!(!check(&ok, Permission::Inject, None, None));
+        assert!(!check(
+            &Claims::default(),
+            Permission::Fill,
+            Some("cursor"),
+            None
+        ));
+        // Tool and arguments together.
+        let alone = Claims {
+            mcp_args: None,
+            ..ok.clone()
+        };
+        assert!(!check(&alone, Permission::Proxy, None, None));
+        let alone = Claims {
+            mcp_tool: None,
+            ..ok.clone()
+        };
+        assert!(!check(&alone, Permission::Proxy, None, None));
+        // T260: the grammars.
+        for tool in [
+            "",
+            "query logs",
+            "q\u{202e}l",
+            "quéry",
+            "a\nb",
+            &"a".repeat(129),
+        ] {
+            let bad = Claims {
+                mcp_tool: Some(tool.into()),
+                ..ok.clone()
+            };
+            assert!(!check(&bad, Permission::Proxy, None, None), "{tool:?}");
+        }
+        for name in ["", "Claude", "claude code", "a\u{202e}", &"a".repeat(33)] {
+            assert!(!check(&ok, Permission::Proxy, Some(name), None), "{name:?}");
+        }
+        for args in ["", "abc", &"A".repeat(44), &format!("{}9", "_".repeat(42))] {
+            let bad = Claims {
+                mcp_args: Some(args.into()),
+                ..ok.clone()
+            };
+            assert!(!check(&bad, Permission::Proxy, None, None), "{args:?}");
+        }
+        // One caller, and an endpoint-sized path.
+        let sandbox = Some(klav_core::ids::SandboxId::generate());
+        assert!(check(&ok, Permission::Proxy, None, sandbox));
+        assert!(!check(&ok, Permission::Proxy, Some("cursor"), sandbox));
+        let long = Claims {
+            path: Some(format!("/{}", "a".repeat(64))),
+            ..ok.clone()
+        };
+        assert!(!check(&long, Permission::Proxy, None, None));
+        // `checked` runs the same check: a write never carries a tool.
+        assert!(
+            check_claims(
+                Permission::Update,
+                &Claims {
+                    mcp_tool: Some("x".into()),
+                    ..Claims::default()
+                }
+            )
+            .is_err()
         );
     }
 }

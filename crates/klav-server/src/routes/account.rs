@@ -17,7 +17,9 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use klav_core::crypto::opaque;
+use klav_core::ids::AccountId;
 use klav_proto::Blob;
+use klav_proto::agent::McpGatewaySwitch;
 use klav_proto::auth::{
     AccountDeleteFinishRequest, AccountDeleteStartRequest, AccountDeleteStartResponse,
     AccountDeletion, AccountInfo,
@@ -40,6 +42,58 @@ pub(super) fn router() -> Router<AppState> {
         .route("/v1/account/delete/start", post(delete_start))
         .route("/v1/account/delete/finish", post(delete_finish))
         .route("/v1/account/delete/cancel", post(delete_cancel))
+        .route(
+            "/v1/account/mcp-gateway",
+            get(mcp_gateway).post(mcp_gateway_on),
+        )
+}
+
+/// When the account's `mcp_gateway` switch was turned on (Unix ms), or
+/// `None` while it is off (ADR 0049 §9).
+pub(crate) async fn mcp_gateway_since<'e, E>(db: E, account: AccountId) -> ApiResult<Option<i64>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    let since: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT mcp_gateway_at FROM accounts WHERE id = $1")
+            .bind(account.to_string())
+            .fetch_optional(db)
+            .await?;
+    Ok(since.flatten())
+}
+
+/// `GET /v1/account/mcp-gateway`: the switch, for the person's sheet. An
+/// older server answers `404`, and the sheet says it can't do this yet.
+async fn mcp_gateway(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> ApiResult<Json<McpGatewaySwitch>> {
+    let since = mcp_gateway_since(&state.db().pool, auth.account_id).await?;
+    Ok(Json(McpGatewaySwitch {
+        mcp_gateway: since.is_some(),
+        since,
+    }))
+}
+
+/// `POST /v1/account/mcp-gateway`: turns the switch on (ADR 0049 §9), only
+/// in the person's session, after the sheet's "update every device first".
+/// Nothing turns it off: the grants and approvals signed with it stay as
+/// signed. Turning it on again keeps its first time.
+async fn mcp_gateway_on(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> ApiResult<Json<McpGatewaySwitch>> {
+    let pool = &state.db().pool;
+    sqlx::query("UPDATE accounts SET mcp_gateway_at = $1 WHERE id = $2 AND mcp_gateway_at IS NULL")
+        .bind(now_ms())
+        .bind(auth.account_id.to_string())
+        .execute(pool)
+        .await?;
+    let since = mcp_gateway_since(pool, auth.account_id).await?;
+    Ok(Json(McpGatewaySwitch {
+        mcp_gateway: since.is_some(),
+        since,
+    }))
 }
 
 /// The keyset, and the deletion the person asked for, if any.

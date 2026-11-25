@@ -98,6 +98,7 @@ fn profile(name: &str, item: ItemId, host: &str) -> ProxyProfile {
         prefix: "Bearer ".into(),
         upstream: format!("https://{host}"),
         rate_per_minute: None,
+        mcp: None,
     }
 }
 
@@ -1191,6 +1192,7 @@ async fn a_sandbox_grant_naming_another_accounts_agent_is_refused() {
                 url: "tls://proxy.example.com:8443".into(),
             }),
         }),
+        local_clients: Vec::new(),
     };
     let post = |agent: &TestAgent, payload: &GrantPayload| {
         let signed = TestServer::sign_payload(&w.ana, agent, payload);

@@ -641,6 +641,116 @@ string_serde!(ClockTime);
 string_serde!(UtcOffset);
 string_serde!(HttpMethod);
 string_serde!(PathPrefix);
+string_serde!(ToolPattern);
+
+// ---------------------------------------------------------- MCP tools ----
+
+/// Longest MCP tool name (ADR 0049 §5.1, the spec's SEP-986).
+pub const MAX_TOOL_NAME: usize = 128;
+/// Longest local client name (ADR 0049 §3.2).
+pub const MAX_LOCAL_CLIENT_NAME: usize = 32;
+/// Display caps of the signing sheet (ADR 0049 §5.3): the person's
+/// confirmation shows every pattern, so the client never signs more. Only
+/// the client applies them, so the hand tests can raise them without a
+/// server release.
+pub const MAX_TOOL_PATTERN_LEN: usize = 64;
+/// At most this many patterns in one rule.
+pub const MAX_TOOL_PATTERNS_PER_RULE: usize = 24;
+/// At most this many patterns over every rule of one profile's item.
+pub const MAX_TOOL_PATTERNS_PER_PROFILE: usize = 48;
+/// At most this many rules with tools for one profile's item.
+pub const MAX_TOOL_RULES_PER_PROFILE: usize = 4;
+
+/// Whether `name` is a tool name the gateway judges (ADR 0049 §5.1,
+/// T257, T260): 1–128 bytes of `A-Z a-z 0-9 _ - .`. No space, quote, line
+/// break, *bidi* or non-ASCII character, so it can go on an approval card
+/// and in a Touch ID prompt as it is. Compared case-sensitively.
+pub fn tool_name_ok(name: &str) -> bool {
+    (1..=MAX_TOOL_NAME).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+/// Whether `name` is a local client's name (ADR 0049 §3.2, T260): 1–32
+/// bytes of `a-z 0-9 -`, such as `claude-code`.
+pub fn local_client_name_ok(name: &str) -> bool {
+    (1..=MAX_LOCAL_CLIENT_NAME).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// A pattern that names MCP tools is not one: an exact tool name, a tool
+/// name followed by one `*`, or `*` alone.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error(
+    "invalid tool pattern {0:?}: an exact tool name (A-Z a-z 0-9 _ - ., at most 128), a name followed by one trailing * (get_*), or * alone"
+)]
+pub struct ToolPatternError(pub String);
+
+/// Which MCP tools a `proxy` rule is about (ADR 0049 §5.3):
+///
+/// * an exact name in the tool grammar ([`tool_name_ok`]): `query_logs`;
+/// * a prefix in that grammar with one trailing `*`: `get_*`;
+/// * `*` alone: any tool.
+///
+/// Matching is byte for byte and case-sensitive. There is no suffix or
+/// infix form: `*_api_key` is not a pattern.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ToolPattern(String);
+
+impl ToolPattern {
+    /// Parses a pattern.
+    pub fn parse(text: &str) -> Result<Self, ToolPatternError> {
+        let ok = match text.strip_suffix('*') {
+            Some("") => true,
+            Some(prefix) => tool_name_ok(prefix) && prefix.len() < MAX_TOOL_NAME,
+            None => tool_name_ok(text),
+        };
+        if ok {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(ToolPatternError(text.to_owned()))
+        }
+    }
+
+    /// The pattern as written.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// `*` alone: any tool (the sheet marks it when it allows).
+    pub fn is_any(&self) -> bool {
+        self.0 == "*"
+    }
+
+    /// Whether `tool` is one of the tools it names. A name outside the
+    /// grammar matches nothing.
+    pub fn matches(&self, tool: &str) -> bool {
+        if !tool_name_ok(tool) {
+            return false;
+        }
+        match self.0.strip_suffix('*') {
+            Some(prefix) => tool.starts_with(prefix),
+            None => self.0 == tool,
+        }
+    }
+}
+
+impl fmt::Display for ToolPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for ToolPattern {
+    type Err = ToolPatternError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
 
 /// A weekly time window (design §5.2 "horario", ADR 0014), in a fixed UTC
 /// offset.
@@ -771,6 +881,12 @@ pub struct Scope {
     /// them). Only in `proxy` rules (ADR 0036 §2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub path_prefixes: Vec<PathPrefix>,
+    /// MCP tools (the call's tool must match one of them). Only in `proxy`
+    /// rules on an MCP profile's item (ADR 0049 §5.3). A request that names
+    /// a tool is matched by a rule without `mcp_tools` only if that rule
+    /// denies ([`evaluate`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_tools: Vec<ToolPattern>,
 }
 
 fn selects<I: PartialEq>(selector: &Selector<I>, target: &Target<I>) -> bool {
@@ -798,12 +914,19 @@ impl Scope {
             || !self.items.is_empty()
             || !self.methods.is_empty()
             || !self.path_prefixes.is_empty()
+            || !self.mcp_tools.is_empty()
     }
 
     /// Whether the scope uses a dimension of the proxy (items, methods or
     /// path prefixes): only a grant payload `v: 2` may carry one.
     pub fn uses_http(&self) -> bool {
         !self.items.is_empty() || !self.methods.is_empty() || !self.path_prefixes.is_empty()
+    }
+
+    /// Whether the scope names MCP tools: only a grant payload `v: 4` may
+    /// carry them (ADR 0049 §2.1).
+    pub fn uses_mcp(&self) -> bool {
+        !self.mcp_tools.is_empty()
     }
 
     /// Whether the scope names vaults or projects only by ID (what the
@@ -837,6 +960,11 @@ impl Scope {
                     .path
                     .as_deref()
                     .is_some_and(|path| self.path_prefixes.iter().any(|p| p.matches(path))))
+            && (self.mcp_tools.is_empty()
+                || request
+                    .mcp_tool
+                    .as_deref()
+                    .is_some_and(|tool| self.mcp_tools.iter().any(|p| p.matches(tool))))
     }
 }
 
@@ -909,6 +1037,9 @@ pub enum ProxyRuleError {
     /// A proxy grant that does not deny a permission that hands out values.
     #[error("a grant with `proxy` must deny `{0}`: the proxy uses values, it never hands them out")]
     HandsOutValues(Permission),
+    /// MCP tools in a rule that is not `proxy` (ADR 0049 §5.3).
+    #[error("only `proxy` rules may name MCP tools, not `{0}` rules")]
+    ToolsOutsideProxy(Permission),
 }
 
 impl Policy {
@@ -920,6 +1051,12 @@ impl Policy {
         self.rules
             .iter()
             .any(|r| r.permission == Permission::Proxy || r.scope.uses_http())
+    }
+
+    /// Whether the policy needs a grant payload `v: 4` (ADR 0049 §2.1): a
+    /// rule that names MCP tools.
+    pub fn needs_v4(&self) -> bool {
+        self.rules.iter().any(|r| r.scope.uses_mcp())
     }
 
     /// Whether some rule can let `proxy` through.
@@ -943,6 +1080,9 @@ impl Policy {
         for rule in &self.rules {
             if rule.permission != Permission::Proxy && rule.scope.uses_http() {
                 return Err(ProxyRuleError::HttpOutsideProxy(rule.permission));
+            }
+            if rule.permission != Permission::Proxy && rule.scope.uses_mcp() {
+                return Err(ProxyRuleError::ToolsOutsideProxy(rule.permission));
             }
             if rule.permission == Permission::Proxy && rule.effect != Effect::Deny {
                 if rule.scope.items.is_empty() {
@@ -1011,6 +1151,9 @@ pub struct Request {
     pub method: Option<String>,
     /// HTTP path of a proxied request, without query (`proxy`).
     pub path: Option<String>,
+    /// The MCP tool a proxied `tools/call` names, or one the proxy checks
+    /// while filtering `tools/list` (ADR 0049 §5.3).
+    pub mcp_tool: Option<String>,
     /// Current Unix time in seconds.
     pub now: u64,
 }
@@ -1024,7 +1167,9 @@ pub enum Reason {
     Default,
     /// Decided by the rule at this index (the first one with the winning effect).
     Rule(usize),
-    /// There are rules for the permission but none applies.
+    /// There are rules for the permission but none applies, or the
+    /// request names an MCP tool and no rule for it allows or asks
+    /// (ADR 0049 §5.3: no default lets a tool call through).
     OutOfScope,
     /// The permission only exists inside an approved task (`passkey`,
     /// `rotate`, ADR 0021 §5): ask for one with `request_task`.
@@ -1059,7 +1204,18 @@ pub fn evaluate(policy: &Policy, request: &Request) -> Decision {
     // A `proxy` request whose method or path the policy cannot judge is
     // never let through by a rule: only `deny` rules apply to it (and
     // `proxy` defaults to deny).
-    let unjudgeable = request.permission == Permission::Proxy && !proxy_request_ok(request);
+    // A tool call that is not a `proxy` call, or whose tool is outside the
+    // grammar, is not judgeable either.
+    let unjudgeable = (request.permission == Permission::Proxy && !proxy_request_ok(request))
+        || request
+            .mcp_tool
+            .as_deref()
+            .is_some_and(|tool| request.permission != Permission::Proxy || !tool_name_ok(tool));
+    // ADR 0049 §5.3 (Q3): a request that names an MCP tool is matched by a
+    // rule without `mcp_tools` only if that rule denies, so the rule that
+    // lets the MCP session through never allows a tool by itself, and a
+    // tool no rule names is denied.
+    let tool_call = request.mcp_tool.is_some();
     let mut has_rules = false;
     let mut best: Option<(Effect, usize)> = None;
     for (index, rule) in policy.rules.iter().enumerate() {
@@ -1070,6 +1226,7 @@ pub fn evaluate(policy: &Policy, request: &Request) -> Decision {
         if rule.expired(request.now)
             || !rule.scope.matches(request)
             || (unjudgeable && rule.effect != Effect::Deny)
+            || (tool_call && rule.scope.mcp_tools.is_empty() && rule.effect != Effect::Deny)
         {
             continue;
         }
@@ -1078,6 +1235,9 @@ pub fn evaluate(policy: &Policy, request: &Request) -> Decision {
         }
     }
     match (has_rules, best) {
+        // No default ever lets a tool call through: only a rule that
+        // names it does.
+        (false, _) if tool_call => deny(Reason::OutOfScope),
         (false, _) => Decision {
             effect: request.permission.default_effect(),
             reason: Reason::Default,
@@ -1206,6 +1366,7 @@ mod tests {
                 item: None,
                 method: None,
                 path: None,
+                mcp_tool: None,
                 now: NOW,
             }
         }
@@ -2194,6 +2355,7 @@ mod tests {
                     items,
                     methods,
                     path_prefixes,
+                    mcp_tools: Vec::new(),
                 },
             )
     }
@@ -2409,6 +2571,7 @@ mod tests {
                     item,
                     method,
                     path,
+                    mcp_tool: None,
                     now,
                 },
             )
@@ -2559,6 +2722,379 @@ mod tests {
                         || r.effect <= decision.effect));
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------ MCP tools ----
+
+    fn tools(patterns: &[&str]) -> Vec<ToolPattern> {
+        patterns.iter().map(|p| p.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn tool_names_and_patterns_follow_their_grammar() {
+        for good in ["query_logs", "a", "get.logs-v2", "X_Y", &"a".repeat(128)] {
+            assert!(tool_name_ok(good), "{good}");
+            assert!(ToolPattern::parse(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "query logs",
+            "query\nlogs",
+            "q\u{202e}l",
+            "quéry",
+            "a\"b",
+            "a/b",
+            "a*b",
+            &"a".repeat(129),
+        ] {
+            assert!(!tool_name_ok(bad), "{bad:?}");
+            assert!(ToolPattern::parse(bad).is_err(), "{bad:?}");
+        }
+        for good in ["*", "get_*", "G*", &format!("{}*", "a".repeat(127))] {
+            assert!(ToolPattern::parse(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "**",
+            "*get",
+            "get_**",
+            "*_api_key",
+            "ge*t",
+            " get_*",
+            &format!("{}*", "a".repeat(128)),
+        ] {
+            assert!(ToolPattern::parse(bad).is_err(), "{bad:?}");
+        }
+        for good in ["claude-code", "cursor", "a", "vs-code-2", &"a".repeat(32)] {
+            assert!(local_client_name_ok(good), "{good}");
+        }
+        for bad in [
+            "",
+            "Claude",
+            "claude code",
+            "claude_code",
+            "é",
+            &"a".repeat(33),
+        ] {
+            assert!(!local_client_name_ok(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn tool_patterns_match_case_sensitively_and_by_prefix_only() {
+        let p = |t: &str| t.parse::<ToolPattern>().unwrap();
+        assert!(p("get_*").matches("get_logs"));
+        assert!(p("get_*").matches("get_"));
+        assert!(p("get_*").matches("get_and_delete_all"));
+        assert!(!p("get_*").matches("Get_logs"));
+        assert!(!p("get_*").matches("forget_logs"));
+        assert!(!p("delete_*").matches("DeleteService"));
+        assert!(p("query_logs").matches("query_logs"));
+        assert!(!p("query_logs").matches("query_logs2"));
+        assert!(!p("query_logs").matches("Query_logs"));
+        assert!(p("*").matches("anything.at-all_9"));
+        assert!(p("*").is_any());
+        // A name outside the grammar matches nothing, not even `*`.
+        assert!(!p("*").matches("bad name"));
+        assert!(!p("*").matches(""));
+        assert!(!p("get_*").matches("get_\u{202e}"));
+        // As JSON, a pattern is its text, checked on the way in.
+        assert_eq!(serde_json::to_string(&p("get_*")).unwrap(), "\"get_*\"");
+        assert!(serde_json::from_str::<ToolPattern>("\"*_key\"").is_err());
+    }
+
+    /// Four `proxy` rules on one item, as ADR 0049 §5.3's Maple example.
+    fn maple_policy() -> Policy {
+        let item = ItemId::from_bytes([5; 16]);
+        let base = Scope {
+            items: vec![item],
+            domains: vec!["api.maple.dev".parse().unwrap()],
+            path_prefixes: vec![PathPrefix::parse("/mcp").unwrap()],
+            ..Scope::default()
+        };
+        let with = |effect, mcp_tools| Rule {
+            permission: Permission::Proxy,
+            effect,
+            scope: Scope {
+                mcp_tools,
+                ..base.clone()
+            },
+            expires_at: None,
+        };
+        Policy {
+            rules: vec![
+                Rule {
+                    permission: Permission::Proxy,
+                    effect: Effect::Allow,
+                    scope: Scope {
+                        methods: vec![
+                            HttpMethod::parse("POST").unwrap(),
+                            HttpMethod::parse("GET").unwrap(),
+                            HttpMethod::parse("DELETE").unwrap(),
+                        ],
+                        ..base.clone()
+                    },
+                    expires_at: None,
+                },
+                with(Effect::Allow, tools(&["get_*", "list_*", "query_*"])),
+                with(Effect::Ask, tools(&["create_*", "update_*", "delete_*"])),
+                with(Effect::Deny, tools(&["create_api_key", "get_api_key"])),
+            ],
+            expires_at: None,
+        }
+    }
+
+    fn mcp_request(tool: Option<&str>) -> Request {
+        let w = World::new();
+        Request {
+            domain: Some("api.maple.dev".into()),
+            item: Some(ItemId::from_bytes([5; 16])),
+            method: Some("POST".into()),
+            path: Some("/mcp".into()),
+            mcp_tool: tool.map(str::to_owned),
+            tags: Vec::new(),
+            ..w.request(Permission::Proxy)
+        }
+    }
+
+    #[test]
+    fn unlisted_tools_are_denied_and_the_session_rule_allows_no_tool() {
+        let policy = maple_policy();
+        let effect = |tool| evaluate(&policy, &mcp_request(tool)).effect;
+        // The session itself (initialize, tools/list): no tool.
+        assert_eq!(effect(None), Effect::Allow);
+        assert_eq!(effect(Some("query_logs")), Effect::Allow);
+        assert_eq!(effect(Some("get_dashboard")), Effect::Allow);
+        assert_eq!(effect(Some("delete_dashboard")), Effect::Ask);
+        // The most restrictive wins: `allow get_*` and `deny get_api_key`.
+        assert_eq!(effect(Some("get_api_key")), Effect::Deny);
+        assert_eq!(effect(Some("create_api_key")), Effect::Deny);
+        // A tool no rule names, a case variant, and a name outside the
+        // grammar: denied, never by the session rule.
+        for tool in ["run_query", "Get_logs", "DeleteService", "get logs", ""] {
+            assert_eq!(effect(Some(tool)), Effect::Deny, "{tool:?}");
+        }
+        // Only the session rule: no tool at all.
+        let session_only = Policy {
+            rules: vec![policy.rules[0].clone()],
+            expires_at: None,
+        };
+        assert_eq!(
+            evaluate(&session_only, &mcp_request(Some("query_logs"))),
+            Decision {
+                effect: Effect::Deny,
+                reason: Reason::OutOfScope
+            }
+        );
+        // A deny rule without tools still denies a tool call.
+        let mut closed = policy.clone();
+        closed.rules.push(Rule {
+            permission: Permission::Proxy,
+            effect: Effect::Deny,
+            scope: Scope::default(),
+            expires_at: None,
+        });
+        assert_eq!(
+            evaluate(&closed, &mcp_request(Some("query_logs"))).effect,
+            Effect::Deny
+        );
+        // An `ask` without tools does not make a tool call ask.
+        let mut asks = policy.clone();
+        asks.rules[0].effect = Effect::Ask;
+        assert_eq!(
+            evaluate(&asks, &mcp_request(Some("query_logs"))).effect,
+            Effect::Allow
+        );
+    }
+
+    #[test]
+    fn no_default_lets_a_tool_through() {
+        let w = World::new();
+        // `inject` and `fill` allow by default; with a tool named, never.
+        for permission in [Permission::Inject, Permission::Fill, Permission::Proxy] {
+            let request = Request {
+                mcp_tool: Some("query_logs".into()),
+                ..w.request(permission)
+            };
+            assert_eq!(
+                evaluate(&Policy::default(), &request).effect,
+                Effect::Deny,
+                "{permission}"
+            );
+        }
+        // A tool on anything but `proxy` is not judgeable, even when a rule
+        // would allow everything.
+        let request = Request {
+            mcp_tool: Some("query_logs".into()),
+            ..w.request(Permission::Inject)
+        };
+        let open = Policy {
+            rules: vec![Rule::new(Permission::Inject, Effect::Allow)],
+            expires_at: None,
+        };
+        assert_eq!(evaluate(&open, &request).effect, Effect::Deny);
+    }
+
+    #[test]
+    fn tools_only_in_proxy_rules_and_only_in_version_4() {
+        let mut policy = maple_policy();
+        assert!(policy.needs_v4() && policy.needs_v2());
+        for p in [
+            Permission::Proxy,
+            Permission::Reveal,
+            Permission::Inject,
+            Permission::Fill,
+        ] {
+            if p != Permission::Proxy {
+                policy.rules.push(Rule::new(p, Effect::Deny));
+            }
+        }
+        policy.check_proxy().expect("valid");
+        let mut outside = policy.clone();
+        outside.rules.push(Rule {
+            permission: Permission::Inject,
+            effect: Effect::Deny,
+            scope: Scope {
+                mcp_tools: tools(&["*"]),
+                ..Scope::default()
+            },
+            expires_at: None,
+        });
+        assert_eq!(
+            outside.check_proxy(),
+            Err(ProxyRuleError::ToolsOutsideProxy(Permission::Inject))
+        );
+        let mut none = maple_policy();
+        for r in &mut none.rules {
+            r.scope.mcp_tools.clear();
+        }
+        assert!(!none.needs_v4());
+    }
+
+    /// `evaluate` as it was before ADR 0049: the oracle the proptests hold
+    /// the new one to wherever no tool is named.
+    fn evaluate_before_0049(policy: &Policy, request: &Request) -> Decision {
+        let deny = |reason| Decision {
+            effect: Effect::Deny,
+            reason,
+        };
+        if policy.expires_at.is_some_and(|t| request.now >= t) {
+            return deny(Reason::PolicyExpired);
+        }
+        if request.permission.requires_task() {
+            return deny(Reason::TaskOnly);
+        }
+        let unjudgeable = request.permission == Permission::Proxy && !proxy_request_ok(request);
+        let mut has_rules = false;
+        let mut best: Option<(Effect, usize)> = None;
+        for (index, rule) in policy.rules.iter().enumerate() {
+            if rule.permission != request.permission {
+                continue;
+            }
+            has_rules = true;
+            if rule.expired(request.now)
+                || !rule.scope.matches(request)
+                || (unjudgeable && rule.effect != Effect::Deny)
+            {
+                continue;
+            }
+            if best.is_none_or(|(effect, _)| rule.effect > effect) {
+                best = Some((rule.effect, index));
+            }
+        }
+        match (has_rules, best) {
+            (false, _) => Decision {
+                effect: request.permission.default_effect(),
+                reason: Reason::Default,
+            },
+            (true, Some((effect, index))) => Decision {
+                effect,
+                reason: Reason::Rule(index),
+            },
+            (true, None) => deny(Reason::OutOfScope),
+        }
+    }
+
+    fn tool_patterns() -> impl Strategy<Value = Vec<ToolPattern>> {
+        prop::collection::vec(
+            prop::sample::select(vec!["get_*", "get_logs", "*", "Get_*", "delete_*"])
+                .prop_map(|t| t.parse::<ToolPattern>().unwrap()),
+            0..3,
+        )
+    }
+
+    /// [`policy`] with tools on some rules (whatever their permission:
+    /// `evaluate` must hold even on a policy `check_proxy` refuses).
+    fn tool_policy() -> impl Strategy<Value = Policy> {
+        (policy(), prop::collection::vec(tool_patterns(), 6)).prop_map(|(mut policy, tools)| {
+            for (rule, t) in policy.rules.iter_mut().zip(tools) {
+                rule.scope.mcp_tools = t;
+            }
+            policy
+        })
+    }
+
+    fn tool() -> impl Strategy<Value = String> {
+        prop::sample::select(vec![
+            "get_logs".to_string(),
+            "get_x".to_string(),
+            "Get_logs".to_string(),
+            "delete_x".to_string(),
+            "bad name".to_string(),
+            String::new(),
+            "a".repeat(129),
+        ])
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 1024, ..ProptestConfig::default() })]
+
+        /// ADR 0049 changes nothing for a request that names no tool, with
+        /// or without tool rules in the policy.
+        #[test]
+        fn prop_without_a_tool_nothing_changes(policy in tool_policy(), request in request()) {
+            prop_assert!(request.mcp_tool.is_none());
+            prop_assert_eq!(evaluate(&policy, &request), evaluate_before_0049(&policy, &request));
+        }
+
+        /// A tool call passes only through a live `proxy` rule that names
+        /// it, with a tool in the grammar; never by a default.
+        #[test]
+        fn prop_a_tool_passes_only_by_a_rule_that_names_it(policy in tool_policy(), request in request(), tool in tool()) {
+            let request = Request { mcp_tool: Some(tool.clone()), ..request };
+            let decision = evaluate(&policy, &request);
+            if decision.effect != Effect::Deny {
+                let Reason::Rule(i) = decision.reason else {
+                    return Err(TestCaseError::fail(format!("{decision:?} without a rule")));
+                };
+                let rule = &policy.rules[i];
+                prop_assert_eq!(request.permission, Permission::Proxy);
+                prop_assert!(tool_name_ok(&tool));
+                prop_assert!(rule.scope.mcp_tools.iter().any(|p| p.matches(&tool)));
+                prop_assert!(rule.scope.matches(&request) && !rule.expired(request.now));
+            }
+        }
+
+        /// A live deny rule that matches denies a tool call, tools or not.
+        #[test]
+        fn prop_a_matching_deny_always_denies_a_tool(policy in tool_policy(), request in request(), tool in tool()) {
+            let request = Request { mcp_tool: Some(tool), ..request };
+            let denied = policy.expires_at.is_none_or(|t| request.now < t)
+                && policy.rules.iter().any(|r| r.permission == request.permission
+                    && r.effect == Effect::Deny
+                    && !r.expired(request.now)
+                    && r.scope.matches(&request));
+            if denied {
+                prop_assert_eq!(evaluate(&policy, &request).effect, Effect::Deny);
+            }
+        }
+
+        /// Naming a tool never loosens what the same request gets from the
+        /// rules without tools: the session rule cannot allow a tool.
+        #[test]
+        fn prop_rules_without_tools_never_allow_a_tool(policy in policy(), request in request(), tool in tool()) {
+            let request = Request { mcp_tool: Some(tool), ..request };
+            prop_assert_eq!(evaluate(&policy, &request).effect, Effect::Deny);
         }
     }
 }

@@ -438,6 +438,7 @@ impl Unlocked {
             profiles: Vec::new(),
             issuers: Vec::new(),
             sandbox: None,
+            local_clients: Vec::new(),
         });
         let mut proxy_next = proxy_payload.clone();
         proxy_next.issuers.retain(|i| i.agent_id != issuer.id);

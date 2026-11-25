@@ -22,7 +22,7 @@ use klav_core::policy::Policy;
 use klav_proto::Blob;
 use klav_proto::agent::{
     AgentInfo, AgentStatus, GRANT_PAYLOAD_VERSION_ITEMS, GrantLabels, GrantPayload, GrantedItem,
-    ProxyProfile, SandboxIssuer, SignedGrant,
+    LocalClient, ProxyProfile, SandboxIssuer, SignedGrant,
 };
 use klav_proto::vault::{Item as WireItem, RewrappedAttachmentKey, UpdateItem};
 use reqwest::Method;
@@ -49,6 +49,11 @@ pub struct ItemGrantRequest {
     /// ADR 0036 §4). A change to the credentials carries them over.
     #[serde(default)]
     pub issuers: Vec<SandboxIssuer>,
+    /// The MCP clients on the person's Mac that may use its MCP profiles
+    /// (`v: 4`, ADR 0049 §3.2). A change to the credentials carries them
+    /// over.
+    #[serde(default)]
+    pub local_clients: Vec<LocalClient>,
 }
 
 /// Result of [`Unlocked::grant_items`].
@@ -260,6 +265,7 @@ impl Unlocked {
             profiles: request.profiles,
             issuers: request.issuers,
             sandbox: None,
+            local_clients: request.local_clients,
         };
         // At least 2 (it is a per-item grant), 3 only while it carries
         // issuers.

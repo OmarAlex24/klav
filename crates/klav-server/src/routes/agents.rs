@@ -687,6 +687,11 @@ async fn me(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Json<Ag
     // Why everything else is refused while the deletion is asked for
     // (ADR 0037 §3).
     let account_delete_at = crate::deletion::delete_at(&state.db().pool, auth.account_id).await?;
+    // The MCP gateway (ADR 0049 §9): said only while the switch is on, so
+    // the answer stays byte for byte what it was while it is off.
+    let mcp_gateway = crate::routes::account::mcp_gateway_since(&state.db().pool, auth.account_id)
+        .await?
+        .map(|_| true);
     Ok(Json(AgentMe {
         id: auth.agent_id,
         name: auth.name,
@@ -698,6 +703,7 @@ async fn me(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Json<Ag
         paused,
         account_delete_at,
         gone_issuers,
+        mcp_gateway,
     }))
 }
 

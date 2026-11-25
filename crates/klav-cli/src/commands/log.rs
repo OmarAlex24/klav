@@ -364,6 +364,8 @@ mod tests {
             until: None,
             alerts: Vec::new(),
             verified: false,
+            mcp_tool: None,
+            local_client: None,
         }
     }
 

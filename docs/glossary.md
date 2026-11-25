@@ -213,6 +213,16 @@ Terms from ADR [0036](decisiones/0036-sandboxes-de-agentes.md) and its amendment
 | modo (a) / URL base | mode (a) / base URL | ADR 0036 §7. A tool calls `http://127.0.0.1:8790/<profile>/<path>`; mode (b) is `HTTPS_PROXY` |
 | puerta MCP / modo (c) | MCP gate / mode (c) | ADR 0036 §7, note of 2026-11-19. An MCP client in a sandbox reaches a remote MCP server through the proxy, which adds the bearer key: a profile on mode (a)'s routing (`http://127.0.0.1:<port>/maple/mcp`) with its own limits for `text/event-stream` answers. Built (steps M2–M4); the by-hand test in a real sandbox (M5) is pending |
 | secreto principal | main secret | Spec §13.4. What a profile without `field` injects: `password` (login), `api_key` (API key) |
+| pasarela MCP | MCP gateway | ADR [0049](decisiones/0049-mcp-gateway.md) (accepted; layers 1–3 built, the proxy part is layer 4): `klav-proxy` with MCP profiles, per-tool rules signed in the grant (`v: 4`), a filtered `tools/list`, tool-level approvals and audit. Not the MCP gate of ADR 0036 (mode (c)), which it builds on. Not in the public glossary until it ships (ADR 0039 §3) |
+| perfil MCP | MCP profile | ADR 0049 §2.1; `ProxyProfile.mcp`: a profile that also knows its upstream's MCP endpoint, which the proxy reads, checks and filters |
+| *endpoint* MCP | MCP endpoint | ADR 0049 §2.1; `mcp.endpoint`, the one path an MCP profile forwards |
+| regla de herramientas / patrón de herramienta | tool rule / tool pattern | ADR 0049 §5.3; `Scope.mcp_tools`, `ToolPattern`: an exact tool name, a prefix with one trailing `*`, or `*` alone; case-sensitive |
+| herramienta sin regla | unlisted tool | ADR 0049 §5.3, Q3: a tool no rule names; denied and hidden from `tools/list` |
+| cliente local / token de cliente local | local client / local client token | ADR 0049 §3.2, spec §13.16: an MCP client on the person's Mac (`claude-code`, `cursor`) and its `klc1_` bearer to the proxy's loopback listener; the proxy's grant carries only its digest (`local_clients`) |
+| resumen de los argumentos | argument digest | ADR 0049 §5.4, spec §13.16; `claims.mcp_args`. "Once" binds it; a lease binds only the tool |
+| argumentos sellados | sealed arguments | ADR 0049 §5.4 (layer 8, not built): a tool call's arguments sealed with HPKE to the person's devices (blob `0x27`) |
+| interruptor de la pasarela MCP | MCP gateway switch | ADR 0049 §9; the account's `mcp_gateway`, off by default, turned on once with `POST /v1/account/mcp-gateway`; `400 mcp_gateway_off` while off |
+| llamador (de una aprobación) | caller | ADR 0049 §5.4; `ApprovalRequest.caller`: the sandbox or the local client a proxied call is for, according to the proxy, under the person's signature |
 | redacción (del proxy) | redaction | ADR 0036 §8. The whole injected value replaced in the provider's answer, never a piece of it (E9, T149) |
 | emisión por fin de línea | line-end flush | ADR 0036 §7, note of 2026-11-19; `StreamRedactor::by_lines` in `klav-sdk`. The stream redactor emits each chunk up to its last CR or LF instead of holding back its tail; falls back to the default rule when a value holds a line end |
 | grant por elemento | per-item grant | ADR 0036 §2; `GrantPayload` `v: 2` with `items`, spec §13.4 |
