@@ -445,6 +445,22 @@ describe("static files and headers", () => {
     }
   });
 
+  test("the privacy policy says the waitlist keeps when an invite went out and a note, in both languages and in privacidad.md", () => {
+    const html = readFileSync(join(WEB, "public", "privacy", "index.html"), "utf8");
+    const md = readFileSync(join(WEB, "..", "..", "docs", "privacidad.md"), "utf8");
+    const en = html.slice(html.indexOf('<article id="en"'), html.indexOf('<article id="es"'));
+    const es = html.slice(html.indexOf('<article id="es"'));
+    assert.match(en, /Once we send you the invite, it also stores that we sent it and when, and sometimes a note of ours/);
+    assert.match(es, /Cuando te mandamos la invitación, guarda también que te la mandamos y cuándo, y a veces una nota nuestra/);
+    assert.match(md, /also stores that we sent it and when, and sometimes a note of ours/);
+    assert.match(md, /guarda también que te la mandamos y cuándo, y a veces una nota nuestra/);
+    // The same date on the page and in the source, in both languages.
+    const enDate = en.match(/Last updated: ([A-Z][a-z]+ \d+, \d{4})/)[1];
+    const esDate = es.match(/Última actualización: (\d+ de [a-z]+ de \d{4})/)[1];
+    assert.ok(md.includes(`**Last updated:** ${enDate}`), enDate);
+    assert.ok(md.includes(`**Última actualización:** ${esDate}`), esDate);
+  });
+
   test("serves fonts and the OG image with their types", async () => {
     for (const [path, type] of [["/fonts/geist.woff2", "font/woff2"], ["/fonts/departure-mono-400.woff2", "font/woff2"], ["/og.png", "image/png"]]) {
       const res = await fetch(`${s.base}${path}`);
