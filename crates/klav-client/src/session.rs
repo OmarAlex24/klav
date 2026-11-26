@@ -581,6 +581,8 @@ pub struct Unlocked {
     queued: HashMap<ItemId, (VaultId, WireItem)>,
     /// While the outbox is being sent, the cache shows the server's versions only.
     pub(crate) outbox_paused: bool,
+    /// How this device reaches Klav Cloud's proxy (ADR 0051).
+    pub(crate) hosted: crate::hosted_proxy::HostedConfig,
     /// Pauses of the account's agents in effect, as the last sync (or this
     /// device's own decision) left them, each checked against the
     /// account's signature (ADR 0033 §7).
@@ -683,6 +685,7 @@ impl Unlocked {
             seen_proofs: Vec::new(),
             queued: HashMap::new(),
             outbox_paused: false,
+            hosted: crate::hosted_proxy::HostedConfig::from_env(),
             agent_pauses: Vec::new(),
             audit_chain: None,
             deletion: crate::deletion::DeletionMarker::default(),

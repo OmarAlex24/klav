@@ -15,6 +15,7 @@ pub mod audit;
 pub mod auth;
 mod blob;
 mod common;
+pub mod hosted;
 pub mod rotate;
 pub mod sandbox;
 pub mod secret_request;

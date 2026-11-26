@@ -22,7 +22,7 @@ enclave = ["klav-core/nitro-attestation", "dep:data-encoding", "dep:aws-nitro-en
 # The enclave's tests: a fake NSM with a test P-384 chain and test release
 # keys (`klav-core`'s `nitro-testkit`, which refuses a release build).
 # `cargo test -p klav-proxy --features enclave-testkit,nitro-parent`.
-enclave-testkit = ["enclave", "klav-core/nitro-testkit", "klav-client/hosted-proxy"]
+enclave-testkit = ["enclave", "klav-core/nitro-testkit", "klav-client/hosted-proxy-testkit"]
 # `klav-nitro-parent` (ADR 0051 §1, §5.3): the untrusted host's byte relay,
 # egress refusal list and health check. No Klav keys and no `klav-core`
 # cryptography.

@@ -855,7 +855,7 @@ fn assemble(f: &Fetched<'_>) -> Result<(SandboxList, Option<Mark>), Refused> {
         }
     };
     let (proxy, mark) = match (setting.mode, setting.agent_id) {
-        (ProxyMode::Own, Some(proxy)) => {
+        (ProxyMode::Own | ProxyMode::Klav, Some(proxy)) => {
             let Some((proxy_name, identity)) = agents.get(&proxy) else {
                 return Err(Refused::Check(ListRefusal {
                     check: ListCheck::UnlistedProxy { agent_id: proxy },

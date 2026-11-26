@@ -63,7 +63,7 @@ helpers=(klav klavd klav-native-host)
 head=""
 
 # Budget (ADR 0027 §5), in bytes.
-max_dmg=$((25 * 1000 * 1000))
+max_dmg=$((26 * 1000 * 1000))
 max_app=$((60 * 1000 * 1000))
 
 if [[ "$mode" == release ]]; then

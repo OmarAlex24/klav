@@ -204,6 +204,10 @@ impl Unlocked {
                 info.name
             )));
         }
+        // Klav Cloud's proxy: verified before anything changes (an item
+        // key, a dropped item's rekey); `upload_grant` checks it again
+        // right before the grant leaves.
+        self.check_hosted_wrap(id, &public).await?;
         let current = match &info.grant {
             Some(g) => Some(self.open_grant(id, &public, g)?),
             None => None,
@@ -427,6 +431,10 @@ impl Unlocked {
                 "agent {id} was revoked from this device; it is never granted again"
             )));
         }
+        // Klav Cloud's proxy gets a grant only once its attestation, with a
+        // fresh nonce, binds exactly `public` (ADR 0051 §2.2 step 7). A
+        // build without the feature refuses it.
+        self.check_hosted_wrap(id, public).await?;
         // The protection of environments (ADR 0032 §3.1): the inherited
         // rules of the grant in force are kept unless this device can prove
         // their release, and the protected items it reaches are added.

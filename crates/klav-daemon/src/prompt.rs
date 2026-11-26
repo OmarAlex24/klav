@@ -306,6 +306,12 @@ pub(crate) enum Prompt<'a> {
         agent: Option<&'a str>,
         replaces: bool,
     },
+    /// Klav Cloud's proxy (ADR 0051): use it (the image `version` it
+    /// verified), stop using it, or set it up again.
+    HostedProxy {
+        action: klav_client::hosted_proxy::CloudAction,
+        version: Option<&'a str>,
+    },
     /// Let the credential proxy `agent` use `item` with `host` (and its
     /// `port` when not 443), the value in `header` when not
     /// `authorization` and taken from `field` when not the main secret,
@@ -691,6 +697,41 @@ impl Prompt<'_> {
                         format!(
                             "{what} y reemplazar las preferencias de la cuenta que escribió un agente"
                         )
+                    }
+                }
+            }
+            (Prompt::HostedProxy { action, version }, _) => {
+                use klav_client::hosted_proxy::CloudAction;
+                match (action, version, lang) {
+                    (CloudAction::Use, Some(v), Lang::En) => format!(
+                        "use Klav Cloud's proxy, attested at version {}, as your credential proxy",
+                        name(v)
+                    ),
+                    (CloudAction::Use, Some(v), Lang::Es) => format!(
+                        "usar el proxy de Klav Cloud, atestado en la versión {}, como tu proxy de credenciales",
+                        name(v)
+                    ),
+                    (CloudAction::Use, None, Lang::En) => {
+                        "use Klav Cloud's proxy as your credential proxy".to_owned()
+                    }
+                    (CloudAction::Use, None, Lang::Es) => {
+                        "usar el proxy de Klav Cloud como tu proxy de credenciales".to_owned()
+                    }
+                    (CloudAction::Stop, _, Lang::En) => {
+                        "stop using Klav Cloud's proxy and change the keys of what it held"
+                            .to_owned()
+                    }
+                    (CloudAction::Stop, _, Lang::Es) => {
+                        "dejar de usar el proxy de Klav Cloud y cambiar las llaves de lo que tenía"
+                            .to_owned()
+                    }
+                    (CloudAction::Reset, _, Lang::En) => {
+                        "set Klav Cloud's proxy up again and move your credentials to it"
+                            .to_owned()
+                    }
+                    (CloudAction::Reset, _, Lang::Es) => {
+                        "volver a configurar el proxy de Klav Cloud y pasarle tus credenciales"
+                            .to_owned()
                     }
                 }
             }
@@ -2116,6 +2157,23 @@ mod tests {
             }
             .reason(Lang::En, None),
             "stop using a credential proxy, replacing the account preferences an agent wrote"
+        );
+        // Klav Cloud's proxy (ADR 0051).
+        assert_eq!(
+            Prompt::HostedProxy {
+                action: klav_client::hosted_proxy::CloudAction::Use,
+                version: Some("0.12.0"),
+            }
+            .reason(Lang::En, None),
+            "use Klav Cloud's proxy, attested at version “0.12.0”, as your credential proxy"
+        );
+        assert_eq!(
+            Prompt::HostedProxy {
+                action: klav_client::hosted_proxy::CloudAction::Stop,
+                version: None,
+            }
+            .reason(Lang::Es, None),
+            "dejar de usar el proxy de Klav Cloud y cambiar las llaves de lo que tenía"
         );
         let get = ["GET".to_owned()];
         let nf = ItemShown {

@@ -961,7 +961,7 @@ fn whole_id_blocked(older: bool) -> &'static str {
 async fn account_proxy(ctx: &mut Ctx) -> CliResult<AgentId> {
     let status = super::proxy::status(ctx).await?;
     match (status.mode, status.agent_id) {
-        (ProxyMode::Own, Some(id)) => Ok(id),
+        (ProxyMode::Own | ProxyMode::Klav, Some(id)) => Ok(id),
         _ => Err(CliError::Other(
             "The account has no proxy of its own (`klav proxy status`): give the first 8 characters of the ID as `klav proxy sandboxes` shows them, or set the proxy with `klav proxy use own <agent>`.".into(),
         )),

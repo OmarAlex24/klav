@@ -73,6 +73,11 @@ struct SettingsView: View {
                         DeleteAccountSection()
                             .padding(.top, 8)
                     }
+                    // ADR 0051 §6.1: Klav Cloud's proxy, when there is
+                    // something to say about it.
+                    if !model.readOnly {
+                        CloudProxySection()
+                    }
 
                     section("Lock Klav") {
                         ForEach(AutoLock.allCases) { option in

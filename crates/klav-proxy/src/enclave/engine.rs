@@ -650,7 +650,7 @@ impl Enclave {
             },
         )
         .await?;
-        let signed = hello.manifest.parse()?;
+        let signed = parse_manifest_wire(&hello.manifest)?;
         let highest = self.manifest().map(|m| m.verified.seq());
         let now = now_ms();
         let verified = self
@@ -818,31 +818,23 @@ async fn post_json<B: Serialize, R: serde::de::DeserializeOwned>(
 
 // ----------------------------------------------------------------- wire --
 
-/// A manifest on the wire: its exact text and the signature in hex.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ManifestWire {
-    /// The manifest's bytes (UTF-8 JSON), as signed.
-    pub manifest: String,
-    /// The signature, 128 hex characters.
-    pub signature: String,
+pub use klav_proto::hosted::{AttestAnswer, EnrollAnswer, EnrollRequest, ManifestWire};
+
+/// A manifest of this enclave on the wire.
+fn manifest_wire(signed: &SignedManifest) -> ManifestWire {
+    ManifestWire {
+        manifest: String::from_utf8_lossy(&signed.bytes).into_owned(),
+        signature: signed.signature_hex(),
+    }
 }
 
-impl ManifestWire {
-    fn of(signed: &SignedManifest) -> Self {
-        Self {
-            manifest: String::from_utf8_lossy(&signed.bytes).into_owned(),
-            signature: signed.signature_hex(),
-        }
-    }
-
-    fn parse(&self) -> Result<SignedManifest, String> {
-        Ok(SignedManifest {
-            bytes: self.manifest.as_bytes().to_vec(),
-            signature: SignedManifest::parse_signature(&self.signature)
-                .ok_or("the manifest's signature is not 128 hex characters")?,
-        })
-    }
+/// A manifest from the wire, its signature parsed.
+fn parse_manifest_wire(wire: &ManifestWire) -> Result<SignedManifest, String> {
+    Ok(SignedManifest {
+        bytes: wire.manifest.as_bytes().to_vec(),
+        signature: SignedManifest::parse_signature(&wire.signature)
+            .ok_or("the manifest's signature is not 128 hex characters")?,
+    })
 }
 
 /// `GET /v1/attest` query.
@@ -853,50 +845,6 @@ pub struct AttestQuery {
     pub account: AccountId,
     /// The device's nonce, base64url without padding.
     pub nonce: String,
-}
-
-/// `GET /v1/attest` answer.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AttestAnswer {
-    /// The attestation document, `user_data` = the account's binding.
-    pub document: Blob,
-    /// The account's hosted agent.
-    pub agent_id: AgentId,
-    /// Its generation.
-    pub generation: u32,
-    /// The `seq` of the manifest the enclave serves.
-    pub manifest_seq: u64,
-}
-
-/// `POST /v1/enroll` (ADR 0051 §6.1 step 2).
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnrollRequest {
-    /// The account.
-    pub account_id: AccountId,
-    /// Its e-mail, for the agent's registration.
-    pub email: String,
-    /// Its identity (kind `0x05`), which signed this request.
-    pub account_public_identity: Blob,
-    /// The generation asked for.
-    pub generation: u32,
-    /// When it was signed (Unix ms).
-    pub at_ms: u64,
-    /// `tuple("klav/v1/sig/hosted-proxy-enroll", …)`, by the account.
-    pub signature: Blob,
-}
-
-/// `POST /v1/enroll` answer.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EnrollAnswer {
-    /// The account's hosted agent, pending until the person approves it.
-    pub agent_id: AgentId,
-    /// Its generation.
-    pub generation: u32,
-    /// Its channel name (`a<agent_id hex>.<endpoint>`).
-    pub channel: String,
-    /// When the pending agent lapses (Unix ms), as the server said.
-    pub expires_at: i64,
 }
 
 /// `POST /v1/handoff/hello`.
@@ -981,13 +929,13 @@ fn handoff_refused(reason: &'static str) -> Response {
 
 async fn get_manifest(State(e): State<Arc<Enclave>>) -> Response {
     match e.manifest() {
-        Some(m) => Json(ManifestWire::of(&m.signed)).into_response(),
+        Some(m) => Json(manifest_wire(&m.signed)).into_response(),
         None => starting(),
     }
 }
 
 async fn post_manifest(State(e): State<Arc<Enclave>>, Json(wire): Json<ManifestWire>) -> Response {
-    let Ok(signed) = wire.parse() else {
+    let Ok(signed) = parse_manifest_wire(&wire) else {
         return bad_request("The manifest's signature is not 128 hex characters.");
     };
     match e.load_manifest(signed) {
@@ -1282,7 +1230,7 @@ async fn handoff_hello(State(e): State<Arc<Enclave>>, Json(req): Json<HelloReque
         session: Blob::new(session.to_vec()),
         nonce: Blob::new(holder_nonce.to_vec()),
         document: Blob::new(document),
-        manifest: ManifestWire::of(&manifest.signed),
+        manifest: manifest_wire(&manifest.signed),
     })
     .into_response()
 }
@@ -1302,7 +1250,7 @@ async fn handoff_seal(State(e): State<Arc<Enclave>>, Json(req): Json<SealRequest
     let (Some(seed), Some(current)) = (e.seed(), e.manifest()) else {
         return starting();
     };
-    let Ok(signed) = req.manifest.parse() else {
+    let Ok(signed) = parse_manifest_wire(&req.manifest) else {
         return handoff_refused("manifest_malformed");
     };
     let now = now_ms();

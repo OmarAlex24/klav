@@ -1211,3 +1211,15 @@ The app has no "Active sandboxes" screen yet; `KlavCore` already has the list an
 
 - **The screen must use `sandbox_list_flagged(all_proxies)` once it can show `security`.** When an agent wrote the account's preferences, it gives the rows of every proxy, no proxy, and `security` (`SandboxSecurityInfo::PreferencesByAgent { agent_id, message }`; one this build does not know arrives as `Unknown { message }`). The app shows it as a security problem, apart from `warnings`, and offers to choose the proxy again (`klav proxy use`, with presence, which replaces those preferences whole, using nothing in them).
 - **`sandbox_list` keeps failing with `Security`** in that case, for an app that cannot show the flag: it never gets a clean list.
+
+## 14. Klav Cloud's proxy (ADR 0051, layer 5)
+
+**Settings › Credential proxy** (`Klav/CloudProxy.swift`, words in `Shared/App/CloudProxyWords.swift`, shared with the Mac) shows Klav Cloud's hosted proxy when there is something to say about it. The app checks nothing itself: `KlavCore.hosted_proxy()` returns `klav-client`'s answer, which verifies the enclave's attestation and the signed manifest in `klav-core` (`nitro-attestation`) each time it is read.
+
+- **In use and attested:** the version and commit it runs, and "Stop using it".
+- **Red** when it couldn't be verified, the account is no longer entitled, it lost its keys or its agent is revoked: what happened, whether a late release is likelier than an attack, and that what it already holds stays until the person acts. "Stop using it" always; "Set it up again" after lost keys or a revoked agent.
+- **Can't be checked:** not red, nothing new is shared meanwhile; "Check again".
+- **Not used:** "Use Klav Cloud Proxy" only when the server says the account is entitled. Hidden in read-only mode (a deleted account).
+- **Every action** asks for Face ID first (`confirmPresence`), then `KlavCore.hosted_proxy_act(use | stop | reset)`, and shows what is left to the person (issuers to add again, provider tokens to rotate).
+
+Until the release-authority keys are pinned in `klav-core`, every real build fails closed (`no_release_key`): "Use" shows that error and saves nothing. No iOS unit test covers the section yet; the words are tested by `CloudProxyTests` on the Mac, and the check itself by `the_person_verifies_the_enclave_before_every_wrap` in `klav-proxy`.

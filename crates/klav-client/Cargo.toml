@@ -19,6 +19,9 @@ health = ["dep:zxcvbn", "klav-core/breach-check"]
 # §14, the DMG's cap). Layer 5 decides where it turns on; today only the
 # enclave's tests in klav-proxy use it.
 hosted-proxy = ["klav-core/nitro-attestation"]
+# Tests only: lets a test build trust a fake NSM's root and test release
+# keys (`klav-core`'s `nitro-testkit`, which refuses a release build).
+hosted-proxy-testkit = ["hosted-proxy", "klav-core/nitro-testkit"]
 
 [dependencies]
 klav-core = { workspace = true, features = ["rp-id"] }

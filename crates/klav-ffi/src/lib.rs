@@ -49,6 +49,7 @@ mod daemon;
 mod error;
 mod grants;
 mod health;
+mod hosted;
 mod import;
 #[cfg(feature = "daemon")]
 mod local_proxy;
@@ -1873,6 +1874,40 @@ impl KlavCore {
         self.with(|u| {
             let checked = self.runtime.block_on(u.sandbox_list_checked())?;
             Ok(sandboxes::checked_info(checked, all_proxies))
+        })
+    }
+
+    /// Klav Cloud's proxy (ADR 0051 §6.3), checked now: the signed
+    /// manifest and a fresh attestation when the account uses it, else
+    /// whether the account is entitled to it. Takes a moment.
+    pub fn hosted_proxy(&self) -> KlavResult<hosted::HostedProxyInfo> {
+        self.with(|u| {
+            let status = self.runtime.block_on(u.proxy_status())?;
+            let entitled = if status.mode == klav_core::model::preferences::ProxyMode::Klav {
+                None
+            } else {
+                self.runtime
+                    .block_on(u.hosted_proxy_entitlement())
+                    .ok()
+                    .flatten()
+            };
+            Ok(hosted::hosted_info(&status, entitled))
+        })
+    }
+
+    /// «Use Klav Cloud Proxy», «Stop using it» or «Set it up again» (ADR
+    /// 0051 §6.1, §6.3, §4.4), after the app asked for Face ID: checks the
+    /// enclave, then checks it again before it writes anything.
+    pub fn hosted_proxy_act(
+        &self,
+        action: hosted::HostedProxyAction,
+    ) -> KlavResult<hosted::HostedProxyOutcomeInfo> {
+        self.writing(|u| {
+            let prepared = self
+                .runtime
+                .block_on(u.prepare_cloud(hosted::action(action)))?;
+            let outcome = self.runtime.block_on(u.commit_cloud(prepared))?;
+            Ok(hosted::outcome_info(outcome))
         })
     }
 

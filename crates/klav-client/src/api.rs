@@ -55,6 +55,17 @@ pub fn http_client() -> ClientResult<reqwest::Client> {
         .map_err(|e| ClientError::Network(e.to_string()))
 }
 
+/// A client for another service than the Klav server (Klav Cloud's
+/// proxy's public API, ADR 0051 §6.4): same TLS and redirect policy, no
+/// retry, and `timeout` for the whole request.
+#[cfg(feature = "hosted-proxy")]
+pub(crate) fn plain_client(timeout: Duration) -> ClientResult<reqwest::Client> {
+    builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| ClientError::Network(e.to_string()))
+}
+
 fn builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(concat!("klav/", env!("CARGO_PKG_VERSION")))

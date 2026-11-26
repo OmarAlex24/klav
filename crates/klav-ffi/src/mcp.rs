@@ -295,6 +295,7 @@ mod tests {
                     profiles: vec!["github".into()],
                 },
             ],
+            hosted: None,
         }
     }
 

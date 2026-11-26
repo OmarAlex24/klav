@@ -17,6 +17,7 @@ import Foundation
 /// values ask for the master password (`sample`) until its window opens.
 /// `-KlavSampleMcp card|security|off` adds an MCP tool call's card, a
 /// security card, or has the account's MCP gateway off (ADR 0049).
+/// `-KlavSampleCloud on|unverified|lost`: Klav Cloud's proxy (ADR 0051).
 final class SampleEngine: MacEngine, @unchecked Sendable {
     private let mutex = NSLock()
     private var unlocked: Bool
@@ -26,6 +27,17 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     private var secretRequestList: [SecretRequestItem] = []
     /// The account's MCP gateway switch (ADR 0049 §9).
     private var mcpGatewayOn = UserDefaults.standard.string(forKey: "KlavSampleMcp") != "off"
+    /// Klav Cloud's proxy (ADR 0051): `-KlavSampleCloud on|unverified|lost`
+    /// has the account use it, verified, failing its check, or after it lost
+    /// its keys; without it the account is entitled and doesn't use it.
+    var cloudProxyInfo: HostedProxyInfo = {
+        switch UserDefaults.standard.string(forKey: "KlavSampleCloud") {
+        case "on": return SampleCloud.verified(agent: "6f1c")
+        case "unverified": return SampleCloud.failing(.unverified, reason: "image_revoked")
+        case "lost": return SampleCloud.failing(.lostKeys, reason: "lost_keys")
+        default: return SampleCloud.notUsed()
+        }
+    }()
     /// The proxy on this Mac (ADR 0036 E3.5): `-KlavSampleLocalProxy on`
     /// runs one with the sample's live sandboxes; the tests set it.
     var localProxyState: LocalProxyState = UserDefaults.standard.string(forKey: "KlavSampleLocalProxy") == "on"
@@ -2001,6 +2013,68 @@ extension SampleEngine {
             mcpGatewayOn = true
             return true
         }
+    }
+}
+
+// MARK: - Klav Cloud's proxy in the sample (ADR 0051, layer 5)
+
+extension SampleEngine {
+    func hostedProxy() throws -> HostedProxyInfo {
+        try locked { cloudProxyInfo }
+    }
+
+    func hostedProxyActWithPassword(action: HostedProxyAction, password: String?) throws -> HostedProxyOutcomeInfo {
+        try presence(true, password)
+        return try locked {
+            switch action {
+            case .use:
+                guard cloudProxyInfo.state == .notUsed, cloudProxyInfo.entitled == true else {
+                    throw KlavError.Invalid(message: "the account already uses Klav Cloud's proxy")
+                }
+                cloudProxyInfo = SampleCloud.verified(agent: "6f1c")
+                return HostedProxyOutcomeInfo(info: cloudProxyInfo, notes: [])
+            case .stop:
+                guard cloudProxyInfo.state != .notUsed else {
+                    throw KlavError.Invalid(message: "the account doesn't use Klav Cloud's proxy")
+                }
+                let held = cloudProxyInfo.credentials
+                cloudProxyInfo = SampleCloud.notUsed()
+                return HostedProxyOutcomeInfo(info: cloudProxyInfo, notes: held > 0
+                    ? ["rotate these provider tokens at each provider: Klav can't do it for you (ADR 0036 §18): Northflank"]
+                    : [])
+            case .reset:
+                cloudProxyInfo = SampleCloud.verified(agent: "9a2e")
+                return HostedProxyOutcomeInfo(info: cloudProxyInfo,
+                                              notes: ["shared with the new agent: Northflank"])
+            }
+        }
+    }
+}
+
+/// Klav Cloud's proxy in the sample and the tests.
+enum SampleCloud {
+    static func notUsed(entitled: Bool? = true) -> HostedProxyInfo {
+        HostedProxyInfo(state: .notUsed, needsAttention: false, entitled: entitled, replacesOwn: true,
+                        reason: nil, message: "the account doesn't use Klav Cloud's proxy", agentId: nil,
+                        version: nil, commit: nil, arch: nil, imageStatus: nil, pcr0: nil, pcr1: nil, pcr2: nil,
+                        manifestSeq: nil, channel: nil, checkedAtMs: 0, credentials: 0)
+    }
+
+    static func verified(agent: String) -> HostedProxyInfo {
+        HostedProxyInfo(state: .verified, needsAttention: false, entitled: true, replacesOwn: false,
+                        reason: nil, message: "attested", agentId: agent,
+                        version: "0.12.0", commit: "3b8f0c27d1a94e6b5c0f1e2d3c4b5a6978695a4b",
+                        arch: "aarch64", imageStatus: "current",
+                        pcr0: String(repeating: "a1", count: 48), pcr1: String(repeating: "b2", count: 48),
+                        pcr2: String(repeating: "c3", count: 48), manifestSeq: 7,
+                        channel: "tls://a\(agent).proxy.klav.dev:443", checkedAtMs: 0, credentials: 1)
+    }
+
+    static func failing(_ state: HostedProxyState, reason: String?) -> HostedProxyInfo {
+        HostedProxyInfo(state: state, needsAttention: state != .unreachable && state != .verified,
+                        entitled: true, replacesOwn: false, reason: reason, message: "m", agentId: "6f1c",
+                        version: nil, commit: nil, arch: nil, imageStatus: nil, pcr0: nil, pcr1: nil, pcr2: nil,
+                        manifestSeq: 7, channel: nil, checkedAtMs: 0, credentials: 1)
     }
 }
 #endif

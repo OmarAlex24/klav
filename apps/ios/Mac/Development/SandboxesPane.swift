@@ -90,6 +90,7 @@ struct SandboxesPane: View {
             PausedLine().padding(.bottom, 16)
         }
         ProxyBlock(board: board, onThisMac: model.localProxyBoard.onThisMac)
+        CloudProxyRow()
         LocalProxyRow().padding(.top, 12)
         ForEach(board.warnings, id: \.self) { warning in
             Notice(text: AgentText.line(warning, max: 300), tone: .info).padding(.top, 12)

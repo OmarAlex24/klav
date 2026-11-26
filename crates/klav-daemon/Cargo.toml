@@ -17,7 +17,7 @@ default = ["server"]
 server = ["dep:klav-import", "dep:klav-touchid", "dep:clap", "dep:nix", "dep:secrecy", "tokio/rt-multi-thread", "tokio/signal"]
 
 [dependencies]
-klav-client = { workspace = true, features = ["health"] }
+klav-client = { workspace = true, features = ["health", "hosted-proxy"] }
 # `rp-id`: the passkey handlers validate the rpId before asking for presence.
 klav-core = { workspace = true, features = ["rp-id"] }
 # Reading QR images of Google Authenticator exports (ADR 0024).

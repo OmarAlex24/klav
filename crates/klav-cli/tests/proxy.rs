@@ -758,3 +758,79 @@ fn the_northflank_preset_shows_and_grants_its_profile() {
         "{rules:?}"
     );
 }
+
+/// Klav Cloud's proxy (ADR 0051 §9, §14): no build pins the release
+/// authority's keys yet, so `klav proxy use klav` refuses before it sends
+/// anything to Klav Cloud (the endpoint here answers nothing), through
+/// klavd and directly, with the security exit code, and the setting stays.
+/// The other `cloud` commands need an account that uses it.
+#[test]
+fn use_klav_fails_closed_until_the_release_keys_are_pinned() {
+    let server = ServerProcess::start(900);
+    let root = tempfile::tempdir().expect("tempdir");
+    let person = Device::new(root.path(), "person");
+    person.signup(&server, "kim@example.com");
+    let _stop = StopDaemon(&person);
+    // Through klavd.
+    person.unlocked(&["unlock", "--idle-lock", "10m"], "").ok();
+    let refused = person.unlocked(&["proxy", "use", "klav"], "").err();
+    assert_eq!(refused.code, 3, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("no release-authority key pinned"),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(status(&person)["mode"], "none");
+    let refused = raw(
+        &person,
+        Request::ProxyCloud {
+            action: klav_client::hosted_proxy::CloudAction::Use,
+            password: None,
+        },
+    )
+    .expect_err("no release key");
+    assert!(refused.message.contains("release-authority"), "{refused:?}");
+    // Without klavd.
+    person.run(&["lock", "--stop"], "").ok();
+    let mut direct = person.command();
+    let out = direct
+        .env("KLAV_NO_DAEMON", "1")
+        .env("KLAV_HOSTED_PROXY_URL", "http://127.0.0.1:9")
+        .args(["--password-stdin", "proxy", "use", "klav"])
+        .spawn()
+        .expect("spawn");
+    let mut out = out;
+    {
+        use std::io::Write;
+        out.stdin
+            .take()
+            .expect("stdin")
+            .write_all(format!("{}\n", common::PASSWORD).as_bytes())
+            .expect("password");
+    }
+    let out = out.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no release-authority key pinned"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Usage and state errors.
+    person.unlocked(&["unlock", "--idle-lock", "10m"], "").ok();
+    person
+        .unlocked(&["proxy", "use", "klav", "some-agent"], "")
+        .err();
+    let not_used = person.unlocked(&["proxy", "cloud", "stop"], "").err();
+    assert!(
+        not_used.stderr.contains("doesn't use Klav Cloud's proxy"),
+        "{}",
+        not_used.stderr
+    );
+    let not_used = person.unlocked(&["proxy", "cloud", "status"], "").err();
+    assert!(
+        not_used.stderr.contains("`klav proxy use klav`"),
+        "{}",
+        not_used.stderr
+    );
+    assert_eq!(status(&person)["mode"], "none");
+}

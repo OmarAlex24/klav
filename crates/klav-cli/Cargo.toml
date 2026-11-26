@@ -11,7 +11,7 @@ publish.workspace = true
 build = "../klav-daemon/build.rs"
 
 [dependencies]
-klav-client = { workspace = true, features = ["health"] }
+klav-client = { workspace = true, features = ["health", "hosted-proxy"] }
 klav-daemon.workspace = true
 # Reading QR images of Google Authenticator exports (ADR 0024).
 klav-import = { workspace = true, features = ["qr-image"] }
