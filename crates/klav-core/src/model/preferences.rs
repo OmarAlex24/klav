@@ -40,20 +40,21 @@ pub enum ProxyMode {
     None,
     /// The person's own proxy, an agent of the account (`agent_id`).
     Own,
-    /// The hosted, attested proxy (ADR 0036 §12). Reserved: it does not
-    /// exist yet, so clients read it and treat it as unsupported, and never
-    /// write it.
+    /// Klav Cloud's hosted, attested proxy (ADR 0051), an agent of the
+    /// account (`agent_id`) that an enclave holds. A client writes it only
+    /// after verifying the enclave's attestation (ADR 0051 §2.2); one older
+    /// than ADR 0051's layer 5 reads it and treats it as unsupported.
     Klav,
 }
 
 /// `proxy`: `{mode, agent_id?}`. `agent_id` is there exactly when the mode
-/// is `own`.
+/// is `own` or `klav` (ADR 0051 §6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProxySetting {
     /// The mode.
     pub mode: ProxyMode,
-    /// The proxy's agent, with `own`.
+    /// The proxy's agent, with `own` and `klav`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<AgentId>,
 }
@@ -73,10 +74,29 @@ impl ProxySetting {
         }
     }
 
-    /// Checks that `agent_id` comes with `own` and only with it.
+    /// Klav Cloud's hosted proxy, `agent` (ADR 0051 §6.2).
+    pub fn klav(agent: AgentId) -> Self {
+        Self {
+            mode: ProxyMode::Klav,
+            agent_id: Some(agent),
+        }
+    }
+
+    /// The proxy's agent, with `own` or `klav`.
+    pub fn proxy_agent(&self) -> Option<AgentId> {
+        match self.mode {
+            ProxyMode::Own | ProxyMode::Klav => self.agent_id,
+            ProxyMode::None => None,
+        }
+    }
+
+    /// Checks that `agent_id` comes with `own` and `klav`, and only with
+    /// them (ADR 0051 §6.2). Run when a device writes the setting, never
+    /// when it reads it: an older device may have written `{mode: "klav"}`
+    /// as a reserved value, which reads as a hosted proxy with no agent.
     pub fn validate(&self) -> Result<(), ModelError> {
         match (self.mode, self.agent_id) {
-            (ProxyMode::Own, Some(_)) | (ProxyMode::None | ProxyMode::Klav, None) => Ok(()),
+            (ProxyMode::Own | ProxyMode::Klav, Some(_)) | (ProxyMode::None, None) => Ok(()),
             _ => Err(ModelError::InvalidText("proxy setting")),
         }
     }
@@ -114,10 +134,17 @@ mod tests {
     }
 
     #[test]
-    fn agent_id_comes_with_own_only() {
+    fn agent_id_comes_with_own_and_klav_only() {
         let id = AgentId::generate();
         assert!(ProxySetting::own(id).validate().is_ok());
+        assert!(ProxySetting::klav(id).validate().is_ok());
         assert!(ProxySetting::NONE.validate().is_ok());
+        assert_eq!(ProxySetting::klav(id).proxy_agent(), Some(id));
+        assert_eq!(ProxySetting::NONE.proxy_agent(), None);
+        assert_eq!(
+            serde_json::to_string(&ProxySetting::klav(id)).unwrap(),
+            format!(r#"{{"mode":"klav","agent_id":"{id}"}}"#)
+        );
         for bad in [
             ProxySetting {
                 mode: ProxyMode::Own,
@@ -129,7 +156,7 @@ mod tests {
             },
             ProxySetting {
                 mode: ProxyMode::Klav,
-                agent_id: Some(id),
+                agent_id: None,
             },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");

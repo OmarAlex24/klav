@@ -540,6 +540,9 @@ pub(crate) const ACCOUNT_FILES: &[&str] = &[
     // The proxy heartbeat watermarks (ADR 0036 E3.3): of this account
     // only, sealed with this local key.
     crate::sandboxes::SANDBOX_MARKS_FILE,
+    // Klav Cloud's proxy (ADR 0051): the manifest watermark and the hosted
+    // agents this device enrolled, sealed with this local key.
+    crate::hosted_proxy::HOSTED_PROXY_FILE,
 ];
 
 /// Removes this device's copy of the account (sign-out). The session must

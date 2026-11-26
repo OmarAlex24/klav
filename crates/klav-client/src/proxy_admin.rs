@@ -59,7 +59,7 @@ pub const OLDER_CLIENTS_PREFERENCES: &str = "Devices with a Klav older than the 
 pub const REPLACES_AGENT_PREFERENCES: &str = "`klav proxy use` replaces them whole with the setting you choose, and uses nothing in them: the developer switch goes back to its default. Their proxy is not trusted, so this cannot check whether a former proxy still holds credentials: `klav agent list` shows your agents, and `klav agent revoke` revokes one";
 
 /// Before presence, when an agent wrote the account's preferences.
-fn replace_warning(agent: AgentId) -> String {
+pub(crate) fn replace_warning(agent: AgentId) -> String {
     format!(
         "An agent ({agent}) wrote the account's preferences, which no agent may write. {REPLACES_AGENT_PREFERENCES}"
     )
@@ -280,6 +280,10 @@ pub struct ProxyStatus {
     /// §3.2). Empty when it names none or is not known.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local_clients: Vec<LocalClientView>,
+    /// Klav Cloud's proxy, as this device checked it just now (ADR 0051
+    /// §6.3): with `mode: "klav"` only. Absent from an older `klavd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosted: Option<crate::hosted_proxy::HostedProxyView>,
 }
 
 /// One agent the proxy's verified grant lets start sandboxes. Its ID,
@@ -474,6 +478,8 @@ pub(crate) struct ProxyGrant {
     pub(crate) public: klav_core::crypto::identity::PublicIdentity,
     pub(crate) pairing_code: String,
     pub(crate) payload: Option<GrantPayload>,
+    /// Klav Cloud's proxy (`mode: "klav"`): no words, an attestation.
+    pub(crate) hosted: bool,
 }
 
 impl Unlocked {
@@ -539,9 +545,17 @@ impl Unlocked {
             lost: Vec::new(),
             issuers: None,
             local_clients: Vec::new(),
+            hosted: None,
         };
+        let hosted_supported = cfg!(feature = "hosted-proxy");
         match (setting.mode, setting.agent_id) {
-            (ProxyMode::Own, Some(id)) => {
+            (ProxyMode::Klav, _) if !hosted_supported => status
+                .problems
+                .push(crate::hosted_proxy::UNSUPPORTED.into()),
+            (ProxyMode::Klav, None) => status.problems.push(
+                "the account's setting names Klav Cloud's proxy without its agent: set it up again with `klav proxy use klav`".into(),
+            ),
+            (ProxyMode::Own | ProxyMode::Klav, Some(id)) => {
                 let agents = self.agents().await?;
                 match agents.iter().find(|a| a.id == id).cloned() {
                     Some(agent) => {
@@ -594,13 +608,20 @@ impl Unlocked {
                     )),
                 }
             }
-            (ProxyMode::Klav, _) => status.problems.push(
-                "the account uses Klav's hosted proxy, which this version does not support yet"
-                    .into(),
-            ),
             _ => {}
         }
-        if status.mode != ProxyMode::Own || !status.problems.is_empty() {
+        // Klav Cloud's proxy, checked now (ADR 0051 §6.3): never a reason
+        // for the status to fail.
+        #[cfg(feature = "hosted-proxy")]
+        if status.mode == ProxyMode::Klav {
+            status.hosted = Some(self.hosted_view(status.agent_id).await);
+        }
+        let usable = match status.mode {
+            ProxyMode::Own => true,
+            ProxyMode::Klav => hosted_supported,
+            ProxyMode::None => false,
+        };
+        if !usable || !status.problems.is_empty() {
             status.lost = LOST_WITHOUT_PROXY.iter().map(|s| (*s).to_owned()).collect();
         }
         // The local MCP clients (ADR 0049 §3.2), from the grant as verified:
@@ -850,7 +871,10 @@ impl Unlocked {
                 ));
             }
         }
-        let first = grant.payload.is_none();
+        // Klav Cloud's proxy has no words to compare: its attestation,
+        // checked again before the grant is uploaded, proves its keys
+        // (ADR 0051 §6.1 step 4).
+        let first = grant.payload.is_none() && !grant.hosted;
         let view = ProxyChangeView {
             agent_id: grant.id,
             agent: grant.name.clone(),
@@ -1092,10 +1116,15 @@ impl Unlocked {
         let setting = self.preferences()?.proxy();
         let id = match (setting.mode, setting.agent_id) {
             (ProxyMode::Own, Some(id)) => id,
-            (ProxyMode::Klav, _) => {
+            (ProxyMode::Klav, Some(id)) if cfg!(feature = "hosted-proxy") => id,
+            (ProxyMode::Klav, Some(_)) => {
                 return Err(ClientError::Invalid(
-                    "the account uses Klav's hosted proxy, which this version does not support yet"
-                        .into(),
+                    crate::hosted_proxy::UNSUPPORTED.into(),
+                ));
+            }
+            (ProxyMode::Klav, None) => {
+                return Err(ClientError::Invalid(
+                    "the account's setting names Klav Cloud's proxy without its agent: set it up again with `klav proxy use klav`".into(),
                 ));
             }
             _ => {
@@ -1138,6 +1167,7 @@ impl Unlocked {
             pairing_code: klav_core::crypto::agent::pairing_code(&public),
             public,
             payload,
+            hosted: setting.mode == ProxyMode::Klav,
         })
     }
 
@@ -1145,7 +1175,10 @@ impl Unlocked {
     /// profiles and the policy as signed), and the items left out because
     /// this device no longer sees them (purged): their profiles and rule
     /// entries go too.
-    fn held_request(&self, grant: &ProxyGrant) -> ClientResult<(ItemGrantRequest, Vec<ItemId>)> {
+    pub(crate) fn held_request(
+        &self,
+        grant: &ProxyGrant,
+    ) -> ClientResult<(ItemGrantRequest, Vec<ItemId>)> {
         let Some(payload) = &grant.payload else {
             return Ok((ItemGrantRequest::default(), Vec::new()));
         };
@@ -1181,7 +1214,9 @@ impl Unlocked {
 
     /// The words the person compared, when the proxy has no grant yet.
     fn check_words(&self, grant: &ProxyGrant, words: Option<&str>) -> ClientResult<()> {
-        if grant.payload.is_some() {
+        // Klav Cloud's proxy: its attestation stands for the words, and
+        // `upload_grant` checks it again before anything leaves.
+        if grant.payload.is_some() || grant.hosted {
             return Ok(());
         }
         match words {

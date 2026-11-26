@@ -1912,3 +1912,420 @@ async fn the_account_caps_trip_deterministically_and_release() {
     .await;
     drop(h.person);
 }
+
+// ----------------------------------------------------- the person's side --
+
+/// A manifest like [`manifest_with`], for the accounts of `server` (a
+/// host name), valid from `issued` for `days`.
+fn manifest_for(
+    seq: u64,
+    images: &[(&Image, &str)],
+    signer: &FakeReleaseKey,
+    server: &str,
+    issued: u64,
+    days: u64,
+) -> SignedManifest {
+    let images: Vec<String> = images
+        .iter()
+        .map(|(img, status)| {
+            format!(
+                r#"{{"version":"{}","commit":"{}","arch":"aarch64","pcr0":"{}","pcr1":"{}","pcr2":"{}","status":"{status}"}}"#,
+                img.version,
+                hex(&img.pcrs[0][..20]),
+                hex(&img.pcrs[0]),
+                hex(&img.pcrs[1]),
+                hex(&img.pcrs[2]),
+            )
+        })
+        .collect();
+    let json = format!(
+        r#"{{"v":1,"seq":{seq},"seed_epoch":0,"issued_at_ms":{issued},"expires_at_ms":{},"endpoint":"{ENDPOINT}","server":"{server}","images":[{}],"parent_roles":["{}"],"egress":["203.0.113.10/32"]}}"#,
+        issued + days * DAY_MS,
+        images.join(","),
+        hex(&klav_role()),
+    );
+    let bytes = json.into_bytes();
+    SignedManifest {
+        signature: signer.sign(&bytes),
+        bytes,
+    }
+}
+
+/// What a parent in front of the enclave does to the person's requests.
+#[derive(Default)]
+struct Tamper {
+    /// Serve this manifest instead of the enclave's.
+    manifest: Option<ManifestWire>,
+    /// Flip a bit of every attestation document.
+    document: bool,
+}
+
+/// A parent host between the person's device and the enclave's API that
+/// can lie (ADR 0051 §1.1, T276): it serves another manifest, or alters
+/// the attestation. Returns its base URL.
+async fn tampering_parent(enclave_api: String, tamper: Arc<Mutex<Tamper>>) -> String {
+    use axum::extract::{RawQuery, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    type S = (String, Arc<Mutex<Tamper>>);
+    async fn relay(res: reqwest::Response) -> axum::response::Response {
+        let status = StatusCode::from_u16(res.status().as_u16()).expect("status");
+        (status, res.bytes().await.expect("body").to_vec()).into_response()
+    }
+    let app = axum::Router::new()
+        .route(
+            "/v1/manifest",
+            axum::routing::get(|State((base, t)): State<S>| async move {
+                let forged = t.lock().expect("lock").manifest.clone();
+                match forged {
+                    Some(m) => axum::Json(m).into_response(),
+                    None => {
+                        relay(
+                            reqwest::get(format!("{base}/v1/manifest"))
+                                .await
+                                .expect("enclave"),
+                        )
+                        .await
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/attest",
+            axum::routing::get(
+                |State((base, t)): State<S>, RawQuery(q): RawQuery| async move {
+                    let res = reqwest::get(format!("{base}/v1/attest?{}", q.unwrap_or_default()))
+                        .await
+                        .expect("enclave");
+                    if !res.status().is_success() || !t.lock().expect("lock").document {
+                        return relay(res).await;
+                    }
+                    let mut answer: AttestAnswer = res.json().await.expect("answer");
+                    let mut bytes = answer.document.as_bytes().to_vec();
+                    let at = bytes.len() / 2;
+                    bytes[at] ^= 1;
+                    answer.document = Blob::new(bytes);
+                    axum::Json(answer).into_response()
+                },
+            ),
+        )
+        .route(
+            "/v1/enroll",
+            axum::routing::post(
+                |State((base, _)): State<S>, body: axum::body::Bytes| async move {
+                    relay(
+                        reqwest::Client::new()
+                            .post(format!("{base}/v1/enroll"))
+                            .header("content-type", "application/json")
+                            .body(body.to_vec())
+                            .send()
+                            .await
+                            .expect("enclave"),
+                    )
+                    .await
+                },
+            ),
+        )
+        .with_state((enclave_api, tamper));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+fn wire(m: &SignedManifest) -> ManifestWire {
+    ManifestWire {
+        manifest: String::from_utf8(m.bytes.clone()).expect("utf-8"),
+        signature: m.signature_hex(),
+    }
+}
+
+/// Grants `item` to the account's proxy with the `northflank` profile.
+async fn grant(
+    person: &mut Unlocked,
+    item: &str,
+    upstream: &Upstream,
+) -> klav_client::ClientResult<klav_client::item_grants::ItemGrantReport> {
+    let mut credential = crate::sandbox_e2e_tests::credential_at(
+        &item.to_ascii_lowercase(),
+        &format!("https://upstream.test:{}", upstream.port),
+    );
+    credential.methods = vec!["GET".into()];
+    let prepared = person
+        .prepare_proxy_grant(item, &credential, PairingCheck::Typed(None))
+        .await?;
+    assert!(
+        !prepared.view().first,
+        "Klav Cloud's proxy has no words to compare"
+    );
+    prepared.require_updated_devices(true)?;
+    person.commit_proxy_change(prepared).await
+}
+
+async fn add_item(person: &mut Unlocked, title: &str, value: &str) {
+    let vault = person.find_vault("Personal").expect("vault");
+    let project = person.find_project(vault, "General").expect("project");
+    let mut item = Item::from_template(ItemKind::Login, title).expect("item");
+    item.field_mut("password")
+        .expect("password")
+        .set_value(value)
+        .expect("set");
+    person
+        .add_item(vault, project, &item)
+        .await
+        .expect("add item");
+}
+
+/// ADR 0051 layer 5, the person's device against layers 3 and 4: a real
+/// `klav-server` with the enclave's service key, the enclave (fake NSM),
+/// and a parent that can lie in front of its API.
+///
+/// - `use klav` refuses an account that isn't entitled, then enrolls,
+///   verifies the attestation against the keys the server shows, and
+///   writes `{mode: "klav", agent_id}`;
+/// - a grant needs no words and goes out only after a fresh attestation;
+/// - a forged manifest, a rolled-back one, an expired one, a revoked image
+///   and an altered document each block the next grant, and the status
+///   says it couldn't be verified; reading and what it holds stay;
+/// - a reset enrolls generation 1, a new agent, moves the credentials to
+///   it and revokes the old one;
+/// - «Stop using it» revokes the agent, sets the proxy to none, and no grant
+///   reaches the revoked agent afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_person_verifies_the_enclave_before_every_wrap() {
+    use klav_client::hosted_proxy::HostedState;
+    use klav_core::model::preferences::ProxyMode;
+
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let enclave = world.enclave_with(&img, &server.url, QuotaLimits::default());
+    enclave.start_fresh().expect("seed");
+    key_server_for(&mut server, &enclave);
+    let host = reqwest::Url::parse(&server.url)
+        .expect("url")
+        .host_str()
+        .expect("host")
+        .to_owned();
+    let release = FakeReleaseKey::new(RELEASE);
+    let seq1 = manifest_for(1, &[(&img, "current")], &release, &host, now() - 60_000, 20);
+    enclave.load_manifest(seq1.clone()).expect("manifest");
+    let tamper = Arc::new(Mutex::new(Tamper::default()));
+    let parent = tampering_parent(api(&enclave).await, Arc::clone(&tamper)).await;
+    let upstream = Upstream::start().await;
+
+    let email = "cam@example.com";
+    let mut person = account(&server, &dir, email, "tok_live_cam_0123456789abcdef").await;
+    add_item(&mut person, "Second", "tok_live_cam_second_0123456789").await;
+    add_item(&mut person, "Third", "tok_live_cam_third_0123456789").await;
+    person
+        .set_hosted_proxy_endpoint(Some(&parent))
+        .expect("endpoint");
+    person.set_hosted_proxy_test_anchors(world.nitro.root(), &[release.public()]);
+
+    // Not entitled yet: nothing is enrolled or written.
+    let refused = person
+        .prepare_hosted_proxy_use()
+        .await
+        .expect_err("not entitled");
+    assert!(refused.to_string().contains("isn't entitled"), "{refused}");
+    assert_eq!(
+        person.preferences().expect("prefs").proxy().mode,
+        ProxyMode::None
+    );
+    hosted_proxy_switch(&server, "enable", email);
+
+    // `use klav`: enrolled and verified, then written after "presence".
+    let prepared = person.prepare_hosted_proxy_use().await.expect("prepare");
+    assert_eq!(prepared.view.state, HostedState::Verified);
+    let image_view = prepared.view.image.clone().expect("image");
+    assert_eq!(image_view.version, "0.12.0");
+    assert_eq!(image_view.pcr0, hex(&img.pcrs[0]));
+    assert_eq!(prepared.view.generation, Some(0));
+    let first_agent = prepared.agent_id;
+    person
+        .commit_hosted_proxy_use(prepared)
+        .await
+        .expect("commit");
+    let setting = person.preferences().expect("prefs").proxy();
+    assert_eq!(setting.mode, ProxyMode::Klav);
+    assert_eq!(setting.agent_id, Some(first_agent));
+    let status = person.proxy_status().await.expect("status");
+    assert_eq!(status.agent_id, Some(first_agent));
+    assert!(status.problems.is_empty(), "{:?}", status.problems);
+    assert!(status.lost.is_empty());
+    let hosted = status.hosted.expect("hosted view");
+    assert_eq!(hosted.state, HostedState::Verified, "{}", hosted.message);
+    assert_eq!(
+        hosted.channel.as_deref(),
+        Some(super::channel_name(first_agent, ENDPOINT).as_str())
+    );
+
+    // The first grant: no words, after a fresh attestation.
+    assert!(
+        grant(&mut person, "Northflank", &upstream)
+            .await
+            .expect("grant")
+            .complete()
+    );
+
+    // Each lie of the parent blocks the next wrap, and only that.
+    let other = FakeReleaseKey::new("not the release authority");
+    let seq2 = manifest_for(2, &[(&img, "current")], &release, &host, now() - 60_000, 20);
+    enclave.load_manifest(seq2).expect("seq 2");
+    // This device now verifies seq 2: its watermark moves.
+    assert_eq!(
+        person
+            .proxy_status()
+            .await
+            .expect("status")
+            .hosted
+            .expect("view")
+            .manifest_seq,
+        Some(2)
+    );
+    let lies: Vec<(&str, Tamper)> = vec![
+        (
+            "manifest_signature",
+            Tamper {
+                manifest: Some(wire(&manifest_for(
+                    3,
+                    &[(&img, "current")],
+                    &other,
+                    &host,
+                    now() - 60_000,
+                    20,
+                ))),
+                document: false,
+            },
+        ),
+        (
+            "manifest_rollback",
+            Tamper {
+                manifest: Some(wire(&seq1)),
+                document: false,
+            },
+        ),
+        (
+            "manifest_expired",
+            Tamper {
+                manifest: Some(wire(&manifest_for(
+                    4,
+                    &[(&img, "current")],
+                    &release,
+                    &host,
+                    now() - 25 * DAY_MS,
+                    20,
+                ))),
+                document: false,
+            },
+        ),
+        (
+            "image_revoked",
+            Tamper {
+                manifest: Some(wire(&manifest_for(
+                    5,
+                    &[(&img, "revoked"), (&image("0.13.0"), "current")],
+                    &release,
+                    &host,
+                    now() - 60_000,
+                    20,
+                ))),
+                document: false,
+            },
+        ),
+        (
+            "other_server",
+            Tamper {
+                manifest: Some(wire(&manifest_for(
+                    6,
+                    &[(&img, "current")],
+                    &release,
+                    "api.klav.dev",
+                    now() - 60_000,
+                    20,
+                ))),
+                document: false,
+            },
+        ),
+        (
+            "signature",
+            Tamper {
+                manifest: None,
+                document: true,
+            },
+        ),
+    ];
+    for (reason, lie) in lies {
+        *tamper.lock().expect("lock") = lie;
+        let refused = grant(&mut person, "Second", &upstream)
+            .await
+            .expect_err(reason);
+        assert!(
+            matches!(refused, klav_client::ClientError::Security(_)),
+            "{reason}: {refused}"
+        );
+        let status = person.proxy_status().await.expect("status still reads");
+        let view = status.hosted.expect("view");
+        assert_eq!(view.state, HostedState::Unverified, "{reason}");
+        assert!(view.state.needs_attention());
+        if reason != "signature" {
+            assert_eq!(view.reason.as_deref(), Some(reason));
+        }
+        // What it holds stays until the person acts (§6.3).
+        assert_eq!(status.credentials.len(), 1, "{reason}");
+    }
+    // The revoked image's manifest (seq 5) was the highest verified: the
+    // enclave's seq 2 is now a rollback for this device. The release
+    // authority publishes a newer one, and the enclave serves it.
+    *tamper.lock().expect("lock") = Tamper::default();
+    let seq7 = manifest_for(7, &[(&img, "current")], &release, &host, now() - 60_000, 20);
+    enclave.load_manifest(seq7).expect("seq 7");
+    assert!(
+        grant(&mut person, "Second", &upstream)
+            .await
+            .expect("an honest parent again")
+            .complete()
+    );
+
+    // Reset: generation 1, a new agent, the credentials move, the old one
+    // is revoked.
+    let reset = person.prepare_hosted_proxy_reset().await.expect("reset");
+    assert_eq!(reset.old_agent_id, Some(first_agent));
+    assert_eq!(reset.new.view.generation, Some(1));
+    assert_ne!(reset.new.agent_id, first_agent);
+    assert_eq!(reset.credentials.len(), 2);
+    let second_agent = reset.new.agent_id;
+    let done = person
+        .commit_hosted_proxy_reset(reset)
+        .await
+        .expect("reset commit");
+    assert_eq!(done.share_failed, None);
+    assert_eq!(done.shared.len(), 2);
+    assert!(done.revoked.is_some());
+    let status = person.proxy_status().await.expect("status");
+    assert_eq!(status.agent_id, Some(second_agent));
+    assert_eq!(status.credentials.len(), 2);
+    let agents = person.agents().await.expect("agents");
+    let old = agents.iter().find(|a| a.id == first_agent).expect("old");
+    assert_eq!(old.status, AgentStatus::Revoked);
+
+    // «Stop using it».
+    let stopped = person.stop_hosted_proxy().await.expect("stop");
+    assert!(stopped.revoked.is_some());
+    assert_eq!(stopped.rotate_at_provider.len(), 2);
+    assert_eq!(
+        person.preferences().expect("prefs").proxy().mode,
+        ProxyMode::None
+    );
+    let agents = person.agents().await.expect("agents");
+    let gone = agents.iter().find(|a| a.id == second_agent).expect("agent");
+    assert_eq!(gone.status, AgentStatus::Revoked);
+    // A grant can't reach it any more: no proxy, and it was revoked here.
+    assert!(grant(&mut person, "Third", &upstream).await.is_err());
+}

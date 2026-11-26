@@ -311,3 +311,91 @@ async fn preferences_an_agent_wrote_flag_the_list_and_only_proxy_use_replaces_th
     let list = a.sandbox_list().await.expect("the plain list again");
     assert_eq!(list.security, None);
 }
+
+/// ADR 0051 §9: another device names Klav Cloud's proxy (`{mode: "klav",
+/// agent_id}`). Without the `hosted-proxy` feature this client reads it,
+/// says it doesn't support it, and refuses every proxy command; with it,
+/// the status checks the enclave and fails closed when it can't (here the
+/// server doesn't know the agent, and no release key is pinned). Neither
+/// writes `klav` through `set_proxy_setting`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_refuses_the_hosted_proxy_it_cannot_verify() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, _) = signup(
+        &Home::at(dir.path().join("a")),
+        SignupRequest {
+            server: server.url.clone(),
+            email: "hosted@example.com".into(),
+            password: MasterPassword::new(PASSWORD),
+            device_name: "laptop".into(),
+            device_kind: DeviceKind::Cli,
+            invite: None,
+        },
+    )
+    .await
+    .expect("sign-up");
+    let hosted = AgentId::generate();
+    // A newer device wrote it: the item, as that device writes it.
+    let loc = person_item(&mut a, ProxySetting::NONE).await;
+    let mut item = a.open_item(loc).unwrap();
+    item.set_preferences(Some(Preferences {
+        developer: None,
+        proxy: Some(ProxySetting::klav(hosted)),
+    }))
+    .unwrap();
+    a.update_item(loc, &item).await.unwrap();
+    assert_eq!(a.preferences().unwrap().proxy(), ProxySetting::klav(hosted));
+
+    // `set_proxy_setting` never writes it: only `use klav`, verified.
+    assert!(matches!(
+        a.set_proxy_setting(ProxySetting::klav(hosted)).await,
+        Err(ClientError::Invalid(_))
+    ));
+    let status = a.proxy_status().await.expect("status reads");
+    assert_eq!(status.mode, ProxyMode::Klav);
+    let spec = klav_client::proxy_admin::ProxyCredentialSpec {
+        profile: "railway".into(),
+        upstream: "https://backboard.railway.app".into(),
+        header: "authorization".into(),
+        prefix: "Bearer ".into(),
+        methods: vec!["POST".into()],
+        path_prefixes: vec!["/graphql".into()],
+        ..Default::default()
+    };
+    let refused = a
+        .prepare_proxy_grant(
+            "anything",
+            &spec,
+            klav_client::proxy_admin::PairingCheck::Typed(None),
+        )
+        .await
+        .expect_err("refused");
+    #[cfg(not(feature = "hosted-proxy"))]
+    {
+        assert!(status.hosted.is_none());
+        assert!(
+            status
+                .problems
+                .iter()
+                .any(|p| p == klav_client::hosted_proxy::UNSUPPORTED),
+            "{:?}",
+            status.problems
+        );
+        assert!(!status.lost.is_empty());
+        assert!(
+            refused
+                .to_string()
+                .contains(klav_client::hosted_proxy::UNSUPPORTED),
+            "{refused}"
+        );
+    }
+    #[cfg(feature = "hosted-proxy")]
+    {
+        let view = status.hosted.expect("checked");
+        assert!(view.state.needs_attention(), "{view:?}");
+        assert_ne!(view.state, klav_client::hosted_proxy::HostedState::Verified);
+        // The server doesn't know that agent: the grant can't be built.
+        let _ = refused;
+    }
+}

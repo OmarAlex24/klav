@@ -100,9 +100,17 @@ impl Unlocked {
 
     /// Sets which credential proxy the account uses, in every preferences
     /// item (creating one when there is none). Other keys stay as each
-    /// item has them. `klav` mode is never written: it does not exist yet.
-    /// A preferences item an agent wrote fails it, as reading does.
+    /// item has them. `klav` mode is refused here: only
+    /// `commit_hosted_proxy_use` writes it, after verifying the enclave
+    /// (ADR 0051 §2.2 step 7). A preferences item an agent wrote fails it,
+    /// as reading does.
     pub async fn set_proxy_setting(&mut self, setting: ProxySetting) -> ClientResult<()> {
+        if setting.mode == ProxyMode::Klav {
+            return Err(ClientError::Invalid(
+                "Klav Cloud's proxy is set with `klav proxy use klav`, which verifies it first"
+                    .into(),
+            ));
+        }
         self.set_proxy_setting_replacing(setting, &[]).await
     }
 
@@ -119,9 +127,9 @@ impl Unlocked {
         setting
             .validate()
             .map_err(|e| ClientError::Invalid(e.to_string()))?;
-        if setting.mode == ProxyMode::Klav {
+        if setting.mode == ProxyMode::Klav && !cfg!(feature = "hosted-proxy") {
             return Err(ClientError::Invalid(
-                "Klav's hosted proxy does not exist yet (ADR 0036 §12)".into(),
+                crate::hosted_proxy::UNSUPPORTED.into(),
             ));
         }
         // Another device may write it meanwhile: `update_item` syncs on a

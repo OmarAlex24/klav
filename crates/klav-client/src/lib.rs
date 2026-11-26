@@ -42,7 +42,6 @@ pub mod grant_change;
 pub mod health;
 pub mod history;
 pub mod home;
-#[cfg(feature = "hosted-proxy")]
 pub mod hosted_proxy;
 pub mod import;
 pub mod issuers;
