@@ -148,10 +148,33 @@ impl Refusal {
     }
 }
 
+/// The server name a forwarder before ADR 0051's layer 3 sent whatever the
+/// URL: the pin, not the name, authenticated the proxy. Still what goes
+/// out when the URL's host is not a valid DNS name.
+pub const LEGACY_SERVER_NAME: &str = "klav-proxy";
+
+/// The TLS server name for a proxy at `address` (`HOST:PORT`): the URL's
+/// host, so Klav Cloud's hosted proxy can pick the account's key by SNI
+/// (`a<agent_id>.proxy.klav.dev`, ADR 0051 §3.4). An IP literal (`[::1]:443`
+/// or `127.0.0.1:443`) becomes an IP name, for which rustls sends no SNI; a
+/// host that is not a valid name falls back to [`LEGACY_SERVER_NAME`]. A
+/// self-hosted proxy ignores SNI, so nothing changes for it.
+pub fn server_name_for(address: &str) -> ServerName<'static> {
+    let host = if let Some(rest) = address.strip_prefix('[') {
+        rest.split_once(']').map(|(host, _)| host)
+    } else {
+        address.rsplit_once(':').map(|(host, _)| host)
+    };
+    host.filter(|h| !h.is_empty())
+        .and_then(|h| ServerName::try_from(h.to_ascii_lowercase()).ok())
+        .unwrap_or_else(|| ServerName::try_from(LEGACY_SERVER_NAME).expect("a valid name"))
+}
+
 /// The proxy, as the package names it, and the channel key.
 pub struct Proxy {
     config: Arc<rustls::ClientConfig>,
     address: String,
+    name: ServerName<'static>,
 }
 
 impl Proxy {
@@ -166,7 +189,16 @@ impl Proxy {
         Ok(Self {
             config: Arc::new(config),
             address: address.to_owned(),
+            name: server_name_for(address),
         })
+    }
+
+    /// [`Proxy::new`] sending `name` as SNI whatever the URL: what a
+    /// forwarder before ADR 0051's layer 3 did with [`LEGACY_SERVER_NAME`]
+    /// (tests of the hosted proxy check it fails closed).
+    pub fn with_server_name(mut self, name: ServerName<'static>) -> Self {
+        self.name = name;
+        self
     }
 
     /// A new channel connection.
@@ -174,10 +206,10 @@ impl Proxy {
         let connect = async {
             let tcp = TcpStream::connect(&self.address).await?;
             tcp.set_nodelay(true)?;
-            // The pin names the proxy; the name is only what SNI carries.
-            let name = ServerName::try_from("klav-proxy").expect("a valid name");
+            // The pin names the proxy; the name is what SNI carries, which
+            // the hosted proxy routes on (ADR 0051 §3.4).
             TlsConnector::from(Arc::clone(&self.config))
-                .connect(name, tcp)
+                .connect(self.name.clone(), tcp)
                 .await
         };
         tokio::time::timeout(CONNECT_TIMEOUT, connect)
