@@ -1032,18 +1032,20 @@ mod verify {
                     }
                 }
                 Some(c) if c.mode == ProxyMode::Own => {
-                    if let Some(old) = c.agent_id {
-                        let holding = self.agents().await?.into_iter().find(|a| {
+                    // Q5 (a): the person's own proxy is not revoked. It keeps
+                    // its grant and serves the local agents of the machine it
+                    // runs on (ADR 0049 §3.1); sandboxes go to Klav Cloud's.
+                    if let Some(old) = c.agent_id
+                        && let Some(old) = self.agents().await?.into_iter().find(|a| {
                             a.id == old
                                 && a.status == AgentStatus::Active
                                 && a.grant.as_ref().is_some_and(|g| !g.items.is_empty())
-                        });
-                        if let Some(old) = holding {
-                            return Err(ClientError::Invalid(format!(
-                                "the current proxy, {:?}, still holds credentials: revoke it first with `klav agent revoke {}` (that also changes the keys of what it held)",
-                                old.name, old.id
-                            )));
-                        }
+                        })
+                    {
+                        warnings.push(format!(
+                            "your own proxy {:?} keeps its credentials and keeps serving the local agents of the machine it runs on; sandboxes use Klav Cloud's proxy from now on. To stop it, `klav agent revoke {} --rotate`",
+                            old.name, old.id
+                        ));
                     }
                 }
                 _ => {}
