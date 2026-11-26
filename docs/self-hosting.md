@@ -183,6 +183,8 @@ Unknown keys in the TOML are an error: a typo does not pass silently.
 | `KLAV_TRUSTED_IP_HEADER` | `trusted_ip_header` | — (none) | Header your proxy sets to the client IP, e.g. `x-real-ip` (§3.2); mutually exclusive with the above |
 | `KLAV_REGISTRATION_MODE` | `registration_mode` | `open` (`invite` in `docker-compose.yml`, Homebrew and `deploy/server/`, §1) | `open`, `invite` or `closed` (§2.5) |
 | `KLAV_ALLOW_REGISTRATION` | `allow_registration` | `true` (`false` in `docker-compose.yml`, Homebrew and `deploy/server/`, §1) | The older switch: `true` = `open`, `false` = `closed`; with `invite` it must be `false` (§2.5) |
+| `KLAV_AUTO_INVITE_TOKEN` | `invites.auto_token` | — | Bearer token of the internal auto-invite route, at least 32 bytes (§2.5) |
+| `KLAV_AUTO_INVITE_MAX` | `invites.auto_max` | `0` (off) | How many auto-issued invites may exist at once (§2.5) |
 | `KLAV_LOG_FORMAT` | `log.format` | `json` | `json` or `pretty` |
 | `KLAV_LOG` | `log.filter` | `info` | `tracing` filter, e.g. `info,klav_server=debug` |
 | `KLAV_APNS_KEY_PATH` | `push.apns.key_path` | — | APNs `.p8` file (§2.4) |
@@ -245,6 +247,10 @@ account_per_minute = 1200      # authenticated requests per account
 account_burst = 300
 invite_ip_per_minute = 1       # invite checks and invite failures, per IP (§2.5)
 invite_ip_burst = 10
+
+[invites]                      # optional: auto-issued invites for a sign-up site (§2.5)
+# auto_token = "…"             # at least 32 bytes; never logged
+auto_max = 0                   # 0: the internal routes answer 404
 
 [push.apns]                    # optional: approval notifications to the iPhone (§2.4)
 key_path = "/run/secrets/AuthKey_ABC123DEFG.p8"
@@ -346,7 +352,8 @@ open yet" message before the emergency kit and Argon2id.
 
 **Invites** are managed with subcommands of the same binary, against the
 configured database (`--config`, `KLAV_CONFIG` or `KLAV_DATABASE_URL`), while
-the server runs. There is no HTTP admin API:
+the server runs. There is no HTTP admin API (the one exception is the narrow
+auto-invite route below):
 
 ```text
 klav-server invite create [--email EMAIL] [--uses N] [--expires 30d] [--note TEXT]
@@ -372,6 +379,33 @@ A failed invite (`POST /v1/auth/invite/check`, or an invite refused in
 writes one `warn` log line with the client's IP key, never the code or the
 email. Behind a proxy without a trusted IP header (§3.2), every client shares
 that bucket; for a personal server that is fine.
+
+**Auto-issued invites** (ADR [0050](decisiones/0050-auto-beta-invites.md)) are
+for a sign-up site that emails invites by itself, as `klav.dev` does for
+`api.klav.dev`. Most self-hosters leave them off. With `KLAV_AUTO_INVITE_MAX`
+above `0`, a `KLAV_AUTO_INVITE_TOKEN` of at least 32 bytes
+(`openssl rand -base64 48`) and `registration_mode = "invite"`, the server
+serves two routes:
+
+- `POST /v1/internal/invites/auto` with `Authorization: Bearer <token>` and
+  `{"email": "…"}` creates an invite bound to that email, single-use, expiring
+  in 14 days, with the note `auto-beta`. It answers `201 {"id", "code",
+  "expires_at"}` (`expires_at` in Unix ms), `409 {"error": "already_invited"}`
+  if that email already has an `auto-beta` invite that isn't revoked, used or
+  not, or `409 {"error": "cap_reached"}` when `KLAV_AUTO_INVITE_MAX`
+  `auto-beta` invites that aren't revoked exist.
+- `POST /v1/internal/invites/auto/{id}/revoke` revokes an unused `auto-beta`
+  invite (`204`, or `404`), which frees its seat: for when the email with the
+  code could not be sent.
+
+Otherwise both answer `404`. A missing or wrong token is `401`, before the
+body is read. The server refuses to start with a shorter token, or with
+`KLAV_AUTO_INVITE_MAX` above `0` and no token. The routes are on the same
+listener as the API, so the token is what protects them: keep it in your
+secrets manager and send it only over a private network or TLS. The code
+appears only in the `201` body; neither it nor the token is logged. An
+auto-issued invite that expires unused keeps its seat until you revoke it with
+`klav-server invite revoke`.
 
 ### 2.6 Quotas per account
 

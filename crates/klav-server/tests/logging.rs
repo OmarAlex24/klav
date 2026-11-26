@@ -93,6 +93,31 @@ async fn request_logs_contain_no_headers_queries_or_bodies() {
     }
     let bare: String = code.expose()[5..].replace('-', "");
     drop(invite_server);
+
+    // Auto-issued invites (ADR 0050): neither the bearer token nor the
+    // code the route hands out reaches the logs, refused or issued.
+    let auto_token = format!("{MARKER}-auto-invite-token-0123456789");
+    let auto_server = TestServer::start_with(|c| {
+        c.allow_registration = Some(false);
+        c.registration_mode = Some(klav_proto::RegistrationMode::Invite);
+        c.invites.auto_token = Some(auto_token.clone().into());
+        c.invites.auto_max = 5;
+    })
+    .await;
+    let auto = |token: String| {
+        auto_server
+            .http
+            .post(auto_server.url("/v1/internal/invites/auto"))
+            .header("authorization", format!("Bearer {token}"))
+            .json(&serde_json::json!({ "email": "auto@example.com" }))
+            .send()
+    };
+    assert_eq!(auto(format!("{auto_token}x")).await.unwrap().status(), 401);
+    let res = auto(auto_token.clone()).await.unwrap();
+    assert_eq!(res.status(), 201);
+    let issued: serde_json::Value = res.json().await.unwrap();
+    let auto_code = issued["code"].as_str().unwrap().to_owned();
+    drop(auto_server);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let logs = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
@@ -104,6 +129,11 @@ async fn request_logs_contain_no_headers_queries_or_bodies() {
     assert!(
         !logs.contains(&code.expose()[5..]) && !logs.contains(&bare),
         "an invite code leaked into the logs"
+    );
+    assert!(logs.contains("auto invite issued"), "issuance is logged");
+    assert!(
+        !logs.contains(&auto_code[5..]) && !logs.contains(&auto_code[5..].replace('-', "")),
+        "an auto-issued invite code leaked into the logs"
     );
     assert!(
         !logs.contains(MARKER),

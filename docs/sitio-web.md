@@ -2,7 +2,10 @@
 
 La página de Klav y la lista de espera viven en [`apps/web`](../apps/web).
 La lista es la cola de invitaciones de la beta gratuita de `api.klav.dev`
-([ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4): Omar las manda a mano (§3). Es un servicio aparte de `klav-server`: no toca la
+([ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4): mientras
+queden lugares, el sitio la manda sola por correo ([ADR
+0050](decisiones/0050-auto-beta-invites.md), §3, «Invitaciones automáticas»);
+si no, Omar la manda a mano (§3). Es un servicio aparte de `klav-server`: no toca la
 bóveda, no comparte base de datos y no tiene dependencias de npm.
 
 | Archivo | Qué es |
@@ -14,6 +17,7 @@ bóveda, no comparte base de datos y no tiene dependencias de npm.
 | `server.mjs` | Servidor: `node:http` y `node:sqlite` (Node ≥ 22.13) |
 | `entrypoint.sh`, `Dockerfile` | La imagen para Railway |
 | `test/server.test.mjs` | Pruebas con `node:test` |
+| `test/auto-invite.test.mjs` | Pruebas de Turnstile y de las invitaciones automáticas, contra *mocks* locales de `klav-server`, Cloudflare Email Sending y `siteverify` |
 
 El diseño sigue [`diseno-visual/README.md`](diseno-visual/README.md) §7,
 «Sitio web». Qué afirma la página y de dónde sale cada cosa está en §6. Los
@@ -41,6 +45,15 @@ node --disable-warning=ExperimentalWarning apps/web/server.mjs
   apagado.
 - `KLAV_WEB_TESTFLIGHT_URL` es el enlace público de TestFlight
   (`https://testflight.apple.com/join/…`). `iphone` solo se enciende con él.
+- `KLAV_TURNSTILE_SITE_KEY` y `KLAV_TURNSTILE_SECRET` encienden Cloudflare
+  Turnstile en el formulario (§2); hacen falta los dos.
+  `KLAV_TURNSTILE_VERIFY_URL` cambia la URL de `siteverify`, para pruebas.
+- `KLAV_BETA_AUTO_CAP` (0 por defecto: solo lista de espera) y las variables
+  de §3, «Invitaciones automáticas», encienden las invitaciones automáticas.
+
+Un valor que falta o está mal escrito deja apagado lo suyo y lo dice una línea
+del registro con el nombre de la variable, nunca su valor. La línea de
+arranque termina en `turnstile on|off · auto invites on, cap N|off`.
 
 Abrir `public/index.html` directamente (`file://`) también funciona, salvo el
 formulario, que necesita el servidor. `?lang=es` y `?theme=dark` fuerzan el
@@ -59,14 +72,34 @@ En CI corren dentro de la tarea `extension`, que ya prepara Node 22.
 `POST /api/waitlist` con `{"email": "...", "lang": "en" | "es"}`.
 
 - **Qué se guarda:** el correo (en minúsculas), el idioma de la página y la
-  fecha. Al mandar la invitación, `mark-invited` (§3) añade cuándo se mandó y,
-  si se le da, una nota para Omar. Nada más: ni IP, ni navegador, ni cookies.
-  La página no carga nada de fuera ni lleva analítica.
-- **La misma respuesta para un correo nuevo y uno repetido** (`200
-  {"ok":true}`), para que el formulario no sirva para averiguar quién se
-  apuntó.
+  fecha. Al mandar la invitación, `mark-invited` (§3) o el envío automático
+  añaden cuándo se mandó y una nota (`auto-beta` en el automático). Nada más:
+  ni IP, ni navegador, ni cookies. La página no lleva analítica, y no carga
+  nada de fuera salvo el *script* de Turnstile cuando está encendido.
+- **Sin invitaciones automáticas, la misma respuesta para un correo nuevo y
+  uno repetido** (`200 {"ok":true}`), para que el formulario no sirva para
+  averiguar quién se apuntó.
+- **Con ellas** (§3), la respuesta lleva `status`: `invited` (la invitación
+  salió por correo), `already_invited` (a ese correo ya se le mandó una
+  automática; no se llama al servidor ni se manda otra) o `waitlisted` (no
+  quedan lugares, el límite por IP o un fallo de `klav-server` o de
+  Cloudflare). `already_invited` revela que a ese correo ya se le mandó una:
+  es el riesgo residual 106 del [modelo de amenazas](modelo-de-amenazas.md)
+  (ADR 0050 §4).
 - **Trampa para bots:** un campo `website` oculto. Si llega con algo, la
-  respuesta es la misma `200` y no se guarda nada.
+  respuesta es la misma que la de un correo que espera en la lista (`200
+  {"ok":true}`, o con `"status":"waitlisted"` si las invitaciones
+  automáticas están encendidas) y no se guarda nada.
+- **Cloudflare Turnstile** (opcional, con `KLAV_TURNSTILE_SITE_KEY` y
+  `KLAV_TURNSTILE_SECRET`): el servidor cambia el marcador `<!--turnstile-->`
+  del formulario por el *widget* y su *script*, y la CSP de `/` gana
+  `https://challenges.cloudflare.com` en `script-src` y en un `frame-src`
+  nuevo; sin Turnstile, la CSP no cambia. La petición lleva
+  `turnstile_token`, que se comprueba antes que la trampa: sin él, `400
+  turnstile_required`; si no pasa, `403 turnstile_failed`; si `siteverify`
+  falla o no responde, `503 turnstile_unavailable` (se cierra, no se guarda
+  nada). No se le manda la IP del cliente. La página reinicia el *widget*
+  tras cada intento, porque cada token sirve una vez.
 - **Límites:** solo `application/json` (`415` si no), 2 KB por petición
   (`413`), 5 intentos cada 10 minutos por IP (`429` con `Retry-After`; la
   cuenta vive en memoria y nunca en disco) y nada desde otro origen (`403` si
@@ -317,6 +350,57 @@ Si algo no funciona, contesta a este correo.
 Omar
 ```
 
+### Invitaciones automáticas
+
+Mientras queden lugares, el sitio manda la invitación solo, en cuanto alguien
+se apunta ([ADR 0050](decisiones/0050-auto-beta-invites.md)):
+
+1. Pide a `klav-server` una invitación con `POST
+   /v1/internal/invites/auto` (`{"email"}`, con `Authorization: Bearer
+   $KLAV_AUTO_INVITE_TOKEN`), por la red privada de Railway. El servidor la
+   crea ligada al correo, de un uso, de 14 días y con la nota `auto-beta`, y
+   responde `201 {id, code, expires_at}` (`expires_at` en milisegundos Unix),
+   `409 already_invited` o `409 cap_reached`.
+2. La manda con Cloudflare Email Sending, en texto plano y en el idioma de la
+   página: el código, que sirve una vez y solo con ese correo, la fecha en que
+   caduca, la descarga para Mac, los pasos («Configurar este Mac» → «Crear una
+   cuenta», o `klav signup`), los docs, las condiciones de la beta y
+   `support@klav.dev`.
+3. Si Cloudflare la acepta, pone `invited_at` y `note = 'auto-beta'` en la
+   fila. Si no (un error, `success: false`, un rebote permanente o un
+   destinatario suprimido), revoca la invitación con `POST
+   /v1/internal/invites/auto/{id}/revoke`, que libera el lugar, y la fila
+   queda pendiente para el ciclo a mano.
+
+**Topes:** el sitio deja de pedir invitaciones cuando tiene
+`KLAV_BETA_AUTO_CAP` filas `auto-beta` con `invited_at`, y el servidor tiene
+su propio `KLAV_AUTO_INVITE_MAX`, que cuenta las invitaciones `auto-beta` no
+revocadas. Además, cada IP recibe como mucho 2 invitaciones automáticas por
+hora; las demás direcciones de esa IP esperan en la lista. Una invitación
+automática que caduca sin usarse sigue ocupando su lugar hasta que Omar la
+revoca (`klav-server invite ls`, `invite revoke`).
+
+**Variables de `klav-web`** (todas, o se queda en solo lista de espera):
+
+| Variable | Qué es |
+|---|---|
+| `KLAV_BETA_AUTO_CAP` | Cuántas invitaciones automáticas manda el sitio; `0` las apaga |
+| `KLAV_AUTO_INVITE_URL` | `klav-server` por la red privada: `http://klav-server.railway.internal:8080` |
+| `KLAV_AUTO_INVITE_TOKEN` | El mismo token que el de `klav-server`, de al menos 32 bytes |
+| `KLAV_CF_ACCOUNT_ID` | El ID de la cuenta de Cloudflare (32 caracteres hexadecimales) |
+| `KLAV_CF_EMAIL_TOKEN` | Un token de la API de Cloudflare con *Email Sending: Edit* |
+| `KLAV_CF_EMAIL_FROM` | `invites@klav.dev` o `Klav <invites@klav.dev>`; el dominio, dado de alta en Email Sending |
+| `KLAV_CF_EMAIL_API_BASE` | Opcional, para pruebas; por defecto `https://api.cloudflare.com/client/v4` |
+
+**Variables de `klav-server`:** `KLAV_AUTO_INVITE_TOKEN` (el mismo) y
+`KLAV_AUTO_INVITE_MAX` (50 en la primera ola), junto al modo `invite` que ya
+tiene ([self-hosting.md](self-hosting.md) §2.5). Sin ellas, la ruta responde
+`404`.
+
+**Registro:** ni `klav-server` ni `klav-web` escriben el código ni los
+tokens. El sitio escribe una línea por invitación enviada (`auto invite: sent
+<id>`) y una por fallo, con el motivo y el código de estado.
+
 ### Sin token
 
 **Si no quieres activar el token**, lee la lista desde dentro del contenedor. Entra
@@ -346,10 +430,12 @@ Un servicio nuevo, `klav-web`, en el mismo proyecto `klav` que `klav-server`.
    `klav-server` ([self-hosting.md](self-hosting.md) §8). **No pongas
    `RAILWAY_RUN_UID`.**
 3. **Variables.** La imagen ya fija `PORT=8080`,
-   `KLAV_WEB_DB=/data/waitlist.db` y `KLAV_WEB_TRUST_PROXY=1`. Solo falta, si
-   quieres exportar por HTTP, `KLAV_WEB_ADMIN_TOKEN`. Créalo en tu Mac
-   (`openssl rand -base64 32`), pégalo en *Variables* y guárdalo en Klav. No
-   va en el repo ni en ningún chat.
+   `KLAV_WEB_DB=/data/waitlist.db` y `KLAV_WEB_TRUST_PROXY=1`. Si quieres
+   exportar por HTTP, `KLAV_WEB_ADMIN_TOKEN`; para Turnstile y las
+   invitaciones automáticas, las de §2 y §3, «Invitaciones automáticas». Los
+   tokens los creas en tu Mac (`openssl rand -base64 32`; el de las
+   invitaciones, `openssl rand -base64 48`), los pegas en *Variables* y los
+   guardas en Klav. No van en el repo ni en ningún chat.
 4. **Despliegue** (*Settings* → *Deploy*): *Healthcheck Path* `/healthz` y
    *Restart Policy* `On Failure`. Sin *Custom Start Command*: Railway lo
    usaría en lugar del *entrypoint*.
@@ -429,7 +515,7 @@ la página no se mezcla antes.
 | Descargas: el iPhone pide iOS 18, entra a una cuenta creada en la Mac o con la CLI, y sale por una beta pública de TestFlight | [ios.md](ios.md); [publicar-ios.md](publicar-ios.md) |
 | Descargas: el servidor propio con `docker compose up`, SQLite o Postgres, detrás de tu TLS; el nuestro, gratis durante su beta con invitación | [self-hosting.md](self-hosting.md); la beta, [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4 y Q1 |
 | La beta de `api.klav.dev` («Request a free beta invite», la tarjeta «Hosted by us» en `#beta`): gratis mientras sea con invitación; después, un plan de 20 USD al año con al menos 60 días de aviso; el servidor propio, gratis siempre | [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4, Q1 y Q5 (aceptado el 2026-11-25); el modo `invite` de `klav-server` y el código en `klav signup` y en la app de Mac (capas 1 y 2 del ADR). **Lo que la página no dice:** que la cuenta se pueda llevar a un servidor propio. ADR 0048 Q5 (a) nombra `klav account set-server`, pero hoy solo cambia la dirección de una cuenta que el servidor nuevo ya tiene ([cli.md](cli.md) §3, `set_server_cmd` en `crates/klav-cli/src/commands/account.rs`), y no hay forma de exportar una cuenta de `api.klav.dev` a un servidor propio vacío. Ni la página, ni los correos, ni los docs lo prometen hasta que exista ese camino; hace falta antes de que termine la beta. La página tampoco nombra las cuotas de la beta: dependen de las variables de producción |
-| Las invitaciones salen a mano, de a poco, desde la lista | §3, «Mandar las invitaciones» |
+| Mientras queden lugares, la invitación llega por correo; si no, se espera en la lista (la etiqueta del formulario, y los mensajes `invited`, `already_invited` y de la lista) | §3, «Invitaciones automáticas» y «Mandar las invitaciones»; [ADR 0050](decisiones/0050-auto-beta-invites.md) |
 
 **Próximamente** (sin implementar en `main`). La lista sale de
 [features.md](features.md), que decide dónde puede aparecer cada cosa (ADR

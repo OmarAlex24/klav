@@ -60,7 +60,9 @@ When the UI and the code disagree, prose follows the UI and identifiers are quot
 | plan alojado | hosted plan | site |
 | lista de espera | waitlist | site |
 | beta con invitación (de `api.klav.dev`) | invite-only beta | site; ADR 0048. Free while it lasts; not the TestFlight public beta |
-| invitación a la beta | beta invite | site; requested on klav.dev (`#beta`), the waitlist is its queue, sent by hand (`sitio-web.md` §3) |
+| invitación a la beta | beta invite | site; requested on klav.dev (`#beta`), the waitlist is its queue, sent automatically while seats last (ADR 0050), otherwise by hand (`sitio-web.md` §3) |
+| invitación automática | auto-issued invite | ADR 0050: an invite `klav-server` issues on its internal route for `klav-web` (single-use, bound, 14 days, note `auto-beta`), emailed at once; capped by `KLAV_AUTO_INVITE_MAX` and `KLAV_BETA_AUTO_CAP` |
+| verificación de Turnstile | Turnstile check | ADR 0050: Cloudflare Turnstile on the beta invite form, verified with `siteverify`; optional, fails closed |
 | relevo ciego | blind relay | ADR 0029 |
 
 ## Vaults and items

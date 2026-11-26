@@ -43,9 +43,39 @@ pub fn digest_str(token: &str) -> [u8; DIGEST_LEN] {
     Sha256::digest(bytes.as_slice()).into()
 }
 
+/// Whether `given` (from a header) is `expected`, in constant time: both
+/// are first reduced to their [`digest_str`], so neither the length nor the
+/// first differing byte of `expected` shows in the timing. For a shared
+/// bearer secret held in the configuration (the auto-invite token, ADR
+/// 0050 §2.2), which the server never stores as a digest.
+pub fn same_token(given: &str, expected: &SecretString) -> bool {
+    use subtle::ConstantTimeEq as _;
+    let a = digest_str(given);
+    let b = token_digest(expected);
+    bool::from(a.ct_eq(&b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_token_matches_only_the_exact_token() {
+        let expected = SecretString::from("an-internal-token-of-at-least-32-bytes");
+        assert!(same_token(
+            "an-internal-token-of-at-least-32-bytes",
+            &expected
+        ));
+        assert!(!same_token(
+            "an-internal-token-of-at-least-32-byteS",
+            &expected
+        ));
+        assert!(!same_token(
+            "an-internal-token-of-at-least-32-bytes ",
+            &expected
+        ));
+        assert!(!same_token("", &expected));
+    }
 
     #[test]
     fn tokens_are_prefixed_unique_and_digest_stably() {

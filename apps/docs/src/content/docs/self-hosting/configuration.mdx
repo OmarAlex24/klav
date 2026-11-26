@@ -28,6 +28,8 @@ klav-server: invalid config file: unknown field `lisen`, expected one of `listen
 | `KLAV_DATA_DIR` | `data_dir` | `data` (`/data` in the image) | Folder for attachments |
 | `KLAV_REGISTRATION_MODE` | `registration_mode` | `open` (`invite` in `docker-compose.yml`, Homebrew and the systemd example) | Who can create an account: `open`, `invite` or `closed`. See [Registration](#registration) |
 | `KLAV_ALLOW_REGISTRATION` | `allow_registration` | `true` (`false` in `docker-compose.yml`, Homebrew and the systemd example) | The older switch: `true` means `open`, `false` means `closed`, or `invite` with `KLAV_REGISTRATION_MODE=invite` |
+| `KLAV_AUTO_INVITE_TOKEN` | `invites.auto_token` | — | Bearer token of the auto-invite route, at least 32 bytes. See [Auto-issued invites](#auto-issued-invites) |
+| `KLAV_AUTO_INVITE_MAX` | `invites.auto_max` | `0` (off) | How many auto-issued invites may exist at once |
 | `KLAV_TRUST_FORWARDED_FOR` | `trust_forwarded_for` | `false` | Take the client's IP address from `X-Forwarded-For` |
 | `KLAV_TRUSTED_IP_HEADER` | `trusted_ip_header` | none | A header your proxy sets to the client's IP address, such as `x-real-ip`; not with the one above |
 | `KLAV_LOG_FORMAT` | `log.format` | `json` | `json` or `pretty` |
@@ -119,6 +121,18 @@ Over a limit, the server answers `429` with `Retry-After`. Limits per IP address
 `allow_registration` is the older switch, and is still read. When both are set, they must agree, or the server doesn't start: `true` goes only with `open`, and `false` with `closed` or `invite`. Keep `allow_registration = false` (or `KLAV_ALLOW_REGISTRATION=false`) next to `invite`: a `klav-server` from before invites ignores `KLAV_REGISTRATION_MODE` and would otherwise start open to everyone, after a rollback for example. Remove it only to choose `open`.
 
 `/v1/health` reports the mode in `registration_mode`. In `invite` and `closed` mode, `registration_open` is `false`, so an app too old to know invites stops before it asks for a password; update it to sign up with an invite.
+
+### Auto-issued invites
+
+For a sign-up page that emails invites by itself, as `klav.dev` does for Klav's own server. Most self-hosted servers leave this off.
+
+With `KLAV_AUTO_INVITE_MAX` above `0`, a `KLAV_AUTO_INVITE_TOKEN` of at least 32 bytes (`openssl rand -base64 48`) and `registration_mode = "invite"`, the server answers `POST /v1/internal/invites/auto` with `Authorization: Bearer <token>` and `{"email": "…"}`:
+
+- `201` with `id`, `code` and `expires_at` (Unix milliseconds): an invite bound to that email, single-use, expiring in 14 days, with the note `auto-beta`.
+- `409` with `"error": "already_invited"` if that email already has one that isn't revoked, used or not.
+- `409` with `"error": "cap_reached"` once `KLAV_AUTO_INVITE_MAX` of them exist, not counting revoked ones.
+
+`POST /v1/internal/invites/auto/<id>/revoke` revokes an unused one and frees its seat, for when the email with the code couldn't be sent. Otherwise both routes answer `404`, and a missing or wrong token gets `401`. The routes are on the same address as the rest of the API, so the token is what protects them: keep it in your secrets manager. The server never logs the code or the token, and it won't start with a token shorter than 32 bytes, or with a cap and no token.
 
 ## Quotas per account
 

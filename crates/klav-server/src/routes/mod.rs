@@ -11,6 +11,7 @@ mod approvals;
 mod attachments;
 mod audit;
 mod auth;
+mod auto_invites;
 mod devices;
 mod health;
 mod items;
@@ -31,6 +32,7 @@ pub(crate) fn router(max_attachment_chunk: usize) -> Router<AppState> {
         .merge(approvals::router())
         .merge(audit::router())
         .merge(auth::router())
+        .merge(auto_invites::router())
         .merge(devices::router())
         .merge(vaults::router())
         .merge(items::router())

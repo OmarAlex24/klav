@@ -487,6 +487,7 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
 .wl-input:focus { outline: none; border-color: var(--tinta); }
 .wl-input[aria-invalid="true"] { border-color: var(--rojo); }
 .wl-row .btn:disabled { opacity: 0.55; cursor: default; }
+.wl-turnstile { margin-top: 10px; min-height: 65px; }
 .wl-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 .wl-status { margin-top: 10px; font-size: 14px; padding: 10px 12px; background: var(--niebla); }
 .wl-status.is-error { box-shadow: inset 2px 0 0 var(--rojo); }
@@ -1158,7 +1159,7 @@ env:
           <li data-i18n="pr.host3">Unlimited agents and devices</li>
         </ul>
         <form class="waitlist" id="waitlist" action="/api/waitlist" method="post" novalidate>
-          <label class="wl-label" for="wl-email" data-i18n="wl.label">Leave your email. We send the invites ourselves, a few at a time.</label>
+          <label class="wl-label" for="wl-email" data-i18n="wl.label">Leave your email. While beta seats last, the invite goes out by email; once they’re gone, you wait on the list.</label>
           <div class="wl-row" id="wl-row">
             <input class="wl-input" id="wl-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required placeholder="you@example.com" data-i18n-placeholder="wl.placeholder" aria-describedby="wl-status">
             <button class="btn btn-primary" type="submit" id="wl-submit" data-i18n="wl.join">Request a free beta invite</button>
@@ -1168,6 +1169,7 @@ env:
             <label for="wl-website">Website</label>
             <input id="wl-website" name="website" type="text" tabindex="-1" autocomplete="off">
           </div>
+          <!--turnstile-->
           <p class="wl-status" id="wl-status" role="status" aria-live="polite" tabindex="-1" hidden></p>
           <p class="wl-terms" data-i18n-html="wl.terms">Our server, <code>api.klav.dev</code>, is free while the beta is invite-only. After the beta it becomes a plan of 20 USD a year, and we’ll tell you at least 60 days before you’d pay anything. Running your own server stays free, for good.</p>
         </form>
@@ -1396,7 +1398,7 @@ env:
     "pr.host1": "Servidor, respaldos y actualizaciones, resueltos",
     "pr.host2": "Aprobaciones con aviso en tu iPhone",
     "pr.host3": "Agentes y dispositivos sin límite",
-    "wl.label": "Deja tu correo. Las invitaciones las mandamos nosotros, de a poco.",
+    "wl.label": "Deja tu correo. Mientras haya lugares en la beta, la invitación te llega por correo; si ya no quedan, esperas en la lista.",
     "wl.placeholder": "tu@ejemplo.com",
     "wl.join": "Pide una invitación a la beta gratuita",
     "wl.terms": "Nuestro servidor, <code>api.klav.dev</code>, es gratis mientras la beta sea por invitación. Al terminar pasa a ser un plan de 20 USD al año, y te avisamos por lo menos 60 días antes de cobrarte nada. Montar tu propio servidor sigue siendo gratis, siempre.",
@@ -1987,22 +1989,32 @@ env:
   setInterval(code, 1000);
 
   // --------------------------------------------------------- waitlist --
-  // One field. The server answers the same for a new email and one it
-  // already has, so the page can't be used to check who signed up.
+  // One field, and a Cloudflare Turnstile check when the server put one
+  // in. While beta seats last, the server sends the invite at once
+  // ("invited"); otherwise the address waits on the list ("waitlisted").
+  // An address that already got one hears "already_invited" (ADR 0050).
   const WL = {
     en: {
       sending: "Sending…",
       done: (e) => `You're on the list. When your invite is ready, we'll send it to ${e}, with the code and how to sign up.`,
+      invited: (e) => `Your invite is on its way to ${e}, with the code and how to sign up. If it isn't in your inbox in a few minutes, look in spam.`,
+      already: (e) => `We already sent an invite to ${e}. Look for an email from Klav, in spam too.`,
       invalid: "Check the email: it needs an @ and a domain.",
       limited: "Too many tries from here. Wait a few minutes and try again.",
       failed: "The list didn't answer. Try again in a moment.",
+      check: "First complete the check above the button.",
+      checkFailed: "The check didn't pass. Try it again.",
     },
     es: {
       sending: "Enviando…",
       done: (e) => `Ya estás en la lista. Cuando tu invitación esté lista, te la mandamos a ${e}, con el código y cómo crear tu cuenta.`,
+      invited: (e) => `Tu invitación va en camino a ${e}, con el código y cómo crear tu cuenta. Si en unos minutos no aparece en tu bandeja, búscala en spam.`,
+      already: (e) => `Ya te mandamos una invitación a ${e}. Busca un correo de Klav, también en spam.`,
       invalid: "Revisa el correo: le falta la @ o el dominio.",
       limited: "Demasiados intentos desde aquí. Espera unos minutos y vuelve a probar.",
       failed: "La lista no respondió. Vuelve a probar en un momento.",
+      check: "Primero completa la verificación de arriba del botón.",
+      checkFailed: "La verificación no pasó. Vuelve a intentarlo.",
     },
   };
   const form = document.getElementById("waitlist");
@@ -2012,14 +2024,17 @@ env:
   const row = document.getElementById("wl-row");
   const label = form.querySelector(".wl-label");
   const status = document.getElementById("wl-status");
+  const check = document.getElementById("wl-turnstile");
   const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  let wl = { state: "idle", error: "", email: "" };
+  let wl = { state: "idle", error: "", email: "", outcome: "" };
+  const DONE = { invited: "invited", already_invited: "already" };
 
   function renderWaitlist() {
     const t = WL[lang];
     const done = wl.state === "done";
     row.hidden = done;
     label.hidden = done;
+    if (check) check.hidden = done;
     submit.disabled = wl.state === "sending";
     if (wl.state === "sending") submit.textContent = t.sending;
     else submit.textContent = (lang === "es" ? ES : EN)["wl.join"];
@@ -2027,7 +2042,7 @@ env:
     status.classList.toggle("is-error", wl.state === "error");
     status.classList.toggle("is-done", done);
     // textContent, never innerHTML: the email is what the person typed.
-    if (done) status.textContent = t.done(wl.email);
+    if (done) status.textContent = t[DONE[wl.outcome] || "done"](wl.email);
     else if (wl.state === "error") status.textContent = t[wl.error];
     status.hidden = !(done || wl.state === "error");
   }
@@ -2043,25 +2058,41 @@ env:
       email.focus();
       return;
     }
-    wl = { state: "sending", error: "", email: value };
+    const token = check ? (form.querySelector('[name="cf-turnstile-response"]') || {}).value || "" : "";
+    if (check && !token) {
+      wl = { state: "error", error: "check", email: "", outcome: "" };
+      renderWaitlist();
+      return;
+    }
+    wl = { state: "sending", error: "", email: value, outcome: "" };
     renderWaitlist();
     try {
+      const sent = { email: value, lang, website: trap.value };
+      if (check) sent.turnstile_token = token;
       const res = await fetch("/api/waitlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: value, lang, website: trap.value }),
+        body: JSON.stringify(sent),
       });
-      if (res.ok) wl = { state: "done", error: "", email: value };
-      else wl = { state: "error", email: "", error: res.status === 400 ? "invalid" : res.status === 429 ? "limited" : "failed" };
+      const answer = await res.json().catch(() => ({}));
+      if (res.ok) wl = { state: "done", error: "", email: value, outcome: answer.status || "waitlisted" };
+      else {
+        const error = answer.error === "turnstile_required" ? "check"
+          : answer.error === "turnstile_failed" ? "checkFailed"
+          : res.status === 400 ? "invalid" : res.status === 429 ? "limited" : "failed";
+        wl = { state: "error", email: "", error, outcome: "" };
+      }
     } catch {
-      wl = { state: "error", error: "failed", email: "" };
+      wl = { state: "error", error: "failed", email: "", outcome: "" };
     }
+    // A Turnstile token works once: a new check for the next try.
+    if (check && window.turnstile) { try { window.turnstile.reset(check); } catch {} }
     renderWaitlist();
     if (wl.state === "error") email.focus();
     else status.focus();
   });
   email.addEventListener("input", () => {
-    if (wl.state === "error") { wl = { state: "idle", error: "", email: "" }; renderWaitlist(); }
+    if (wl.state === "error") { wl = { state: "idle", error: "", email: "", outcome: "" }; renderWaitlist(); }
   });
 
   // The hero's "Request a free beta invite" goes to the form and puts the cursor in it.

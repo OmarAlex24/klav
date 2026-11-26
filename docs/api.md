@@ -188,7 +188,27 @@ Si el registro está cerrado responde `403`. Si el correo ya existe, `409`
   código bueno espera (`429`). Cada fallo deja una línea `warn` con la IP y
   sin el código ni el correo.
 - Los códigos los crea quien opera el servidor con `klav-server invite
-  create|ls|revoke` (ADR 0048 §1.4), no hay API HTTP de administración.
+  create|ls|revoke` (ADR 0048 §1.4), no hay API HTTP de administración, salvo
+  la ruta acotada de abajo.
+
+**Invitaciones emitidas solas** (ADR
+[0050](decisiones/0050-auto-beta-invites.md); para el sitio de registro, no
+para los clientes):
+
+- `POST /v1/internal/invites/auto` con `Authorization: Bearer
+  <KLAV_AUTO_INVITE_TOKEN>` y `{ "email" }` (nada más, 1 KiB como mucho) →
+  `201 { "id", "code", "expires_at" }` (`expires_at` en milisegundos Unix):
+  una invitación de un uso, ligada al correo, de 14 días y con la nota
+  `auto-beta`. `409 { "error": "already_invited" }` si el correo ya tiene una
+  `auto-beta` sin revocar, usada o no; `409 { "error": "cap_reached" }` si ya
+  hay `KLAV_AUTO_INVITE_MAX` sin revocar. Estos `409` no son un `ErrorCode`
+  de `klav-proto`.
+- `POST /v1/internal/invites/auto/{id}/revoke` → `204` si revocó una
+  invitación `auto-beta` sin usar, `404` si no. Libera el lugar y el correo.
+- Las dos responden `404` salvo con `KLAV_AUTO_INVITE_MAX > 0`, un token y el
+  modo `invite`, y `401` sin el token o con otro, antes de leer el cuerpo y
+  de tocar la base de datos (comparación en tiempo constante). El servidor
+  registra solo el `id`, nunca el código ni el token.
 
 ### 2.3 Login
 
