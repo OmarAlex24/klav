@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-<Aside>In progress. The self-hosted base-URL proxy (`klav-proxy` and `klav-forward`) and the Mac app's Active Sandboxes panel are in early preview in the repository; transparent `HTTPS_PROXY` mode, the MCP gate, the iPhone panel, and a managed enclave proxy are still on the way.</Aside>
+<Aside>In progress. The self-hosted base-URL proxy (`klav-proxy` and `klav-forward`) and the Mac app's Active Sandboxes panel are in early preview in the repository; transparent `HTTPS_PROXY` mode, the MCP gate, the iPhone panel, and Klav Cloud's proxy in an enclave are still on the way.</Aside>
 
 This page explains a design for agents that work in disposable sandboxes: what goes wrong today when a sandbox holds your API tokens, and how a credential proxy would keep them out.
 
@@ -26,10 +26,19 @@ An agent that works in a disposable sandbox, such as a cloud virtual machine sta
 - **Every call in your log,** with the name of the sandbox that made it.
 - **Revoke from the apps or the terminal.** "Active sandboxes" in the Mac and iPhone apps lists them and lets you revoke one, and so does `klav proxy sandboxes` in the CLI.
 
-The proxy you host yourself comes first. A proxy run by Klav would come later, once it runs inside an enclave you can verify.
+The proxy you host yourself comes first.
+
+## Klav Cloud's proxy
+
+Running your own proxy means keeping a machine up, even while your Mac sleeps. Klav Cloud will offer one that Klav runs for you, as a higher tier that comes later, first for invited beta accounts. Klav still must not be able to read your tokens, so it runs only inside an AWS Nitro Enclave, an isolated part of a server that nobody, Klav's operators included, can log in to or read.
+
+- **Your devices check it first.** Before your Mac, iPhone or the CLI shares a token with it, it asks the enclave for a signed statement from AWS's hardware saying which program it runs, and checks that the program is one Klav published and lists in a signed public file, and that it holds the keys your device is about to share with.
+- **Each account gets its own keys,** so a mistake that mixes accounts up still can't open another account's tokens.
+- **The code is open and the build reproducible,** so anyone can check that a published version is what the enclave says it runs.
 
 ## What it won't solve
 
 - Whoever runs the sandbox sees what the agent sends and receives. The proxy keeps your tokens and your Klav keys out, not the data.
 - While a sandbox lives, the agent can do what the token allows through the proxy. The allow lists and the approvals are for that.
 - If you run the proxy yourself, keeping it running, updated and protected is up to you; whoever runs its machine could, in principle, read its memory.
+- With Klav Cloud's proxy, you trust AWS's hardware and whoever signs Klav's releases. Klav's servers can see which services you call, when and how much, but not your tokens.

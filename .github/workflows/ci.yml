@@ -820,6 +820,10 @@ jobs:
             echo "::warning::cargo-nextest is not installed: running cargo test instead"
             cargo test --workspace --locked
           fi
+          # klav-core's Nitro attestation and enclave manifest (ADR 0051), with
+          # their vectors: no binary turns the feature on yet, so the
+          # workspace run above does not build it.
+          cargo test -p klav-core --features nitro-attestation --locked --lib nitro
           # Swift bindings of klav-ffi (uniffi, library mode; ADR 0018).
           cargo build -p klav-ffi --features bindgen --locked
           target/debug/uniffi-bindgen generate --library target/debug/libklav_ffi.so \
@@ -892,6 +896,8 @@ jobs:
           # the socket's client (ADR 0027).
           cargo clippy -p klav-ffi --features daemon --all-targets --locked -- -D warnings
           cargo clippy -p klav-daemon --no-default-features --lib --locked -- -D warnings
+          # klav-core with the Nitro attestation feature (ADR 0051).
+          cargo clippy -p klav-core --features nitro-attestation --all-targets --locked -- -D warnings
           EOF
 
       - name: "test (postgres): start"

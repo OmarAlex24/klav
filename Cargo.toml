@@ -56,6 +56,8 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.p256]
 opt-level = 3
+[profile.dev.package.p384]
+opt-level = 3
 [profile.dev.package.primefield]
 opt-level = 3
 [profile.dev.package.primeorder]

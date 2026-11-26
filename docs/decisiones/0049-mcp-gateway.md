@@ -47,6 +47,8 @@ It is also Omar's most frequent credential chore: he generates Cloudflare and No
 ## Decision
 
 ### 1. What the gateway is, and what "zero-knowledge" means here
+> Note of 2026-11-26: "no hosted gateway in this ADR" stands here; [ADR 0051](0051-hosted-nitro-enclave-proxy.md) (accepted that day) runs the gateway's MCP profiles for sandboxes in Klav Cloud's hosted proxy, inside an AWS Nitro Enclave the person's devices verify.
+
 - **It is not a new program.** The MCP gateway is `klav-proxy` with **MCP profiles**: a profile that also knows its upstream's MCP endpoint and lets the proxy read, check and filter the JSON-RPC in it (§5). The same binary serves:
   - sandboxes, through `klav-forward` and the pinned channel (ADR 0036 §5–§6);
   - the person's Mac, on its loopback listener, once the Mac proxy exists (§3).
@@ -97,6 +99,8 @@ It strips any `Authorization`, `Cookie` or provider header the caller sends (the
 
 ### 3. Local agents on the Mac
 #### 3.1 Where they connect
+> Note of 2026-11-26: with Klav Cloud's hosted proxy ([ADR 0051](0051-hosted-nitro-enclave-proxy.md), Q5 (a)), the Mac keeps its own local proxy for its local agents, known only to that Mac, and the hosted proxy serves sandboxes. Nothing in this section changes.
+
 - **To the Mac's own proxy, on loopback.** The client's MCP entry is plain Streamable HTTP:
   ```json
   { "type": "http", "url": "http://127.0.0.1:8790/maple/mcp",

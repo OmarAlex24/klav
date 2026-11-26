@@ -197,7 +197,13 @@ Terms from ADR [0036](decisiones/0036-sandboxes-de-agentes.md) and its amendment
 |---|---|---|
 | sandbox | sandbox | ADR 0036. A disposable VM or container where an agent works (Boat) |
 | proxy de credenciales | credential proxy | ADR 0036 §1; `klav-proxy`. UI "Credential proxy" (planned) |
-| proxy propio / proxy atestado | your own proxy / attested proxy | ADR 0036 §1, §12; `proxy.mode = own` |
+| proxy propio / proxy atestado | your own proxy / attested proxy | ADR 0036 §1, §12; `proxy.mode = own`. The attested proxy is Klav Cloud's hosted proxy of ADR 0051 (accepted, not built; `proxy.mode = "klav"`): `klav-proxy` in an AWS Nitro Enclave that a device verifies before it wraps anything for it. UI "Klav Cloud proxy" (planned). Not in the public glossary until built |
+| proxy alojado (de Klav Cloud) | (Klav Cloud's) hosted proxy | ADR 0051. Same thing as the attested proxy; "hosted" says who runs it, "attested" why it can be trusted. Not in the public glossary until built |
+| manifiesto del enclave | enclave manifest | ADR 0051 §2.4, spec §15.5: the Klav Enclave Transparency Manifest, a signed list of the enclave images the release authority accepts (`current`, `draining`, `revoked`), with a `seq` watermark and a 30-day expiry; `klav/v1/sig/enclave-manifest`. Not in the public glossary until built |
+| autoridad de publicación | release authority | ADR 0051 §2.1, §11.5: whoever holds the key that signs the enclave manifest (today, Omar), with an offline backup key; both public halves pinned in `klav-core`. Not in the public glossary until built |
+| PCR | PCR | AWS Nitro Enclaves: a Platform Configuration Register, a 48-byte SHA-384 measurement in the attestation document. PCR0 is the image, PCR1 the kernel, PCR2 the application, PCR3 the parent instance's IAM role. All zeros means a debug-mode enclave. Never translated |
+| vínculo de la atestación | attestation binding | ADR 0051 §2.2, spec §15.6: the `user_data` of an attestation, a SHA-256 over the account, the agent and its keys (`klav/v1/proxy/enclave-binding`), which proves an approved image holds those keys |
+| traspaso (de la semilla) | hand-off | ADR 0051 §4.2: one enclave seals the master seed with HPKE to another after each verifies the other's attestation and the manifest is public in the repository (`klav/v1/proxy/enclave-handoff`) |
 | reenviador | forwarder | `klav-forward`, inside the sandbox: claims it over the pinned channel and relays `127.0.0.1` to the proxy (ADR 0036 §5, api.md §8.11) |
 | emisor | issuer | ADR 0036 §4. The program or agent that starts sandboxes; `klav proxy issuer add`. Listed in the proxy's grant (`issuers`); its own grant names the proxy (`sandbox`) |
 | grant de emisores / `v: 3` | issuer grant / version 3 grant | Spec §13.4; `GrantPayload` `v: 3`, only with `issuers` or `sandbox` |

@@ -59,7 +59,7 @@ Omar answered «si, vamos con tus recomendados» to a list the coordinator wrote
 
 - **Decision 2. Owner's decision (2026-11-18).** "Direction for services: a signed identity where the provider accepts it, a key with limits where it doesn't." (§1, §2.)
 - **Decision 3. Owner's decision (2026-11-18).** "Who signs: the proxy, for services." He was told that a person's device signing instead is a dial: the proxy then holds no signer, but with the phone off for longer than a token's life the service goes down. **A device signing for sandboxes was mentioned only as "could come later". It is not decided** (§10).
-- **Decision 4. Owner's decision (2026-11-18).** "A proxy hosted by Klav: out of launch, it stays on the waitlist." He was told that if it is ever built, the enclave should hold only a per-customer signer, never provider keys (§5).
+- **Decision 4. Owner's decision (2026-11-18).** "A proxy hosted by Klav: out of launch, it stays on the waitlist." He was told that if it is ever built, the enclave should hold only a per-customer signer, never provider keys (§5). *(Overturned for sandboxes and MCP on 2026-11-26 by ADR 0051, Q1 (a); note in §5.)*
 - **Decision 5. Owner's decision (2026-11-18).** "Approval per deploy: configurable per service, off by default." (§4.)
 - **Roadmap only, no design here:**
   - decision 6: "secrets that aren't HTTP in sandboxes: out of launch; afterwards, databases through the proxy";
@@ -283,6 +283,8 @@ With the setting on, every enrollment of the service goes as during incident mod
 That is why it is off by default, and why `klav service edit` says this before turning it on.
 
 ### 5. The proxy hosted by Klav: out of launch (decision 4)
+> Note of 2026-11-26: Omar overturned the condition below for the hosted proxy of [ADR 0051](0051-hosted-nitro-enclave-proxy.md) (accepted that day, Q1 (a)): it holds provider keys for sandboxes and remote MCP profiles, inside an enclave the person's devices verify before they wrap anything for it, as a later, higher tier, with this ADR's signers added when they exist. The breach cost this section describes is the price ADR 0051 Q1 states. Deployed services still don't use a hosted proxy.
+
 - **Not built for launch;** the plan keeps its place on the waitlist (roadmap, Hito C).
 - **The condition for a future one:** the enclave holds **only per-customer signers** for the federation path, **never provider keys**. A customer cuts it at their provider without Klav (§1.9), and a breach of the enclave yields tokens limited by each customer's rule.
 - **What changed since ADR 0036 §12 was written** (dated note there):

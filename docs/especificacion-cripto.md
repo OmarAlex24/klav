@@ -21,6 +21,7 @@ Este documento describe **byte a byte** lo que hace el núcleo. Otra implementac
 | Comparación en tiempo constante | — | `subtle` 2.6 |
 | Contraseñas filtradas (opcional, solo el prefijo de Have I Been Pwned; ADR [0022](decisiones/0022-generador-historial-y-cambio-asistido.md) §4) | SHA-1, nunca para un uso de seguridad de Klav | `sha1` 0.11, feature `breach-check` (TOTP usa HMAC-SHA1 aparte, RFC 6238) |
 | Secretos en memoria | `SecretBox`, borrado al soltar | `secrecy` 0.10, `zeroize` 1.9 |
+| Atestación del proxy alojado (opcional, feature `nitro-attestation`; ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md)) | ECDSA P-384 con SHA-384 y X.509, solo verificación (§15) | `p384` 0.14, `x509-cert` 0.3, `der` 0.8, `spki` 0.8 |
 
 No hay primitivas implementadas a mano. Todo el material aleatorio (llaves, nonces, sales, IDs) sale del CSPRNG del sistema operativo; si este falla, el proceso aborta (no hay forma segura de seguir).
 
@@ -91,8 +92,13 @@ Etiquetas usadas en v1 (todas empiezan con `klav/v1/`):
 | `klav/v1/proxy/local-client` | resumen del token de un cliente local que lleva el grant del proxy, ADR [0049](decisiones/0049-mcp-gateway.md) (§13.16) |
 | `klav/v1/proxy/mcp-args` | resumen de los argumentos de una llamada `tools/call` de la pasarela MCP, ADR [0049](decisiones/0049-mcp-gateway.md) (§13.16) |
 | `klav/v1/proxy/tool-definition` | solo local: resumen de la definición de una herramienta que mostró `tools/list`, que el proxy guarda en memoria para notar que cambió (ADR [0049](decisiones/0049-mcp-gateway.md) §5.2). Nunca sale del proxy, nadie lo firma y no tiene vectores |
+| `klav/v1/proxy/hosted-account` | `info` de HKDF (dentro de `tuple`) de las llaves por cuenta del proxy alojado, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
+| `klav/v1/proxy/enclave-binding` | vínculo que lleva el `user_data` de la atestación del proxy alojado, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
+| `klav/v1/proxy/enclave-handoff` | `info` de HPKE de la semilla que un enclave pasa a otro, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
+| `klav/v1/sig/hosted-proxy-enroll` | la cuenta pide al proxy alojado su agente, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
+| `klav/v1/sig/enclave-manifest` | la autoridad de publicación firma el manifiesto de los enclaves, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.5) |
 
-Las etiquetas de HKDF (`kdf/…`) y el contexto de OPAQUE se usan como bytes ASCII tal cual, sin `lp`, salvo `kdf/local-key` y `kdf/keystore-wrap`, que llevan contexto y van dentro de `tuple` como `server/decoy-kdf-salt`. El resto siempre va dentro de `tuple`.
+Las etiquetas de HKDF (`kdf/…`) y el contexto de OPAQUE se usan como bytes ASCII tal cual, sin `lp`, salvo `kdf/local-key` y `kdf/keystore-wrap`, que llevan contexto y van dentro de `tuple` como `server/decoy-kdf-salt`; `proxy/hosted-account` también va dentro de `tuple`. El resto siempre va dentro de `tuple`.
 
 ### 2.4 Encabezado y AAD
 Todo dato binario persistido o transmitido empieza con un encabezado de dos bytes:
@@ -563,9 +569,11 @@ Están en [`docs/vectores/`](vectores/), uno por formato, en JSON (campos binari
 | `webauthn-l3.json` | vector oficial de WebAuthn nivel 3, «ES256 Credential with No Attestation», transcrito del texto: con la misma llave, AAGUID, `credential_id` y banderas, `klav-core` produce el mismo `attestationObject`, el mismo `authenticatorData`, el mismo `clientDataJSON` de la aserción y la misma firma (RFC 6979) (§14) |
 | `invite.json` | códigos de invitación: escritura canónica, otras escrituras que dan los mismos bytes (minúsculas, sin prefijo ni guiones, con espacios, con `I`/`L`/`O`), resumen, y códigos que hay que rechazar (§4.7) |
 | `mcp-gateway.json` | la pasarela MCP: tokens de cliente local (`klc1_`) con su resumen y tokens que hay que rechazar, el resumen de los argumentos (también reordenados y ausentes), la coincidencia de los patrones de herramienta con patrones inválidos, y la evaluación de una llamada con herramienta (§13.4, §13.16) |
+| `nitro-attestation.json` | atestación de Nitro (ADR 0051): la raíz fijada, un documento real de un enclave en modo *debug*, una cadena sintética con un documento que verifica y documentos mutados que hay que rechazar, las llaves por cuenta, el vínculo, la inscripción y el `info` del traspaso (§15). Solo con `--features nitro-attestation` |
+| `enclave-manifest.json` | manifiesto de los enclaves (ADR 0051): el mensaje firmado, manifiestos que se aceptan y que se rechazan, con llaves de prueba (§15.5). Solo con `--features nitro-attestation` |
 | `totp.json` | vectores oficiales de RFC 6238 (TOTP, SHA-1/256/512) y RFC 4226 (HOTP), transcritos de los RFC |
 
-Para regenerarlos tras un cambio **intencional** de formato: `KLAV_REGEN_VECTORS=1 cargo test -p klav-core vectors`.
+Para regenerarlos tras un cambio **intencional** de formato: `KLAV_REGEN_VECTORS=1 cargo test -p klav-core vectors` y, para los dos de §15, `KLAV_REGEN_VECTORS=1 cargo test -p klav-core --features nitro-attestation nitro_vectors`.
 
 ## 12. Secretos en el dispositivo
 
@@ -1199,7 +1207,160 @@ Un UUID v4 fijo de Klav, constante en `klav-core` (`crypto::passkey::AAGUID`) y 
 - No puede ser un sufijo público conocido de la PSL (`psl` 2.1, secciones ICANN y privada), ni tener una sola etiqueta salvo `localhost`.
 - Si falla, la llamada pasa al autenticador del navegador; no hay error propio de Klav.
 
-## 15. Registro de cambios
+## 15. Proxy alojado de Klav Cloud: atestación de Nitro, manifiesto y llaves por cuenta (ADR 0051)
+
+Todo esto vive en `klav_core::nitro`, detrás de la feature `nitro-attestation`, que no está activada por defecto. `klav-wasm` nunca la compila: la extensión nunca envuelve llaves para un proxy. En esta capa ningún binario la activa todavía; la CLI, `klavd`, `klav-ffi` y el enclave la activan en sus capas del ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md).
+
+### 15.1 Primitivas y dependencias
+
+| Uso | Primitiva | Crate |
+|---|---|---|
+| Firma del documento y de la cadena | ECDSA P-384 con SHA-384, solo verificación | `p384` 0.14 (`ecdsa`, que trae `sha384`) |
+| Certificados | X.509 v3 en DER, solo lectura | `x509-cert` 0.3, `der` 0.8, `spki` 0.8 |
+| CBOR del documento | lector estricto propio (§15.2), no criptografía | — |
+| Manifiesto | Ed25519, verificación estricta (§9) | `ed25519-dalek` 3 |
+| Llaves por cuenta | HKDF-SHA256 | `hkdf` 0.13, `sha2` 0.11 |
+
+`ciborium` sigue siendo solo dependencia de desarrollo: su `Value` acepta longitudes indefinidas y enteros en forma larga sin dejar rastro, así que no se puede hacer estricto. Ninguna llave privada toca `p384`.
+
+### 15.2 El documento de atestación
+
+Un `COSE_Sign1` (RFC 9052) que firma el Nitro Secure Module. El NSM lo emite **sin** la etiqueta CBOR 18; la documentación de AWS la muestra, así que se aceptan las dos formas y ninguna otra etiqueta. El documento entero cabe en 16 KiB.
+
+```
+COSE_Sign1 = [ protected: bstr, unprotected: {}, payload: bstr, signature: bstr(96) ]
+protected  = a1 01 38 22                    ({1: -35}, ES384, exactamente estos 4 bytes)
+signature  = r(48) ‖ s(48)
+```
+
+**Lector CBOR estricto** (`nitro::cbor`), para el `COSE_Sign1` y para el `payload`. Rechaza:
+
+- longitudes indefinidas y el byte `break`;
+- una longitud o un entero que no está en su forma más corta;
+- claves repetidas en un mapa (se comparan los bytes de la clave, que son únicos porque todo va en forma corta) y claves que no son enteros ni texto;
+- *floats*, `undefined` y valores simples que no sean `false`, `true` o `null`;
+- texto que no es UTF-8, anidamiento de más de 8 niveles y bytes después del objeto.
+
+El orden de las claves no se comprueba: el NSM escribe su mapa en un orden fijo que no es el canónico.
+
+**`payload`**: un mapa con exactamente estas claves de texto; cualquier otra se rechaza.
+
+| Clave | Tipo | Regla |
+|---|---|---|
+| `module_id` | texto | no vacío |
+| `digest` | texto | `"SHA384"` |
+| `timestamp` | entero sin signo | milisegundos Unix |
+| `pcrs` | mapa `índice → bstr` | índices < 32, cada valor de 48 bytes, con 0, 1 y 2 presentes (los documentos reales traen 16) |
+| `certificate` | bstr | el certificado hoja, DER |
+| `cabundle` | arreglo de bstr | la raíz y luego cada intermedio |
+| `public_key`, `user_data`, `nonce` | bstr de hasta 1024 bytes, `null` o ausente | el NSM escribe `null` cuando faltan |
+
+**Firma** (RFC 9052 §4.4), verificada con la llave P-384 de la hoja:
+
+```
+Sig_structure = ["Signature1", protected, h'', payload]   (CBOR: 84 6a "Signature1" bstr(protected) 40 bstr(payload))
+```
+
+### 15.3 La cadena de certificados
+
+`cabundle[0]` tiene que ser, byte a byte, la raíz fijada en `klav-core`: AWS Nitro Enclaves Root-G1 (`CN=aws.nitro-enclaves, C=US, O=Amazon, OU=AWS`, válida de 2019-10-28 a 2049-10-28), de `https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip`, con SHA-256 `641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b` (una prueba lo comprueba). La cadena es `[cabundle[0], …, cabundle[n], certificate]`, de 2 a 8 certificados de 1 a 1024 bytes. Para cada uno:
+
+1. DER estricto: el certificado se decodifica sin bytes de más y vuelve a codificarse en los mismos bytes. X.509 v3.
+2. Algoritmo `ecdsa-with-SHA384` (1.2.840.10045.4.3.3, sin parámetros) en el certificado y en el TBS; llave `id-ecPublicKey` en `secp384r1`.
+3. Desde el segundo: su `issuer` es el `subject` del anterior (comparados en DER) y la firma del anterior verifica sobre los bytes del `TBSCertificate` **tal como llegaron**.
+4. Dentro de su validez en el reloj del dispositivo (`notBefore ≤ ahora ≤ notAfter`, en segundos).
+5. Extensiones: `basicConstraints` y `keyUsage` se leen; cualquier otra extensión crítica, o una extensión repetida, se rechaza. No hay CRL (AWS dice que se desactive).
+6. Los de `cabundle`: `cA = TRUE`, `keyUsage` con `keyCertSign`, y su `pathLenConstraint`, si lo hay, no menor que el número de intermedios que quedan debajo (sin contar la hoja).
+7. La hoja: no es CA y, si trae `keyUsage`, incluye `digitalSignature`.
+
+Los documentos reales de 2022 y 2023 (§15.7) traen tres intermedios (`pathLenConstraint` 2, 1 y 0), todos ECDSA P-384 con SHA-384.
+
+### 15.4 Lo que comprueba el dispositivo, y lo que comprueba un enclave en un traspaso
+
+`nitro::verify_hosted_proxy` (ADR 0051 §2.2, pasos 2 a 6), antes de envolver cualquier llave para el proxy alojado:
+
+1. §15.2 y §15.3, y la firma del documento.
+2. `nonce` igual al que mandó el dispositivo con `GET /v1/attest`.
+3. `|timestamp − ahora| ≤ 5 minutos`.
+4. `user_data` igual al vínculo de §15.6 para el agente que el servidor muestra como proxy alojado de la cuenta. `public_key` se ignora.
+5. PCR0, PCR1 y PCR2 distintos de cero (un enclave en modo *debug* los reporta en cero y se rechaza).
+6. PCR0–2 iguales a los de una imagen del manifiesto (§15.5) con estado `current` o `draining`; `revoked` se rechaza.
+
+`nitro::verify_handoff_peer` (ADR 0051 §4.2, paso 2), lo que el enclave que tiene la semilla comprueba del que la pide: los pasos 1–3, 5 y 6 (con el `nonce` del que la tiene), y además que PCR3 esté en `parent_roles`, que la imagen del otro no sea más vieja que la propia (por `version`) y que `public_key` sea una llave X25519 de 32 bytes. Que el manifiesto sea el publicado en el repositorio lo comprueba quien llama.
+
+Cada rechazo tiene su variante de `NitroError` y un código estable (`NitroError::code`), el que usan los vectores.
+
+### 15.5 Manifiesto de transparencia de los enclaves
+
+`manifest.json`, JSON en UTF-8 con estos campos y ningún otro (un campo desconocido o repetido se rechaza):
+
+```json
+{"v":1,"seq":7,"seed_epoch":0,"issued_at_ms":…,"expires_at_ms":…,
+ "endpoint":"proxy.klav.dev","server":"api.klav.dev",
+ "images":[{"version":"0.12.0","commit":"<40 hex>","arch":"aarch64",
+            "pcr0":"<96 hex>","pcr1":"<96 hex>","pcr2":"<96 hex>","status":"current"}],
+ "parent_roles":["<96 hex>"],"egress":["203.0.113.10/32"]}
+```
+
+- `v = 1`; `0 < expires_at_ms − issued_at_ms ≤ 30 días`; `endpoint` y `server` son nombres de host en minúsculas.
+- Al menos una imagen. `version` es `MAYOR.MENOR.PARCHE` sin ceros a la izquierda; `commit` 40 hexadecimales en minúsculas; `arch` `aarch64` o `x86_64`; cada PCR 96 hexadecimales en minúsculas, ninguno en cero; dos imágenes no repiten PCR0–2; `status` es `current`, `draining` o `revoked`.
+- `parent_roles`: valores de PCR3 (96 hexadecimales, no cero). `egress`: hasta 16 bloques CIDR, con la dirección escrita en su forma canónica.
+
+**Firma**, Ed25519 (§9) sobre los bytes exactos que se recibieron:
+
+```
+mensaje = tuple("klav/v1/sig/enclave-manifest", SHA-256(manifest_bytes))
+```
+
+con cualquiera de las llaves públicas de la autoridad de publicación fijadas en `klav-core` (`RELEASE_AUTHORITY_KEYS`: la activa y una de respaldo). **En esta versión la lista está vacía**: esas llaves aún no existen, así que todo manifiesto se rechaza con `no_release_key` hasta que una capa posterior las fije.
+
+El dispositivo verifica la firma antes de leer el JSON, y después rechaza: un `seq` menor que el más alto que ya verificó (el mismo `seq` se acepta), un manifiesto con `ahora ≥ expires_at_ms` y uno con `issued_at_ms > ahora + 5 minutos`.
+
+### 15.6 Llaves por cuenta, vínculo, inscripción y traspaso
+
+Una semilla de 32 bytes que vive solo en la memoria del enclave (`HostedSeed`, sin `Debug`, `Display` ni `Clone`, borrada al soltarse). Las llaves del agente proxy de cada cuenta:
+
+```
+okm         = HKDF-SHA256(ikm = semilla, sal = vacía,
+                          info = tuple("klav/v1/proxy/hosted-account", account_id(16), u32_be(generation)), L = 64)
+x25519_sk   = okm[0..32]          ed25519_seed = okm[32..64]
+```
+
+forman un par de identidad normal (§6.1), el de un agente (§13).
+
+**Vínculo** que lleva `user_data` (ADR 0051 §2.2, paso 5):
+
+```
+binding = SHA-256(tuple("klav/v1/proxy/enclave-binding", account_id(16), agent_id(16),
+                        agent_ed25519_pub(32), agent_x25519_pub(32), u32_be(generation)))
+```
+
+**Inscripción** (ADR 0051 §6.1, paso 2), firmada con la identidad de la cuenta (§9); el enclave comprueba además que `at_ms` esté a ±5 minutos:
+
+```
+tuple("klav/v1/sig/hosted-proxy-enroll", account_id(16), u32_be(generation), u64_be(at_ms))
+```
+
+**`info` de HPKE del traspaso de la semilla** del enclave que la tiene (H) al que se une (J) (ADR 0051 §4.2, paso 4); el `nonce` de cada documento tal como aparece en él (el del documento de J vino de H, y al revés):
+
+```
+info = tuple("klav/v1/proxy/enclave-handoff", pcr0_H(48), pcr0_J(48), nonce_del_documento_de_H, nonce_del_documento_de_J)
+```
+
+Aquí solo queda fijado el `info`. El blob sellado, con su versión y su tipo, llega con el enclave (capa 3 del ADR 0051).
+
+### 15.7 Vectores
+
+`nitro-attestation.json` y `enclave-manifest.json` (§11). Se comprueban con `cargo test -p klav-core --features nitro-attestation nitro_vectors`; `cargo test --workspace` no los compila.
+
+- **Un documento real**, de un enclave en modo *debug* en `us-east-1` del 2023-09-18, tomado de las pruebas de `evervault/attestation-doc-validation` (Apache-2.0, `crates/klav-core/src/nitro/testdata/README.md`): su cadena llega a la raíz fijada, su firma verifica, y sus PCR0–2 en cero lo hacen rechazar como `debug_enclave`.
+- **Una cadena sintética** con la forma de la de AWS (raíz, dos intermedios y hoja, ECDSA P-384 con SHA-384 y llaves deterministas), **que no es de AWS**: un documento que verifica, también con la etiqueta 18, y documentos mutados, cada uno vuelto a firmar para que llegue a la comprobación que nombra (un bit en el *payload* o en la firma, un PCR cambiado, la cadena fuera de orden, una clave de más, una clave repetida, una longitud indefinida, un certificado vencido, otra raíz, PCR en cero, un `timestamp` viejo, otro `nonce`, otro `user_data` y una imagen revocada).
+- Las llaves por cuenta en dos generaciones, sus vínculos, la firma de inscripción y el `info` del traspaso.
+- Manifiestos firmados con llaves de prueba (la activa y la de respaldo) que se aceptan, y otros que se rechazan: otra llave, *rollback*, vencido, emitido en el futuro, un campo desconocido o repetido, más de 30 días y un PCR en cero.
+
+El documento del enclave propio de Klav se captura en la capa 6 del ADR 0051.
+
+## 16. Registro de cambios
 
 | Fecha | Cambio |
 |---|---|
@@ -1262,3 +1423,4 @@ Un UUID v4 fijo de Klav, constante en `klav-core` (`crypto::passkey::AAGUID`) y 
 | 2026-11-25 | **ADR 0032 en código, capas 1–2** (entornos por repositorio): §7.1: el tipo `environment`, la clave `environment` del *overview* y `variables` de *details*, con sus reglas, la marca efectiva, el conjunto protegido y el error `UnknownKind`; §7.2: `repos` en los metadatos de proyecto (ya en código); §11: `entorno.json`; §13.4: `Scope.items` en cualquier regla sin `v: 2`, `once`, `origin: "protected"` y `released`, en cualquier versión, con el `400` y el `409` del servidor; §13.5: `items` en la petición de aprobación y sin arrendamiento ni tarea en lo que pide cada vez. Ningún formato binario, etiqueta ni AAD cambia; los vectores existentes no cambian. |
 | 2026-11-25 | **ADR 0036 en código, capa 11** (el proxy en el Mac): §13.7: el servidor acepta el fin `person_local` (solo `{"reason":"person_local"}`), que el *socket* local del proxy manda sin firma de la persona; el verificador no cambia. Sin formatos nuevos: el *socket* habla líneas JSON con versión (`v: 1`), en [api.md](api.md) §8.14. |
 | 2026-11-25 | **ADR 0032 en código, capa 3** (CLI y `klavd`): §12.2: el propósito `protection` de los datos locales (`0x41`), para `protection.bin`. Ningún formato firmado, del servidor ni binario cambia; los vectores no cambian. |
+| 2026-11-26 | **ADR 0051 aceptado y en código, capas 1–2** (el proxy alojado de Klav Cloud): §1: `p384`, `x509-cert`, `der` y `spki`, detrás de la feature `nitro-attestation`; §2.3: etiquetas `klav/v1/proxy/hosted-account`, `klav/v1/proxy/enclave-binding`, `klav/v1/proxy/enclave-handoff`, `klav/v1/sig/hosted-proxy-enroll` y `klav/v1/sig/enclave-manifest`; §15 nueva: el documento de atestación con su lector CBOR estricto, la cadena hasta AWS Nitro Enclaves Root-G1, lo que comprueban el dispositivo y el enclave en un traspaso, el manifiesto, las llaves por cuenta, el vínculo, la inscripción y el `info` del traspaso, en `klav_core::nitro`. El registro de cambios pasa a §16 (la cita «§15» del ADR 0020 se refiere a él). Vectores nuevos `nitro-attestation.json` y `enclave-manifest.json`; los demás no cambian. |
