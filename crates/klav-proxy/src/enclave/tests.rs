@@ -34,7 +34,8 @@ use rustls::pki_types::ServerName;
 
 use super::attest::FakeNsm;
 use super::engine::{
-    AttestAnswer, EnrollAnswer, EnrollRequest, HelloAnswer, HelloRequest, ManifestWire, SealRequest,
+    AttestAnswer, EnrollAnswer, EnrollRequest, HelloAnswer, HelloRequest, ManifestWire,
+    SealRequest, StatusAnswer,
 };
 use super::registry::Enrollment;
 use super::{Anchors, Enclave, EnclaveConfig, PublishedRepo, QuotaLimits, SignedManifest};
@@ -651,14 +652,31 @@ async fn account(
 fn key_server_for(server: &mut ServerProcess, enclave: &Enclave) {
     let seed = enclave.seed_for_test().expect("seed");
     let service = klav_core::nitro::hosted_service_keys(&seed);
+    key_server_with(server, &hex(service.public().ed25519()));
+}
+
+/// Configures `server` with `service_key` (64 hex digits) as
+/// `[hosted_proxy] service_key` and restarts it on the same port.
+fn key_server_with(server: &mut ServerProcess, service_key: &str) {
     let path = server.dir.path().join("server.toml");
     let mut config = std::fs::read_to_string(&path).expect("config");
     config.push_str(&format!(
-        "[hosted_proxy]\nservice_key = \"{}\"\n",
-        hex(service.public().ed25519())
+        "[hosted_proxy]\nservice_key = \"{service_key}\"\n"
     ));
     std::fs::write(&path, config).expect("config");
     server.restart();
+}
+
+/// `GET /v1/status` on the enclave at `api_base`: always `200`; its
+/// `service_key`, and the raw body.
+async fn status_of(api_base: &str) -> (Option<String>, String) {
+    let res = reqwest::get(format!("{api_base}/v1/status"))
+        .await
+        .expect("status");
+    assert_eq!(res.status().as_u16(), 200, "/v1/status answers 200");
+    let body = res.text().await.expect("status body");
+    let answer: StatusAnswer = serde_json::from_str(&body).unwrap_or_else(|_| panic!("{body}"));
+    (answer.service_key, body)
 }
 
 /// `klav-server hosted-proxy <switch> <email>` against `server`'s database,
@@ -1585,8 +1603,112 @@ async fn a_live_sandbox_goes_on_through_the_new_enclave_after_an_upgrade() {
         secrets.push(both[..32].to_vec());
         secrets.push(both[32..].to_vec());
     }
+    let service = klav_core::nitro::fake::secret_bytes(&hosted_service_keys(&seed));
+    secrets.push(service[..32].to_vec());
+    secrets.push(service[32..].to_vec());
     assert_nothing_secret(&log.text(), &secrets, &[&a.email, &b.email]);
     drop((a.person, a.issuer, b.person, b.issuer));
+}
+
+/// ADR 0051 §18, blocker 2: the operator reads the service key's public
+/// half from the enclave and sets it as `KLAV_HOSTED_PROXY_SERVICE_KEY`.
+/// Before a seed, `GET /v1/status` answers `service_key: null`; after
+/// genesis, 64 lowercase hex digits, and a real `klav-server` configured
+/// with exactly that string accepts the enclave's registration marks. A
+/// newer enclave that takes the seed through the hand-off serves the same
+/// key, and the server accepts its marks too. The key is logged once per
+/// enclave; no private key, seed, token or e-mail reaches the log at
+/// TRACE or the status answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_service_key_is_served_and_logged_and_only_its_public_half() {
+    let log = global_log();
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let old = image("0.12.0");
+    let new = image("0.13.0");
+    let m1 = manifest(1, &[(&new, "current"), (&old, "draining")]);
+    world.repo.publish(1, &m1);
+
+    // Genesis: no key before the seed, then the key.
+    let first = world.enclave_with(&old, &server.url, QuotaLimits::default());
+    let first_api = api(&first).await;
+    assert_eq!(status_of(&first_api).await.0, None, "no seed, no key");
+    assert_eq!(first.service_key(), None);
+    first.start_fresh().expect("seed");
+    first.load_manifest(m1).expect("manifest");
+    let (served, first_body) = status_of(&first_api).await;
+    let key = served.expect("a seeded enclave serves its service key");
+    assert_eq!(key.len(), 64, "{key}");
+    assert!(
+        key.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "lowercase hex: {key}"
+    );
+    assert_eq!(first.service_key(), Some(key.as_str()));
+
+    // The server takes exactly the served string, and accepts the marks.
+    key_server_with(&mut server, &key);
+    let ana = account(
+        &server,
+        &dir,
+        "ana@example.com",
+        "tok_service_key_a_0123456789",
+    )
+    .await;
+    hosted_proxy_switch(&server, "enable", "ana@example.com");
+    let (status, code, body) = enroll(&first_api, &ana, "ana@example.com").await;
+    assert_eq!((status, code), (200, None), "{body}");
+
+    // A newer enclave joins: no key before the hand-off, the same after.
+    let second = world.enclave_with(&new, &server.url, QuotaLimits::default());
+    let second_api = api(&second).await;
+    assert_eq!(status_of(&second_api).await.0, None, "no seed, no key");
+    second
+        .join(&first_api, &reqwest::Client::new())
+        .await
+        .expect("hand-off");
+    let (served, second_body) = status_of(&second_api).await;
+    assert_eq!(
+        served.as_deref(),
+        Some(key.as_str()),
+        "the same seed, the same key"
+    );
+    // Its marks pass the same server configuration.
+    let bo = account(
+        &server,
+        &dir,
+        "bo@example.com",
+        "tok_service_key_b_9876543210",
+    )
+    .await;
+    hosted_proxy_switch(&server, "enable", "bo@example.com");
+    let (status, code, body) = enroll(&second_api, &bo, "bo@example.com").await;
+    assert_eq!((status, code), (200, None), "{body}");
+
+    // Logged, public half only.
+    let text = log.text();
+    assert!(text.contains(&key), "the service key is logged");
+    let seed = second.seed_for_test().expect("seed");
+    let mut secrets: Vec<Vec<u8>> = vec![
+        klav_core::nitro::fake::seed_bytes(&seed).to_vec(),
+        b"tok_service_key_a_0123456789".to_vec(),
+        b"tok_service_key_b_9876543210".to_vec(),
+    ];
+    let service = klav_core::nitro::fake::secret_bytes(&hosted_service_keys(&seed));
+    secrets.push(service[..32].to_vec());
+    secrets.push(service[32..].to_vec());
+    for person in [&ana, &bo] {
+        let id = person.sign_hosted_proxy_enroll(0, now()).account_id;
+        let both = klav_core::nitro::fake::secret_bytes(&derive_account_keys(&seed, id, 0));
+        secrets.push(both[..32].to_vec());
+        secrets.push(both[32..].to_vec());
+    }
+    assert_nothing_secret(&text, &secrets, &["ana@example.com", "bo@example.com"]);
+    for body in [&first_body, &second_body] {
+        assert_nothing_secret(body, &secrets, &["ana@example.com", "bo@example.com"]);
+    }
+    drop((ana, bo));
 }
 
 /// `klav-proxy enclave` as the image starts it, over loopback instead of
@@ -1672,6 +1794,8 @@ async fn the_enclave_command_starts_fresh_or_joins_a_peer() {
     tokio::spawn(serve(s, nsm(), anchors(), Some(tx)));
     let joiner = rx.await.expect("joiner ready");
     assert!(joiner.has_seed());
+    assert!(genesis.service_key().is_some());
+    assert_eq!(joiner.service_key(), genesis.service_key());
     let mut names = joiner.channel_names();
     names.sort();
     let mut expected = genesis.channel_names();

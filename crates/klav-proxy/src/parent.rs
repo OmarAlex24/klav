@@ -460,7 +460,7 @@ pub struct Args {
     #[arg(long)]
     pub channel_enclave: crate::transport::Endpoint,
     /// TCP address for the public API (`/v1/manifest`, `/v1/attest`,
-    /// `/v1/enroll`, the hand-off).
+    /// `/v1/enroll`, `/v1/status`, the hand-off).
     #[arg(long, default_value = "0.0.0.0:8443")]
     pub api_listen: SocketAddr,
     /// The enclave's API port.

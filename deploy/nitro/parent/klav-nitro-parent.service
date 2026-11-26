@@ -3,8 +3,9 @@
 #   - TCP 443  -> enclave vsock 16:5000  sandbox channels (the channel NLB,
 #                                        TCP passthrough, SNI routed inside)
 #   - TCP 8443 -> enclave vsock 16:5001  the API: /v1/manifest, /v1/attest,
-#                                        /v1/enroll and the hand-off (the API
-#                                        NLB, and the other zone's enclave)
+#                                        /v1/enroll, /v1/status and the
+#                                        hand-off (the API NLB, and the
+#                                        other zone's enclave)
 #   - vsock *:5002                       the enclave's egress (`CONNECT
 #                                        host:port`), refusing every address
 #                                        that isn't public, and every port

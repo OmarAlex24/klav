@@ -2,10 +2,9 @@
 
 How to run Klav Cloud's hosted credential proxy on AWS Nitro Enclaves ([ADR 0051](../../docs/decisiones/0051-hosted-nitro-enclave-proxy.md)): the release-authority key, the manifests, the first deployment, the standby, upgrades, failover, revocation, total loss, and the hand test before going live.
 
-> **This is not live, and three things block going live** (ADR 0051 §18). Each needs a change outside `deploy/`:
+> **This is not live, and two things block going live** (ADR 0051 §18):
 > 1. **The release-authority keys are not pinned.** `RELEASE_AUTHORITY_KEYS` in `klav-core` is empty, so every enclave refuses to start and every manifest is refused. Layer 5 pins them (§2).
-> 2. **Nothing exposes the enclave's service public key.** The server needs it as `KLAV_HOSTED_PROXY_SERVICE_KEY` to accept hosted registrations. The enclave derives it from the seed and never logs or serves it, and a debug enclave can't help, because each genesis makes a new seed (§4.4). Fix: a crate change in `klav-proxy` that serves or logs the Ed25519 public half once the enclave has a seed.
-> 3. **No hand test on real Nitro hardware yet** (§10). That covers bringing the loopback interface up, `/dev/nsm`, vsock, joining through the API load balancer, and how long a switch between zones takes.
+> 2. **No hand test on real Nitro hardware yet** (§10). That covers bringing the loopback interface up, `/dev/nsm`, vsock, joining through the API load balancer, and how long a switch between zones takes.
 
 ## Contents
 1. [What runs where](#1-what-runs-where)
@@ -132,7 +131,16 @@ Only for the very first enclave, or after a total loss (§8.2). **Never while an
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8443/v1/manifest    # 200
    ```
    Fetch `1.json` and `1.json.sig` from `raw.githubusercontent.com` (the published bytes), not from your laptop.
-4. **The service key (blocked):** set `KLAV_HOSTED_PROXY_SERVICE_KEY` on `api.klav.dev` (Railway) to the enclave's service public key (64 hex characters), then redeploy `klav-server`. Until the key is set there, every enroll is refused with `403 klav_hosted_not_entitled`. **At `a4866c6f` nothing exposes this key**, so this step needs the crate change in blocker 2. Not secret: it is a public key.
+4. **The service key.** The enclave serves the Ed25519 public half of its service key on `GET /v1/status`: `null` until it holds a seed, then 64 lowercase hex characters. The enclave also logs it once, but its console isn't readable without debug mode (§1), so read it from the API. It is a public key, not a secret. On zone `a`, through SSM:
+   ```sh
+   key=$(curl -sf http://127.0.0.1:8443/v1/status | jq -r .service_key)
+   printf '%s\n' "$key" | grep -Eqx '[0-9a-f]{64}' && echo "$key"   # nothing printed = no seed yet; don't go on
+   ```
+   Cross-check it through the API load balancer: `curl -sf https://proxy.klav.dev/v1/status | jq -r .service_key` must print the same string. Then, from a machine logged in to Railway, set it on `api.klav.dev` (the `klav-server` service). Railway redeploys the service when a variable changes:
+   ```sh
+   railway variables --service klav-server --set "KLAV_HOSTED_PROXY_SERVICE_KEY=<the 64 hex characters>"
+   ```
+   `klav-server` refuses to start with a value that isn't 64 hex characters, so check the deploy logs. Until the key is set, every enroll is refused with `403 klav_hosted_not_entitled`, and so is every enroll after a key mismatch. Each genesis makes a new seed and therefore a new key, while a join keeps the holder's key.
 5. Turn the entitlement on for the beta accounts: `klav-server hosted-proxy enable <email>` (ADR 0051 §15).
 6. `systemctl enable klav-enclave.service` is already done by the installer. **Don't start the unit on zone `a` while the genesis enclave runs.** The genesis enclave stays as the holder until its first replacement in a rolling upgrade (§6), and the unit takes over from then on.
 
@@ -142,7 +150,7 @@ Only for the very first enclave, or after a total loss (§8.2). **Never while an
    - the joiner's PCR3 is in `parent_roles`;
    - the manifest is byte-equal to the published `<seq>.json`.
    It retries every 5 s for 5 minutes.
-2. Ready when `curl … 127.0.0.1:8443/v1/manifest` answers 200 on zone `b`, with the holder's `seq`. If it never does, read `journalctl -u klav-nitro-parent` on `b`. A refused egress shows why (the address or the port), and a join that never connects shows as no `CONNECT proxy.klav.dev:443` at all. Then `systemctl restart klav-enclave.service`.
+2. Ready when `curl … 127.0.0.1:8443/v1/manifest` answers 200 on zone `b`, with the holder's `seq`, and `curl -s http://127.0.0.1:8443/v1/status | jq -r .service_key` prints the same key as zone `a` (the same seed). If it never does, read `journalctl -u klav-nitro-parent` on `b`. A refused egress shows why (the address or the port), and a join that never connects shows as no `CONNECT proxy.klav.dev:443` at all. Then `systemctl restart klav-enclave.service`.
 3. **Never attach a parent before its enclave has joined.** With the client address preserved, the joiner's own `CONNECT` to `proxy.klav.dev` could come back to itself.
 
 ## 6. Rolling upgrade
@@ -189,7 +197,7 @@ Devices refuse a `revoked` image in a later manifest. A joiner also refuses a se
 What happens to people is in ADR 0051 §4.4: sandboxes fail with `klav_proxy_unreachable`, and `GET /v1/attest` answers `404 klav_hosted_not_enrolled` for every account until each person sets the proxy up again on a device.
 1. Publish a manifest with **`seed_epoch` + 1**, so devices can tell "lost its keys" from "a broken endpoint". Keep the current images.
 2. Genesis on the zone in service (§4, steps 2–3).
-3. **New service key:** a new seed means a new service key. Set the new public key in `KLAV_HOSTED_PROXY_SERVICE_KEY` on `api.klav.dev` (blocked, §4 step 4) before anyone re-enrolls.
+3. **New service key:** a new seed means a new service key. Read the new public key from `GET /v1/status` and set it in `KLAV_HOSTED_PROXY_SERVICE_KEY` on `api.klav.dev` (§4 step 4) before anyone re-enrolls.
 4. Join the standby (§5).
 5. People re-enroll from the layer-5 sheet. The enclave registers a **new** agent (new `agent_id`, so a new `a<agent_id>.proxy.klav.dev`), the device re-wraps every credential and re-signs the issuers, and revokes the old agent. A per-account reset (`generation + 1`, §3.2) is the same flow for one account.
 6. Post a status note: what happened, and that no key left an enclave (or, after a compromise, which tokens to rotate).
@@ -214,7 +222,7 @@ Each item needs evidence in the PR (commands and output; never a secret). None i
 - [ ] Real PCRs match: `nitro-cli describe-enclaves` on a parent shows the same PCR0/1/2 as `images.json`, and a real attestation document from `GET /v1/attest` verifies in `klav-core` against the published manifest.
 - [ ] The enclave starts on real hardware: `lo` comes up (busybox `ip`), `/dev/nsm` opens, vsock 5000/5001/5002 work, and egress reaches `api.klav.dev` and `raw.githubusercontent.com`.
 - [ ] A real attestation document from Klav's enclave added to `docs/vectores/nitro-attestation.json` (ADR 0051's layer 6 deliverable).
-- [ ] `klav proxy use klav` from a device enrolls, verifies the attestation and turns the hosted proxy on (needs layer 5 and blocker 2).
+- [ ] `klav proxy use klav` from a device enrolls, verifies the attestation and turns the hosted proxy on (needs layer 5, and the service key set on `api.klav.dev`, §4 step 4).
 - [ ] A Boat sandbox calls `northflank` and Maple's MCP through the hosted proxy (`klav sandbox start`, then a wrapped credential works).
 - [ ] The standby joins (§5), and `/v1/manifest` answers 200 on it.
 - [ ] Losing a zone: stop the zone in service (`nitro-cli terminate-enclave`), fail over (§7), and a running sandbox goes on working, or claims again without `theft` if it started before the standby's last join. Record how long sandboxes were down.

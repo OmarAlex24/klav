@@ -7,13 +7,14 @@
 #                        account's key (ADR 0051 §3.4). The NLB sees bytes.
 #   proxy.klav.dev    -> API NLB, TLS 443 with an ACM certificate -> parent
 #                        8443 -> enclave (plain HTTP): /v1/manifest,
-#                        /v1/attest, /v1/enroll and the hand-off. The API is
-#                        self-authenticating (attestation documents, the
-#                        signed manifest, signed enrolls), so its transport
-#                        is not trusted (ADR 0051 §2.2 step 1); TLS here only
-#                        keeps it private on the wire. A joining enclave
-#                        uses it too: its image joins https://proxy.klav.dev,
-#                        which reaches the one enclave in service.
+#                        /v1/attest, /v1/enroll, /v1/status and the
+#                        hand-off. The API is self-authenticating
+#                        (attestation documents, the signed manifest, signed
+#                        enrolls), so its transport is not trusted (ADR 0051
+#                        §2.2 step 1); TLS here only keeps it private on
+#                        the wire. A joining enclave uses it too: its image
+#                        joins https://proxy.klav.dev, which reaches the one
+#                        enclave in service.
 #
 # Only the zone in service is attached (var.zones). Cross-zone load
 # balancing is on, so both NLB nodes reach it. Both target groups preserve

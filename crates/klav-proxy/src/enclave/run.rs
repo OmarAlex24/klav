@@ -7,8 +7,8 @@
 //!
 //! - **Listeners** (`vsock:CID:PORT`, or `tcp:IP:PORT` off an enclave):
 //!   the channel (sandboxes' TLS, routed by SNI), the API (`/v1/manifest`,
-//!   `/v1/attest`, `/v1/enroll`, `/healthz`) and, with `--peer`, the
-//!   hand-off on a port of its own (without it, on the API).
+//!   `/v1/attest`, `/v1/enroll`, `/v1/status`, `/healthz`) and, with
+//!   `--peer`, the hand-off on a port of its own (without it, on the API).
 //! - **Egress** (`--egress vsock:3:PORT`): an enclave has no network. Each
 //!   connection to the server, a provider or the repository goes, as an
 //!   HTTP `CONNECT`, through a loopback port this command bridges to the
