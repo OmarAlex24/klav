@@ -1372,3 +1372,543 @@ async fn egress_and_stream_quotas_trip() {
     );
     assert_eq!(quotas.open_streams(), 1);
 }
+
+// ------------------------------------------------------------ layer 3b --
+
+/// A TCP hop in front of the enclaves, as the load balancer and the parents
+/// are: [`Hop::switch`] sends new connections to another enclave and cuts
+/// the open ones, as an enclave that stops does.
+struct Hop {
+    addr: SocketAddr,
+    target: Arc<Mutex<SocketAddr>>,
+    open: Arc<Mutex<Vec<tokio::task::AbortHandle>>>,
+}
+
+impl Hop {
+    async fn to(target: SocketAddr) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let target = Arc::new(Mutex::new(target));
+        let open: Arc<Mutex<Vec<tokio::task::AbortHandle>>> = Arc::default();
+        let (t, o) = (Arc::clone(&target), Arc::clone(&open));
+        tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                let to = *t.lock().expect("lock");
+                let task = tokio::spawn(async move {
+                    if let Ok(mut outbound) = tokio::net::TcpStream::connect(to).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                });
+                o.lock().expect("lock").push(task.abort_handle());
+            }
+        });
+        Self { addr, target, open }
+    }
+
+    fn switch(&self, to: SocketAddr) {
+        *self.target.lock().expect("lock") = to;
+        for task in self.open.lock().expect("lock").drain(..) {
+            task.abort();
+        }
+    }
+}
+
+/// Fails when any of `secrets`, in any usual encoding, or any of `emails`
+/// is in `text`.
+fn assert_nothing_secret(text: &str, secrets: &[Vec<u8>], emails: &[&str]) {
+    assert!(!text.is_empty(), "the log captured something");
+    for secret in secrets {
+        for encoded in [
+            data_encoding::HEXLOWER.encode(secret),
+            data_encoding::HEXUPPER.encode(secret),
+            data_encoding::BASE64.encode(secret),
+            data_encoding::BASE64URL_NOPAD.encode(secret),
+            String::from_utf8_lossy(secret).into_owned(),
+        ] {
+            assert!(!text.contains(&encoded), "a secret reached the log");
+        }
+    }
+    for email in emails {
+        assert!(!text.contains(email), "an e-mail reached the log");
+    }
+}
+
+/// ADR 0051 §4.2, §4.3 and §7.4, a rolling upgrade with no failed call:
+/// account A enrolls on enclave 1 and its sandbox is claimed and calling;
+/// enclave 2, a newer image the published manifest lists, takes the seed
+/// and every account's live state through the attested hand-off; enclave 1
+/// stops. A's sandbox goes on calling through enclave 2 with the same
+/// forwarder and channel key: no new claim, enrollment, approval or grant,
+/// the same agent, the same store epoch. Account B, on the same enclaves,
+/// stays apart. Nothing secret is logged at TRACE.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_sandbox_goes_on_through_the_new_enclave_after_an_upgrade() {
+    let log = global_log();
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let old = image("0.12.0");
+    let new = image("0.13.0");
+    let m1 = manifest(1, &[(&new, "current"), (&old, "draining")]);
+    world.repo.publish(1, &m1);
+
+    let first = world.enclave_with(&old, &server.url, QuotaLimits::default());
+    first.start_fresh().expect("seed");
+    key_server_for(&mut server, &first);
+    first.load_manifest(m1).expect("manifest");
+    let first_api = api(&first).await;
+    let first_addr = channel(&first).await;
+    let upstream = Upstream::start().await;
+    let mut a = enroll_and_start(
+        &server,
+        &dir,
+        &first,
+        &first_api,
+        "ana@example.com",
+        "tok_live_upgrade_a_0123456789abcdef",
+        &upstream,
+    )
+    .await;
+    let mut b = enroll_and_start(
+        &server,
+        &dir,
+        &first,
+        &first_api,
+        "bo@example.com",
+        "tok_live_upgrade_b_fedcba9876543210",
+        &upstream,
+    )
+    .await;
+
+    // Both forwarders reach the enclaves through one hop, as through the
+    // load balancer, and claim on enclave 1.
+    let hop = Hop::to(first_addr).await;
+    let (fwd_a, port_a) = forwarder(&a.package, hop.addr, sni(&a.channel)).await;
+    fwd_a.claim(&a.package).await.expect("claim A");
+    let (fwd_b, port_b) = forwarder(&b.package, hop.addr, sni(&b.channel)).await;
+    fwd_b.claim(&b.package).await.expect("claim B");
+    for port in [port_a, port_b] {
+        let (status, body) = call(port, "/northflank/v1/projects").await;
+        assert_eq!(status, 200, "{body}");
+    }
+    let state_a1 = first.state_of(a.account_id).await.expect("A on 1");
+    let proxy_a = state_a1.proxy_id().await;
+    let epoch_a = state_a1.heartbeats().epoch().await;
+    let agents_a = agent_ids(&mut a.person).await;
+    let agents_b = agent_ids(&mut b.person).await;
+    drop(state_a1);
+
+    // Enclave 2, the newer image, joins; then enclave 1 stops, and the hop
+    // sends everything to enclave 2 and cuts what was open.
+    let second = world.enclave_with(&new, &server.url, QuotaLimits::default());
+    second
+        .join(&first_api, &reqwest::Client::new())
+        .await
+        .expect("hand-off");
+    let second_addr = channel(&second).await;
+    first.stop_for_test().await;
+    hop.switch(second_addr);
+    // Enclave 1 is gone: straight to it, A's name presents no key.
+    let (direct, _) = forwarder(&a.package, first_addr, sni(&a.channel)).await;
+    assert_eq!(
+        direct.claim(&a.package).await.expect_err("stopped").error,
+        "klav_proxy_unreachable"
+    );
+
+    // A's sandbox goes on, through enclave 2, with the same forwarder.
+    let seen_before = upstream.requests().len();
+    for _ in 0..3 {
+        let (status, body) = call(port_a, "/northflank/v1/projects").await;
+        assert_eq!(status, 200, "{body}");
+    }
+    let (status, body) = call(port_b, "/northflank/v1/projects").await;
+    assert_eq!(status, 200, "{body}");
+    let auths: Vec<String> = upstream.requests()[seen_before..]
+        .iter()
+        .filter_map(|s| s.header("authorization").map(str::to_owned))
+        .collect();
+    let bearer_a = format!("Bearer {}", a.token);
+    let bearer_b = format!("Bearer {}", b.token);
+    assert_eq!(
+        auths,
+        [&bearer_a, &bearer_a, &bearer_a, &bearer_b].map(String::as_str),
+        "each account's calls carry its own credential only"
+    );
+    assert!(
+        second.egress_today(a.account_id) > 0,
+        "the calls went through enclave 2"
+    );
+    let state_a2 = second.state_of(a.account_id).await.expect("A on 2");
+    assert_eq!(state_a2.proxy_id().await, proxy_a, "the same agent");
+    let views = state_a2.sandboxes().views().await;
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].sandbox_id, a.package.sandbox_id);
+    assert!(views[0].claimed, "still claimed: no new claim was needed");
+    // The same store epoch, its reset already logged: no new reset, and
+    // the heartbeat goes on from the holder's `seq`.
+    let (epoch, logged, seq) = state_a2.heartbeats().epoch().await;
+    assert_eq!(epoch, epoch_a.0, "the same store epoch");
+    assert!(logged && epoch_a.1);
+    assert!(seq >= epoch_a.2, "seq goes on: {} then {seq}", epoch_a.2);
+    // No enrollment, approval or grant of the person in between.
+    assert_eq!(agent_ids(&mut a.person).await, agents_a);
+    assert_eq!(agent_ids(&mut b.person).await, agents_b);
+
+    // B stays apart on enclave 2: A's package with B's name fails the pin,
+    // and each account has its own proxy.
+    let (crossed, _) = forwarder(&a.package, second_addr, sni(&b.channel)).await;
+    assert_eq!(
+        crossed.claim(&a.package).await.expect_err("crossed").error,
+        "klav_proxy_unreachable"
+    );
+    let state_b2 = second.state_of(b.account_id).await.expect("B on 2");
+    assert!(!Arc::ptr_eq(&state_a2, &state_b2));
+    assert_ne!(state_b2.proxy_id().await, proxy_a);
+    let views_b = state_b2.sandboxes().views().await;
+    assert_eq!(views_b.len(), 1);
+    assert_eq!(views_b[0].sandbox_id, b.package.sandbox_id);
+
+    // Nothing secret in any line logged meanwhile.
+    let seed = second.seed_for_test().expect("seed");
+    let mut secrets: Vec<Vec<u8>> = vec![
+        klav_core::nitro::fake::seed_bytes(&seed).to_vec(),
+        a.token.as_bytes().to_vec(),
+        b.token.as_bytes().to_vec(),
+        a.package.secret.expose().to_vec(),
+        b.package.secret.expose().to_vec(),
+    ];
+    for h in [&a, &b] {
+        let both =
+            klav_core::nitro::fake::secret_bytes(&derive_account_keys(&seed, h.account_id, 0));
+        secrets.push(both[..32].to_vec());
+        secrets.push(both[32..].to_vec());
+    }
+    assert_nothing_secret(&log.text(), &secrets, &[&a.email, &b.email]);
+    drop((a.person, a.issuer, b.person, b.issuer));
+}
+
+/// `klav-proxy enclave` as the image starts it, over loopback instead of
+/// vsock and with a fake NSM: genesis serves the published manifest it
+/// names, the hand-off only on the peer port; a joiner takes the seed and
+/// the accounts from it; a joiner that finds no holder, and a genesis
+/// whose manifest isn't published, give up with the reason.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_enclave_command_starts_fresh_or_joins_a_peer() {
+    use super::run::{Plan, Startup, loopback, serve};
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let m3 = manifest(3, &[(&img, "current")]);
+    world.repo.publish(3, &m3);
+    let startup = |plan: Plan| async {
+        let (channel, _) = loopback().await;
+        let (api, api_addr) = loopback().await;
+        let (peer, peer_addr) = loopback().await;
+        let startup = Startup {
+            plan,
+            config: world.config("http://127.0.0.1:9", QuotaLimits::default()),
+            channel,
+            api,
+            peer: Some(peer),
+            published: Arc::new(
+                PublishedRepo::new(&world.repo.base, reqwest::Client::new()).expect("repo"),
+            ),
+            peer_client: reqwest::Client::new(),
+            join_retry: Duration::from_millis(50),
+        };
+        (startup, api_addr, peer_addr)
+    };
+    let nsm = || -> Arc<FakeNsm> {
+        Arc::new(FakeNsm {
+            nitro: Arc::clone(&world.nitro),
+            pcrs: img.pcrs,
+        })
+    };
+    let anchors = || Anchors::test(world.nitro.root(), &[FakeReleaseKey::new(RELEASE).public()]);
+
+    // Genesis, serving manifest 3.
+    let (s, api_g, peer_g) = startup(Plan::Genesis {
+        manifest_seq: Some(3),
+    })
+    .await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(serve(s, nsm(), anchors(), Some(tx)));
+    let genesis = rx.await.expect("genesis ready");
+    assert!(genesis.has_seed());
+    let served: ManifestWire = reqwest::get(format!("http://{api_g}/v1/manifest"))
+        .await
+        .expect("manifest")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(served.manifest.as_bytes(), &m3.bytes[..]);
+    // The hand-off is on the peer port only.
+    let hello = |addr: SocketAddr| async move {
+        reqwest::Client::new()
+            .post(format!("http://{addr}/v1/handoff/hello"))
+            .json(&HelloRequest {
+                nonce: Blob::new(vec![1; 32]),
+            })
+            .send()
+            .await
+            .expect("hello")
+            .status()
+            .as_u16()
+    };
+    assert_eq!(hello(api_g).await, 404);
+    assert_eq!(hello(peer_g).await, 200);
+    for n in [1, 2] {
+        genesis.enroll_for_test(enrollment(n)).expect("enroll");
+    }
+
+    // A joiner takes the seed and both accounts.
+    let (s, _, _) = startup(Plan::Join {
+        holder: format!("http://{peer_g}"),
+        attempts: 3,
+    })
+    .await;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(serve(s, nsm(), anchors(), Some(tx)));
+    let joiner = rx.await.expect("joiner ready");
+    assert!(joiner.has_seed());
+    let mut names = joiner.channel_names();
+    names.sort();
+    let mut expected = genesis.channel_names();
+    expected.sort();
+    assert_eq!(names, expected);
+
+    // No holder answers: it gives up after its attempts.
+    let (s, _, _) = startup(Plan::Join {
+        holder: "http://127.0.0.1:9".into(),
+        attempts: 2,
+    })
+    .await;
+    let err = serve(s, nsm(), anchors(), None)
+        .await
+        .expect_err("no holder");
+    assert!(err.contains("no hand-off after 2 attempts"), "{err}");
+    // A genesis whose manifest isn't published doesn't start.
+    let (s, _, _) = startup(Plan::Genesis {
+        manifest_seq: Some(99),
+    })
+    .await;
+    let err = serve(s, nsm(), anchors(), None)
+        .await
+        .expect_err("unpublished");
+    assert!(err.contains("manifest 99"), "{err}");
+}
+
+/// Writes `head` and then each of `chunks` as one HTTP chunk to `port`.
+async fn chunked(port: u16, path: &str, chunks: &[Vec<u8>], end: bool) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\ncontent-type: application/octet-stream\r\ntransfer-encoding: chunked\r\n\r\n"
+    );
+    s.write_all(head.as_bytes()).await.expect("head");
+    for c in chunks {
+        // The proxy may answer and close before every chunk is in.
+        if s.write_all(format!("{:x}\r\n", c.len()).as_bytes())
+            .await
+            .is_err()
+            || s.write_all(c).await.is_err()
+            || s.write_all(b"\r\n").await.is_err()
+        {
+            break;
+        }
+    }
+    if end {
+        let _ = s.write_all(b"0\r\n\r\n").await;
+    }
+    s
+}
+
+/// The status and the `klav-error` of the answer on `s`.
+async fn answer_of(s: &mut tokio::net::TcpStream) -> (u16, Option<String>) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    let read = tokio::time::timeout(10 * SECOND, async {
+        while !buf.ends_with(b"\r\n\r\n") {
+            if s.read(&mut byte).await.expect("read") == 0 {
+                break;
+            }
+            buf.push(byte[0]);
+        }
+    })
+    .await;
+    assert!(read.is_ok(), "an answer came");
+    let head = String::from_utf8_lossy(&buf).to_ascii_lowercase();
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let code = head
+        .split("\r\n")
+        .find_map(|l| l.strip_prefix("klav-error: "))
+        .map(str::to_owned);
+    (status, code)
+}
+
+/// Polls `check` until it holds (at most 5 s).
+async fn eventually(what: &str, check: impl Fn() -> bool) {
+    let begun = std::time::Instant::now();
+    while !check() {
+        assert!(begun.elapsed() < 5 * SECOND, "{what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// ADR 0051 §3.3: the per-account cap on calls to providers at once and on
+/// request bodies held in memory each trip with `503 klav_proxy_backlog`,
+/// a call waits its turn while a slot frees up, and both give back what
+/// they hold when the answer ends or the caller goes away mid-body; a body
+/// sent in chunks without `Content-Length` past the body limit is cut and
+/// refused with `413 klav_upstream_blocked`, and reaches no provider.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_account_caps_trip_deterministically_and_release() {
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let limits = QuotaLimits {
+        upstream_calls: 2,
+        queue_wait: 2 * SECOND,
+        buffer_bytes: 1000,
+        max_body: 512,
+        ..QuotaLimits::default()
+    };
+    let enclave = world.enclave_with(&img, &server.url, limits);
+    enclave.start_fresh().expect("seed");
+    key_server_for(&mut server, &enclave);
+    enclave
+        .load_manifest(manifest(1, &[(&img, "current")]))
+        .expect("manifest");
+    let api_base = api(&enclave).await;
+    let addr = channel(&enclave).await;
+    let upstream = Upstream::start().await;
+    let h = enroll_and_start(
+        &server,
+        &dir,
+        &enclave,
+        &api_base,
+        "ana@example.com",
+        "tok_live_caps_0123456789abcdef",
+        &upstream,
+    )
+    .await;
+    let (fwd, local) = forwarder(&h.package, addr, sni(&h.channel)).await;
+    fwd.claim(&h.package).await.expect("claim");
+    let state = enclave.state_of(h.account_id).await.expect("state");
+    assert_eq!((state.free_slots(), state.free_buffer()), (2, 1000));
+
+    // Calls at once: both of the account's slots held, as by two calls in
+    // flight. A third waits its turn, then gets `503` with `retry_after`.
+    let one = state.take_slots(None).await.expect("one");
+    let two = state.take_slots(None).await.expect("two");
+    let res = reqwest::get(format!("http://127.0.0.1:{local}/northflank/v1/projects"))
+        .await
+        .expect("call");
+    assert_eq!(res.status(), 503);
+    assert_eq!(
+        res.headers()
+            .get("klav-error")
+            .and_then(|v| v.to_str().ok()),
+        Some("klav_proxy_backlog")
+    );
+    assert_eq!(
+        res.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
+    );
+    let body: serde_json::Value = res.json().await.expect("json");
+    assert_eq!(body["retry_after"], 1);
+    // While one waits its turn, a slot frees up: it goes through.
+    let waiting = tokio::spawn(call(local, "/northflank/v1/projects"));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(one);
+    let (status, body) = waiting.await.expect("waited");
+    assert_eq!(status, 200, "{body}");
+    drop(two);
+    eventually("every call slot came back", || state.free_slots() == 2).await;
+
+    // Bodies held at once: 900 of the 1000 bytes held; a 200-byte body
+    // doesn't fit, and fits once they are given back.
+    let budget = Arc::clone(state.body_budget().expect("budget"));
+    let held = Arc::clone(&budget)
+        .try_acquire_many_owned(900)
+        .expect("held");
+    let post = || async {
+        reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{local}/northflank/v1/upload"))
+            .body(vec![b'x'; 200])
+            .send()
+            .await
+            .expect("post")
+    };
+    let res = post().await;
+    assert_eq!(res.status(), 503);
+    assert_eq!(
+        res.headers()
+            .get("klav-error")
+            .and_then(|v| v.to_str().ok()),
+        Some("klav_proxy_backlog")
+    );
+    drop(held);
+    let res = post().await;
+    assert_eq!(res.status(), 200);
+    eventually("the body's bytes came back", || state.free_buffer() == 1000).await;
+
+    // A body that stops on the way holds its bytes only while its caller
+    // is there.
+    let stalled = chunked(local, "/northflank/v1/upload", &[vec![b'y'; 300]], false).await;
+    eventually("the stalled body holds its bytes", || {
+        state.free_buffer() == 700
+    })
+    .await;
+    assert_eq!(state.free_slots(), 1);
+    drop(stalled);
+    eventually("the caller went away: its bytes and slot came back", || {
+        state.free_buffer() == 1000 && state.free_slots() == 2
+    })
+    .await;
+
+    // Chunked, no `Content-Length`, past the 512-byte limit: cut and
+    // refused, nothing reaches the provider.
+    let seen = upstream.requests().len();
+    let mut over = chunked(
+        local,
+        "/northflank/v1/upload",
+        &[vec![b'z'; 300], vec![b'z'; 300]],
+        true,
+    )
+    .await;
+    assert_eq!(
+        answer_of(&mut over).await,
+        (413, Some("klav_upstream_blocked".to_owned()))
+    );
+    assert_eq!(
+        upstream.requests().len(),
+        seen,
+        "nothing reached the provider"
+    );
+    // A chunked body within the limit still goes through.
+    let mut within = chunked(
+        local,
+        "/northflank/v1/upload",
+        &[vec![b'z'; 100], vec![b'z'; 100]],
+        true,
+    )
+    .await;
+    assert_eq!(answer_of(&mut within).await.0, 200);
+    eventually("everything came back", || {
+        state.free_buffer() == 1000 && state.free_slots() == 2
+    })
+    .await;
+    drop(h.person);
+}
