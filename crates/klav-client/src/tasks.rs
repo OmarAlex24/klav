@@ -1120,6 +1120,14 @@ impl Unlocked {
         }
         let (view, request) = self.approval_view(&info)?;
         crate::agents::refuse_security_card(&view)?;
+        // An «ask every time» target never goes into a task (ADR 0032 §4.2),
+        // whatever the server sent.
+        if view.always_asks {
+            return Err(ClientError::Invalid(format!(
+                "{} always asks for approval: it cannot go in a task; approve it once or deny it",
+                view.target_name.as_deref().unwrap_or(&view.target)
+            )));
+        }
         let live = self.live_tasks().await?;
         let outside = self.outside_task(&live, &request).ok_or_else(|| {
             ClientError::Invalid(format!(

@@ -69,7 +69,7 @@ struct RawConfig {
 }
 
 /// A loaded `klav.toml`, references expanded.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ProjectConfig {
     /// Where it was read from (canonical).
     pub(crate) path: PathBuf,
@@ -540,6 +540,78 @@ pub(crate) fn is_reference(value: &str) -> bool {
     value.trim().starts_with(SCHEME)
 }
 
+/// Whether picking the environment without `--env` (ADR 0032 §5) needs the
+/// names of the project's environments in the vault: only when `klav.toml`
+/// has neither `default_env` nor a flat `[env]`.
+pub(crate) fn default_needs_vault(config: Option<&ProjectConfig>) -> bool {
+    config.is_some_and(|c| c.default_env.is_none() && c.env.is_empty())
+}
+
+/// The environment to use without `--env` (ADR 0032 §5, answer 8), the same
+/// for `klav run`, `klav agent run` and `run_with_secrets`: (1)
+/// `default_env`; (2) with text variables in `[env]`, none (today's
+/// behavior, no environment item read); (3) the only one among `vault` (the
+/// project's environments) and the `[env.<name>]` tables; (4) with several,
+/// an error that lists them. It never picks one by its name.
+pub(crate) fn default_environment(
+    config: Option<&ProjectConfig>,
+    vault: &[String],
+) -> Result<Option<String>, String> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    if let Some(default) = &config.default_env {
+        return Ok(Some(default.clone()));
+    }
+    if !config.env.is_empty() {
+        return Ok(None);
+    }
+    let mut names: Vec<String> = config.envs.keys().cloned().collect();
+    for name in vault {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    names.sort();
+    match names.len() {
+        0 => Ok(None),
+        1 => Ok(names.pop()),
+        _ => Err(format!("there are {}: use --env", and_list(&names))),
+    }
+}
+
+/// `a, b and c`.
+pub(crate) fn and_list(names: &[String]) -> String {
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        Some((last, _)) => last.clone(),
+        None => String::new(),
+    }
+}
+
+/// The error for an environment neither the vault nor `klav.toml` has,
+/// listing the ones that exist.
+pub(crate) fn no_such_environment(
+    name: &str,
+    config: Option<&ProjectConfig>,
+    vault: &[String],
+) -> String {
+    let mut known: Vec<String> = config
+        .map(|c| c.envs.keys().cloned().collect())
+        .unwrap_or_default();
+    for n in vault {
+        if !known.contains(n) {
+            known.push(n.clone());
+        }
+    }
+    known.sort();
+    if known.is_empty() {
+        format!("no environment {name:?} in the vault or klav.toml")
+    } else {
+        format!("no environment {name:?}: there are {}", and_list(&known))
+    }
+}
+
 fn validate_env_name(name: &str) -> Result<(), String> {
     let mut chars = name.chars();
     let ok = chars
@@ -624,6 +696,58 @@ mod tests {
         assert!(load(Some(&path)).is_err());
         std::fs::write(&path, "[files]\n\"new/dir/key.p8\" = \"klav://a/b/c/d\"\n").unwrap();
         assert!(load(Some(&path)).is_ok());
+    }
+
+    #[test]
+    fn the_default_environment_follows_the_order_and_never_guesses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let load_text = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            load(Some(&path)).unwrap().unwrap()
+        };
+        let vault = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        // No klav.toml: no environment.
+        assert_eq!(
+            default_environment(None, &vault(&["development"])),
+            Ok(None)
+        );
+        // default_env wins, without looking at the vault.
+        let c = load_text("project = \"W/P\"\ndefault_env = \"staging\"\n");
+        assert!(!default_needs_vault(Some(&c)));
+        assert_eq!(
+            default_environment(Some(&c), &vault(&["development", "production"])),
+            Ok(Some("staging".into()))
+        );
+        // A flat [env]: today's behavior.
+        let c = load_text("project = \"W/P\"\n[env]\nA = \"klav://a/b/c/d\"\n");
+        assert!(!default_needs_vault(Some(&c)));
+        assert_eq!(
+            default_environment(Some(&c), &vault(&["production"])),
+            Ok(None)
+        );
+        // The only one, from the vault or klav.toml.
+        let c = load_text("project = \"W/P\"\n");
+        assert!(default_needs_vault(Some(&c)));
+        assert_eq!(
+            default_environment(Some(&c), &vault(&["production"])),
+            Ok(Some("production".into()))
+        );
+        let c = load_text("project = \"W/P\"\n[env.development]\nA = \"klav://a/b/c/d\"\n");
+        assert_eq!(
+            default_environment(Some(&c), &vault(&["development"])),
+            Ok(Some("development".into()))
+        );
+        // Several: an error listing them; `development` is never guessed.
+        let e = default_environment(Some(&c), &vault(&["production", "staging"])).unwrap_err();
+        assert_eq!(
+            e,
+            "there are development, production and staging: use --env"
+        );
+        assert_eq!(
+            no_such_environment("qa", Some(&c), &vault(&["production"])),
+            "no environment \"qa\": there are development and production"
+        );
     }
 
     #[test]

@@ -411,8 +411,9 @@ impl Session {
             .ok_or_else(|| ClientError::NotFound(format!("item {item}")))?;
         // The policy with the tags the item will have: `add_tags` must not
         // widen what `update` may touch (ronda 2).
-        let before = self.evaluate_entry(entry, Permission::Update, None, &entry.overview.tags);
-        let after = self.evaluate_entry(entry, Permission::Update, None, current.tags());
+        let before =
+            self.evaluate_entry(item, entry, Permission::Update, None, &entry.overview.tags);
+        let after = self.evaluate_entry(item, entry, Permission::Update, None, current.tags());
         let decision = before.effect.max(after.effect);
         if decision == Effect::Deny {
             return Err(denied_here(Permission::Update));

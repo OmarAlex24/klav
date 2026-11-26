@@ -122,6 +122,11 @@ pub struct Claim {
     pub domain: Option<String>,
     /// Already sent with a request of this action.
     pub used: bool,
+    /// The other items it covers, one access each (an environment's
+    /// protected items, ADR 0032 §3.1).
+    pub members: Vec<ItemId>,
+    /// Members already sent with a request.
+    pub members_used: Vec<ItemId>,
 }
 
 /// An approved agent with its grant open.
@@ -149,6 +154,17 @@ pub struct Session {
     /// person confirmed (ADR 0030 §7): those an agent added and she has not
     /// confirmed are left out. Only these are filled.
     pub(crate) confirmed: HashMap<ItemId, Vec<String>>,
+    /// For each environment read in this session, the items its
+    /// references point to (ADR 0032 §3.1): what its next bundle asks for.
+    pub(crate) env_refs: HashMap<ItemId, Vec<ItemId>>,
+    /// Items that need an approval the account signed whatever the policy
+    /// here and the server say: the references of a protected environment's
+    /// version by the person, read in this session (ADR 0032 §4.4).
+    pub(crate) must_approve: Vec<ItemId>,
+    /// The approval the last granted access used, if any.
+    pub(crate) last_approval: Option<ApprovalId>,
+    /// Whether the person wrote the version the last granted access got.
+    pub(crate) last_by_person: bool,
 }
 
 /// How many injected values a session remembers for redaction.
@@ -241,6 +257,10 @@ impl Session {
             task: None,
             injected: Vec::new(),
             confirmed: HashMap::new(),
+            env_refs: HashMap::new(),
+            must_approve: Vec::new(),
+            last_approval: None,
+            last_by_person: false,
         };
         session.refresh().await?;
         Ok(session)
@@ -419,13 +439,17 @@ impl Session {
                 once: false,
             };
         };
-        self.evaluate_entry(e, permission, domain, &e.overview.tags)
+        self.evaluate_entry(item, e, permission, domain, &e.overview.tags)
     }
 
     /// [`Self::evaluate`] with `tags` instead of the listed ones (the tags
     /// of the version actually delivered, or the ones after a patch).
+    /// The item's ID goes in the request, so the rules that name items
+    /// (per environment and inherited ones, ADR 0032 §4.1) apply here as
+    /// they do on the server.
     pub(crate) fn evaluate_entry(
         &self,
+        item: ItemId,
         e: &Entry,
         permission: Permission,
         domain: Option<&str>,
@@ -446,10 +470,10 @@ impl Session {
                 },
                 tags: tags.to_vec(),
                 domain: domain.map(str::to_owned),
-                // Items, methods and paths only appear in proxy rules
-                // (ADR 0036 §2), which this path never evaluates: left
-                // out, such a rule does not match.
-                item: None,
+                // Methods and paths only appear in proxy rules (ADR 0036
+                // §2), which this path never evaluates: left out, such a
+                // rule does not match.
+                item: Some(item),
                 method: None,
                 path: None,
                 now: now_secs(),
@@ -627,7 +651,7 @@ impl Session {
     ) -> ClientResult<Access> {
         Ok(
             match self
-                .access_inner(item, permission, reason, domain, approval_id, false)
+                .access_inner(item, permission, reason, domain, approval_id, false, &[])
                 .await?
             {
                 Got::Granted(item, _) => Access::Granted(item),
@@ -641,7 +665,10 @@ impl Session {
 
     /// [`Session::access`], also asking for the item's attachments when
     /// `with_files` (only with `inject`, ADR 0016): they come in the same
-    /// answer, under the same decision, and are decrypted here.
+    /// answer, under the same decision, and are decrypted here. `bundle`
+    /// (only with `inject` on an environment, ADR 0032 §3.1) names the
+    /// other items one approval covers.
+    #[allow(clippy::too_many_arguments)]
     async fn access_inner(
         &mut self,
         item: ItemId,
@@ -650,6 +677,7 @@ impl Session {
         domain: Option<&str>,
         approval_id: Option<ApprovalId>,
         with_files: bool,
+        bundle: &[ItemId],
     ) -> ClientResult<Got> {
         if reason.trim().is_empty() {
             return Err(ClientError::Invalid(
@@ -696,7 +724,7 @@ impl Session {
             include_attachments: with_files,
             sandbox: None,
             local_client: None,
-            items: Vec::new(),
+            items: bundle.to_vec(),
         };
         let bytes =
             serde_json::to_vec(&body).map_err(|e| ClientError::Invalid(format!("request: {e}")))?;
@@ -730,13 +758,33 @@ impl Session {
                     .items
                     .get(&item)
                     .ok_or_else(|| ClientError::NotFound(format!("item {item}")))?;
-                let real = self.evaluate_entry(entry, permission, domain, opened.tags());
+                let real = self.evaluate_entry(item, entry, permission, domain, opened.tags());
                 if real.effect == Effect::Deny {
                     return Err(local_denial());
                 }
-                if real.effect > decision.effect {
+                if real.strictness() > decision.strictness() {
                     self.backed(&target, approval_id, granted.approval_id, task_id)
                         .await?;
+                }
+                // The double barrier (ADR 0032 §4.4): an environment this
+                // runtime can read, protected by its effective flag (§3),
+                // needs an approval the account signed whatever the server
+                // and the grant say; a task never covers it.
+                if (opened.kind() == ItemKind::Environment
+                    && klav_core::policy::PROTECTED_PERMISSIONS.contains(&permission)
+                    && self.effectively_protected(item, &granted, &opened))
+                    || (self.must_approve.contains(&item)
+                        && klav_core::policy::PROTECTED_PERMISSIONS.contains(&permission))
+                {
+                    self.approved(&target, approval_id, granted.approval_id)
+                        .await
+                        .map_err(|e| match e {
+                            ClientError::Security(m) => ClientError::Security(format!(
+                                "“{}” is protected by an environment: {m}",
+                                opened.title()
+                            )),
+                            other => other,
+                        })?;
                 }
                 let files = if with_files {
                     self.decrypt_files(item, &granted, &opened)?
@@ -745,6 +793,8 @@ impl Session {
                 };
                 let confirmed = self.confirmed_of(item, &granted, &opened);
                 self.confirmed.insert(item, confirmed);
+                self.last_approval = granted.approval_id.or(approval_id);
+                self.last_by_person = granted.item.author_agent_id.is_none();
                 // Remember the version read (for a following update), and
                 // what it really says (title, tags and URLs).
                 if let Some(entry) = self.items.get_mut(&item) {
@@ -1022,6 +1072,8 @@ impl Session {
             item: request.item_id,
             domain: request.claims.domain,
             used: false,
+            members: request.items,
+            members_used: Vec::new(),
         });
         Ok(())
     }
@@ -1135,7 +1187,12 @@ impl Session {
             // This runtime's request just spent an approve-once decision.
             return self.approval_fits(target, id, true).await;
         }
-        if self.task_covers(target, task) {
+        // An «ask every time» target never goes into a task (ADR 0032
+        // §4.2): only an approval backs it.
+        let once = target
+            .item
+            .is_some_and(|i| self.evaluate(i, target.permission, target.domain).once);
+        if !once && self.task_covers(target, task) {
             return Ok(());
         }
         Err(ClientError::Security(format!(
@@ -1166,21 +1223,85 @@ impl Session {
             other => other,
         })?;
         let fits = request.permission == target.permission
-            && request.vault_id == target.vault
-            && request.project_id == target.project
-            && request.item_id == target.item
-            && request
-                .claims
-                .domain
-                .as_deref()
-                .map(str::to_ascii_lowercase)
-                == target.domain.map(str::to_ascii_lowercase);
+            && ((request.vault_id == target.vault
+                && request.project_id == target.project
+                && request.item_id == target.item
+                && request
+                    .claims
+                    .domain
+                    .as_deref()
+                    .map(str::to_ascii_lowercase)
+                    == target.domain.map(str::to_ascii_lowercase))
+                // One access to an item an environment's approval lists
+                // (ADR 0032 §3.1): same permission, no site; the item may
+                // be in another project or vault.
+                || (target.domain.is_none()
+                    && target.item.is_some_and(|i| request.items.contains(&i))));
         if !fits {
             return Err(ClientError::Security(format!(
                 "the server let `{name}` through with approval {id}, which is for another action"
             )));
         }
         Ok(())
+    }
+
+    /// A `2xx` for `target` that must come with an approval the account
+    /// signed for it (or listing it), whatever the policy here says, never
+    /// a task: a protected environment (ADR 0032 §4.4).
+    pub(crate) async fn approved(
+        &self,
+        target: &ActionTarget<'_>,
+        sent: Option<ApprovalId>,
+        returned: Option<ApprovalId>,
+    ) -> ClientResult<()> {
+        let name = permission_name(target.permission);
+        if let (Some(sent), Some(returned)) = (sent, returned)
+            && sent != returned
+        {
+            return Err(ClientError::Security(format!(
+                "the server used another approval than {sent} for `{name}`"
+            )));
+        }
+        match returned.or(sent) {
+            Some(id) => self.approval_fits(target, id, true).await,
+            None => Err(ClientError::Security(format!(
+                "the server let `{name}` through without an approval the account signed: its answer is refused"
+            ))),
+        }
+    }
+
+    /// The effective `protected` flag (ADR 0032 §3) of the environment
+    /// `opened`, as delivered in `granted`: the flag of the person's latest
+    /// version (the delivered one when she wrote it; else the overview of
+    /// hers the server sends, which must open with the project key). With
+    /// no version of hers, protected if its flag is on or it is called
+    /// `production`/`prod`; anything that does not open counts as
+    /// protected (it fails closed).
+    pub(crate) fn effectively_protected(
+        &self,
+        item: ItemId,
+        granted: &AccessGranted,
+        opened: &Item,
+    ) -> bool {
+        let delivered = opened
+            .environment()
+            .is_none_or(klav_core::model::environment::Environment::protected);
+        if granted.item.author_agent_id.is_none() {
+            return delivered;
+        }
+        let Some(found) = &granted.person_version else {
+            return delivered || klav_core::model::environment::is_production_name(opened.title());
+        };
+        let person = (|| -> Option<bool> {
+            let entry = self.items.get(&item)?;
+            let granted_key = self.grant.keys.get(&entry.project)?;
+            let ctx: ItemContext = item_ctx(&granted_key.ctx, item);
+            let key = unwrap_item_key(&granted_key.key, &ctx, found.wrapped_key.as_bytes()).ok()?;
+            let overview =
+                open_overview(&key, &ctx, found.version, found.overview.as_bytes()).ok()?;
+            overview.environment.map(|e| e.protected)
+        })();
+        person.unwrap_or(true)
     }
 
     /// A running task this runtime verified covers `target` (with `task`,
@@ -1222,7 +1343,9 @@ impl Session {
         };
         let fits = claim.permission == permission
             && match (claim.item, items.is_empty()) {
-                (Some(item), false) => items.contains(&item),
+                (Some(item), false) => {
+                    items.contains(&item) || items.iter().any(|i| claim.members.contains(i))
+                }
                 (None, true) => project.is_some_and(|p| p == claim.project),
                 _ => false,
             };
@@ -1252,7 +1375,13 @@ impl Session {
         let Some(claim) = self.claim.clone() else {
             return Ok(None);
         };
-        if claim.used || claim.permission != permission || claim.item != item {
+        // An item the approval lists besides its own (ADR 0032 §3.1).
+        let member = item.filter(|i| {
+            claim.item != item && claim.members.contains(i) && !claim.members_used.contains(i)
+        });
+        if claim.permission != permission
+            || (member.is_none() && (claim.used || claim.item != item))
+        {
             return Ok(None);
         }
         if claim.domain.as_deref().map(str::to_ascii_lowercase)
@@ -1270,7 +1399,10 @@ impl Session {
         match status {
             ApprovalStatus::Approved => {
                 if let Some(c) = &mut self.claim {
-                    c.used = true;
+                    match member {
+                        Some(i) => c.members_used.push(i),
+                        None => c.used = true,
+                    }
                 }
                 Ok(Some(claim.id))
             }
@@ -1297,7 +1429,7 @@ impl Session {
         wait: Duration,
     ) -> ClientResult<Item> {
         Ok(self
-            .access_waiting_inner(item, permission, reason, domain, wait, false)
+            .access_waiting_inner(item, permission, reason, domain, wait, false, &[])
             .await?
             .0)
     }
@@ -1314,11 +1446,20 @@ impl Session {
             .items
             .get(&item)
             .is_some_and(|e| !e.attachments.is_empty());
-        self.access_waiting_inner(item, Permission::Inject, reason, None, wait, with_files)
-            .await
+        self.access_waiting_inner(
+            item,
+            Permission::Inject,
+            reason,
+            None,
+            wait,
+            with_files,
+            &[],
+        )
+        .await
     }
 
-    async fn access_waiting_inner(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn access_waiting_inner(
         &mut self,
         item: ItemId,
         permission: Permission,
@@ -1326,10 +1467,19 @@ impl Session {
         domain: Option<&str>,
         wait: Duration,
         with_files: bool,
+        bundle: &[ItemId],
     ) -> ClientResult<(Item, Files)> {
         if let Some(id) = self.claimed(Some(item), permission, domain, wait).await? {
             return match self
-                .access_inner(item, permission, reason, domain, Some(id), with_files)
+                .access_inner(
+                    item,
+                    permission,
+                    reason,
+                    domain,
+                    Some(id),
+                    with_files,
+                    bundle,
+                )
                 .await?
             {
                 Got::Granted(item, files) => Ok((*item, files)),
@@ -1337,7 +1487,7 @@ impl Session {
             };
         }
         match self
-            .access_inner(item, permission, reason, domain, None, with_files)
+            .access_inner(item, permission, reason, domain, None, with_files, bundle)
             .await?
         {
             Got::Granted(item, files) => Ok((*item, files)),
@@ -1357,6 +1507,7 @@ impl Session {
                                 domain,
                                 Some(approval_id),
                                 with_files,
+                                bundle,
                             )
                             .await?
                         {

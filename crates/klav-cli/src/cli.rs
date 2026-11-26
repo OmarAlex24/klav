@@ -814,8 +814,8 @@ pub(crate) enum AgentCommand {
     /// `totp` is `ask` by default).
     Totp(AgentTotpArgs),
     /// Run a command with secrets in its environment, as the agent (agent
-    /// side): `klav.toml` and `-e`; the output comes back with the values
-    /// redacted.
+    /// side): `klav.toml`, an environment (`--env`) and `-e`; the output
+    /// comes back with the values redacted.
     Run(AgentRunArgs),
     /// Write secrets into a new 0600 file, as the agent (agent side; never
     /// to stdout). Prefer `klav agent run` (env or `klav.toml`'s `[files]`)
@@ -836,7 +836,8 @@ pub(crate) enum AgentCommand {
     #[command(subcommand, name = "secret-request")]
     SecretRequest(AgentSecretRequestCommand),
     /// Approve an agent, or change its grant (person side; Touch ID or the
-    /// master password).
+    /// master password). `grant` is the same command.
+    #[command(alias = "grant")]
     Approve(AgentApproveArgs),
     /// Deny a pending registration (person side).
     Deny {
@@ -1020,8 +1021,15 @@ pub(crate) struct AgentRunArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) config: Option<PathBuf>,
     /// Extra variable `NAME=REF` (repeatable).
-    #[arg(short = 'e', long = "env", value_name = "NAME=REF")]
-    pub(crate) env: Vec<String>,
+    #[arg(short = 'e', long = "var", value_name = "NAME=REF")]
+    pub(crate) vars: Vec<String>,
+    /// The environment to inject (ADR 0032 §4.5): the project's
+    /// environment of that name in the vault, plus `[env.NAME]` of
+    /// `klav.toml`. Without it: `default_env`, the flat `[env]`, or the
+    /// only environment. A protected one asks the person once for it and
+    /// the protected items it uses. A `NAME=REF` here is read as `-e`.
+    #[arg(long = "env", value_name = "NAME")]
+    pub(crate) environment: Vec<String>,
     /// Do not write the `[files]` of `klav.toml`.
     #[arg(long)]
     pub(crate) no_files: bool,
@@ -1505,6 +1513,12 @@ pub(crate) struct AgentApproveArgs {
     /// Allow `fill` only on these hosts (`example.com`, `*.example.com`).
     #[arg(long = "fill-domain", value_name = "PATTERN")]
     pub(crate) fill_domains: Vec<String>,
+    /// `inject` on one environment of the shared projects (ADR 0032 §4.3),
+    /// e.g. `development=allow`, `staging=ask` (repeatable; `VAULT/PROJECT/
+    /// NAME=…` when two projects have it). A protected environment is never
+    /// `allow`: it and the items it protects always ask, once per use.
+    #[arg(long = "env", value_name = "NAME=allow|ask|deny")]
+    pub(crate) environments: Vec<String>,
     /// Only work inside this weekly window, e.g. `mon-fri 09:00-18:00 -06:00`
     /// (repeatable).
     #[arg(long = "hours", value_name = "WINDOW")]

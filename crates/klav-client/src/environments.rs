@@ -847,6 +847,88 @@ impl Unlocked {
                 .is_some_and(|(loc, _)| self.protection.uncertain(loc.vault))
     }
 
+    /// The warning of an environment's approval card (ADR 0032 §3.1): the
+    /// items it lists must be references of the person's latest version
+    /// of that environment, as this device keeps it; it names those that
+    /// are not (and which other environment protects them, if one does),
+    /// or says this device cannot tell. `None` for a request without
+    /// items, or when every listed item is a reference.
+    pub(crate) fn bundle_warning(
+        &self,
+        request: &klav_proto::agent::ApprovalRequest,
+    ) -> Option<String> {
+        if request.items.is_empty() {
+            return None;
+        }
+        let name_of = |id: ItemId| {
+            self.locate(id)
+                .and_then(|(loc, _)| self.item_summary(loc).ok())
+                .map_or_else(|| format!("item {id}"), |s| format!("“{}”", s.title))
+        };
+        let env = request.item_id?;
+        let Some(contribution) = self.protection.contributions.get(&env) else {
+            return Some(format!(
+                "Klav cannot check which items {} uses on this device: approve only if you expected the agent to use each item listed",
+                name_of(env)
+            ));
+        };
+        let extra: Vec<String> = request
+            .items
+            .iter()
+            .filter(|i| !contribution.items.contains(i))
+            .map(|i| {
+                let others: Vec<String> = self
+                    .protection
+                    .protected_by(*i)
+                    .into_iter()
+                    .filter(|t| *t != contribution.title)
+                    .collect();
+                if others.is_empty() {
+                    name_of(*i)
+                } else {
+                    format!("{} (protected by {})", name_of(*i), others.join(", "))
+                }
+            })
+            .collect();
+        if extra.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "The agent also asks for {}, which your latest version of “{}” does not use",
+            extra.join(", "),
+            contribution.title
+        ))
+    }
+
+    /// Refuses a policy the person asks for that names a protected item in
+    /// an `allow` rule for a permission that hands out or changes a value
+    /// (ADR 0032 §4.3): the client never signs a grant that leaves one
+    /// open. Only where the person's request enters (approving an agent,
+    /// changing its grant); an automatic reissue keeps what is signed and
+    /// adds the inherited rules, which win anyway.
+    pub(crate) fn refuse_open_protected(
+        &self,
+        policy: &klav_core::policy::Policy,
+    ) -> ClientResult<()> {
+        for rule in &policy.rules {
+            if rule.effect != klav_core::policy::Effect::Allow
+                || !PROTECTED_PERMISSIONS.contains(&rule.permission)
+            {
+                continue;
+            }
+            if let Some(item) = rule.scope.items.iter().find(|i| self.always_asks(**i)) {
+                let name = self
+                    .locate(*item)
+                    .and_then(|(loc, _)| self.item_summary(loc).ok())
+                    .map_or_else(|| format!("item {item}"), |s| format!("“{}”", s.title));
+                return Err(ClientError::Invalid(format!(
+                    "{name} is protected by an environment: an agent always asks for it, once per use, so a grant never leaves it in allow"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Adds what the `origin: "protected"` rules of a verified grant name
     /// to what feeds the set (§3.1), and saves it if it changed.
     pub(crate) fn note_grant_protection(&mut self, payload: &GrantPayload) {

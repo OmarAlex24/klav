@@ -3,6 +3,7 @@
 pub(crate) mod account;
 pub(crate) mod agent;
 pub(crate) mod agent_actions;
+pub(crate) mod agent_env;
 pub(crate) mod client;
 pub(crate) mod client_mcp;
 pub(crate) mod deletion;

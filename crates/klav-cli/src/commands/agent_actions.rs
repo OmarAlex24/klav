@@ -60,9 +60,49 @@ fn wait(action: &AgentActionArgs) -> Duration {
     wait
 }
 
-pub(crate) async fn run_cmd(ctx: &mut Ctx, args: AgentRunArgs) -> CliResult<()> {
-    let mut o = open(ctx, &args.action, args.config.as_deref()).await?;
-    let mut env: BTreeMap<String, String> = BTreeMap::new();
+/// What an agent's run takes from environments (ADR 0032 §4.5 and §5):
+/// `None` for today's flat `[env]` (or no `klav.toml`); otherwise the
+/// vault's environment to read, if the vault has it, and `[env.NAME]` of
+/// `klav.toml`. The same order as `klav run`; it never guesses
+/// `development`.
+pub(crate) type AgentEnvironment = Option<(Option<String>, BTreeMap<String, String>)>;
+
+/// See [`AgentEnvironment`]. `requested` is `--env` or MCP's `environment`.
+pub(crate) fn agent_environment(
+    session: &Session,
+    config: Option<&ProjectConfig>,
+    scope: Option<(&str, &str)>,
+    requested: Option<&str>,
+) -> Result<AgentEnvironment, String> {
+    let vault: Vec<String> = session
+        .environments(scope)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    let name = match requested {
+        Some(name) => name.to_owned(),
+        None => match project::default_environment(config, &vault)? {
+            Some(name) => name,
+            None => return Ok(None),
+        },
+    };
+    let in_vault = session
+        .find_environment(scope, &name)
+        .map_err(|e| e.to_string())?
+        .is_some();
+    let from_toml = config.and_then(|c| c.envs.get(&name)).cloned();
+    if !in_vault && from_toml.is_none() {
+        return Err(project::no_such_environment(&name, config, &vault));
+    }
+    Ok(Some((
+        in_vault.then_some(name),
+        from_toml.unwrap_or_default(),
+    )))
+}
+
+/// The process's own `NAME=klav://…` variables.
+pub(crate) fn inherited_references() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
     for (name, value) in std::env::vars_os() {
         if let (Some(name), Some(value)) = (name.to_str(), value.to_str())
             && is_reference(value)
@@ -70,15 +110,56 @@ pub(crate) async fn run_cmd(ctx: &mut Ctx, args: AgentRunArgs) -> CliResult<()> 
             env.insert(name.to_owned(), value.trim().to_owned());
         }
     }
-    if let Some(c) = &o.config {
-        env.extend(c.env.clone());
+    env
+}
+
+pub(crate) async fn run_cmd(ctx: &mut Ctx, args: AgentRunArgs) -> CliResult<()> {
+    let mut o = open(ctx, &args.action, args.config.as_deref()).await?;
+    // `--env NAME=REF` is `-e`, as before environments.
+    let mut pairs = args.vars.clone();
+    let mut named = Vec::new();
+    for value in &args.environment {
+        if value.contains('=') {
+            pairs.push(value.clone());
+        } else {
+            named.push(value.clone());
+        }
     }
-    for pair in &args.env {
+    if named.len() > 1 {
+        return Err(usage("give one --env"));
+    }
+    let mut extra: BTreeMap<String, String> = BTreeMap::new();
+    for pair in &pairs {
         let (name, value) = pair
             .split_once('=')
             .ok_or_else(|| usage(format!("-e expects NAME=REF, got {pair:?}")))?;
-        env.insert(name.to_owned(), o.expand(value)?);
+        extra.insert(name.to_owned(), o.expand(value)?);
     }
+    let scope_pair = o.scope.clone();
+    let scope_ref = scope_pair.as_ref().map(|(v, p)| (v.as_str(), p.as_str()));
+    let chosen = agent_environment(
+        &o.session,
+        o.config.as_ref(),
+        scope_ref,
+        named.first().map(String::as_str),
+    )
+    .map_err(usage)?;
+    let inherited = inherited_references();
+    let (environment, env, fallback_env) = match chosen {
+        Some((vault_env, mut from_toml)) => {
+            from_toml.extend(extra);
+            let fallback: Vec<(String, String)> = inherited.into_iter().collect();
+            (vault_env, from_toml, fallback)
+        }
+        None => {
+            let mut env = inherited;
+            if let Some(c) = &o.config {
+                env.extend(c.env.clone());
+            }
+            env.extend(extra);
+            (None, env, Vec::new())
+        }
+    };
     let files: Vec<(PathBuf, String)> = match (&o.config, args.no_files) {
         (Some(c), false) => c.files.clone().into_iter().collect(),
         _ => Vec::new(),
@@ -98,6 +179,8 @@ pub(crate) async fn run_cmd(ctx: &mut Ctx, args: AgentRunArgs) -> CliResult<()> 
             reason: args.action.reason,
             wait,
             timeout: args.timeout,
+            environment,
+            fallback_env,
         },
     )
     .await;

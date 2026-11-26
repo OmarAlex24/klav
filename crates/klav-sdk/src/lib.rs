@@ -18,6 +18,7 @@ pub mod agent;
 pub mod browser;
 pub mod cdp;
 pub mod config;
+pub mod environments;
 pub mod grant;
 pub mod keystore;
 pub mod passkeys;
@@ -41,6 +42,7 @@ pub use browser::{
     BrowserTarget, FieldSelector, FillOptions, FillReport, Target, fill, fill_target,
 };
 pub use config::AgentConfig;
+pub use environments::{EnvironmentInfo, EnvironmentValues};
 pub use grant::OpenGrant;
 pub use keystore::{KeyStore, KeyStoreChoice};
 pub use proxy::{ProxyAccess, ProxyCall};

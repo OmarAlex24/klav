@@ -766,6 +766,7 @@ impl Unlocked {
             ChangePolicy::Rules(policy) => policy.clone(),
         };
         let policy = self.resolve_policy(policy)?;
+        self.refuse_open_protected(&policy)?;
         policy
             .check_grantable()
             .map_err(|e| ClientError::Invalid(e.to_string()))?;

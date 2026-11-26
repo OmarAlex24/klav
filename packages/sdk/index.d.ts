@@ -71,7 +71,12 @@ export declare function registerSession(
 export declare function run(
   command: string,
   args: string[],
-  options: Common & { env?: Record<string, string>; timeout?: string },
+  options: Common & {
+    env?: Record<string, string>;
+    /** The project's environment to inject (ADR 0032), e.g. "development". */
+    environment?: string;
+    timeout?: string;
+  },
 ): Promise<{ code: number; stdout: string; stderr: string }>;
 /** `out` must be inside `cwd` (the working directory by default). */
 export declare function inject(

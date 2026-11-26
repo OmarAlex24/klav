@@ -734,25 +734,52 @@ impl Server {
                         "`command` must be a non-empty array: [program, args…]".into(),
                     ));
                 }
-                let mut env: Vec<(String, String)> = Vec::new();
-                let mut files = Vec::new();
-                if args
+                let use_project = args
                     .get("use_project")
                     .and_then(Value::as_bool)
-                    .unwrap_or(true)
-                    && let Some(c) = &self.config
-                {
-                    env.extend(c.env.clone());
+                    .unwrap_or(true);
+                let requested = arg(args, "environment").map(str::to_owned);
+                let mut extra: Vec<(String, String)> = Vec::new();
+                for (name, reference) in string_map(args, "env")? {
+                    extra.push((name, self.expand(&reference)?));
+                }
+                let mut files = Vec::new();
+                if use_project && let Some(c) = &self.config {
                     for (path, reference) in &c.files {
                         files.push((self.cwd.join(path), reference.clone()));
                     }
                 }
-                for (name, reference) in string_map(args, "env")? {
-                    env.push((name, self.expand(&reference)?));
-                }
+                let config = if use_project {
+                    self.config.clone()
+                } else {
+                    None
+                };
                 let cwd = self.cwd.clone();
                 let timeout = seconds(args, "timeout_seconds", Duration::from_secs(600), MAX_RUN);
                 let session = self.session().await?;
+                // The same order as `klav run` (ADR 0032 §5): `default_env`,
+                // the flat `[env]`, the only environment, or an error that
+                // lists them.
+                let chosen = crate::commands::agent_actions::agent_environment(
+                    session,
+                    config.as_ref(),
+                    scope,
+                    requested.as_deref(),
+                )
+                .map_err(ToolError::Msg)?;
+                let (environment, mut env): (Option<String>, Vec<(String, String)>) = match chosen {
+                    Some((vault_env, from_toml)) => (vault_env, from_toml.into_iter().collect()),
+                    None => (
+                        None,
+                        config
+                            .map(|c| c.env.into_iter().collect())
+                            .unwrap_or_default(),
+                    ),
+                };
+                for (name, reference) in extra {
+                    env.retain(|(n, _)| *n != name);
+                    env.push((name, reference));
+                }
                 let out = klav_sdk::run(
                     session,
                     scope,
@@ -764,6 +791,8 @@ impl Server {
                         reason,
                         wait,
                         timeout,
+                        environment,
+                        fallback_env: Vec::new(),
                     },
                 )
                 .await?;
@@ -1237,8 +1266,8 @@ pub(crate) fn tools() -> Value {
           "inputSchema": schema(json!({ "ref": reference, "url": { "type": "string", "description": "find the login by the page's address instead of ref" }, "target": target, "selectors": map, "submit": { "type": "boolean", "description": "submit the form after filling (default false)" } }), &["target"]) },
         { "name": "fill_card", "description": "Type a payment card into a browser page. Returns only the field names.",
           "inputSchema": schema(json!({ "ref": reference, "target": target, "selectors": map }), &["ref", "target"]) },
-        { "name": "run_with_secrets", "description": "Run a command with secrets in its environment: env: {\"API_KEY\": \"klav://…/api_key\"}, plus klav.toml's [env] and [files]. Never put a secret or a value in `command`. The output comes back with the values replaced by [redacted by klav] (also those inject_file wrote in this session): do not try to recover them (encoding, splitting, lengths or prefixes). The redaction is a courtesy, not a sealed channel: the command itself has the values.",
-          "inputSchema": schema(json!({ "command": { "type": "array", "items": { "type": "string" }, "description": "[program, args…]; no secrets here" }, "env": map, "use_project": { "type": "boolean", "description": "also load klav.toml's [env] and [files] (default true)" }, "timeout_seconds": { "type": "integer" } }), &["command"]) },
+        { "name": "run_with_secrets", "description": "Run a command with secrets in its environment: env: {\"API_KEY\": \"klav://…/api_key\"}, plus klav.toml's [env] and [files], or a project environment with environment: \"development\" (without it, klav.toml's default_env or the only environment; with several, the error lists them: pick one, never guess). A protected environment (production) asks the person once per call for it and the protected items it uses; approval_id retries the whole call. Never put a secret or a value in `command`. The output comes back with the values replaced by [redacted by klav] (also those inject_file wrote in this session): do not try to recover them (encoding, splitting, lengths or prefixes). The redaction is a courtesy, not a sealed channel: the command itself has the values.",
+          "inputSchema": schema(json!({ "command": { "type": "array", "items": { "type": "string" }, "description": "[program, args…]; no secrets here" }, "env": map, "environment": { "type": "string", "description": "the project's environment to inject (development, staging, production…)" }, "use_project": { "type": "boolean", "description": "also load klav.toml's [env] and [files] (default true)" }, "timeout_seconds": { "type": "integer" } }), &["command"]) },
         { "name": "inject_file", "description": "Prefer run_with_secrets (with env or klav.toml's [files], which Klav removes when the command ends) whenever possible; use inject_file only when a tool needs a file on disk beforehand. Write secrets into a new 0600 file inside the working directory: one reference, or a template with at least one {{ klav://… }}. Returns the path, never the content. Pass ttl_seconds so it disappears, and tell the person the file exists. Attachments (a .p8, a certificate, a key file) go with ref (Item/<attachment name>, as get_item lists it), never in a template. Never cat the file into your context. A `warning` says git would commit the file (add it and *.klav-tmp to .gitignore, or remove the file before any commit), or names a temporary file of a write that was interrupted or is still in progress (tell the person; never delete it yourself).",
           "inputSchema": schema(json!({ "path": { "type": "string" }, "ref": reference, "template": { "type": "string" }, "ttl_seconds": { "type": "integer", "description": "remove the file after this long" }, "overwrite": { "type": "boolean" } }), &["path"]) },
         { "name": "get_totp", "description": "Current one-time code of an item. Pass target so it is typed into the page instead of returned (preferred). Needs the person's approval by default. A TOTP seed is never injected: run_with_secrets, inject_file and templates refuse …/totp.",

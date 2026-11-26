@@ -1241,7 +1241,7 @@ domain = "telmex.com"           # opcional; si falta, valen las URLs del element
 > Los pasos para quien usa Klav están en la página pública [`use-secrets-without-seeing-them.mdx`](../apps/docs/src/content/docs/agents/use-secrets-without-seeing-them.mdx) (en `apps/docs/src/content/docs/agents/`); un cambio en esos pasos va primero allí.
 
 ```sh
-klav agent run --reason "por qué" [-e NOMBRE=REF] [--timeout 10m] -- comando …
+klav agent run --reason "por qué" [--env NOMBRE] [-e NOMBRE=REF] [--timeout 10m] -- comando …
 klav agent inject --reason "por qué" (-r REF | -i plantilla) -o archivo [--ttl 10m] [--force]
 klav agent fill klav://Bóveda/Proyecto/Elemento[/campo] --reason "por qué" \
     (--cdp http://127.0.0.1:9222 [--target ID] | --session NOMBRE | --extension) [--selector campo=css …] \
@@ -1255,6 +1255,31 @@ Todas aceptan `--wait`, `--approval` y `--agent`, usan `klav.toml` como
 
 - **`run`** pone los valores en el entorno del comando (`[env]`, `[files]`,
   `-e` y variables `NOMBRE=klav://…` heredadas) con el permiso `inject`.
+  - **Entornos** ([ADR 0032](decisiones/0032-entornos-por-repositorio.md)
+    §4.5): `--env NOMBRE` inyecta el entorno de ese nombre del `project` de
+    `klav.toml`, más `[env.NOMBRE]`, con la misma mezcla que `klav run`
+    (§6). Sin `--env`, el mismo orden que `klav run`: `default_env`, el
+    `[env]` plano, el único entorno o un error que los nombra; nunca elige
+    `development` por su nombre. `-e` se llama ahora `--var` en su forma
+    larga, y `--env NOMBRE=REF` se sigue leyendo como `-e`. En `klav mcp`
+    es el campo `environment` de `run_with_secrets`, y en `@klav/sdk`, la
+    opción `environment` de `run`.
+  - **Un entorno protegido** (producción) pide **una** aprobación por
+    `run`: la solicitud nombra el entorno y, en `items`, los elementos
+    protegidos a los que pueden apuntar sus referencias (los que las
+    reglas heredadas del grant firmado protegen; el runtime no ve las
+    referencias antes de abrir el entorno). Cada elemento se pide después
+    con su propio acceso, que nombra esa aprobación, una vez cada uno. El
+    reintento con `--approval <id>` cubre la llamada entera. Las
+    referencias a elementos no protegidos se juzgan con sus propias
+    reglas.
+  - **Doble barrera** (§4.4): el runtime aplica el grant firmado y, cuando
+    puede leer el entorno, calcula su marca efectiva (la de la última
+    versión de la persona; sin versión suya, protegido si se llama
+    `production` o `prod`). Un entorno protegido, y las referencias de la
+    versión protegida de la persona, necesitan una aprobación firmada por
+    la cuenta aunque el servidor diga `allow`; si no, sale con 3 y no usa
+    ningún valor. Una tarea nunca la cubre.
   - La salida vuelve **después** de que el comando termina, con cada valor
     sustituido por `[redacted by klav]`. También se tapan las formas en que
     un comando suele imprimir un valor sin querer:
@@ -1859,7 +1884,8 @@ tocar lo demás.
 klav agent list [--json]
 klav agent approve <nombre|id> --project Bóveda/proyecto … [--vault Bóveda …] \
     [--allow PERMISOS] [--ask PERMISOS] [--deny PERMISOS] \
-    [--fill-domain "*.example.com" …] [--hours "mon-fri 09:00-18:00 -06:00" …] \
+    [--fill-domain "*.example.com" …] [--env NOMBRE=allow|ask|deny …] \
+    [--hours "mon-fri 09:00-18:00 -06:00" …] \
     [--expires 30d] [--policy-file politica.json] [--words "seis palabras …"] \
     [--rotate-removed] [--yes]
 klav agent deny <nombre|id>
@@ -1912,6 +1938,23 @@ klav agent resume [<nombre|id> | --all] [--json]
   - `--allow`, `--ask` y `--deny` reciben listas separadas por comas, por
     ejemplo `--allow reveal --deny delete`;
   - `--fill-domain` limita `fill` a esos dominios;
+  - `--env NOMBRE=allow|ask|deny` ([ADR 0032](decisiones/0032-entornos-por-repositorio.md)
+    §4.3) da una regla de `inject` por entorno de los proyectos que
+    compartes, por el ID del entorno (`BÓVEDA/PROYECTO/NOMBRE=…` si dos
+    proyectos lo tienen). `klav agent grant` es el mismo comando:
+    - si `inject` no tenía reglas, su valor por defecto entra antes como
+      regla explícita sin alcance, para que lo demás no pase a `deny`
+      (ADR 0006 §2);
+    - un entorno protegido nunca va en `allow`: `klav` lo rechaza, y
+      `=ask` es «preguntar cada vez» (`ask once`). Klav añade por su cuenta
+      `ask once` para él y los elementos a los que apunta;
+    - un entorno no puede quedar más abierto que una regla general que
+      también lo cubre (gana la más restrictiva, ADR 0006 §3): con `--ask
+      inject` y `--env development=allow`, `klav` sale con 2, nombra esa
+      regla y propone acotarla por entorno;
+    - `--env NOMBRE=allow` avisa si el entorno apunta a elementos que el
+      grant deja en `deny`, fuera de sus proyectos, o protegidos: esa
+      ejecución fallaría o pediría aprobación.
   - `--hours` limita todo a una ventana semanal con desplazamiento UTC
     explícito (actualízalo con el horario de verano);
   - `--expires` pone caducidad al grant entero;
@@ -2078,6 +2121,21 @@ klav approval wait <id> [--timeout 10m] [--agent NOMBRE] [--json]   # el agente
 - `approve` sin `--for` aprueba **una vez**. Con `--for` (24 h como máximo),
   el agente puede repetir la misma acción sobre el mismo elemento sin
   preguntar hasta que venza.
+- **Lo que siempre pregunta** ([ADR 0032](decisiones/0032-entornos-por-repositorio.md)
+  §3.1 y §4.2): un entorno protegido, un elemento que hereda su protección,
+  o una solicitud con varios elementos. La tarjeta dice «Always asks for
+  approval», y `--for` y `--add-to-task` salen con 2, aunque el servidor no
+  lo diga. `klav task show` lo marca igual en cada permiso: `[-] …: Always
+  asks for approval`, sin marcar y sin poder marcarse.
+- **La aprobación de un entorno** nombra el entorno en `on:` y cada
+  elemento protegido que cubre en una línea `and:` (`items` en `--json`):
+  vale un uso de cada uno, dentro de esa llamada. La tarjeta comprueba que
+  esos elementos sean referencias de tu última versión de ese entorno
+  (la que guarda este dispositivo) y avisa (`WARNING:`, `items_warning`)
+  de los que no lo son, y de qué otro entorno los protege, o de que este
+  dispositivo no lo puede comprobar. `klav log verify` comprueba que cada
+  acceso bajo esa aprobación sea del mismo agente, con el mismo permiso,
+  sobre el entorno o un elemento de su lista.
 - Una aprobación de un solo uso se gasta en la primera petición del agente
   que coincida (mismo permiso, elemento y sitio) y vale 10 minutos desde que
   la apruebas.
