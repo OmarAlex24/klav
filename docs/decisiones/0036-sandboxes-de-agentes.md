@@ -512,6 +512,8 @@ Esto responde a la pregunta de Omar sobre Railway (respuesta 7). Vale para cualq
 ### 12. El proxy alojado y atestado (capa posterior, la única versión alojada)
 Respuesta 10: el proxy alojado solo existe así. Se escribe ahora para no perderlo.
 
+> Nota del 2026-11-26: el ADR [0051](0051-hosted-nitro-enclave-proxy.md) (aceptado ese día, con la opción (a) de Omar en Q1–Q7) diseña este proxy entero y reemplaza lo que sigue donde no coincide: un par de llaves por cuenta derivado de una semilla, la semilla solo en memoria en dos enclaves que se la pasan tras atestarse (sin KMS en la primera versión), un manifiesto firmado de las imágenes aceptadas que el dispositivo verifica con la atestación en `klav-core` (feature `nitro-attestation`, sin verificador en Swift), y `c7g.large` de Graviton (los `.large` de x86 no admiten enclaves). Sus capas sustituyen las capas 15 y 16 del plan de este ADR.
+
 - **Qué es:** `klav-proxy`, compilado de forma reproducible, corre dentro de un AWS Nitro Enclave operado por Klav.
   - El enclave genera su llave dentro y la pone en su documento de atestación.
   - Habla con el exterior por *vsock* a través de su instancia. El TLS del canal (§6) y el de salida hacia el proveedor terminan **dentro** del enclave, así que la instancia solo pasa bytes cifrados.

@@ -1,0 +1,133 @@
+{
+  "cases": [
+    {
+      "expect": "ok",
+      "highest_seq": null,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "valid",
+      "now_ms": 1795040000000,
+      "signature": "dfe14566f3b2edfc3d49e7f1b60a45e251ab338f4ba964a32af920c2ace5824430dd0f3d9a9c6bcf7ca0552a3ba4efe0b73e531db19f2aca524d1fe8bd0f3301",
+      "signer": "active"
+    },
+    {
+      "expect": "ok",
+      "highest_seq": null,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "valid-backup-key",
+      "now_ms": 1795040000000,
+      "signature": "102cf51f181f5f737c41b6959796e0408ed366c8403d3f8e9ae656f799378bb3e50632f3f4fac7eb8c2d9b1855c0fcc7adfd173fd4cf1a157b22a7abbb9b7d0c",
+      "signer": "backup"
+    },
+    {
+      "expect": "ok",
+      "highest_seq": 7,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "valid-same-seq",
+      "now_ms": 1795040000000,
+      "signature": "dfe14566f3b2edfc3d49e7f1b60a45e251ab338f4ba964a32af920c2ace5824430dd0f3d9a9c6bcf7ca0552a3ba4efe0b73e531db19f2aca524d1fe8bd0f3301",
+      "signer": "active"
+    },
+    {
+      "expect": "ok",
+      "highest_seq": 7,
+      "manifest": "{\"v\":1,\"seq\":9,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.13.0\",\"commit\":\"2003881219532795768c114d2b9fe9661c3a4a66\",\"arch\":\"aarch64\",\"pcr0\":\"68142b1f4eafcb2f8defb6424f2bbcbc86c13e3c7ddc90462a03e8e3711430822fdb6676c27d7bd6fbf9b122ba1047a2\",\"pcr1\":\"7d2ad0680247c22587eeb5911f8cea79156c680fdd5a865f2e6fe1c2919bbff6ba4c7657f4b86a13e0d1e00bf05e84d0\",\"pcr2\":\"e3fc8fc1b73f310c2b569f010c99ddc6d096a80057cb1025bf4caa35ba8a669d96dced011df94a3a28b32dc77f396e1c\",\"status\":\"current\"},{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"draining\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "valid-current-and-draining",
+      "now_ms": 1795040000000,
+      "signature": "4e17ca2726c1c6c73091c1e160344152006dd76b9636ea40b7b1c198b295471a0c8d61629491ac5ba7d17f81169328151c76540607a78d6489922008692c8006",
+      "signer": "active"
+    },
+    {
+      "expect": "manifest_signature",
+      "highest_seq": null,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "unknown-key",
+      "now_ms": 1795040000000,
+      "signature": "081fcc2f2c1e4fd7a47b72f7d07004f0681e94121c12503f0eb1088680d49d60a3cf8dbfb4f42c43a2338fb35b3c04a1fd5e453dda80db63bc88cefdd2429f03",
+      "signer": "stranger"
+    },
+    {
+      "expect": "manifest_rollback",
+      "highest_seq": 8,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "rollback",
+      "now_ms": 1795040000000,
+      "signature": "dfe14566f3b2edfc3d49e7f1b60a45e251ab338f4ba964a32af920c2ace5824430dd0f3d9a9c6bcf7ca0552a3ba4efe0b73e531db19f2aca524d1fe8bd0f3301",
+      "signer": "active"
+    },
+    {
+      "expect": "manifest_expired",
+      "highest_seq": null,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "expired",
+      "now_ms": 1797545600000,
+      "signature": "dfe14566f3b2edfc3d49e7f1b60a45e251ab338f4ba964a32af920c2ace5824430dd0f3d9a9c6bcf7ca0552a3ba4efe0b73e531db19f2aca524d1fe8bd0f3301",
+      "signer": "active"
+    },
+    {
+      "expect": "manifest_future",
+      "highest_seq": null,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "issued-in-the-future",
+      "now_ms": 1794953299999,
+      "signature": "dfe14566f3b2edfc3d49e7f1b60a45e251ab338f4ba964a32af920c2ace5824430dd0f3d9a9c6bcf7ca0552a3ba4efe0b73e531db19f2aca524d1fe8bd0f3301",
+      "signer": "active"
+    },
+    {
+      "expect": "manifest_malformed",
+      "highest_seq": null,
+      "manifest": "{\"debug\":true,\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "unknown-field",
+      "now_ms": 1795040000000,
+      "signature": "6c303890ca2c243fe09f075a432dd8929e593fce56ac68b861678d563f221631b7a37923c9054153487acea66fb164f865f904246d4cc188606693e7888ebc0d",
+      "signer": "active"
+    },
+    {
+      "expect": "manifest_malformed",
+      "highest_seq": null,
+      "manifest": "{\"seq\":99,\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "duplicate-field",
+      "now_ms": 1795040000000,
+      "signature": "c5960df4df1e225b1d566b29c4ca247b164ba13a7cdc6963efb576fe0db95c5466817b653bfabf280adaab40f8d6bfc2c3903ef64665616615a14274b2368d00",
+      "signer": "active"
+    },
+    {
+      "expect": "manifest_malformed",
+      "highest_seq": null,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600001,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "longer-than-30-days",
+      "now_ms": 1795040000000,
+      "signature": "05e48ccdc55c62ff99d897761bf13bcd2ed96d1e498632deb78c3c90f2c4a462a75ede14e4cd99daa01132029c5289c2c47c194ecd787dbebea19656b177e003",
+      "signer": "active"
+    },
+    {
+      "expect": "manifest_malformed",
+      "highest_seq": null,
+      "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+      "name": "zero-pcr",
+      "now_ms": 1795040000000,
+      "signature": "40c3a2addaf1004d781e0c19f9eb433a9f9d3807e6655c0747efeaefd84ff0e29621af6f87bd47c161f84e0005c9f2e92e66f8647bc558fb72596ac974286a08",
+      "signer": "active"
+    }
+  ],
+  "description": "Klav Enclave Transparency Manifest (ADR 0051 §2.4): the signed message, manifests a device accepts and manifests it refuses (unknown key, rollback, expired, issued in the future, unknown or repeated field, longer than 30 days, a zero PCR)",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "feature": "cargo test -p klav-core --features nitro-attestation nitro_vectors",
+  "format_version": 1,
+  "message": {
+    "label": "klav/v1/sig/enclave-manifest",
+    "manifest": "{\"v\":1,\"seq\":7,\"seed_epoch\":0,\"issued_at_ms\":1794953600000,\"expires_at_ms\":1797545600000,\"endpoint\":\"proxy.klav.dev\",\"server\":\"api.klav.dev\",\"images\":[{\"version\":\"0.12.0\",\"commit\":\"4c07092c46595ecd4fe574aec0fab4f3b75b2e3c\",\"arch\":\"aarch64\",\"pcr0\":\"1966b23cd8c3cec6475fee25988a2787db53fa930223bef4e3765e230e177d8d74e588b87ff01cd55f4b3c8103b14875\",\"pcr1\":\"9aaedcb3ae23ecbec0e72c53f235b832f3a93d2060d52705747bee08e6f40e3ae106e5672716e3b96436b2473f11a7cc\",\"pcr2\":\"a28309c1d7ec6350eb721631ac46b1a3ff897cb362609c82dee71f3a3ca5041cee4449d8914353456f0ea25a1ab31d90\",\"status\":\"current\"}],\"parent_roles\":[\"b48d2338db3ccf4c6d8413b87595d5baceb6402f9f009f59f3f316f18d0868498ab00ce07fc2c5204b56953b8e3939af\"],\"egress\":[\"203.0.113.10/32\",\"203.0.113.11/32\"]}",
+    "sha256": "9bc3e01bd72f2db9cd4b11d08c4c732789c6bfcc3ddec1d7aead0d377e5ae7e3",
+    "signed_message": "0000001c6b6c61762f76312f7369672f656e636c6176652d6d616e6966657374000000209bc3e01bd72f2db9cd4b11d08c4c732789c6bfcc3ddec1d7aead0d377e5ae7e3"
+  },
+  "note": "Test release keys only. Klav's release-authority keys are not pinned yet (RELEASE_AUTHORITY_KEYS is empty).",
+  "release_keys": {
+    "active": "c9111966f8949ac1e1d42eefdd766f9b40e3c727ffbf085179e9ec206907ecdc",
+    "backup": "7031586611139e89f69c6ca3c7bbf97bf8bf48950633584787f597b6509391c6",
+    "stranger": "ee858e8d0efaeace5b29e7bdcdfd77b041f9ecd5959adcb324fb4da2426d2e56"
+  },
+  "spec": "docs/especificacion-cripto.md §15.5",
+  "trusted": [
+    "active",
+    "backup"
+  ]
+}

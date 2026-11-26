@@ -20,6 +20,11 @@ breach-check = []
 # §7). Only `klav-client` (and so `klavd`) turns it on: `klav-wasm` does not
 # compile it, so the extension does not carry the list.
 rp-id = ["dep:psl"]
+# Verification of an AWS Nitro Enclaves attestation document and of the
+# signed enclave manifest, before a device wraps anything for Klav Cloud's
+# hosted proxy (ADR 0051 §2.2, §5.1). `klav-wasm` never turns it on: the
+# extension never wraps for a proxy.
+nitro-attestation = ["dep:p384", "dep:x509-cert", "dep:der", "dep:spki"]
 
 [dependencies]
 aead-stream = { version = "0.6", default-features = false, features = ["alloc"] }
@@ -40,6 +45,14 @@ p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8
 opaque-ke = { version = "4.0.1", default-features = false, features = ["ristretto255"] }
 hpke = { version = "0.15", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha", "hkdfsha2"] }
 percent-encoding = "2.3"
+# Nitro attestation (feature `nitro-attestation`, ADR 0051 §5.1): ES384 and
+# the P-384 chain to AWS's pinned root, verify only, and X.509 parsing. The
+# CBOR of the document goes through the strict reader of `nitro::cbor`, not
+# ciborium (spec §16.2).
+p384 = { version = "0.14.0", default-features = false, features = ["ecdsa", "sha384"], optional = true }
+x509-cert = { version = "0.3.1", default-features = false, optional = true }
+der = { version = "0.8", default-features = false, features = ["alloc", "oid"], optional = true }
+spki = { version = "0.8", default-features = false, optional = true }
 # Public Suffix List, only for the rpId of passkeys (feature `rp-id`).
 psl = { version = "2.1", optional = true }
 secrecy = "0.10"
@@ -58,7 +71,8 @@ uuid = { version = "1.29", default-features = false, features = ["std"] }
 zeroize = "1.9"
 
 [dev-dependencies]
-# Independent CBOR decoder for the tests of the WebAuthn encoder (ADR 0020 §6).
+# Independent CBOR decoder for the tests of the WebAuthn encoder (ADR 0020
+# §6), and the lax reader the strict Nitro reader is compared with (ADR 0051).
 ciborium = "0.2"
 hex = "0.4"
 proptest = "1.12"
