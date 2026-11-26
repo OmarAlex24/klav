@@ -6,6 +6,7 @@ pub(crate) mod agent_actions;
 pub(crate) mod client;
 pub(crate) mod client_mcp;
 pub(crate) mod deletion;
+pub(crate) mod env;
 pub(crate) mod extension;
 pub(crate) mod generate;
 pub(crate) mod generated;

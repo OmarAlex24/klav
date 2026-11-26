@@ -2214,6 +2214,7 @@ async fn browser_presence(
         lasts: until_lock.then_some(AskLasts::UntilLock),
         value: None,
         browser: Some(ask),
+        protected: None,
     };
     hub.ask_presence(tab, ask).await?;
     state
@@ -2458,6 +2459,8 @@ fn counts_as_use(request: &Request) -> bool {
         Request::Status
         | Request::Vaults
         | Request::Projects { .. }
+        | Request::Environments { .. }
+        | Request::Environment { .. }
         | Request::List { .. }
         | Request::Suggest { .. }
         | Request::PasskeyCandidates { .. }
@@ -2563,7 +2566,10 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ReusedOffer { .. }
         | Request::OfferTask { .. }
         | Request::SetAgentLabel { .. }
-        | Request::SetProjectRepos { .. } => true,
+        | Request::SetProjectRepos { .. }
+        | Request::EnvironmentImportReview { .. }
+        | Request::EnvironmentSave { .. }
+        | Request::EnvironmentTrash { .. } => true,
     }
 }
 
@@ -3339,6 +3345,11 @@ struct Checked {
     /// The window the answer opens, opened only once the hand-out found
     /// what was asked about (Omar's decision G of 2026-11-19).
     opens: Option<presence::Opening>,
+    /// The ADR 0032 «every time» ask ran: what it named is bound by `item`.
+    /// When it didn't, the hand-out checks again, under the session's lock,
+    /// that the request still names nothing protected (a rename needs no
+    /// presence and could point the query at a protected item meanwhile).
+    every_time: bool,
 }
 
 /// What an ask named, and its state then ([`asked_now`]): two digests
@@ -3395,11 +3406,54 @@ async fn window_gate(
             &Instant::now,
         )
     })?;
+    // A value of a protected environment, or of an item it protects, asks
+    // every time, whatever window or held connection covers the caller
+    // (ADR 0032 §3 and §3.1).
+    let touch = password.is_none() && presence::Verify::touch_id_available(&device);
+    let asks = matches!(first, Untitled::NeedsText { touch: true });
+    if let Some(reason) = protected_reason(state, &slot, request, asks, touch).await? {
+        let (value, asked) = value_text(state, &slot, request, touch).await?;
+        let bound = presence::Bound {
+            request: presence::request_digest(request)?,
+            names: asked.map(|a| a.names),
+        };
+        let passed = tokio::task::block_in_place(|| {
+            state.presence.require(
+                slot.generation,
+                caller,
+                Purpose::EveryTime {
+                    reason: &reason,
+                    value: Some(&value),
+                },
+                password,
+                &bound,
+                asked.map(|a| a.version),
+                &device,
+                Lang::current(),
+                &Instant::now,
+            )
+        })?;
+        let item = match (asked, passed.version) {
+            (Some(a), Some(version)) => Some(Asked {
+                names: a.names,
+                version,
+            }),
+            (Some(_), None) => return Err(changed()),
+            (None, _) => None,
+        };
+        return Ok(Some(Checked {
+            slot,
+            item,
+            opens: None,
+            every_time: true,
+        }));
+    }
     let Untitled::NeedsText { touch } = first else {
         return Ok(Some(Checked {
             slot,
             item: None,
             opens: None,
+            every_time: false,
         }));
     };
     #[cfg(test)]
@@ -3443,7 +3497,81 @@ async fn window_gate(
         slot,
         item,
         opens: passed.opens,
+        every_time: false,
     }))
+}
+
+/// Why a value request asks every time (ADR 0032 §3.1): it reads a protected
+/// environment, an item in the protected set, or any item of a vault whose
+/// protection this device cannot tell. Autofill is not a copy or a show
+/// and stays under the window (§3.1, "what doesn't change for the person").
+/// A request that names nothing is left to the window row, which refuses
+/// it.
+///
+/// The session's lock is taken as [`value_text`] takes it: never behind an
+/// open dialog when this request shows one anyway (`asks`), and when it
+/// waited while one was open and turns out to need its own Touch ID prompt
+/// (`touch`), it answers `presence_busy` instead of showing it right after.
+async fn protected_reason(
+    state: &State,
+    slot: &Slot,
+    request: &Request,
+    asks: bool,
+    touch: bool,
+) -> Result<Option<String>, ErrorBody> {
+    if !matches!(
+        request,
+        Request::View { reveal: true, .. }
+            | Request::PreviousPassword { .. }
+            | Request::Totp { .. }
+            | Request::Resolve { .. }
+    ) {
+        return Ok(None);
+    }
+    let (session, prompted) = state.presence.lock(&slot.session, asks, None).await?;
+    let u = &session.unlocked;
+    let items = match request {
+        Request::View { query, .. }
+        | Request::PreviousPassword { query, .. }
+        | Request::Totp { query, .. } => match u.find_item(query) {
+            Ok(loc) => vec![loc],
+            Err(_) => return Ok(None),
+        },
+        Request::Resolve { references, .. } => match u.reference_targets(references) {
+            Ok(items) => items,
+            Err(_) => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    let reason = u.protection_reason(&items);
+    if reason.is_some() && prompted && touch {
+        return Err(presence::busy());
+    }
+    Ok(reason)
+}
+
+/// Whether a value request names something protected now, read under the
+/// session's lock (see [`protected_reason`]). A query that names nothing
+/// is left to the request's own error.
+fn protected_now(u: &klav_client::Unlocked, request: &Request) -> bool {
+    let items = match request {
+        Request::View {
+            query,
+            reveal: true,
+            ..
+        }
+        | Request::PreviousPassword { query, .. }
+        | Request::Totp { query, .. } => match u.find_item(query) {
+            Ok(loc) => vec![loc],
+            Err(_) => return false,
+        },
+        Request::Resolve { references, .. } => match u.reference_targets(references) {
+            Ok(items) => items,
+            Err(_) => return false,
+        },
+        _ => return false,
+    };
+    u.protection_reason(&items).is_some()
 }
 
 /// The answer when what a value was asked for was renamed away, replaced or
@@ -3522,6 +3650,7 @@ async fn handle(
     // cancels it below (`unless_locked`).
     let named = checked.as_ref().and_then(|c| c.item);
     let opens = checked.as_ref().and_then(|c| c.opens);
+    let window_only = checked.as_ref().is_some_and(|c| !c.every_time);
     let Some(slot) = checked.map(|c| c.slot).or_else(|| state.current()) else {
         return Err(locked());
     };
@@ -3557,6 +3686,12 @@ async fn handle(
             if let Some(named) = named
                 && asked_now(&session.unlocked, &request).ok().flatten() != Some(named)
             {
+                return Err(changed());
+            }
+            // Passed under a window as unprotected: still unprotected now,
+            // in the hold that hands it out (ADR 0032 §3). Otherwise the
+            // value would go without its «every time» ask.
+            if window_only && protected_now(&session.unlocked, &request) {
                 return Err(changed());
             }
             // Only now the window the answer stated: a `conflict` above, or
@@ -3621,6 +3756,11 @@ fn will_ask(state: &State, request: &Request, caller: Option<&Caller>) -> bool {
         | Request::McpGatewayOn { password, .. }
         | Request::ResumeAgents { password, .. }
         | Request::CancelAccountDeletion { password } => password.is_none(),
+        // Only a change that lowers the protection asks, and only the
+        // handler knows (ADR 0032 §3): counted as one that may.
+        Request::EnvironmentSave { password, .. } | Request::EnvironmentTrash { password, .. } => {
+            password.is_none()
+        }
         Request::PasskeyGet { password, .. } | Request::PasskeyCreate { password, .. } => {
             password.is_none()
                 && caller.is_some_and(|c| state.presence.passkey_needs(c, Instant::now()))
@@ -4010,7 +4150,9 @@ async fn value_text(
         Request::Totp { query, .. } => (AskValueKind::Code, Some(query)),
         Request::Autofill { item, .. } => (AskValueKind::Fill, Some(item)),
         Request::GeneratedValue { .. } => (AskValueKind::Generated, None),
-        Request::Resolve { .. } => (AskValueKind::Resolve, None),
+        Request::Resolve { .. } | Request::EnvironmentImportReview { .. } => {
+            (AskValueKind::Resolve, None)
+        }
         // Only the window row reaches here (`presence::gate`).
         _ => {
             return Err(ErrorBody {
@@ -4084,7 +4226,10 @@ fn asked_now(u: &Unlocked, request: &Request) -> Result<Option<Asked>, ClientErr
         Request::Resolve { references, .. } => {
             let mut names = Vec::new();
             let mut versions = Vec::new();
-            for loc in u.reference_items(references)? {
+            // Through an environment's reference too: the item behind a
+            // variable is part of what was asked about (ADR 0032 §1).
+            u.reference_items(references)?;
+            for loc in u.reference_targets(references)? {
                 let (id, version) = item(loc)?;
                 names.push(id.clone().into_bytes());
                 versions.push(id.into_bytes());
@@ -4207,6 +4352,63 @@ async fn dispatch(
             )
         }
         Request::List { filter } => ok(u.list_items(&filter).map_err(e)?, warnings),
+        Request::Environments { project } => {
+            ok(u.environments(project.as_deref()).map_err(e)?, warnings)
+        }
+        Request::Environment { project, name } => ok(
+            u.environment_detail(project.as_deref(), &name)
+                .await
+                .map_err(e)?,
+            warnings,
+        ),
+        Request::EnvironmentImportReview {
+            project,
+            name,
+            variables,
+            ..
+        } => ok(
+            u.import_review(project.as_deref(), &name, &variables)
+                .map_err(e)?,
+            warnings,
+        ),
+        Request::EnvironmentSave {
+            project,
+            name,
+            edit,
+            password,
+        } => {
+            let prepared = u
+                .prepare_environment(project.as_deref(), &name, &edit)
+                .await
+                .map_err(e)?;
+            // Lowering the protection asks first (ADR 0032 §3).
+            if prepared.plan.shrinks {
+                confirm(Prompt::LowerProtection { environment: &name }, password)?;
+            }
+            let saved = u.commit_environment(prepared).await.map_err(e)?;
+            let mut warnings = warnings;
+            warnings.extend(saved.warnings.iter().cloned());
+            ok(saved, warnings)
+        }
+        Request::EnvironmentTrash {
+            project,
+            name,
+            password,
+        } => {
+            let protected = u
+                .environments(project.as_deref())
+                .map_err(e)?
+                .into_iter()
+                .any(|l| l.name == name && l.protected);
+            if protected {
+                confirm(Prompt::LowerProtection { environment: &name }, password)?;
+            }
+            let saved = u
+                .trash_environment(project.as_deref(), &name)
+                .await
+                .map_err(e)?;
+            ok(saved, warnings)
+        }
         Request::View { query, reveal, .. } => {
             ok(u.view_item(&query, reveal).map_err(e)?, warnings)
         }

@@ -167,6 +167,13 @@ fn print_view(view: &ItemView, added_by: Option<&str>) {
     if s.trashed {
         output::line("state:     in the trash");
     }
+    // ADR 0032 §3.1: copying or showing it asks for presence every time.
+    if !s.protected_by.is_empty() {
+        output::line(&format!(
+            "protected: by {} (presence every time; agents ask once)",
+            protected_names(&s.protected_by)
+        ));
+    }
     for f in &view.fields {
         let attachment = (f.kind == klav_core::model::item::FieldKind::File)
             .then(|| {
@@ -203,18 +210,39 @@ fn print_view(view: &ItemView, added_by: Option<&str>) {
     }
 }
 
+fn protected_names(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| format!("“{n}”"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn print_list(items: &[klav_client::ItemSummary]) {
+    let any_protected = items.iter().any(|i| !i.protected_by.is_empty());
     let rows: Vec<Vec<String>> = items
         .iter()
         .map(|i| {
-            vec![
+            let mut row = vec![
                 i.reference.clone(),
                 kind_name(i.kind).to_owned(),
                 i.username.clone().unwrap_or_default(),
-            ]
+            ];
+            if any_protected {
+                row.push(if i.protected_by.is_empty() {
+                    String::new()
+                } else {
+                    format!("protected by {}", protected_names(&i.protected_by))
+                });
+            }
+            row
         })
         .collect();
-    output::table(&["ITEM", "TYPE", "USERNAME"], &rows);
+    if any_protected {
+        output::table(&["ITEM", "TYPE", "USERNAME", ""], &rows);
+    } else {
+        output::table(&["ITEM", "TYPE", "USERNAME"], &rows);
+    }
 }
 
 /// Splits `klav://v/p/i/field` into the item part and the field.

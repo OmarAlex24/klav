@@ -71,6 +71,10 @@ pub(crate) enum Command {
     /// Import from another password manager or a browser: new items are
     /// created, repeats merged, and no password is lost (ADR 0024).
     Import(ImportArgs),
+    /// Environments of a project (ADR 0032): variables per environment,
+    /// `.env` import and scan, and the repository link.
+    #[command(subcommand)]
+    Env(EnvCommand),
     /// Run a command with secrets in its environment (`klav.toml`).
     Run(RunArgs),
     /// Write secrets into a file or a named pipe (template or one reference).
@@ -1532,8 +1536,14 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) config: Option<PathBuf>,
     /// Extra variable `NAME=klav://…` (repeatable).
-    #[arg(short = 'e', long = "env", value_name = "NAME=REF")]
-    pub(crate) env: Vec<String>,
+    #[arg(short = 'e', long = "var", value_name = "NAME=REF")]
+    pub(crate) vars: Vec<String>,
+    /// The environment to inject (ADR 0032 §5): the project's environment
+    /// of that name in the vault, plus `[env.NAME]` of `klav.toml`. Without
+    /// it: `default_env`, the flat `[env]`, or the only environment. A
+    /// `NAME=REF` here is read as `-e`, as before environments.
+    #[arg(long = "env", value_name = "NAME")]
+    pub(crate) environment: Vec<String>,
     /// Do not write the `[files]` of `klav.toml`.
     #[arg(long)]
     pub(crate) no_files: bool,
@@ -1577,6 +1587,143 @@ pub(crate) struct InjectArgs {
     /// Project file for short references (default: nearest `klav.toml`).
     #[arg(long, value_name = "PATH")]
     pub(crate) config: Option<PathBuf>,
+    /// The environment to write (ADR 0032 §6), with `--dotenv`.
+    #[arg(long = "env", value_name = "NAME", requires = "dotenv", conflicts_with_all = ["template", "reference"])]
+    pub(crate) environment: Option<String>,
+    /// Write the environment as a `.env` file (`NAME='value'` lines).
+    #[arg(long, requires = "environment")]
+    pub(crate) dotenv: bool,
+    /// Use an environment not confirmed for this `klav.toml` yet without
+    /// asking (it is pinned as confirmed). Presence is still asked for a
+    /// protected one.
+    #[arg(long)]
+    pub(crate) trust: bool,
+}
+
+/// `klav env …` (ADR 0032 §6, ADR 0036 §16).
+#[derive(Debug, Subcommand)]
+pub(crate) enum EnvCommand {
+    /// The environments of a project: variables, protected, last edit.
+    Ls {
+        /// Project (`Vault/Project`, a name or an ID; default: `klav.toml`'s
+        /// `project`, or every project).
+        #[arg(long)]
+        project: Option<String>,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// One environment: variable names and where each comes from. Values
+    /// are masked unless `--reveal` (presence every time for a protected
+    /// one).
+    Show {
+        /// The environment's name.
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+        /// Print the values.
+        #[arg(long)]
+        reveal: bool,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// Create an environment. `production` and `prod` are protected unless
+    /// `--no-protected`.
+    Create {
+        /// The environment's name (`[a-z0-9][a-z0-9_-]{0,63}`).
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+        /// Protected: presence every time, and `ask once` for agents.
+        #[arg(long, conflicts_with = "no_protected")]
+        protected: bool,
+        /// Not protected (turning protection off asks for presence).
+        #[arg(long)]
+        no_protected: bool,
+    },
+    /// Set variables: a value by hidden prompt (`-s VAR`) or stdin
+    /// (`--secret-stdin VAR`), or a reference (`--ref VAR=klav://…`).
+    Set {
+        /// The environment's name.
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+        /// Ask for VAR's value without echo (repeatable).
+        #[arg(short = 's', long = "secret", value_name = "VAR")]
+        secret: Vec<String>,
+        /// Read VAR's value from the next line of stdin (repeatable).
+        #[arg(long = "secret-stdin", value_name = "VAR")]
+        secret_stdin: Vec<String>,
+        /// VAR points to a field of another item (repeatable).
+        #[arg(long = "ref", value_name = "VAR=REF")]
+        refs: Vec<String>,
+        /// Turn `protected` on or off with the same change.
+        #[arg(long)]
+        protected: Option<bool>,
+    },
+    /// Remove variables, or with none the whole environment (to the trash,
+    /// after a confirmation).
+    Rm {
+        /// The environment's name.
+        name: String,
+        /// Variables to remove.
+        vars: Vec<String>,
+        #[arg(long)]
+        project: Option<String>,
+        /// Do not ask (needed without a terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Import a `.env` file (or `klav.toml`'s flat `[env]`, as references)
+    /// into an environment, without printing any value.
+    Import {
+        /// `.env` file, `klav.toml`, or `-` for stdin.
+        file: String,
+        /// The environment to import into (created if missing).
+        #[arg(long = "env", value_name = "NAME")]
+        env: String,
+        #[arg(long)]
+        project: Option<String>,
+        /// Show the review and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Accept every proposal and do not ask (the file is not deleted).
+        #[arg(long, short = 'y')]
+        yes: bool,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
+    /// Link this Git repository to a project (it only suggests: never
+    /// grants or skips a confirmation).
+    Link {
+        /// Project (`Vault/Project`; default: `klav.toml`'s `project`).
+        project: Option<String>,
+        /// The Git remote to read (default: `origin`, or the one chosen
+        /// before for this repository).
+        #[arg(long)]
+        remote: Option<String>,
+        /// Do not ask (the remote must be clear, `klav.toml` is not
+        /// written).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Remove this repository from a project's links.
+    Unlink {
+        /// Project (`Vault/Project`; default: `klav.toml`'s `project`).
+        #[arg(long)]
+        project: Option<String>,
+        /// The Git remote to read.
+        #[arg(long)]
+        remote: Option<String>,
+    },
+    /// Find `.env` and `.env.*` files (not `.env.example`) under DIR, say
+    /// whether git ignores or tracks each, and offer to import them. Never
+    /// reads or prints their contents to list them.
+    Scan {
+        /// Where to look (default: the current directory).
+        dir: Option<PathBuf>,
+        #[command(flatten)]
+        json: JsonFlag,
+    },
 }
 
 /// `90`, `30s`, `10m`, `1h`, `1d`.

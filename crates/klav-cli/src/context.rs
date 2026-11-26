@@ -45,6 +45,17 @@ impl Ctx {
         }
         Ok(self.backend.as_mut().expect("just set"))
     }
+
+    /// [`Self::backend`], with the input and the home beside it, for an
+    /// operation that may ask for the master password again.
+    pub(crate) async fn parts(&mut self) -> CliResult<(&mut Backend, &mut Input, &Home)> {
+        self.backend().await?;
+        Ok((
+            self.backend.as_mut().expect("just set"),
+            &mut self.input,
+            &self.home,
+        ))
+    }
 }
 
 /// The host name, as the default device name.

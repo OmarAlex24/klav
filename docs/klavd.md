@@ -129,9 +129,9 @@ A request counts only if it worked. Which ones count is decided in one
 place in `klavd` (`counts_as_use`, which names every operation), and a
 test holds these three lists equal to it:
 
-- **Not use** (they only list or report state, hand out no secret value and change nothing): `status`, `vaults`, `projects`, `list`, `suggest`, `passkey_candidates`, `agents`, `agent_labels`, `approvals`, `tasks`, `task_log`, `task_progress`, `secret_requests`, `agent_exposure`, `agent_revocations`, `grant_editor`, `grant_change_prepare`, `proxy_status`, `proxy_grant_preview`, `proxy_issuer_preview`, `local_client_preview`, `mcp_gateway`, `audit_log`, `audit_status`, `item_activity`, `sandbox_list`, `sandbox_list_flagged`, `sandbox_list_checked`, `generator_history`, `password_history`, `import_preview`, `extension_attach`, `extension_reply`, `extension_presence`, `browser_tab`, `hold`
+- **Not use** (they only list or report state, hand out no secret value and change nothing): `status`, `vaults`, `projects`, `environments`, `environment`, `list`, `suggest`, `passkey_candidates`, `agents`, `agent_labels`, `approvals`, `tasks`, `task_log`, `task_progress`, `secret_requests`, `agent_exposure`, `agent_revocations`, `grant_editor`, `grant_change_prepare`, `proxy_status`, `proxy_grant_preview`, `proxy_issuer_preview`, `local_client_preview`, `mcp_gateway`, `audit_log`, `audit_status`, `item_activity`, `sandbox_list`, `sandbox_list_flagged`, `sandbox_list_checked`, `generator_history`, `password_history`, `import_preview`, `extension_attach`, `extension_reply`, `extension_presence`, `browser_tab`, `hold`
 - **Use only when it changes the setting** (asking for the setting is not use): `health_settings`, `passkey_uv`, `presence_window`
-- **Use** (everything else: it returns a secret value or a decrypted field, signs, approves or denies, writes to the vault, to the server or to this device, unlocks or locks, or fills): `unlock`, `lock`, `shutdown`, `sync`, `reset_cache`, `create_vault`, `create_project`, `set_project_repos`, `view`, `create`, `edit`, `trash`, `totp`, `resolve`, `autofill`, `passkey_get`, `passkey_create`, `attach`, `approve_agent`, `deny_agent`, `set_agent_label`, `decide_approval`, `decide_task`, `add_to_task`, `end_task`, `fulfill_secret_request`, `deny_secret_request`, `revoke_agent`, `grant_change_apply`, `proxy_use`, `proxy_grant`, `proxy_revoke`, `proxy_issuer_add`, `proxy_issuer_remove`, `local_client_change`, `mcp_gateway_on`, `pause_agents`, `resume_agents`, `confirm_presence`, `cancel_account_deletion`, `verify_audit`, `sandbox_revoke`, `audit_reset`, `generator_record`, `generated_value`, `generator_delete`, `previous_password`, `vault_health`, `import_add`, `import_apply`, `import_cancel`, `browser_fill`, `agent_passkey_arm`, `agent_passkey_use`, `agent_rotate_begin`, `agent_rotate_confirm`, `agent_rotate_cancel`, `agent_rotate_pending`, `resolve_pending`, `reused_offer`, `offer_task`
+- **Use** (everything else: it returns a secret value or a decrypted field, signs, approves or denies, writes to the vault, to the server or to this device, unlocks or locks, or fills): `unlock`, `lock`, `shutdown`, `sync`, `reset_cache`, `create_vault`, `create_project`, `set_project_repos`, `environment_import_review`, `environment_save`, `environment_trash`, `view`, `create`, `edit`, `trash`, `totp`, `resolve`, `autofill`, `passkey_get`, `passkey_create`, `attach`, `approve_agent`, `deny_agent`, `set_agent_label`, `decide_approval`, `decide_task`, `add_to_task`, `end_task`, `fulfill_secret_request`, `deny_secret_request`, `revoke_agent`, `grant_change_apply`, `proxy_use`, `proxy_grant`, `proxy_revoke`, `proxy_issuer_add`, `proxy_issuer_remove`, `local_client_change`, `mcp_gateway_on`, `pause_agents`, `resume_agents`, `confirm_presence`, `cancel_account_deletion`, `verify_audit`, `sandbox_revoke`, `audit_reset`, `generator_record`, `generated_value`, `generator_delete`, `previous_password`, `vault_health`, `import_add`, `import_apply`, `import_cancel`, `browser_fill`, `agent_passkey_arm`, `agent_passkey_use`, `agent_rotate_begin`, `agent_rotate_confirm`, `agent_rotate_cancel`, `agent_rotate_pending`, `resolve_pending`, `reused_offer`, `offer_task`
 
 `health_settings` counts with `breach_check`, and `passkey_uv` and `presence_window` with
 `window`. `view` counts without `reveal` too: it opens one item's fields,
@@ -233,6 +233,11 @@ padding.
 | `create_vault` | `name` | `{}` | no |
 | `create_project` | `vault?`, `name` | `{}` | no |
 | `set_project_repos` | `vault?`, `project`, `repos` | `ProjectSummary` (normalized `host/owner/repo` links in encrypted project metadata, ADR 0032 §2) | no |
+| `environments` | `project?` | `[EnvironmentListing]` (ADR 0032 §6): each project's environments, with the variable count, whether each is protected and why, and the project's linked repositories. Never a value | no |
+| `environment` | `project?`, `name` | `EnvironmentDetail` or `null`: each variable's name and origin (`value`, or `reference` with its target and whether that target is protected), and what an agent changed since the person's last version. Never a value | no |
+| `environment_import_review` | `project?`, `name`, `variables` (`[[name, value]]`), `password?` | `[ImportReview]`: for each variable read from a `.env`, whether it is new, the same, changed, or equal to a vault field it could reference instead. Compares values, so it is gated as one (below); the answer carries no value | no |
+| `environment_save` | `project?`, `name`, `edit` (`create`, `must_be_new`, `protected?`, `set`, `remove`), `password?` | `EnvironmentSaved`. A change that makes protection grow reissues the agents' grants before it saves, and saves nothing if that fails; one that lowers it asks first (Touch ID or `password`), saves, and then releases the grants (ADR 0032 §3.1, below) | no |
+| `environment_trash` | `project?`, `name`, `password?` | `EnvironmentSaved`. A protected environment asks first and is saved unprotected before it goes to the trash, so the release is proven | no |
 | `list` | `filter` (`vault?`, `project?`, `kind?`, `kinds?`, `codes?`, `tag?`, `query?`, `trash`). `kinds` is several kinds added to `kind`; `codes` keeps only the items with a one-time code, of any kind (it opens their details once per version) | `[ItemSummary]` | no |
 | `view` | `query`, `reveal`, `password?` | `ItemView` (secrets only with `reveal`). No presence, also with `reveal` | no |
 | `create` | `item` (`NewItem`: `kind`, `title`, `vault?`, `project?`, `fields`, `urls`, `tags`, `notes?`, `allow_duplicate?`) | `ItemSummary` | no |
@@ -945,10 +950,10 @@ catch-all: a new operation doesn't compile without its row.
 
 | Row | Operations | What `klavd` does |
 |---|---|---|
-| Window | `view` with `reveal`, `previous_password`, `totp`, `generated_value`, `resolve`, `autofill` | The caller's key needs an open window, or a verification now |
+| Window | `view` with `reveal`, `previous_password`, `totp`, `generated_value`, `resolve`, `autofill`, `environment_import_review` | The caller's key needs an open window, or a verification now |
 | Extension's connection | `extension_attach`, and the value events it then gets (`browser_fill`'s `fill`, the fill step of `agent_rotate_begin`, `passkey_arm`) | One presence for the connection, until Klav locks or the connection closes; under `always`, one per event. Below, «The extension's connection» |
 | Passkey window | `passkey_get`, `passkey_create` | The passkey window, now per key |
-| Already asks | `approve_agent`, `decide_approval` and `decide_task` with `approve`, `add_to_task`, `offer_task`, `fulfill_secret_request` with `grant_proxy`, `grant_change_apply`, `proxy_use`, `proxy_grant`, `proxy_revoke`, `proxy_issuer_add`, `proxy_issuer_remove`, `local_client_change`, `resume_agents`, `cancel_account_deletion`, `confirm_presence` | As today: they ask for presence themselves, and never open or use a window |
+| Already asks | `approve_agent`, `decide_approval` and `decide_task` with `approve`, `add_to_task`, `offer_task`, `fulfill_secret_request` with `grant_proxy`, `grant_change_apply`, `proxy_use`, `proxy_grant`, `proxy_revoke`, `proxy_issuer_add`, `proxy_issuer_remove`, `local_client_change`, `resume_agents`, `cancel_account_deletion`, `confirm_presence`, `environment_save`, `environment_trash` (only when they lower protection) | As today: they ask for presence themselves, and never open or use a window |
 | Setting | `presence_window` and `passkey_uv` with `window` | Loosening asks; tightening doesn't |
 | Declares | `hold` | Below |
 | Agent's proof | `agent_passkey_arm`, `agent_passkey_use`, `agent_rotate_*`, `browser_fill` | As today: the agent's own signed request or grant, no value of the person's |
@@ -1012,6 +1017,10 @@ request again with `password`:
   already tells any caller). So the vague "show a value from your vault"
   only appears from a `klavd` that sends no title; the real `klavd` no
   longer does. `generated` and `resolve` name no item.
+- `protected?`: for a value that asks every time because a protected
+  environment reaches its item (ADR 0032 §3), the environment that
+  protects it ("used by the production environment of api"). The CLI says
+  "it lets klav show “Stripe”, this once: used by …".
 
 The title is a **hint**, not proof (Omar's decision D of 2026-11-19).
 Renaming an item is a write, and writes need no presence (ADR 0041 §3), so
@@ -1066,6 +1075,18 @@ at once. At the hand-out, under the session's lock, it checks the same
 again: an item edited, moved or deleted, a reference that now names another
 item, or an entry deleted or replaced while it asked, is `conflict`, and
 nothing is handed out.
+
+**Protected items ask every time (ADR 0032 §3).** An item a protected
+environment reaches (a variable of it, or the item one of its references
+names) asks for presence on every value: `view` with `reveal`,
+`previous_password`, `totp` and `resolve` that name it. That ask comes
+before the window: an open window doesn't skip it, the answer opens none,
+and `lasts` is missing whatever the setting. `autofill` keeps its own row:
+filling a password on its site doesn't hand the value to the caller.
+`klav run --trust` and a confirmed `klav.toml` don't skip it either. What
+`klavd` knows is protected comes from the protected set (`protection.bin`,
+`docs/cli.md` §1), which only shrinks with proof: an environment it can't
+read, or a vault it can't open, keeps its items protected.
 
 **A `conflict` opens no window.** A verification that passes doesn't open
 its window by itself: `klavd` opens it, under the session's lock, only

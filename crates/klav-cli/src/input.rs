@@ -168,6 +168,19 @@ impl Input {
         Ok(Zeroizing::new(line.trim().to_owned()))
     }
 
+    /// A question for the person, answered on the terminal: `None` when
+    /// there is none to ask on (stdin or stderr is not a terminal).
+    pub(crate) fn question(&mut self, prompt: &str) -> CliResult<Option<String>> {
+        if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+            return Ok(None);
+        }
+        eprint!("{prompt}");
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+        let line = self.raw_line("answer")?;
+        Ok(Some(line.trim().to_owned()))
+    }
+
     /// The master password: stdin if `--password-stdin`, else the TTY.
     pub(crate) fn password(&mut self, prompt: &str) -> CliResult<Zeroizing<String>> {
         if self.password_stdin {

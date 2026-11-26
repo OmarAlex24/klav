@@ -207,6 +207,21 @@ impl Unlocked {
     pub async fn agents(&mut self) -> ClientResult<Vec<AgentView>> {
         let res = self.authed(Method::GET, "/v1/agents", &Body::Empty).await?;
         let list: AgentList = crate::api::json(res).await?;
+        // The inherited rules of every verified grant feed the protected
+        // set (ADR 0032 §3.1): another device's protection arrives here
+        // before its environment does.
+        for info in &list.agents {
+            if info.status != AgentStatus::Active {
+                continue;
+            }
+            let Some(grant) = &info.grant else { continue };
+            let Ok(public) = PublicIdentity::decode(info.public_identity.as_bytes()) else {
+                continue;
+            };
+            if let Ok(payload) = self.open_grant(info.id, &public, grant) {
+                self.note_grant_protection(&payload);
+            }
+        }
         Ok(list
             .agents
             .into_iter()
@@ -1021,7 +1036,16 @@ impl Unlocked {
         check_shown("request", info.request.as_bytes(), shown)?;
         // Parse and check what the person is about to sign: a request that
         // breaks the MCP gateway's grammars is never signed, either way.
-        refuse_security_card(&self.approval_view(&info)?.0)?;
+        let view = self.approval_view(&info)?.0;
+        refuse_security_card(&view)?;
+        // A protected target always asks (ADR 0032 §3.1): no lease, even if
+        // the request the server sent does not say so.
+        if approve && lease.is_some() && view.item_id.is_some_and(|item| self.always_asks(item)) {
+            return Err(ClientError::Invalid(format!(
+                "{} is protected by an environment and always asks: approve it once",
+                view.target_name.as_deref().unwrap_or(&view.target)
+            )));
+        }
         let decided_at = now_ms();
         let lease_until = match (approve, lease) {
             (true, Some(d)) => decided_at + i64::try_from(d.as_millis()).unwrap_or(i64::MAX / 2),

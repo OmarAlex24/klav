@@ -34,6 +34,7 @@ mod attach;
 pub mod audit;
 mod auth;
 pub mod deletion;
+pub mod environments;
 mod error;
 pub mod fill;
 pub mod grant_change;

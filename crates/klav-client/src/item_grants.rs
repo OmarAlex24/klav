@@ -427,6 +427,15 @@ impl Unlocked {
                 "agent {id} was revoked from this device; it is never granted again"
             )));
         }
+        // The protection of environments (ADR 0032 §3.1): the inherited
+        // rules of the grant in force are kept unless this device can prove
+        // their release, and the protected items it reaches are added.
+        let previous = match self.agent_info(id).await?.grant {
+            Some(grant) => Some(self.open_grant(id, public, &grant)?),
+            None => None,
+        };
+        let mut payload = payload;
+        self.protect_grant(&mut payload, previous.as_ref())?;
         check_payload(&payload)?;
         // Before the server sees it: a later revocation changes the keys of
         // every project and item this device ever granted it, whatever grant the

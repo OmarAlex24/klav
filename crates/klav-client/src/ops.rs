@@ -444,6 +444,9 @@ impl Unlocked {
     /// live item of the project already has, unless `allow_duplicate`:
     /// references by title would become ambiguous.
     pub async fn create(&mut self, new: &NewItem) -> ClientResult<ItemSummary> {
+        if new.kind == ItemKind::Environment {
+            return Err(environment_by_hand());
+        }
         let item = build_item(new)?;
         let (vault, project) = self.destination(new.vault.as_deref(), new.project.as_deref())?;
         if !new.allow_duplicate
@@ -478,6 +481,9 @@ impl Unlocked {
     /// refused unless `patch.allow_duplicate` (same rule as [`Self::create`]).
     pub async fn edit(&mut self, query: &str, patch: &ItemPatch) -> ClientResult<ItemSummary> {
         let loc = self.find_item(query)?;
+        if self.locate(loc.item).map(|(_, kind)| kind) == Some(ItemKind::Environment) {
+            return Err(environment_by_hand());
+        }
         if let Some(title) = &patch.title
             && !patch.allow_duplicate
             && let Some(existing) = self
@@ -536,7 +542,13 @@ impl Unlocked {
                     item: resolved.item,
                 };
                 let item = self.open_item(loc)?;
-                resolve_field(&item, &resolved.field)?;
+                if item.kind() == klav_core::model::item::ItemKind::Environment {
+                    // A variable of an environment (ADR 0032 §1): checked
+                    // here, its reference's item by `reference_targets`.
+                    klav_core::model::reference::resolve_variable(&item, &resolved.field)?;
+                } else {
+                    resolve_field(&item, &resolved.field)?;
+                }
                 Ok(loc)
             })
             .collect()
@@ -555,6 +567,23 @@ impl Unlocked {
                 item: resolved.item,
             };
             let item = self.open_item(loc)?;
+            if item.kind() == klav_core::model::item::ItemKind::Environment {
+                // A variable of an environment: its own value, or the field
+                // its reference points to (ADR 0032 §1).
+                let variable =
+                    klav_core::model::reference::resolve_variable(&item, &resolved.field)?
+                        .name()
+                        .to_owned();
+                let canonical = format!("{}/{variable}", self.item_summary(loc)?.reference);
+                let value = self.variable_value(&item, &resolved.field).await?;
+                out.push(ResolvedValue {
+                    reference: reference.clone(),
+                    canonical,
+                    kind: FieldKind::Concealed,
+                    value,
+                });
+                continue;
+            }
             let field = resolve_field(&item, &resolved.field)?;
             let canonical = format!("{}/{}", self.item_summary(loc)?.reference, field.name());
             let kind = field.kind();
@@ -594,6 +623,17 @@ impl Unlocked {
         self.trash_item(loc).await?;
         Ok(summary)
     }
+}
+
+/// Environments are written only through `klav env` ([`crate::environments`]),
+/// which reissues the agents' grants before protection grows and asks for
+/// presence before it shrinks (ADR 0032 §3.1).
+fn environment_by_hand() -> ClientError {
+    ClientError::Invalid(
+        "environments are changed with `klav env create|set|rm`, which keep the agents' grants \
+         in step with what they protect"
+            .into(),
+    )
 }
 
 /// The error for a title another live item of the project already has.
@@ -706,6 +746,7 @@ mod tests {
             confirmed_urls: vec![],
             pending_urls: vec![],
             author_agent_id: None,
+            protected_by: Vec::new(),
         }
     }
 }

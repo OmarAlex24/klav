@@ -503,6 +503,11 @@ pub struct ItemSummary {
     /// The agent that wrote the current version, if one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_agent_id: Option<AgentId>,
+    /// The environments whose references protect this item, or that it is
+    /// itself (a protected environment), by name (ADR 0032 §3.1): copying
+    /// or showing it asks for presence every time. Empty: not protected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected_by: Vec<String>,
 }
 
 /// Which items to list.
@@ -587,6 +592,12 @@ pub struct Unlocked {
     /// What this device knows of the account's deletion (ADR 0037 §3), as
     /// [`crate::deletion::DELETION_FILE`] keeps it.
     pub(crate) deletion: crate::deletion::DeletionMarker,
+    /// What protected environments protect (ADR 0032 §3.1), as
+    /// [`crate::environments::PROTECTION_FILE`] keeps it.
+    pub(crate) protection: crate::environments::Protection,
+    /// An environment being created protected: not in this device's view
+    /// yet, but its grants must already name it (ADR 0032 §4.3).
+    pub(crate) pending_protection: Option<ItemLocation>,
 }
 
 /// A sync planned under the account and fetched without it
@@ -675,8 +686,27 @@ impl Unlocked {
             agent_pauses: Vec::new(),
             audit_chain: None,
             deletion: crate::deletion::DeletionMarker::default(),
+            protection: crate::environments::Protection::default(),
+            pending_protection: None,
         };
+        unlocked.protection = crate::environments::Protection::load(
+            &unlocked.home,
+            &unlocked.local_key,
+            &unlocked.ctx,
+        );
         unlocked.rebuild();
+        // Environments in the cache that the set has never heard of: the
+        // file is missing (deleted, or never written) and nothing is known
+        // until a refresh works, so it fails closed (ADR 0032 §3.1). A
+        // refresh records every environment it sees.
+        let entries = unlocked.environment_entries();
+        if !entries.is_empty()
+            && entries
+                .iter()
+                .all(|e| !unlocked.protection.contributions.contains_key(&e.loc.item))
+        {
+            unlocked.protection.unreadable = true;
+        }
         unlocked
     }
 
@@ -800,7 +830,7 @@ impl Unlocked {
         Ok(res)
     }
 
-    async fn get<R: DeserializeOwned>(&mut self, path: &str) -> ClientResult<R> {
+    pub(crate) async fn get<R: DeserializeOwned>(&mut self, path: &str) -> ClientResult<R> {
         let res = self.authed(Method::GET, path, &Body::Empty).await?;
         api::json(res).await
     }
@@ -961,6 +991,10 @@ impl Unlocked {
         }
         self.cache = cache;
         self.rebuild();
+        // What protected environments protect, from the person's versions
+        // (ADR 0032 §3.1). Never fails the sync: what it cannot learn
+        // leaves the vault asking for presence every time.
+        self.refresh_protection(&mut notices).await;
         self.warnings.extend(notices);
         if report != SyncReport::default() || deletion_changed {
             self.generation += 1;
@@ -1591,6 +1625,43 @@ impl Unlocked {
             confirmed_urls: e.confirmed_urls.clone(),
             pending_urls: e.pending_urls.clone(),
             author_agent_id: e.author,
+            protected_by: self.protection.protected_by(id),
+        })
+    }
+
+    /// Every item of kind `environment` this device opens, trashed ones
+    /// included: where it is, its version, who wrote it, when, its title
+    /// and whether it is in the trash.
+    pub(crate) fn environment_entries(&self) -> Vec<crate::environments::EnvEntry> {
+        self.items
+            .iter()
+            .filter(|(_, e)| e.overview.kind == ItemKind::Environment && !e.is_system())
+            .map(|(id, e)| crate::environments::EnvEntry {
+                loc: ItemLocation {
+                    vault: e.vault,
+                    project: e.project,
+                    item: *id,
+                },
+                version: e.version,
+                author: e.author,
+                updated_at: e.updated_at,
+                title: e.overview.title.clone(),
+                trashed: e.trashed,
+            })
+            .collect()
+    }
+
+    /// Where an item this device opens lives, and its kind.
+    pub(crate) fn locate(&self, id: ItemId) -> Option<(ItemLocation, ItemKind)> {
+        self.items.get(&id).map(|e| {
+            (
+                ItemLocation {
+                    vault: e.vault,
+                    project: e.project,
+                    item: id,
+                },
+                e.overview.kind,
+            )
         })
     }
 

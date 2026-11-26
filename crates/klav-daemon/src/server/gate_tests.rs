@@ -2754,3 +2754,118 @@ async fn with_two_browsers_only_the_one_in_front_gets_values() {
     at_once(filled).await.unwrap().expect("filled");
     assert_eq!(fake.asked(), asked_before + 1);
 }
+
+// ------------------------------------------------- protected environments
+
+/// Saves `production` (protected by its name) with a reference to
+/// GitHub's password, through `environment_save` as `klav env set` does.
+async fn protect_github(c: &Conn) {
+    let projects: Vec<klav_client::ProjectSummary> = call(c, Request::Projects { vault: None })
+        .await
+        .expect("projects");
+    let p = &projects[0];
+    let saved: Result<Value, ErrorBody> = call(
+        c,
+        Request::EnvironmentSave {
+            project: Some(format!("{}/{}", p.vault, p.name)),
+            name: "production".into(),
+            edit: klav_client::environments::EnvironmentEdit {
+                create: true,
+                must_be_new: true,
+                protected: None,
+                set: vec![klav_client::environments::NewVariable {
+                    name: "GITHUB_PASSWORD".into(),
+                    value: None,
+                    reference: Some(format!("klav://{}/{}/GitHub/password", p.vault, p.name)),
+                }],
+                remove: Vec::new(),
+            },
+            password: None,
+        },
+    )
+    .await;
+    saved.expect("saved");
+}
+
+/// An item a protected environment reaches asks for Touch ID on every
+/// value, also while the caller's window is open, and the answer opens no
+/// window (ADR 0032 §3).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_protected_item_asks_every_time_under_an_open_window() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let _klavd = daemon(&home, &fake, &[session(40)], false).await;
+    let a = conn(&home).await;
+    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    // Not protected yet: one prompt opens a's window, and the next value
+    // goes under it.
+    call::<Value>(&a, view(None)).await.expect("view");
+    let window_opened = fake.asked();
+    call::<Value>(&a, view(None))
+        .await
+        .expect("under the window");
+    assert_eq!(fake.asked(), window_opened, "the window covers it");
+
+    protect_github(&a).await;
+    call::<Value>(&a, view(None)).await.expect("protected view");
+    assert_eq!(fake.asked(), window_opened + 1, "asks despite the window");
+    assert!(fake.last().contains("production"), "{}", fake.last());
+    call::<Value>(&a, view(None))
+        .await
+        .expect("protected view again");
+    assert_eq!(
+        fake.asked(),
+        window_opened + 2,
+        "and again: no window opened"
+    );
+}
+
+/// A caller whose window covers it, asking for a protected item while
+/// another key's dialog holds the session, doesn't show its own prompt
+/// right after that one: `presence_busy`, and the dialog stays the only
+/// one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_covered_protected_value_behind_a_dialog_is_busy() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let seam = BeforePrompt::default();
+    let keys = [session(40), session(41)];
+    let _klavd = daemon_with(&home, &fake, &keys, false, Arc::clone(&seam)).await;
+    let a = conn(&home).await;
+    let b = conn(&home).await;
+    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    call::<Value>(&a, view(None))
+        .await
+        .expect("opens a's window");
+    protect_github(&a).await;
+    let before = fake.asked();
+    let (reached, go) = pause_before_prompt(&seam);
+    let (open, release) = fake.hold_next();
+    let first = {
+        let b = Arc::clone(&b);
+        tokio::spawn(async move { call::<Value>(&b, cancel_deletion(None)).await })
+    };
+    opened(reached).await;
+    let value = {
+        let a = Arc::clone(&a);
+        tokio::spawn(async move { code(&a, view(None)).await })
+    };
+    tokio::time::sleep(SETTLE).await;
+    assert!(!value.is_finished(), "it waits for the session's lock");
+    go.send(()).unwrap();
+    opened(open).await;
+    release.send(()).unwrap();
+    first.await.unwrap().expect("cancel");
+    assert_eq!(at_once(value).await.unwrap(), ErrorCode::PresenceBusy);
+    assert_eq!(fake.asked(), before + 1, "no second dialog");
+}

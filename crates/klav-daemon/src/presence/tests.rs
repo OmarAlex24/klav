@@ -491,6 +491,7 @@ fn without_touch_id_the_client_is_told_what_to_ask() {
             lasts: Some(AskLasts::FiveMinutes),
             value: None,
             browser: None,
+            protected: None,
         }))
     );
     // A wrong password grants nothing; the right one opens the window.
@@ -549,6 +550,7 @@ fn a_held_connection_reads_until_lock_with_five_minutes_and_is_never_shared() {
             &app,
             Purpose::EveryTime {
                 reason: "show “Prod DB”",
+                value: None,
             },
             None,
             &Bound::default(),
@@ -623,7 +625,10 @@ fn other_verifications_on_a_declared_connection_do_not_hold_it() {
         .require(
             GEN,
             &app,
-            Purpose::EveryTime { reason: "x" },
+            Purpose::EveryTime {
+                reason: "x",
+                value: None,
+            },
             None,
             &Bound::default(),
             None,

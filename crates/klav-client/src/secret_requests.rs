@@ -880,6 +880,7 @@ mod tests {
             trashed: false,
             passkey: None,
             author_agent_id: None,
+            protected_by: Vec::new(),
         };
 
         // Outside grant: IDs must be omitted (T236).
