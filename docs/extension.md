@@ -97,7 +97,8 @@ tests use throwaway profiles and never touch the user's.
 |---|---|---|
 | Chromium (development) | `niiplppgdljgimbnmokojdkofdcjkgao` | set by the manifest's public key (`key`); the private one was thrown away. Only with `install-host --dev` |
 | Firefox | `klav@klav.dev` | `browser_specific_settings.gecko.id` |
-| Chromium (Chrome Web Store, Edge Add-ons) | pending | the one each store assigns; it goes in `STORE_CHROMIUM_IDS` (`crates/klav-daemon/src/native.rs`) and enters the manifest and the *host* without further options. Meanwhile, `--extension-id` ([publicar-extension.md](publicar-extension.md) §6) |
+| Chromium (Chrome Web Store) | `aoabckikmlcaffgipfcaoeccgclbpbph` | assigned by the Chrome Web Store; it is in `STORE_CHROMIUM_IDS` (`crates/klav-daemon/src/native.rs`) and enters the manifest and the *host* without further options ([publicar-extension.md](publicar-extension.md) §6) |
+| Chromium (Edge Add-ons) | pending | the one Edge Add-ons assigns; it goes in `STORE_CHROMIUM_IDS` too. Meanwhile, `--extension-id` |
 
 ## 3. Extension ↔ *host* protocol, version 1
 
@@ -1176,7 +1177,7 @@ Then, `klav extension install-host --dev` and restart the browser. The guide
 the stores (Chromium's without the development key, `key`), the source
 code addons.mozilla.org asks for, and their *hashes*. Underneath it uses
 `KLAV_STORE=1` and `KLAV_DIST` from `scripts/build.mjs`, so `dist/` stays
-the development build. The Chrome Web Store assigns its own ID, which goes
+the development build. The Chrome Web Store assigned its own ID, which is
 in `STORE_CHROMIUM_IDS` (§2); Firefox's doesn't change: `klav@klav.dev`.
 
 The step-by-step for each store is in

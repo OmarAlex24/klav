@@ -305,9 +305,6 @@ struct SetupView: View {
             ForEach(installer.browsers, id: \.self) { id in
                 browserChoiceRow(id)
             }
-            if let kept = installer.foreignDevKeptLine {
-                Status(text: kept, tone: .warning)
-            }
             if installer.browsers.isEmpty {
                 Status(text: String(localized: "No supported browser found on this Mac."), tone: .plain)
             } else if chosen.isEmpty {
@@ -330,7 +327,7 @@ struct SetupView: View {
         let selected = installer.isBrowserSelected(id)
         let mine = installer.neededManifests.filter { $0.browser == id }
         let foreign = Installer.uniqueForeignHosts(mine.filter(\.foreign))
-        let hostReady = !mine.isEmpty && mine.allSatisfy(\.current)
+        let hostReady = !mine.isEmpty && mine.allSatisfy(installer.connected)
         let isConnected = connected.contains(id)
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 10) {
@@ -342,12 +339,6 @@ struct SetupView: View {
                             .foregroundStyle(selected ? Palette.tinta : Palette.gris)
                         if !selected {
                             Status(text: String(localized: "Not selected"), tone: .plain)
-                        } else if installer.foreignDevKept.contains(id) {
-                            // Another install lets the development build in here,
-                            // and this app can't change that: said, not hidden.
-                            ForEach(Installer.uniqueForeignHosts(installer.foreignDevManifests.filter { $0.browser == id })) { m in
-                                Status(text: String(localized: "Another install, \(m.runs ?? m.pointsTo ?? "?")"), tone: .warning)
-                            }
                         } else if installer.cliDevBrowsers.contains(id) {
                             Status(text: String(localized: "Lets in the development extension, connected from the command line"), tone: .warning)
                         } else if installer.waits(id) {

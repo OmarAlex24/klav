@@ -37,7 +37,7 @@ pub const DEV_CHROMIUM_ID: &str = "niiplppgdljgimbnmokojdkofdcjkgao";
 /// Firefox add-on: the store keeps the key, unlike the development build's.
 /// Each is 32 letters a–p (a test checks it). Where they come from:
 /// `docs/publicar-extension.md` §6.
-pub const STORE_CHROMIUM_IDS: &[&str] = &[];
+pub const STORE_CHROMIUM_IDS: &[&str] = &["aoabckikmlcaffgipfcaoeccgclbpbph"];
 /// Firefox ID (`browser_specific_settings.gecko.id`), the same in
 /// development and on addons.mozilla.org.
 pub const FIREFOX_ID: &str = "klav@klav.dev";

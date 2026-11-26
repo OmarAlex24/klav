@@ -2290,16 +2290,6 @@
         }
       }
     },
-    "Another install’s host lets the development extension into %@. Klav can’t replace it there until Klav is in the Chrome Web Store, so the development extension still connects.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El host de otra instalación deja entrar la extensión de desarrollo en %@. Klav no puede reemplazarlo ahí mientras no esté en Chrome Web Store, así que la extensión de desarrollo se sigue conectando."
-          }
-        }
-      }
-    },
     "Another klav is at %@ and doesn’t say its build. Your terminal may run it instead of this app’s.": {
       "localizations": {
         "es": {

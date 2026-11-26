@@ -29,9 +29,6 @@ final class Installer: ObservableObject {
         /// A Chromium manifest whose `allowed_origins` lists the development
         /// build (`Installer.developmentOrigin`). Set by `hostStatus`.
         fileprivate(set) var listsDevelopmentBuild = false
-        /// Points to this `KLAV_HOME`'s wrapper, which `install-host` rewrites,
-        /// whatever host that wrapper runs now. Set by `hostStatus`.
-        fileprivate(set) var viaThisHomesWrapper = false
         var id: String { path }
         /// Chromium's format (`allowed_origins`). Firefox's, in Mozilla's
         /// directory, is also the one Dia reads.
@@ -246,8 +243,7 @@ final class Installer: ObservableObject {
     /// Manifests «Connect the browsers» writes: only for chosen browsers, and
     /// not the Chromium ones of a browser that waits for the store.
     var neededManifests: [Manifest] {
-        let kept = foreignDevKept
-        return activeManifests.filter { !($0.chromium && waits($0.browser)) && !($0.foreign && kept.contains($0.browser) && $0.chromium) }
+        activeManifests.filter { !($0.chromium && waits($0.browser)) }
     }
     /// Manifests that point to another install: the app shows them and asks.
     /// This app's own with an outdated wrapper are not among them.
@@ -255,10 +251,18 @@ final class Installer: ObservableObject {
     /// Done when a chosen browser can reach `klavd`: not while every one waits
     /// for the store (Dia's manifest in Mozilla's folder alone lets nothing in).
     var hostsReady: Bool {
-        !neededManifests.isEmpty && neededManifests.allSatisfy(\.current) && chosenBrowsers.contains { !waits($0) }
+        !neededManifests.isEmpty && neededManifests.allSatisfy(connected) && chosenBrowsers.contains { !waits($0) }
     }
     /// Something «Connect the browsers» would still write.
-    var hostsToConnect: Bool { neededManifests.contains { !$0.current } }
+    var hostsToConnect: Bool { neededManifests.contains { !connected($0) } }
+
+    /// A manifest «Connect the browsers» has nothing left to write for: it is
+    /// current and, with «Development extension» on, a Chromium one lists the
+    /// development build too. The store build's manifest alone is current,
+    /// but turning the switch on still needs it written again with `--dev`.
+    func connected(_ manifest: Manifest) -> Bool {
+        manifest.current && !(devExtension && manifest.chromium && !manifest.listsDevelopmentBuild)
+    }
 
     /// A Chromium browser that cannot reach `klavd` until Klav is in its
     /// store (or the development extension is on). Not one the command line
@@ -283,18 +287,11 @@ final class Installer: ObservableObject {
     /// The browsers whose manifest, of another install, has a host that lets
     /// the development build in (`klav extension install-host --dev` from
     /// another `klav`, even with this `KLAV_HOME`). With «Development
-    /// extension» off, «Use this app’s» shuts that build out there, and its
-    /// question says so.
-    ///
-    /// Only where that is true: the manifest points to this `KLAV_HOME`'s
-    /// wrapper (which «Use this app’s» rewrites without the development
-    /// build), and `install-host` will write that wrapper, which it does only
-    /// with a Firefox-format manifest to write (Firefox, or Dia's copy in
-    /// Mozilla's folder). Without one, while Klav has no Chromium extension
-    /// to allow, it stops before writing anything (`foreignDevKept`).
+    /// extension» off, «Use this app’s» writes this app's manifest there,
+    /// which lets in the store build and not that one, and its question says
+    /// so.
     var foreignDevBrowsers: [String] {
-        guard writesWrapper else { return [] }
-        return Self.names(foreignDevManifests.filter(\.viaThisHomesWrapper))
+        Self.names(foreignDevManifests)
     }
     /// Another install's Chromium manifests whose host lets the development
     /// build in, while «Development extension» is off.
@@ -305,19 +302,6 @@ final class Installer: ObservableObject {
                 && !($0.refused ?? []).contains(Self.developmentOrigin)
         }
     }
-    /// The browsers where another install's host lets the development build
-    /// in and this app can change nothing: its manifest points to another
-    /// `KLAV_HOME`'s wrapper, or there is no Firefox-format manifest to write,
-    /// so `install-host` stops before the wrapper. «Use this app’s» can't
-    /// replace them until Klav is in the Chrome Web Store, so they aren't
-    /// offered for replacing; the Browsers step says the door stays open,
-    /// whatever `waitingForStore` says.
-    var foreignDevKept: [String] {
-        Self.names(foreignDevManifests.filter { !($0.viaThisHomesWrapper && writesWrapper) })
-    }
-    /// `install-host` without `--dev` writes this home's wrapper: there is a
-    /// Firefox-format manifest to write among the chosen browsers.
-    private var writesWrapper: Bool { activeManifests.contains { !$0.chromium } }
 
     private static func names(_ manifests: [Manifest]) -> [String] {
         var seen = Set<String>()
@@ -326,26 +310,17 @@ final class Installer: ObservableObject {
 
     /// The question before replacing another install's manifests: each
     /// browser and the host it runs now, then what it does to the
-    /// development extension another install let in (T122): shut out where
-    /// it is (`foreignDevBrowsers`), still connecting where this app can't
-    /// change it (`foreignDevKept`).
+    /// development extension another install let in (T122): shut out
+    /// (`foreignDevBrowsers`).
     var foreignHostsMessage: String {
         var lines = Self.uniqueForeignHosts(foreignManifests).map { "\($0.browser): \($0.runs ?? $0.pointsTo ?? "?")" }
-        let out = foreignDevBrowsers, kept = foreignDevKept
-        if !out.isEmpty || !kept.isEmpty { lines.append("") }
+        let out = foreignDevBrowsers
         if !out.isEmpty {
+            lines.append("")
             let names = out.map(BrowserNames.name).formatted(.list(type: .and))
             lines.append(String(localized: "The host there now lets the development extension into \(names). This app’s won’t while “Development extension” is off, so it stops connecting there."))
         }
-        if let line = foreignDevKeptLine { lines.append(line) }
         return lines.joined(separator: "\n")
-    }
-
-    /// What the Browsers step and the question say of `foreignDevKept`.
-    var foreignDevKeptLine: String? {
-        guard !foreignDevKept.isEmpty else { return nil }
-        let names = foreignDevKept.map(BrowserNames.name).formatted(.list(type: .and))
-        return String(localized: "Another install’s host lets the development extension into \(names). Klav can’t replace it there until Klav is in the Chrome Web Store, so the development extension still connects.")
     }
     var daemonReady: Bool { agent == .enabled && otherDaemon == nil }
 
@@ -500,7 +475,6 @@ final class Installer: ObservableObject {
             manifest.ours = manifest.current
                 || (!(manifest.refused ?? []).isEmpty && manifest.pointsTo == report.wrapper
                     && report.host != nil && manifest.runs == report.host)
-            manifest.viaThisHomesWrapper = manifest.pointsTo == report.wrapper
             if manifest.chromium, let data = FileManager.default.contents(atPath: manifest.path),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let origins = json["allowed_origins"] as? [String] {
@@ -689,9 +663,9 @@ final class Installer: ObservableObject {
     /// (`klav extension install-host`). Manifests of another install are
     /// replaced only after the person chose «Use this app's».
     ///
-    /// Firefox's add-on has a fixed ID. Chromium browsers need the store
-    /// build's, which `klav` allows once the Chrome Web Store assigns it;
-    /// until then they are left out (`skipped`). `--dev` allows the
+    /// Firefox's add-on has a fixed ID, and Chromium browsers get the Chrome
+    /// Web Store build's (`STORE_CHROMIUM_IDS` in `klav`). A `klav` without a
+    /// store ID leaves them out (`skipped`). `--dev` allows the
     /// development build loaded unpacked, only with «Development
     /// extension» on: its key is public (T122, ADR 0030 layer 09).
     func installHosts() async {
@@ -858,9 +832,10 @@ final class Installer: ObservableObject {
             setManifests(try await Task.detached { try Self.hostStatus(paths, system, installed: installed) }.value, read: read)
         }
         await installHosts()
-        // Said, not hidden: a manifest that stays still lets it in. Its
-        // host now turns it away, so it is outdated, not current.
-        let left = manifests.filter { $0.chromium && $0.ours }.map(\.path)
+        // Said, not hidden: a manifest that still lists it lets it in. Its
+        // host now turns it away, so it is outdated, not current. The store
+        // build's manifest `installHosts` wrote again is not one of them.
+        let left = manifests.filter { $0.chromium && $0.ours && $0.listsDevelopmentBuild }.map(\.path)
         if !left.isEmpty, problems[.hosts] == nil {
             problems[.hosts] = String(localized: "Klav couldn’t remove these files; delete them to stop the development extension: \(left.joined(separator: ", "))")
         }

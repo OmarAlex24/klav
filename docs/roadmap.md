@@ -21,9 +21,8 @@ Fuente de verdad del avance. El *qué* y el *por qué* están en [`diseno.md`](d
 - **Pendiente de la fase 5 que requiere a Omar:** publicar la extensión siguiendo [publicar-extension.md](publicar-extension.md), y decidir si se hace el desbloqueo sin daemon (ADR 0017 §2). Para publicar:
   - antes de enviar (§1): hacer público el repositorio y tener una descarga de Klav (el DMG de la app de Mac o una *release*) que ya lleve el ID de la tienda; al enviar, crear la cuenta desechable para quien revisa en `api.klav.dev` y borrarla cuando aprueben;
   - comprobar que `klav.dev/privacy` abre tras el despliegue (la política de [privacidad.md](privacidad.md) y `apps/web/public/privacy/index.html` ya se sirve en `/privacy`);
-  - rehacer las capturas con el *popup* de ahora (§4 de la guía);
   - crear las cuentas de Chrome Web Store (5 USD, verificación en dos pasos, declaración de comerciante) y de addons.mozilla.org, y opcionalmente la de Edge Add-ons;
-  - subir el borrador a Chrome Web Store, poner su ID en `STORE_CHROMIUM_IDS` (`crates/klav-daemon/src/native.rs`, una línea) y publicar `klav` con él;
+  - subir el borrador a Chrome Web Store (su ID, `aoabckikmlcaffgipfcaoeccgclbpbph`, ya está en `STORE_CHROMIUM_IDS`) y publicar `klav` con él;
   - rellenar las fichas con `apps/extension/store/ficha.md`, decidir las respuestas de uso de datos (§5 y §6 de la ficha) y enviar a revisión
 - **En uso real desde el 2026-11-04:** `klav-server` en Railway (con el dominio que Railway generó, registro cerrado) y la app en TestFlight (desde la 0.6.0 build 1; la última, la 0.9.0 build 6, del 2026-11-06). Omar ya importó su bóveda y usa la extensión en Dia
 - **Pendiente de la fase 6 que requiere a Omar** (lista completa en [probar-fase-6.md](probar-fase-6.md) §1):

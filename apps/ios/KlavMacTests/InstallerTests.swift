@@ -88,8 +88,12 @@ final class InstallerTests: XCTestCase {
         XCTAssertNil(installer.problems[.hosts])
         XCTAssertTrue(installer.foreignManifests.isEmpty, "\(installer.manifests)")
         XCTAssertFalse(installer.hostsToConnect)
-        XCTAssertEqual(installer.waitingForStore, ["dia"], "no store build to allow in Dia's own folder yet")
-        XCTAssertFalse(installer.hostsReady, "not done while Dia waits for the store")
+        XCTAssertEqual(installer.waitingForStore, [], "Dia's own folder lets in the store build")
+        XCTAssertTrue(installer.hostsReady, "\(installer.manifests)")
+        let dia = try String(contentsOf: root.appendingPathComponent(
+            "\(support)/Dia/User Data/NativeMessagingHosts/dev.klav.host.json"), encoding: .utf8)
+        XCTAssertTrue(dia.contains(storeID), dia)
+        XCTAssertFalse(dia.contains(devID), dia)
         let wrapper = try String(contentsOf: root.appendingPathComponent("home/native-host/klav-native-host"),
                                  encoding: .utf8)
         XCTAssertTrue(wrapper.contains(helpers.appendingPathComponent("klav-native-host").resolvingSymlinksInPath().path),
@@ -144,8 +148,10 @@ final class InstallerTests: XCTestCase {
     private var wrapper: URL { root.appendingPathComponent("home/native-host/klav-native-host") }
     /// The development build's ID, whose key is public (`klav_daemon::native::DEV_CHROMIUM_ID`).
     private let devID = "niiplppgdljgimbnmokojdkofdcjkgao"
+    /// The Chrome Web Store build's ID (`klav_daemon::native::STORE_CHROMIUM_IDS`).
+    private let storeID = "aoabckikmlcaffgipfcaoeccgclbpbph"
 
-    func testByDefaultOnlyFirefoxConnectsAndChromiumWaitsForTheStore() async throws {
+    func testByDefaultFirefoxAndTheStoreBuildConnect() async throws {
         let installer = try installer()
         XCTAssertFalse(installer.devExtension, "off unless the person turns it on")
         _ = try mkdir("\(support)/Google/Chrome")
@@ -157,29 +163,35 @@ final class InstallerTests: XCTestCase {
         XCTAssertNil(installer.problems[.hosts])
         let fm = FileManager.default
         XCTAssertTrue(fm.fileExists(atPath: firefoxManifest.path))
-        XCTAssertFalse(fm.fileExists(atPath: chromeManifest.path), "no Chromium extension to allow")
+        let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertTrue(chrome.contains(storeID), "the Chrome Web Store build gets in: \(chrome)")
+        XCTAssertFalse(chrome.contains(devID), "the development build doesn't")
         XCTAssertFalse(try String(contentsOf: wrapper, encoding: .utf8).contains(devID))
-        XCTAssertEqual(installer.waitingForStore, ["chrome"])
-        XCTAssertTrue(installer.waits("chrome"))
+        XCTAssertEqual(installer.waitingForStore, [])
+        XCTAssertFalse(installer.waits("chrome"))
         XCTAssertTrue(installer.hostsReady, "\(installer.manifests)")
         XCTAssertFalse(installer.hostsToConnect, "nothing left to connect: no button")
 
-        // The app opens again: Chrome still waits, with no button.
+        // The app opens again: nothing waits, and no button.
         let again = try self.installer()
         await again.refresh(info: nil)
-        XCTAssertEqual(again.waitingForStore, ["chrome"])
+        XCTAssertEqual(again.waitingForStore, [])
+        XCTAssertTrue(again.hostsReady)
         XCTAssertFalse(again.hostsToConnect)
     }
 
-    func testOnlyChromiumBrowsersIsNotAProblem() async throws {
+    func testOnlyChromiumBrowsersConnectTheStoreBuild() async throws {
         let installer = try installer()
         _ = try mkdir("\(support)/Google/Chrome")
         await installer.installHosts()
-        XCTAssertNil(installer.problems[.hosts], "the step says Chrome waits for the store")
-        XCTAssertEqual(installer.waitingForStore, ["chrome"])
-        XCTAssertFalse(installer.hostsReady)
+        XCTAssertNil(installer.problems[.hosts])
+        XCTAssertEqual(installer.waitingForStore, [])
+        XCTAssertTrue(installer.hostsReady, "\(installer.manifests)")
         XCTAssertFalse(installer.hostsToConnect)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: chromeManifest.path))
+        let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertTrue(chrome.contains(storeID), chrome)
+        XCTAssertFalse(chrome.contains(devID), chrome)
+        XCTAssertFalse(try String(contentsOf: wrapper, encoding: .utf8).contains(devID))
     }
 
     func testTheDevelopmentExtensionIsKeptAndTurningItOffTakesItsWayIn() async throws {
@@ -187,12 +199,15 @@ final class InstallerTests: XCTestCase {
         _ = try mkdir("\(support)/Google/Chrome")
         _ = try mkdir("\(support)/Mozilla")
         await installer.installHosts()
-        XCTAssertTrue(installer.waits("chrome"))
+        XCTAssertFalse(installer.waits("chrome"), "the store build connects")
+        XCTAssertFalse(try String(contentsOf: chromeManifest, encoding: .utf8).contains(devID))
+        XCTAssertFalse(installer.hostsToConnect)
 
         await installer.setDevExtension(true)
         XCTAssertTrue(defaults.bool(forKey: Installer.devExtensionKey), "in the app's preferences")
         XCTAssertFalse(installer.waits("chrome"))
-        XCTAssertTrue(installer.hostsToConnect, "Chrome can be connected now")
+        XCTAssertTrue(installer.hostsToConnect, "Chrome's store-only manifest is written again with the development build")
+        XCTAssertFalse(installer.hostsReady)
         await installer.installHosts()
         XCTAssertNil(installer.problems[.hosts])
         XCTAssertTrue(try String(contentsOf: chromeManifest, encoding: .utf8).contains(devID))
@@ -204,11 +219,14 @@ final class InstallerTests: XCTestCase {
         XCTAssertNil(installer.problems[.hosts])
         XCTAssertFalse(defaults.bool(forKey: Installer.devExtensionKey))
         let fm = FileManager.default
-        XCTAssertFalse(fm.fileExists(atPath: chromeManifest.path), "Chrome's manifest goes at once")
+        let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertFalse(chrome.contains(devID), "Chrome's manifest no longer lists it")
+        XCTAssertTrue(chrome.contains(storeID), "and lets the store build in again")
         XCTAssertFalse(try String(contentsOf: wrapper, encoding: .utf8).contains(devID), "the host no longer lets it in")
         XCTAssertTrue(fm.fileExists(atPath: firefoxManifest.path), "Firefox stays connected")
-        XCTAssertEqual(installer.waitingForStore, ["chrome"])
+        XCTAssertEqual(installer.waitingForStore, [])
         XCTAssertTrue(installer.hostsReady)
+        XCTAssertFalse(installer.hostsToConnect)
     }
 
     /// The person, in Terminal, with this app's klav (the link of step 2),
@@ -274,11 +292,14 @@ final class InstallerTests: XCTestCase {
         await installer.connectHosts(keepingDevelopment: false)
         XCTAssertNil(installer.problems[.hosts])
         XCTAssertFalse(installer.devExtension)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: chromeManifest.path), "Chrome's manifest goes")
+        let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertFalse(chrome.contains(devID), "Chrome's manifest no longer lists it")
+        XCTAssertTrue(chrome.contains(storeID), "only the store build")
         XCTAssertFalse(try String(contentsOf: wrapper, encoding: .utf8).contains(devID), "the host no longer lets it in")
         XCTAssertTrue(FileManager.default.fileExists(atPath: firefoxManifest.path), "Firefox stays connected")
         XCTAssertEqual(installer.cliDevBrowsers, [])
-        XCTAssertTrue(installer.waits("chrome"))
+        XCTAssertFalse(installer.waits("chrome"))
+        XCTAssertTrue(installer.hostsReady)
     }
 
     /// «Remove it» is one step: `busy` is set before anything is deleted, so
@@ -299,14 +320,14 @@ final class InstallerTests: XCTestCase {
         watch.cancel()
         XCTAssertEqual(manifestWhenBusy, true, "busy before Chrome's manifest goes")
         XCTAssertNil(installer.busy)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: chromeManifest.path))
+        XCTAssertFalse(try String(contentsOf: chromeManifest, encoding: .utf8).contains(devID))
     }
 
-    /// A Mac with only Chromium browsers: `install-host` has nothing to
-    /// allow and stops before writing a wrapper. «Remove it» takes this
-    /// home's wrapper too, so nothing lists the development build, also for
-    /// a manifest `host-status` doesn't see (`--user-data-dir`), which now
-    /// points at nothing (`docs/macos.md` §3, step 3).
+    /// A Mac with only Chromium browsers. «Remove it» takes this home's
+    /// wrapper too, and `install-host` writes it again with the store build
+    /// only, so nothing lets the development build in, also through a
+    /// manifest `host-status` doesn't see (`--user-data-dir`), which still
+    /// points at that wrapper (`docs/macos.md` §3, step 3).
     func testRemovingItWithOnlyChromeLeavesNoBrowserAWayIn() async throws {
         _ = try mkdir("\(support)/Google/Chrome")
         try installHostFromTheCommandLine()
@@ -325,14 +346,17 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(installer.manifests.contains { $0.path == customManifest.path }, "host-status doesn't list it")
 
         await installer.connectHosts(keepingDevelopment: false)
-        XCTAssertNil(installer.problems[.hosts], "nothing to allow is not a failure")
+        XCTAssertNil(installer.problems[.hosts])
         XCTAssertFalse(installer.devExtension)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: chromeManifest.path), "Chrome's manifest goes")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: wrapper.path),
-                       "the wrapper goes, and install-host had nothing to write it again for")
+        let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertFalse(chrome.contains(devID), "Chrome's manifest no longer lists it")
+        XCTAssertTrue(chrome.contains(storeID), chrome)
+        let script = try String(contentsOf: wrapper, encoding: .utf8)
+        XCTAssertFalse(script.contains(devID), "the wrapper the custom profile points at turns it away: \(script)")
         XCTAssertFalse(installer.manifests.contains { $0.exists && $0.listsDevelopmentBuild })
         XCTAssertEqual(installer.cliDevBrowsers, [])
-        XCTAssertEqual(installer.waitingForStore, ["chrome"])
+        XCTAssertEqual(installer.waitingForStore, [])
+        XCTAssertTrue(installer.hostsReady)
     }
 
     /// `host-status` fails while «Connect the browsers» reads the browsers
@@ -427,7 +451,6 @@ final class InstallerTests: XCTestCase {
     }
 
     private let shutOut = "The host there now lets the development extension into Chrome. This app’s won’t while “Development extension” is off, so it stops connecting there."
-    private let stillConnects = "Another install’s host lets the development extension into Chrome. Klav can’t replace it there until Klav is in the Chrome Web Store, so the development extension still connects."
 
     /// Case 1 of 3: another `klav` (its own host, this `KLAV_HOME`) connected
     /// the development build, and Firefox is here. «Use this app’s» rewrites
@@ -442,7 +465,6 @@ final class InstallerTests: XCTestCase {
         await installer.refresh(info: nil)
         XCTAssertTrue(installer.foreignManifests.contains { $0.path == chromeManifest.path }, "\(installer.manifests)")
         XCTAssertEqual(installer.foreignDevBrowsers, ["chrome"])
-        XCTAssertEqual(installer.foreignDevKept, [])
         XCTAssertEqual(installer.cliDevBrowsers, [], "not this app's: the other question")
         XCTAssertEqual(installer.foreignHostsMessage.components(separatedBy: "\n").last, shutOut)
         let answer2 = await installer.connectBrowsers(info: nil, replacingForeign: false)
@@ -459,65 +481,73 @@ final class InstallerTests: XCTestCase {
         XCTAssertNil(installer.problems[.hosts])
         XCTAssertTrue(installer.foreignManifests.isEmpty)
         XCTAssertFalse(try String(contentsOf: wrapper, encoding: .utf8).contains(devID), "the door is shut")
-        XCTAssertEqual(installer.foreignDevKept, [])
-        XCTAssertNil(installer.foreignDevKeptLine)
+        XCTAssertTrue(try String(contentsOf: chromeManifest, encoding: .utf8).contains(storeID))
+        XCTAssertEqual(installer.foreignDevBrowsers, [])
     }
 
     /// Case 2 of 3: the same, with only Chromium browsers. `install-host`
-    /// would stop before writing the wrapper, so nothing changes: no
-    /// promise to shut it out, no replacing offered, and the step keeps
-    /// saying the development build gets in, also after connecting.
-    func testWithOnlyChromeAnotherInstallsDevelopmentConnectionIsSaidToStay() async throws {
+    /// writes Chrome's manifest and this home's wrapper with the store build
+    /// only, so «Use this app’s» is asked first and its question says the
+    /// development build is shut out.
+    func testWithOnlyChromeReplacingAnotherInstallsDevelopmentConnectionShutsItOut() async throws {
         _ = try mkdir("\(support)/Google/Chrome")
         try installHostFromAnotherKlav(klavHome: "home")
         let installer = try installer()
         await installer.refresh(info: nil)
-        XCTAssertEqual(installer.foreignDevBrowsers, [], "nothing would shut it out")
-        XCTAssertEqual(installer.foreignDevKept, ["chrome"])
-        XCTAssertEqual(installer.foreignDevKeptLine, stillConnects)
-        XCTAssertTrue(installer.foreignManifests.isEmpty, "no replacing offered that can't happen")
+        XCTAssertEqual(installer.foreignDevBrowsers, ["chrome"])
+        XCTAssertEqual(installer.foreignManifests.map(\.path), [chromeManifest.path])
+        XCTAssertEqual(installer.foreignHostsMessage.components(separatedBy: "\n").last, shutOut)
 
-        let answer = await installer.connectBrowsers(info: nil, replacingForeign: false)
+        let manifest = try String(contentsOf: chromeManifest, encoding: .utf8)
+        let question = await installer.connectBrowsers(info: nil, replacingForeign: false)
+        XCTAssertEqual(question, .foreign, "never replaced without asking")
+        XCTAssertEqual(try String(contentsOf: chromeManifest, encoding: .utf8), manifest, "nothing written before the answer")
+        XCTAssertTrue(try String(contentsOf: wrapper, encoding: .utf8).contains(devID))
+
+        let answer = await installer.connectBrowsers(info: nil, replacingForeign: true)
         XCTAssertEqual(answer, .none)
-        XCTAssertTrue(try String(contentsOf: wrapper, encoding: .utf8).contains(devID), "the door is still open…")
-        XCTAssertEqual(installer.waitingForStore, ["chrome"])
-        XCTAssertFalse(installer.waits("chrome"), "…and not hidden as waiting for the store")
-        XCTAssertEqual(installer.foreignDevKept, ["chrome"])
-        XCTAssertEqual(installer.foreignDevKeptLine, stillConnects)
-
-        let es = try XCTUnwrap(Bundle(for: MacModel.self).path(forResource: "es", ofType: "lproj").flatMap(Bundle.init(path:)))
-        XCTAssertEqual(es.localizedString(forKey: "Another install’s host lets the development extension into %@. Klav can’t replace it there until Klav is in the Chrome Web Store, so the development extension still connects.", value: nil, table: nil),
-                       "El host de otra instalación deja entrar la extensión de desarrollo en %@. Klav no puede reemplazarlo ahí mientras no esté en Chrome Web Store, así que la extensión de desarrollo se sigue conectando.")
+        XCTAssertNil(installer.problems[.hosts])
+        XCTAssertTrue(installer.foreignManifests.isEmpty)
+        let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertTrue(chrome.contains(storeID), chrome)
+        XCTAssertFalse(chrome.contains(devID), chrome)
+        XCTAssertFalse(try String(contentsOf: wrapper, encoding: .utf8).contains(devID), "the door is shut")
+        XCTAssertEqual(installer.waitingForStore, [])
+        XCTAssertTrue(installer.hostsReady)
     }
 
     /// Case 3 of 3: another `klav` with another `KLAV_HOME` (its own
-    /// wrapper), Firefox here too. «Use this app’s» replaces Firefox's
-    /// manifest, but nothing of the other install's Chrome changes: the
-    /// question says the development build still connects there, and the
-    /// step keeps saying it afterwards.
-    func testAnotherHomesDevelopmentConnectionIsSaidToStay() async throws {
+    /// wrapper), Firefox here too. «Use this app’s» replaces both manifests
+    /// with this app's, pointing to this home's wrapper, so the development
+    /// build is shut out of Chrome, and the question says so. The other
+    /// home's wrapper stays as it was; no manifest of these points to it.
+    func testReplacingAnotherHomesDevelopmentConnectionShutsItOut() async throws {
         _ = try mkdir("\(support)/Google/Chrome")
         _ = try mkdir("\(support)/Mozilla")
         try installHostFromAnotherKlav(klavHome: "other-home")
         let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
         let installer = try installer()
         await installer.refresh(info: nil)
-        XCTAssertEqual(installer.foreignDevBrowsers, [])
-        XCTAssertEqual(installer.foreignDevKept, ["chrome"])
-        XCTAssertEqual(installer.foreignManifests.map(\.browser), ["firefox"], "only what can be replaced")
-        let lines = installer.foreignHostsMessage.components(separatedBy: "\n")
-        XCTAssertEqual(lines.last, stillConnects)
-        XCTAssertFalse(installer.foreignHostsMessage.contains("stops connecting"))
+        XCTAssertEqual(installer.foreignDevBrowsers, ["chrome"])
+        XCTAssertEqual(Set(installer.foreignManifests.map(\.browser)), ["chrome", "firefox"])
+        XCTAssertEqual(installer.foreignHostsMessage.components(separatedBy: "\n").last, shutOut)
+        let before = await installer.connectBrowsers(info: nil, replacingForeign: false)
+        XCTAssertEqual(before, .foreign)
+        XCTAssertEqual(try String(contentsOf: chromeManifest, encoding: .utf8), chrome, "nothing written before the answer")
 
         let answer = await installer.connectBrowsers(info: nil, replacingForeign: true)
         XCTAssertEqual(answer, .none)
         XCTAssertNil(installer.problems[.hosts])
         XCTAssertTrue(installer.foreignManifests.isEmpty)
-        XCTAssertEqual(try String(contentsOf: chromeManifest, encoding: .utf8), chrome, "the other install's Chrome is as it was")
+        let now = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertTrue(now.contains(wrapper.path), "this home's wrapper: \(now)")
+        XCTAssertTrue(now.contains(storeID), now)
+        XCTAssertFalse(now.contains(devID), now)
+        XCTAssertFalse(try String(contentsOf: wrapper, encoding: .utf8).contains(devID), "the door is shut")
         XCTAssertTrue(try String(contentsOf: root.appendingPathComponent("other-home/native-host/klav-native-host"),
-                                 encoding: .utf8).contains(devID), "its door is open…")
-        XCTAssertEqual(installer.foreignDevKept, ["chrome"], "…and still said")
-        XCTAssertEqual(installer.foreignDevKeptLine, stillConnects)
+                                 encoding: .utf8).contains(devID), "the other home's wrapper is left as it was")
+        XCTAssertEqual(installer.foreignDevBrowsers, [])
+        XCTAssertTrue(installer.hostsReady)
     }
 
     /// Turning the switch off while the app refreshes can't end with it on:
@@ -621,8 +651,9 @@ final class InstallerTests: XCTestCase {
         await installer.setDevExtension(false)
         XCTAssertNil(installer.problems[.hosts])
         let fm = FileManager.default
-        XCTAssertFalse(fm.fileExists(atPath: chromeManifest.path),
-                       "it still lists the development build: it goes at once")
+        let chrome = try String(contentsOf: chromeManifest, encoding: .utf8)
+        XCTAssertFalse(chrome.contains(devID), "it listed the development build: it went at once, and came back without it")
+        XCTAssertTrue(chrome.contains(storeID), chrome)
         XCTAssertTrue(fm.fileExists(atPath: firefoxManifest.path))
         XCTAssertTrue(installer.hostsReady)
     }
@@ -1762,9 +1793,9 @@ final class InstallerTests: XCTestCase {
     }
 
     /// With Development extension off and installed browsers [Ardia, Firefox]
-    /// plus a leftover uninstalled Chrome folder, connecting still writes
-    /// Firefox's manifest and marks Ardia waiting—without touching Chrome.
-    func testConnectingMixedInstalledBrowsersWithoutDevStillConnectsFirefox() async throws {
+    /// plus a leftover uninstalled Chrome folder, connecting writes Firefox's
+    /// manifest and Ardia's with the store build, without touching Chrome.
+    func testConnectingMixedInstalledBrowsersWithoutDevConnectsFirefoxAndArdia() async throws {
         let system = SampleSystem()
         system.setInstalledBrowsers(["ardia", "firefox"])
         let installer = try installer(system: system)
@@ -1780,8 +1811,11 @@ final class InstallerTests: XCTestCase {
         await installer.installHosts()
         XCTAssertNil(installer.problems[.hosts])
         XCTAssertTrue(FileManager.default.fileExists(atPath: firefoxManifest.path))
-        XCTAssertEqual(installer.waitingForStore, ["ardia"])
-        XCTAssertTrue(installer.waits("ardia"))
+        XCTAssertEqual(installer.waitingForStore, [])
+        XCTAssertFalse(installer.waits("ardia"))
+        let ardia = try XCTUnwrap(installer.manifests.first { $0.browser == "ardia" })
+        XCTAssertTrue(ardia.current, "\(ardia)")
+        XCTAssertTrue(try String(contentsOf: URL(fileURLWithPath: ardia.path), encoding: .utf8).contains(storeID))
         XCTAssertTrue(installer.hostsReady)
         XCTAssertEqual(try String(contentsOf: chromeForeign, encoding: .utf8), chromeBefore)
     }
