@@ -319,6 +319,9 @@ mod tests {
             local_client: Some("claude-code".into()),
             security: None,
             item_id: Some(item),
+            items: Vec::new(),
+            items_warning: None,
+            always_asks: false,
         }
     }
 

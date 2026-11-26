@@ -2,7 +2,7 @@
 name: klav
 description: Use the person's Klav vault to log in to sites, run commands with API keys and write config files without ever seeing the secrets. Use whenever a task needs a password, API key, token, TOTP code, card or a `.env`/key file, needs credentials in a sandbox, VM, container or CI runner, or mentions Klav, `klav://` references, `klav.toml`, `klav sandbox` or `klav-forward`.
 metadata:
-  klav-skill-version: "0.3.4"
+  klav-skill-version: "0.3.5"
 ---
 
 # Klav: secrets you use without seeing
@@ -33,6 +33,13 @@ every answer and follow them.
    a tool cannot take an environment variable or a per-command file — never
    under `/tmp`, and always with a TTL or removed right after. Use `reveal`
    only as a last resort, and only when the person asks to see the value.
+   **Never write a `.env` file** (nor any file of secrets the command could
+   read from the environment instead). On this machine, use
+   `run_with_secrets` / `klav agent run`; for a project with environments,
+   pass `environment` (`--env`), such as `development`. Without it Klav uses
+   `klav.toml`'s `default_env` or the only environment; with several, it
+   lists them: pick one, never guess. A protected one (production) asks the
+   person once per run. In a sandbox, use `klav-forward` ([Sandboxes](#sandboxes)).
 2. **Search first** (`search_items`) and use the exact reference it returns.
    Do not guess vault or item names. Names keep their spaces and accents
    (`klav://Personal/Café con leche/Banco Azul/password`): quote a

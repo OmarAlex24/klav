@@ -1612,7 +1612,7 @@ fn skill_copies_are_klavs_only_while_unchanged() {
     assert_eq!(common::mode(&copy), 0o644);
     assert_eq!(common::mode(&migrate_copy), 0o644);
     let status = mac.json(&["skill", "status", "--json"]);
-    assert_eq!(status["bundled"]["version"], "0.3.4");
+    assert_eq!(status["bundled"]["version"], "0.3.5");
     assert_eq!(
         status["bundled_skills"].as_array().expect("skills").len(),
         2
@@ -1639,7 +1639,7 @@ fn skill_copies_are_klavs_only_while_unchanged() {
     assert!(read(&copy).contains("My own rule."));
     let kept = mac.json(&["skill", "update", "--keep-mine", "--json"]);
     assert_eq!(kept["copies"][0]["action"], "keep_mine");
-    assert!(mac.registry()["skills"][0]["kept_mine"] == "0.3.4");
+    assert!(mac.registry()["skills"][0]["kept_mine"] == "0.3.5");
     let install = mac.json(&["skill", "install", "--dir", dir_s, "--json"]);
     assert_eq!(install["copies"][0]["action"], "leave");
     let replaced = mac.json(&["skill", "install", "--dir", dir_s, "--replace", "--json"]);

@@ -21,46 +21,26 @@ use crate::secret_files::{
     Cleanup, Signals, warn_if_not_ignored, warn_leftovers, write_new_private,
 };
 
-/// The environment `klav run` uses without `--env` (ADR 0032 §5): (1)
-/// `default_env`; (2) with text variables in `[env]`, none (today's
-/// behavior, no environment item read); (3) the only one among the
-/// project's environments and the `[env.<name>]` tables; (4) with several,
-/// an error that lists them. It never picks one by its name.
+/// The environment `klav run` uses without `--env` (ADR 0032 §5, see
+/// [`project::default_environment`]).
 async fn default_environment(
     ctx: &mut Ctx,
     config: Option<&ProjectConfig>,
 ) -> CliResult<Option<String>> {
-    let Some(config) = config else {
-        return Ok(None);
-    };
-    if let Some(default) = &config.default_env {
-        return Ok(Some(default.clone()));
+    let mut vault = Vec::new();
+    if project::default_needs_vault(config)
+        && let Some(project) = config.and_then(|c| c.project.as_deref())
+    {
+        vault = ctx
+            .backend()
+            .await?
+            .environments(Some(project))
+            .await?
+            .into_iter()
+            .map(|l| l.name)
+            .collect();
     }
-    if !config.env.is_empty() {
-        return Ok(None);
-    }
-    let mut names: Vec<String> = config.envs.keys().cloned().collect();
-    if let Some(project) = &config.project {
-        for listing in ctx.backend().await?.environments(Some(project)).await? {
-            if !names.contains(&listing.name) {
-                names.push(listing.name);
-            }
-        }
-    }
-    names.sort();
-    match names.len() {
-        0 => Ok(None),
-        1 => Ok(names.pop()),
-        _ => Err(usage(format!("there are {}: use --env", and_list(&names)))),
-    }
-}
-
-fn and_list(names: &[String]) -> String {
-    match names.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        Some((last, _)) => last.clone(),
-        None => String::new(),
-    }
+    project::default_environment(config, &vault).map_err(usage)
 }
 
 /// An environment ready to inject: variable → reference, the confirmation
@@ -151,22 +131,18 @@ pub(crate) async fn environment_variables(
     };
     let from_toml = config.and_then(|c| c.envs.get(name));
     if detail.is_none() && from_toml.is_none() {
-        let mut known: Vec<String> = config
-            .map(|c| c.envs.keys().cloned().collect())
-            .unwrap_or_default();
+        let mut vault = Vec::new();
         if let Some(p) = &project {
-            for l in ctx.backend().await?.environments(Some(p)).await? {
-                if !known.contains(&l.name) {
-                    known.push(l.name);
-                }
-            }
+            vault = ctx
+                .backend()
+                .await?
+                .environments(Some(p))
+                .await?
+                .into_iter()
+                .map(|l| l.name)
+                .collect();
         }
-        known.sort();
-        return Err(usage(if known.is_empty() {
-            format!("no environment {name:?} in the vault or klav.toml")
-        } else {
-            format!("no environment {name:?}: there are {}", and_list(&known))
-        }));
+        return Err(usage(project::no_such_environment(name, config, &vault)));
     }
     let mut env = inherited;
     let mut origins: BTreeMap<String, String> = env

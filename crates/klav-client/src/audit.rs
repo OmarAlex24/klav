@@ -23,7 +23,7 @@ use klav_core::crypto::identity::PublicIdentity;
 use klav_core::crypto::local::{open_local_data, seal_local_data};
 use klav_core::crypto::sandbox::{RevokeScope, RevokeToSign, verify_revoke};
 use klav_core::crypto::sign::{SIGNATURE_LEN, Signature};
-use klav_core::ids::{AccountId, AgentId, ItemId, SandboxId, TaskId};
+use klav_core::ids::{AccountId, AgentId, ApprovalId, ItemId, SandboxId, TaskId};
 use klav_core::policy::{Permission, normalize_host};
 use klav_core::secret_request::SecretRequestDecision;
 use klav_core::task::TaskRequest;
@@ -408,6 +408,10 @@ struct Verifier<'a> {
     /// the chain, with the position and the time the server logged the
     /// first one.
     revoked: HashMap<AgentId, (u64, i64)>,
+    /// Approvals the account signed for an environment and its protected
+    /// items (ADR 0032 §3.1), earlier in the chain: the agent, the
+    /// permission, the environment and the other items it lists.
+    bundles: HashMap<ApprovalId, (AgentId, Permission, Option<ItemId>, Vec<ItemId>)>,
     report: VerifyReport,
 }
 
@@ -535,9 +539,37 @@ impl Verifier<'_> {
         }
         if backing == Backing::Agent(AgentRoute::Access) {
             self.used_after_revocation(entry);
+            self.bundle_use(entry)?;
         }
         if let Backing::Agent(_) = backing {
             self.after_agent_revoked(entry);
+        }
+        Ok(())
+    }
+
+    /// An allowed access under an environment's approval (ADR 0032 §3.1)
+    /// must be by that agent, with that permission, on the environment or
+    /// one of the items the account signed in its request: an item it does
+    /// not list never rides on it.
+    fn bundle_use(&self, entry: &Entry) -> AuditResult<()> {
+        let e = &entry.event;
+        if e.outcome.as_deref() != Some("allow") {
+            return Ok(());
+        }
+        let Some(approval) = e.approval_id else {
+            return Ok(());
+        };
+        let Some((agent, permission, item, items)) = self.bundles.get(&approval) else {
+            return Ok(());
+        };
+        let listed = e
+            .item_id
+            .is_some_and(|i| Some(i) == *item || items.contains(&i));
+        if e.agent_id != Some(*agent) || e.permission != Some(*permission) || !listed {
+            return Err(tampered(format!(
+                "event {} ({}): it used approval {approval}, which the account signed for other items",
+                entry.seq, e.action
+            )));
         }
         Ok(())
     }
@@ -1232,19 +1264,27 @@ impl Verifier<'_> {
                         "event {seq}: the approval request names an MCP tool or caller the server never accepts"
                     )));
                 }
-                agent::verify_approval(
+                let approve = e.outcome.as_deref() == Some("approve");
+                let ok = agent::verify_approval(
                     self.account,
                     &ApprovalToSign {
                         approval,
                         agent: agent_id,
                         request: signed.as_bytes(),
-                        approve: e.outcome.as_deref() == Some("approve"),
+                        approve,
                         lease_until_ms: u64::try_from(e.lease_until.unwrap_or(0)).unwrap_or(0),
                         decided_at_ms: decided_at(),
                     },
                     &signature,
                 )
-                .is_ok()
+                .is_ok();
+                if ok && approve && !request.items.is_empty() {
+                    self.bundles.insert(
+                        approval,
+                        (agent_id, request.permission, request.item_id, request.items),
+                    );
+                }
+                ok
             }
             "task.decided" => {
                 let task = e
@@ -1773,6 +1813,7 @@ fn verify_chain(
         store_epochs: HashSet::new(),
         paused: HashMap::new(),
         revoked: HashMap::new(),
+        bundles: HashMap::new(),
         report: VerifyReport::default(),
     };
     let mut previous = GENESIS;
@@ -3311,13 +3352,36 @@ mod tests {
         }
 
         fn approval(&self) -> AuditEvent {
+            self.approval_for(Permission::Totp, Vec::new())
+        }
+
+        /// An `inject` access by the agent on `item`, allowed under
+        /// `approval`.
+        fn inject_access(&self, item: ItemId, approval: ApprovalId) -> AuditEvent {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "item_id": item,
+                "permission": "inject",
+                "reason": "run",
+                "approval_id": approval,
+            }))
+            .unwrap();
+            let mut e = self.signed("agent.access", "POST", "/v1/agent/access", Some(&body), AT);
+            e.item_id = Some(item);
+            e.permission = Some(Permission::Inject);
+            e.reason = Some("run".into());
+            e.outcome = Some("allow".into());
+            e.approval_id = Some(approval);
+            e
+        }
+
+        fn approval_for(&self, permission: Permission, items: Vec<ItemId>) -> AuditEvent {
             let approval = ApprovalId::generate();
             let request = serde_json::to_vec(&ApprovalRequest {
                 v: 1,
                 approval_id: approval,
                 agent_id: self.agent,
                 agent_name: "bot".into(),
-                permission: Permission::Totp,
+                permission,
                 vault_id: VaultId::generate(),
                 project_id: ProjectId::generate(),
                 item_id: Some(self.item),
@@ -3326,7 +3390,7 @@ mod tests {
                 grant_version: 1,
                 requested_at: AT,
                 caller: None,
-                items: Vec::new(),
+                items,
             })
             .unwrap();
             let parsed: ApprovalRequest = serde_json::from_slice(&request).unwrap();
@@ -4966,6 +5030,9 @@ mod tests {
             local_client: None,
             security,
             item_id: None,
+            items: Vec::new(),
+            items_warning: None,
+            always_asks: false,
         };
         assert!(crate::agents::refuse_security_card(&view(None)).is_ok());
         let err = crate::agents::refuse_security_card(&view(Some(
@@ -4975,6 +5042,47 @@ mod tests {
         assert!(matches!(err, ClientError::Security(_)));
         // The fixed text, never what the server sent.
         assert!(err.to_string().contains(crate::agents::MCP_SECURITY_CARD));
+    }
+
+    #[test]
+    fn an_environment_approval_covers_only_the_items_it_lists() {
+        // ADR 0032 §3.1: one approval for an environment and its protected
+        // items; each access names it, and an item it does not list never
+        // rides on it.
+        let w = World::new();
+        let stripe = ItemId::generate();
+        let decided = w.approval_for(Permission::Inject, vec![stripe]);
+        let id = decided.approval_id.unwrap();
+        let report = w
+            .check(
+                vec![
+                    w.granted(),
+                    decided.clone(),
+                    w.inject_access(w.item, id),
+                    w.inject_access(stripe, id),
+                ],
+                &w.listed(),
+            )
+            .unwrap();
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_rejected(
+            w.check(
+                vec![
+                    w.granted(),
+                    decided.clone(),
+                    w.inject_access(ItemId::generate(), id),
+                ],
+                &w.listed(),
+            ),
+            "signed for other items",
+        );
+        // Another permission under it is refused too.
+        let mut reveal = w.inject_access(stripe, id);
+        reveal.permission = Some(Permission::Reveal);
+        assert!(
+            w.check(vec![w.granted(), decided, reveal], &w.listed())
+                .is_err()
+        );
     }
 
     #[test]

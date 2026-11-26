@@ -125,11 +125,19 @@ export async function registerSession(name, page, options = {}) {
 
 /**
  * Runs `command` with secrets in its environment (`env`: NAME → reference,
- * plus `klav.toml` in `cwd`). Returns its exit code and its output with
- * the values redacted.
+ * plus `klav.toml` in `cwd`, or the project's `environment`, such as
+ * "development"; without it, `klav.toml`'s `default_env` or the only
+ * environment). A protected environment asks the person once for the whole
+ * run. Returns its exit code and its output with the values redacted.
  */
 export async function run(command, args, options) {
   const argv = ["run", ...common(options)];
+  if (options.environment !== undefined) {
+    if (typeof options.environment !== "string" || !options.environment.trim() || options.environment.includes("=")) {
+      throw new TypeError("options.environment is an environment name, such as \"development\"");
+    }
+    argv.push("--env", options.environment);
+  }
   for (const [name, reference] of Object.entries(options.env || {})) {
     argv.push("-e", `${name}=${reference}`);
   }

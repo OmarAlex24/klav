@@ -271,7 +271,8 @@ Omar lo aceptó el 2026-11-05, con producción protegida por la política y el r
 - [x] CLI: `klav env ls|show|create|set|rm`, `klav env import` (sin imprimir valores, referencias en vez de duplicados y la oferta de borrar el `.env`), `klav run --env` y `klav inject --env` (`--dotenv`, `--fifo`), `[env.<nombre>]` y `default_env` en `klav.toml`, `klav run` sin `--env` con `default_env` o el único entorno, la confirmación por entorno y Touch ID en los protegidos y en los elementos que heredan la protección ([cli.md](cli.md) §5–§7)
 - [x] Enlace: `klav env link|unlink`, la normalización de remotos, la sugerencia del proyecto y los avisos de `klav.toml` fuera del proyecto enlazado
 - [x] Protección heredada en `klav-client` y `klavd`: la caché de las versiones de la persona de los entornos con *details*, el conjunto protegido que solo encoge con prueba, Touch ID para toda la bóveda cuando no se sabe qué protege, y los grants que se vuelven a emitir antes de guardar la versión que hace crecer la protección
-- [ ] Agentes: `--env` en `klav agent approve|grant`, reglas por entorno y `ask once` automático en los protegidos y en los elementos referidos, `environment` en `run_with_secrets` con una aprobación para el entorno y sus elementos protegidos, `--env` en `klav agent run`, la comprobación de la marca efectiva en el runtime, `@klav/sdk` y la skill
+- [x] Agentes: `--env` en `klav agent approve|grant`, reglas por entorno y `ask once` automático en los protegidos y en los elementos referidos, `environment` en `run_with_secrets` con una aprobación para el entorno y sus elementos protegidos, `--env` en `klav agent run`, la comprobación de la marca efectiva en el runtime, `@klav/sdk` y la skill
+  - Hecho (capa 4a): los `items` de la aprobación salen de las reglas heredadas del grant firmado (el runtime no ve las referencias antes de abrir el entorno), acotados a lo que la sesión ya sabe que el entorno usa; con varios entornos protegidos puede pedir de más, y la tarjeta lo avisa. `klav log verify` comprueba los accesos bajo una aprobación con varios elementos, y las tarjetas de aprobación y de tarea marcan «Always asks for approval» sin arrendamiento ni tarea ([cli.md](cli.md))
 - [ ] *Popup* y `klavd`: «Entornos» en la ficha del proyecto, valores ocultos, «Mostrar» y «Copiar» con Touch ID cada vez en los entornos protegidos y en los elementos que heredan la protección (con el aviso «Protegido por …»), y tarjetas de aprobación sin arrendamiento para esos destinos
 - [ ] iOS (`KlavFFI`): lo mismo, con Face ID
 - [ ] App de Mac (ADR 0027): lo mismo
@@ -284,6 +285,7 @@ Omar lo aceptó el 2026-11-05, con producción protegida por la política y el r
   - un agente con `allow` directo sobre una API key de otro proyecto a la que apunta `production`, que necesita la aprobación;
   - un agente que apaga `protected` o quita la referencia sin que deje de pedirse la aprobación;
   - un segundo dispositivo con la caché vieja que vuelve a emitir el grant sin perder la regla heredada
+  - Hecho en `crates/klav-cli/tests/e2e_environments.rs` (capa 4a): las cinco primeras, la aprobación única del entorno y de Stripe, `klav log verify` sobre toda la cadena, y un servidor que dice `allow` (con el grant firmado vigente, y con un grant viejo que ya no protege el entorno) que el runtime rechaza con un error de seguridad. Faltan las dos últimas: un agente no puede escribir aún un entorno (el SDK no edita sus variables), y el segundo dispositivo con la caché vieja necesita su propia prueba
 - [ ] Un *hook* de sesión y un bloque que Klav ofrece para `AGENTS.md` y `CLAUDE.md` (decisión de Omar del 2026-11-18, anotada en el ADR [0045](decisiones/0045-keyless-services.md); sin diseño todavía)
 
 ### Agentes desde la app de Mac (aceptado, ADR [0033](decisiones/0033-agentes-desde-la-app-de-mac.md))
@@ -376,7 +378,7 @@ Enmienda del 2026-11-09, pedida y respondida por Omar: la parte de los sandboxes
 - [ ] Después, sin fecha (ADR 0042 §2): el proxy hace el intercambio del token de Tailscale y crea la llave en `klav sandbox start --tailnet`, con un tipo de perfil nuevo en el grant que `forward` nunca sirve, su especificación y vectores, y el servidor que lo acepta; y qué puede alcanzar un sandbox en la red de la persona, cuando Omar responda P8
 - [ ] `klav agent run --exec` para servidores MCP por stdio
 - [x] `klav env scan` (ADR 0032, capa 3)
-- [ ] Las reglas de la skill sobre `.env`
+- [x] Las reglas de la skill sobre `.env` (skill 0.3.5: nunca escribir un `.env`; `klav run`/`run_with_secrets` con `environment` en local, `klav-forward` en un sandbox)
 - [ ] Después: relevo ciego en `klav.dev` (solo si hace falta), proxy atestado en Nitro Enclaves, proxy alojado en el plan (depende del atestado) y tokens hijos donde el proveedor los permita
 
 ### Borrar la cuenta desde la app (aceptado, ADR [0037](decisiones/0037-borrar-la-cuenta.md))

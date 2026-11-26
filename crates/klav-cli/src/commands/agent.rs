@@ -852,8 +852,13 @@ fn permissions(list: &[String]) -> CliResult<Vec<Permission>> {
         .collect()
 }
 
-/// The policy from `--policy-file` and the flags.
-pub(crate) fn build_policy(args: &AgentApproveArgs, now_secs: u64) -> CliResult<Policy> {
+/// The policy from `--policy-file` and the flags, with the rules of the
+/// resolved `--env` flags (`envs`) before `--hours` applies its window.
+pub(crate) fn build_policy(
+    args: &AgentApproveArgs,
+    now_secs: u64,
+    envs: &[super::agent_env::EnvRule],
+) -> CliResult<Policy> {
     let mut policy = match &args.policy_file {
         Some(path) => {
             let text = std::fs::read(path)
@@ -887,6 +892,7 @@ pub(crate) fn build_policy(args: &AgentApproveArgs, now_secs: u64) -> CliResult<
             ..Rule::new(Permission::Fill, Effect::Allow)
         });
     }
+    super::agent_env::add_rules(&mut policy, envs);
     if !args.hours.is_empty() {
         let windows = args
             .hours
@@ -961,7 +967,30 @@ fn confirm_words(agent: &AgentView, given: Option<&str>) -> CliResult<String> {
 
 async fn approve(ctx: &mut Ctx, args: AgentApproveArgs) -> CliResult<()> {
     let now = u64::try_from(now_ms() / 1000).unwrap_or(0);
-    let policy = build_policy(&args, now)?;
+    let envs = super::agent_env::env_rules(ctx, &args).await?;
+    let policy = build_policy(&args, now, &envs)?;
+    super::agent_env::check_rules(&policy, &envs, now)?;
+    if !envs.is_empty() {
+        let granted: Vec<klav_client::ProjectSummary> = ctx
+            .backend()
+            .await?
+            .projects(None)
+            .await?
+            .into_iter()
+            .filter(|p| {
+                args.projects.iter().any(|w| {
+                    w.split_once('/').is_some_and(|(v, n)| {
+                        v.eq_ignore_ascii_case(&p.vault) && n.eq_ignore_ascii_case(&p.name)
+                    })
+                }) || args.vaults.iter().any(|v| v.eq_ignore_ascii_case(&p.vault))
+            })
+            .collect();
+        for warning in
+            super::agent_env::reference_warnings(ctx, &policy, &envs, &granted, now).await?
+        {
+            output::warn(&warning);
+        }
+    }
     let found = find(ctx, &args.agent).await?;
     if found.status == AgentStatus::Active {
         return change_grant(ctx, &args, &found, policy).await;
@@ -1318,6 +1347,13 @@ pub(crate) async fn approval_cmd(ctx: &mut Ctx, cmd: ApprovalCommand) -> CliResu
             let profiles = mcp_profiles(ctx, std::slice::from_ref(&view)).await;
             print_approval(&view, &profiles);
             refuse_security(&view)?;
+            // ADR 0032 §4.2: a protected target is approved once, never for
+            // a while and never into a task.
+            if view.always_asks && (lease.is_some() || add_to_task) {
+                return Err(usage(
+                    "this request always asks for approval: approve it once (without --for or --add-to-task) or deny it",
+                ));
+            }
             if add_to_task {
                 confirm_approval("Add it to the task and approve it once?", yes)?;
                 return add_approval_to_task(ctx, &view).await;
@@ -1477,6 +1513,21 @@ fn approval_lines(
         );
     }
     lines.push(format!("  on:      {}", a.target));
+    for item in &a.items {
+        lines.push(format!(
+            "  and:     {}   (one use, in the same call)",
+            item.target
+        ));
+    }
+    if let Some(warning) = &a.items_warning {
+        lines.push(format!("  WARNING: {warning}"));
+    }
+    if a.always_asks {
+        lines.push(
+            "  asks:    Always asks for approval: once only, no --for and no --add-to-task"
+                .to_owned(),
+        );
+    }
     lines.push(match &a.domain {
         Some(site) => format!("  site:    {site}   (according to the agent)"),
         None => "  site:    none given".to_owned(),
@@ -1797,6 +1848,9 @@ mod tests {
             local_client: Some("claude-code".into()),
             security,
             item_id: Some(klav_core::ids::ItemId::from_bytes([3; 16])),
+            items: Vec::new(),
+            items_warning: None,
+            always_asks: false,
         }
     }
 

@@ -121,6 +121,10 @@ const PUBLISHED: &[(&str, &str)] = &[
         "0.3.4",
         "dbd927e1c787fec234e182957f71b11c01736e2883730dc6520a6013e136e3b0",
     ),
+    (
+        "0.3.5",
+        "985c93af1f0dfe3fd912c3cde1d6859a2b560cbe5f67442347859b176cf7965f",
+    ),
 ];
 
 /// Every skill Klav published as `name: klav-migrate`, oldest first.
@@ -473,6 +477,11 @@ mod tests {
             // Field names of `request_secret` and pending responses (ADR 0046).
             "proxy_proposal",
             "wait_command",
+            // `run_with_secrets`'s environment field, an environment's name
+            // and the `klav.toml` key that picks one (ADR 0032 §4.5, §5).
+            "environment",
+            "development",
+            "default_env",
         ];
         let tools = crate::mcp::tools();
         let names: Vec<&str> = tools

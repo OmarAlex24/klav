@@ -406,6 +406,8 @@ Terms from ADR [0038](decisiones/0038-deployed-services.md) (accepted). The sand
 | pedir cada vez (`ask once`) | ask every time | ADR 0032 §4.2; `Rule.once`: no lease, one use, never in a task |
 | regla heredada (`origin: "protected"`) | inherited rule | ADR 0032 §3.1; `Rule::protected`, `RuleOrigin::Protected`: an `ask once` rule on the items of the protected set, which only tightens a decision |
 | marca efectiva (`protected`) | effective flag | ADR 0032 §3; `effective_protected`: the `protected` flag of the latest version the person wrote; with none, on or named `production`/`prod` |
+| aprobación del entorno | environment's approval | ADR 0032 §3.1; an approval whose request lists `items`: one use of the environment and one of each protected item it names, in the same call; never a lease or a task (`bundle_for` in `klav-sdk` picks the items) |
+| doble barrera | double barrier | ADR 0032 §4.4: the server and the agent's runtime apply the same signed grant, and the runtime also requires a signed approval for an environment whose effective flag is on, even if the server says `allow` |
 | liberados (`released`) | released | ADR 0032 §3.1; `GrantPayload.released`: the items a reissued grant stops protecting, with proof; without them the server answers `409` |
 | variable (de un entorno) | variable | ADR 0032 §1; `Variable`: a name (`[A-Za-z_][A-Za-z0-9_]{0,127}`, case-sensitive) with a value or a `klav://` reference |
 | volver a emitir (un grant) | reissue | ADR 0032 §3.1, ADR 0033 F1; `regrant_agents` |

@@ -332,6 +332,11 @@ fn print_card(c: &TaskCard) {
             let name = klav_sdk::session::permission_name(p.permission);
             let mut text = if p.denied_by_policy {
                 format!("        [-] {name}: your policy denies it")
+            } else if p.always_asks {
+                // ADR 0032 §4.2: unchecked and cannot be checked.
+                format!(
+                    "        [-] {name}: Always asks for approval (protected; it never goes in a task)"
+                )
             } else if p.no_site {
                 format!("        [-] {name}: no site")
             } else {
@@ -341,6 +346,7 @@ fn print_card(c: &TaskCard) {
                 text.push_str("  (added by Klav)");
             }
             if !p.denied_by_policy
+                && !p.always_asks
                 && !p.no_site
                 && let Some(w) = warning(p.permission)
             {

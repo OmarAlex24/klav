@@ -83,6 +83,20 @@ test("run returns the exit code and the redacted output", async () => {
   ]);
 });
 
+test("run names the environment with --env, before the variables", async () => {
+  const out = await run("npm", ["start"], {
+    reason: "start",
+    environment: "development",
+    env: { EXTRA: "klav://V/P/I/k" },
+  });
+  assert.deepEqual(JSON.parse(out.stdout), [
+    "agent", "run", "--reason", "start", "--env", "development", "-e", "EXTRA=klav://V/P/I/k", "--", "npm", "start",
+  ]);
+  for (const environment of ["", "A=klav://x", 3]) {
+    await assert.rejects(run("true", [], { reason: "x", environment }), TypeError);
+  }
+});
+
 test("inject and totp", async () => {
   const work = join(dir, "work");
   mkdirSync(join(work, "config"), { recursive: true });

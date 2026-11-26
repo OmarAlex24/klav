@@ -484,6 +484,7 @@ impl Unlocked {
             None => (0, GRANT_PAYLOAD_VERSION),
         };
         let policy = self.resolve_policy(request.policy)?;
+        self.refuse_open_protected(&policy)?;
         let mut warnings = warnings;
         // An issuer's grant keeps `sandbox`, but its policy is the one this
         // approval is given: an `inject: ask` from `issuer add
@@ -789,6 +790,28 @@ pub struct ApprovalView {
     /// proxy's profiles a tool call goes through (ADR 0049 §5.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<klav_core::ids::ItemId>,
+    /// The other items this one approval covers, one access each (ADR 0032
+    /// §3.1): the protected items an environment's references point to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ApprovalItem>,
+    /// Set when the agent asked for an item the person's latest version of
+    /// the environment does not reference, or this device cannot tell
+    /// (ADR 0032 §3.1). Fixed text with names, never values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_warning: Option<String>,
+    /// The target always asks (ADR 0032 §3.1, §4.2): «Approve 15 min» and
+    /// «Add to the task» are not offered, whatever the server sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always_asks: bool,
+}
+
+/// An item an environment's approval also covers (ADR 0032 §3.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalItem {
+    /// The item.
+    pub id: klav_core::ids::ItemId,
+    /// `klav://…` by name when this device has it, else `item <ID>`.
+    pub target: String,
 }
 
 /// The fixed text of an approval whose MCP fields break their grammars
@@ -955,6 +978,20 @@ impl Unlocked {
                     .filter(|_| mcp_ok),
                 security: (!mcp_ok).then(|| MCP_SECURITY_CARD.to_owned()),
                 item_id: request.item_id,
+                items: request
+                    .items
+                    .iter()
+                    .map(|id| ApprovalItem {
+                        id: *id,
+                        target: self
+                            .locate(*id)
+                            .and_then(|(loc, _)| self.item_summary(loc).ok())
+                            .map_or_else(|| format!("item {id}"), |s| s.reference),
+                    })
+                    .collect(),
+                items_warning: self.bundle_warning(&request),
+                always_asks: !request.items.is_empty()
+                    || request.item_id.is_some_and(|item| self.always_asks(item)),
             },
             request,
         ))
@@ -1040,7 +1077,7 @@ impl Unlocked {
         refuse_security_card(&view)?;
         // A protected target always asks (ADR 0032 §3.1): no lease, even if
         // the request the server sent does not say so.
-        if approve && lease.is_some() && view.item_id.is_some_and(|item| self.always_asks(item)) {
+        if approve && lease.is_some() && view.always_asks {
             return Err(ClientError::Invalid(format!(
                 "{} is protected by an environment and always asks: approve it once",
                 view.target_name.as_deref().unwrap_or(&view.target)

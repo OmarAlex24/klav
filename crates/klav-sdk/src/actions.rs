@@ -82,6 +82,9 @@ impl Session {
         wait: Duration,
         with_files: bool,
     ) -> ClientResult<Vec<Resolved>> {
+        if references.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut located = Vec::with_capacity(references.len());
         for reference in references {
             let (item, field) = self.locate(reference, scope)?;
@@ -788,6 +791,13 @@ pub struct RunRequest {
     pub wait: Duration,
     /// Kill the command after this long.
     pub timeout: Duration,
+    /// The vault's environment of that name in `scope`'s project (ADR 0032
+    /// §4.5): its variables go in under `env`, whose names win. `None`:
+    /// no environment item is read.
+    pub environment: Option<String>,
+    /// `NAME` → reference used only when neither the environment nor `env`
+    /// names it (the process's own `klav://` variables, §5).
+    pub fallback_env: Vec<(String, String)>,
 }
 
 /// What a command did; its output already redacted.
@@ -885,25 +895,58 @@ pub async fn run(
         .command
         .split_first()
         .ok_or_else(|| ClientError::Invalid("missing command".into()))?;
-    let references: Vec<String> = req
-        .env
-        .iter()
-        .map(|(_, r)| r.clone())
-        .chain(req.files.iter().map(|(_, r)| r.clone()))
-        .collect();
     // Checked before asking for anything, so a failure here never shows
     // in the audit log as a secret obtained.
     for (path, _) in &req.files {
         check_writable(path, false)?;
     }
+    let environment = match &req.environment {
+        Some(name) => {
+            let found = session.find_environment(scope, name)?.ok_or_else(|| {
+                ClientError::NotFound(format!("environment {name:?} in the vault"))
+            })?;
+            Some(
+                session
+                    .environment_values(found.id, &req.reason, req.wait)
+                    .await?,
+            )
+        }
+        None => None,
+    };
+    let from_environment: Vec<(String, Zeroizing<String>)> = environment
+        .map(|e| e.values)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(n, _)| !req.env.iter().any(|(m, _)| m == n))
+        .collect();
+    let mut env: Vec<(String, String)> = req
+        .fallback_env
+        .iter()
+        .filter(|(n, _)| {
+            !req.env.iter().any(|(m, _)| m == n) && !from_environment.iter().any(|(m, _)| m == n)
+        })
+        .cloned()
+        .collect();
+    env.extend(req.env.iter().cloned());
+    let references: Vec<String> = env
+        .iter()
+        .map(|(_, r)| r.clone())
+        .chain(req.files.iter().map(|(_, r)| r.clone()))
+        .collect();
     let values = session
         .resolve(&references, scope, &req.reason, req.wait)
         .await?;
-    let (env_values, file_values) = values.split_at(req.env.len());
-    let env_texts: Vec<&str> = env_values
+    let (env_values, file_values) = values.split_at(env.len());
+    let mut env_texts: Vec<&str> = env_values
         .iter()
         .map(Resolved::text)
         .collect::<ClientResult<_>>()?;
+    env_texts.extend(from_environment.iter().map(|(_, v)| v.as_str()));
+    let names: Vec<&str> = env
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .chain(from_environment.iter().map(|(n, _)| n.as_str()))
+        .collect();
     // Attachments printed by the command are redacted when they are text,
     // and so are the values this session already wrote to files
     // (`inject_file`): the command may read those files (ADR 0030 §2).
@@ -933,7 +976,7 @@ pub async fn run(
     if let Some(cwd) = &req.cwd {
         command.current_dir(cwd);
     }
-    for ((name, _), value) in req.env.iter().zip(&env_texts) {
+    for (name, value) in names.iter().zip(&env_texts) {
         command.env(name, value);
     }
     let spawned = command.spawn();
@@ -942,6 +985,7 @@ pub async fn run(
     drop(command);
     drop(env_texts);
     drop(values);
+    drop(from_environment);
     let mut child = spawned.map_err(|e| {
         ClientError::Invalid(format!("cannot run {}: {e}", program.to_string_lossy()))
     })?;
