@@ -127,11 +127,15 @@ fn install_host_writes_one_manifest_per_browser() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    // Without --dev, not the development build (its key is public).
-    assert_eq!(
-        origins,
-        ["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"]
-    );
+    // Without --dev, the store builds and --extension-id, never the
+    // development build (its key is public).
+    let stores: Vec<String> = klav_daemon::native::STORE_CHROMIUM_IDS
+        .iter()
+        .map(|id| format!("chrome-extension://{id}/"))
+        .collect();
+    let mut expected = stores.clone();
+    expected.push("chrome-extension://abcdefghijklmnopabcdefghijklmnop/".into());
+    assert_eq!(origins, expected);
     assert!(
         !script.contains("niiplppgdljgimbnmokojdkofdcjkgao"),
         "{script}"
@@ -143,8 +147,9 @@ fn install_host_writes_one_manifest_per_browser() {
     assert_eq!(ff["allowed_extensions"][0], "klav@klav.dev");
     assert!(ff.get("allowed_origins").is_none());
 
-    // A throwaway Chromium profile: no Chromium extension to allow
-    // without --extension-id or --dev.
+    // A throwaway Chromium profile without --extension-id or --dev: only
+    // the store builds, never the development build.
+    assert!(!stores.is_empty(), "a store ID is published");
     let profile = root.path().join("profile");
     let profile_arg = profile.to_str().expect("utf-8");
     let (code, _, err) = run(&[
@@ -155,13 +160,11 @@ fn install_host_writes_one_manifest_per_browser() {
         "--user-data-dir",
         profile_arg,
     ]);
-    assert_ne!(code, 0);
-    assert!(err.contains("--dev"), "{err}");
-    assert!(
-        !profile
-            .join("NativeMessagingHosts/dev.klav.host.json")
-            .exists()
-    );
+    assert_eq!(code, 0, "{err}");
+    let text = std::fs::read_to_string(profile.join("NativeMessagingHosts/dev.klav.host.json"))
+        .expect("manifest");
+    let store_only: Value = serde_json::from_str(&text).expect("manifest json");
+    assert_eq!(store_only["allowed_origins"], serde_json::json!(stores));
     let (code, _, err) = run(&[
         "extension",
         "install-host",

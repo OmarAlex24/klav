@@ -224,12 +224,6 @@ inventado (Northwind, en `app.northwind.example`, que Chromium resuelve a un
 servidor local con HTTPS y un certificado de un solo uso). Ninguna lleva datos
 reales.
 
-[REVISAR: las de `store/screenshots/` se hicieron antes de traer `main` a
-este PR. El *popup* de ahora tiene las pestañas por tipo y «Códigos» (#152) y
-«Nuevo elemento» (#155), y la extensión ya tiene passkeys. Rehazlas antes de
-subirlas y revísalas una por una. `e2e/tiendas.spec.ts` no corre en la CI, así
-que puede necesitar ajustes al *popup* nuevo.]
-
 Para rehacerlas, por ejemplo tras cambiar el *popup*:
 
 ```sh
