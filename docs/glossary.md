@@ -59,6 +59,8 @@ When the UI and the code disagree, prose follows the UI and identifiers are quot
 | límite de peticiones | rate limit / limit per IP address | `[rate_limit]` in the server's configuration; `429` with `Retry-After` |
 | plan alojado | hosted plan | site |
 | lista de espera | waitlist | site |
+| beta con invitación (de `api.klav.dev`) | invite-only beta | site; ADR 0048. Free while it lasts; not the TestFlight public beta |
+| invitación a la beta | beta invite | site; requested on klav.dev (`#beta`), the waitlist is its queue, sent by hand (`sitio-web.md` §3) |
 | relevo ciego | blind relay | ADR 0029 |
 
 ## Vaults and items

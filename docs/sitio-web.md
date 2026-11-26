@@ -1,7 +1,8 @@
 # Sitio web y lista de espera (`klav.dev`)
 
-La página de Klav y la lista de espera del plan alojado viven en
-[`apps/web`](../apps/web). Es un servicio aparte de `klav-server`: no toca la
+La página de Klav y la lista de espera viven en [`apps/web`](../apps/web).
+La lista es la cola de invitaciones de la beta gratuita de `api.klav.dev`
+([ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4): Omar las manda a mano (§3). Es un servicio aparte de `klav-server`: no toca la
 bóveda, no comparte base de datos y no tiene dependencias de npm.
 
 | Archivo | Qué es |
@@ -28,8 +29,8 @@ node --disable-warning=ExperimentalWarning apps/web/server.mjs
 - `PORT` (8080) y `HOST` (`0.0.0.0`) cambian dónde escucha.
 - `KLAV_WEB_DB` es la ruta del SQLite. Por defecto, `apps/web/data/waitlist.db`.
   `apps/web/data/` está en `.gitignore`.
-- `KLAV_WEB_ADMIN_TOKEN` activa la exportación (§3). Sin él, la exportación
-  responde `404`.
+- `KLAV_WEB_ADMIN_TOKEN` activa la exportación y `mark-invited` (§3). Sin él,
+  las dos responden `404`.
 - `KLAV_WEB_TRUST_PROXY=1` toma la IP del cliente de `X-Real-IP` para el
   límite de intentos. Solo tiene sentido detrás de Railway; la imagen ya lo
   trae puesto.
@@ -58,8 +59,9 @@ En CI corren dentro de la tarea `extension`, que ya prepara Node 22.
 `POST /api/waitlist` con `{"email": "...", "lang": "en" | "es"}`.
 
 - **Qué se guarda:** el correo (en minúsculas), el idioma de la página y la
-  fecha. Nada más: ni IP, ni navegador, ni cookies. La página no carga nada de
-  fuera ni lleva analítica.
+  fecha. Al mandar la invitación, `mark-invited` (§3) añade cuándo se mandó y,
+  si se le da, una nota para Omar. Nada más: ni IP, ni navegador, ni cookies.
+  La página no carga nada de fuera ni lleva analítica.
 - **La misma respuesta para un correo nuevo y uno repetido** (`200
   {"ok":true}`), para que el formulario no sirva para averiguar quién se
   apuntó.
@@ -69,9 +71,31 @@ En CI corren dentro de la tarea `extension`, que ya prepara Node 22.
   (`413`), 5 intentos cada 10 minutos por IP (`429` con `Retry-After`; la
   cuenta vive en memoria y nunca en disco) y nada desde otro origen (`403` si
   `Origin` no es el propio sitio).
-- **Esquema:** una tabla `waitlist (id, email UNIQUE COLLATE NOCASE, lang,
-  created_at)` con `PRAGMA user_version = 1`. El servidor se niega a abrir una
-  base con un esquema más nuevo que el suyo.
+- **Esquema 2:** una tabla `waitlist (id, email UNIQUE COLLATE NOCASE, lang,
+  created_at, invited_at, note)` con `PRAGMA user_version = 2`. `invited_at`
+  (fecha ISO 8601) y `note` son `NULL` hasta que `mark-invited` los pone; una
+  fila sin `invited_at` está pendiente. El servidor se niega a abrir una base
+  con un esquema más nuevo que el suyo.
+  - **De 1 a 2:** al arrancar, en una sola transacción, `ALTER TABLE waitlist
+    ADD COLUMN invited_at TEXT`, `ADD COLUMN note TEXT` y `PRAGMA user_version
+    = 2`. Una base nueva pasa por el esquema 1 y llega al 2 en la misma
+    apertura. Cada columna se añade solo si falta, así que volver a subir
+    después de una vuelta atrás no falla.
+  - **Volver a una versión anterior de `klav-web`:** la anterior se niega a
+    abrir una base con el esquema 2. Las columnas son aditivas, así que basta
+    con bajar el número a mano, dentro del contenedor (`railway ssh --service
+    klav-web`), antes de desplegar la versión vieja:
+
+    ```sh
+    node --disable-warning=ExperimentalWarning -e '
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync("/data/waitlist.db");
+    db.exec("PRAGMA user_version = 1");
+    '
+    ```
+
+    Las columnas se quedan, con lo que tenían. La versión vieja no las lee ni
+    las exporta, y la nueva, al volver, las encuentra y solo sube el número.
 
 El resto de rutas: `GET /`, `GET /privacy` (y `/privacy/`), una lista fija de archivos (las tres fuentes y
 `og.png`) y las descargas (abajo); cualquier otra cosa es `404`. `GET /healthz` responde `ok`.
@@ -153,27 +177,157 @@ exige tocar la CSP. Por la misma razón, las páginas no pueden llevar atributos
 `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `frame-ancestors 'none'`
 y HSTS.
 
-## 3. Exportar la lista
+## 3. Exportar la lista y marcar las invitaciones
+
+Las dos rutas piden `Authorization: Bearer $KLAV_WEB_ADMIN_TOKEN`. Sin
+`KLAV_WEB_ADMIN_TOKEN` en el servicio responden `404`; sin token o con uno que
+no coincide, `401` (la comparación es de tiempo constante).
+
+### Exportar
 
 ```sh
 curl -fsS -H "Authorization: Bearer $KLAV_WEB_ADMIN_TOKEN" \
   https://klav.dev/api/waitlist/export -o klav-waitlist.csv
 ```
 
-Devuelve `email,lang,created_at` en CSV. Una celda que empiece por `=`, `+`,
-`-` o `@` sale con un `'` delante para que una hoja de cálculo no la ejecute.
-Sin token o con uno que no coincide: `401`. Sin `KLAV_WEB_ADMIN_TOKEN` en el
-servicio: `404`.
+Devuelve `email,lang,created_at,invited_at,note` en CSV, en el orden en que se
+apuntaron. Con `?pending=1` (`/api/waitlist/export?pending=1`) solo salen las
+filas sin `invited_at`; cualquier otro valor devuelve la lista entera. Una
+celda que empiece por `=`, `+`, `-` o `@`, la nota incluida, sale con un `'`
+delante para que una hoja de cálculo no la ejecute.
 
-**Si no quieres activar el token**, léela desde dentro del contenedor. Entra
+### Marcar como invitados
+
+```sh
+curl -fsS -X POST https://klav.dev/api/waitlist/mark-invited \
+  -H "Authorization: Bearer $KLAV_WEB_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"emails": ["ana@example.com", "bo@example.com"], "note": "waitlist"}'
+# {"marked":2,"unknown":0}
+```
+
+- **Cuerpo:** `{"emails": [...], "note": "..."}`, solo `application/json`
+  (`415` si no) y hasta 16 KB (`413`). Entre 1 y 200 correos (`400
+  too_many_emails` con más, `400 emails_required` sin ninguno); todos tienen
+  que ser correos (`400 invalid_email`, y no se marca ninguno). `note` es
+  opcional, una cadena de hasta 200 caracteres (`400 invalid_note`).
+- **Qué hace:** en una transacción, pone `invited_at` a la hora del servidor
+  en cada fila de la lista con ese correo (sin distinguir mayúsculas ni
+  espacios alrededor). Un correo repetido en la petición cuenta una vez. Una
+  fila ya marcada se vuelve a marcar con la fecha nueva. Sin `note`, o con una
+  vacía, la nota que hubiera se queda; con una, la reemplaza.
+- **Respuesta:** `200 {"marked": n, "unknown": m}`. `unknown` son los correos
+  que no están en la lista: no se añaden.
+- **No mira `Origin`:** se llama con `curl`, y el token es la única
+  autenticación. Por eso la ruta no existe sin token configurado.
+
+### Mandar las invitaciones (a mano)
+
+No hay infraestructura de correo: Omar manda cada invitación desde su propio
+buzón ([ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4). Antes
+de cada tanda, la regla de tamaño del ADR 0048 §3.3 dice cuántas plazas caben
+en el volumen.
+
+1. **Los pendientes:**
+
+   ```sh
+   curl -fsS -H "Authorization: Bearer $KLAV_WEB_ADMIN_TOKEN" \
+     "https://klav.dev/api/waitlist/export?pending=1" -o pendientes.csv
+   ```
+
+2. **Un código por persona,** dentro del servidor (`railway ssh --service
+   klav-server`):
+
+   ```sh
+   klav-server invite create --email ana@example.com --expires 30d --note waitlist
+   ```
+
+   Imprime el código una vez, solo en la salida estándar. Va ligado a ese
+   correo, sirve una vez y caduca a los 30 días. No lo pegues en ningún otro
+   sitio que el correo.
+3. **El correo,** desde el buzón de Omar, con la plantilla de abajo en el
+   idioma de la columna `lang` (inglés si está vacía).
+4. **Marcarlos,** con los correos que de verdad salieron:
+
+   ```sh
+   curl -fsS -X POST https://klav.dev/api/waitlist/mark-invited \
+     -H "Authorization: Bearer $KLAV_WEB_ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"emails": ["ana@example.com"], "note": "waitlist"}'
+   ```
+
+   `unknown` tiene que ser `0`; si no, un correo está mal escrito.
+
+Si alguien escribe que su código no funciona o caducó: `klav-server invite
+ls` dice si se usó, y uno nuevo es repetir los pasos 2 a 4.
+
+**Plantilla en inglés**
+
+```text
+Subject: Your invite to the Klav beta
+
+Hi,
+
+You asked for an invite to the Klav beta, and here it is. It works once, only
+with this email address, until <date, 30 days from today>:
+
+    <KLAV-…>
+
+1. Install Klav for Mac from https://klav.dev/#download (on Linux, the
+   command line from the same page).
+2. Create your account on klav.dev: in the Mac app, "Set up this Mac" →
+   "Create an account"; on the command line, `klav signup`. Use this email
+   address, and paste the code when Klav asks for it.
+3. The docs are at https://docs.klav.dev/.
+
+Our server is free while the beta lasts. When it ends, it becomes a plan of
+20 USD a year, and we'll tell you at least 60 days before you'd pay
+anything. Running your own server stays free.
+
+Just reply to this email if anything doesn't work.
+
+Omar
+```
+
+**Plantilla en español**
+
+```text
+Asunto: Tu invitación a la beta de Klav
+
+Hola:
+
+Pediste una invitación a la beta de Klav, y aquí está. Sirve una vez, solo con
+este correo, hasta el <fecha, a 30 días de hoy>:
+
+    <KLAV-…>
+
+1. Instala Klav para Mac desde https://klav.dev/#download (en Linux, la línea
+   de comandos, desde la misma página).
+2. Crea tu cuenta en klav.dev: en la app de Mac, «Configurar este Mac» →
+   «Crear una cuenta»; en la línea de comandos, `klav signup`. Usa este
+   correo y pega el código cuando Klav te lo pida.
+3. Los docs están en https://docs.klav.dev/.
+
+Nuestro servidor es gratis mientras dure la beta. Cuando termine pasa a ser un
+plan de 20 USD al año, y te avisamos por lo menos 60 días antes de cobrarte
+nada. Montar el tuyo sigue siendo gratis.
+
+Si algo no funciona, contesta a este correo.
+
+Omar
+```
+
+### Sin token
+
+**Si no quieres activar el token**, lee la lista desde dentro del contenedor. Entra
 con `railway ssh --service klav-web` y, ya dentro:
 
 ```sh
 node --disable-warning=ExperimentalWarning -e '
 const { DatabaseSync } = require("node:sqlite");
 const db = new DatabaseSync("/data/waitlist.db", { readOnly: true });
-for (const r of db.prepare("SELECT email, lang, created_at FROM waitlist ORDER BY id").all())
-  console.log([r.email, r.lang ?? "", r.created_at].join(","));
+for (const r of db.prepare("SELECT email, lang, created_at, invited_at, note FROM waitlist ORDER BY id").all())
+  console.log([r.email, r.lang ?? "", r.created_at, r.invited_at ?? "", r.note ?? ""].join(","));
 '
 ```
 
@@ -242,7 +396,10 @@ protocolo DevTools con una espera en tiempo real. Las capturas de
 
 La página solo afirma lo que está en `main`. Lo que todavía no existe lleva
 «Coming soon» / «Próximamente», sin fechas. Al cambiar un texto, revisa su
-fuente aquí.
+fuente aquí. La beta con invitación es la excepción en el otro sentido: no
+basta con que esté en `main`, porque la página la ofrece solo después de que
+Omar pone `api.klav.dev` en modo `invite` (ADR 0048 §8). El PR que la puso en
+la página no se mezcla antes.
 
 | Afirmación | Fuente |
 |---|---|
@@ -270,7 +427,9 @@ fuente aquí.
 | Descargas: la extensión se instala a mano; en Chromium, como versión preliminar, con la compilación con llave y `--dev` (o «Extensión de desarrollo»), con su riesgo: cualquier extensión sin empaquetar que lleve la llave pública del repositorio llega a `klavd` (`default_allowed` en `crates/klav-daemon/src/native.rs` no la incluye, y `--dev` la añade); en Firefox, el `.xpi` que firmó Mozilla, desde «Instalar complemento desde archivo…», que se queda instalado pero no se actualiza solo. Mientras Mozilla no lo firme, Firefox dice «Próximamente» | [releasing.md](releasing.md) §3 y §8; [extension.md](extension.md) §3; [modelo-de-amenazas.md](modelo-de-amenazas.md) T64 y T122; las páginas de Mozilla citadas en releasing.md §3 |
 | Descargas: la extensión necesita la app de Mac o, en Linux, la línea de comandos | `klavd` y `klav-native-host` vienen en los dos ([releasing.md](releasing.md) §1) |
 | Descargas: el iPhone pide iOS 18, entra a una cuenta creada en la Mac o con la CLI, y sale por una beta pública de TestFlight | [ios.md](ios.md); [publicar-ios.md](publicar-ios.md) |
-| Descargas: el servidor propio con `docker compose up`, SQLite o Postgres, detrás de tu TLS; el alojado, 20 USD al año, todavía no abre | [self-hosting.md](self-hosting.md); el plan de pago y la lista de espera, decisión de Omar del 2026-11-13 |
+| Descargas: el servidor propio con `docker compose up`, SQLite o Postgres, detrás de tu TLS; el nuestro, gratis durante su beta con invitación | [self-hosting.md](self-hosting.md); la beta, [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4 y Q1 |
+| La beta de `api.klav.dev` («Request a free beta invite», la tarjeta «Hosted by us» en `#beta`): gratis mientras sea con invitación; después, un plan de 20 USD al año con al menos 60 días de aviso; el servidor propio, gratis siempre | [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4, Q1 y Q5 (aceptado el 2026-11-25); el modo `invite` de `klav-server` y el código en `klav signup` y en la app de Mac (capas 1 y 2 del ADR). **Lo que la página no dice:** que la cuenta se pueda llevar a un servidor propio. ADR 0048 Q5 (a) nombra `klav account set-server`, pero hoy solo cambia la dirección de una cuenta que el servidor nuevo ya tiene ([cli.md](cli.md) §3, `set_server_cmd` en `crates/klav-cli/src/commands/account.rs`), y no hay forma de exportar una cuenta de `api.klav.dev` a un servidor propio vacío. Ni la página, ni los correos, ni los docs lo prometen hasta que exista ese camino; hace falta antes de que termine la beta. La página tampoco nombra las cuotas de la beta: dependen de las variables de producción |
+| Las invitaciones salen a mano, de a poco, desde la lista | §3, «Mandar las invitaciones» |
 
 **Próximamente** (sin implementar en `main`). La lista sale de
 [features.md](features.md), que decide dónde puede aparecer cada cosa (ADR
@@ -290,9 +449,12 @@ way» en los docs. Quien cambie una lista cambia las otras dos en el mismo PR.
   instancia clonada.
 - **Las tiendas:** la extensión en la Chrome Web Store y en
   addons.mozilla.org, y la app de iPhone en la App Store.
-- **El servidor de Klav,** `api.klav.dev`, un plan de pago de 20 USD al año
-  con lista de espera (ADR [0010](decisiones/0010-decisiones-fase-3-y-plan-alojado.md);
-  el precio, decisión de Omar del 2026-11-13).
+- **El servidor de Klav abierto a todos:** el registro en `api.klav.dev` sin
+  invitación y el plan de 20 USD al año, cuando termine la beta (ADR
+  [0010](decisiones/0010-decisiones-fase-3-y-plan-alojado.md); el precio,
+  decisión de Omar del 2026-11-13; ADR
+  [0048](decisiones/0048-invite-beta-and-distribution.md) Q1 y Q5). La beta
+  con invitación ya no va aquí: la ofrece la tarjeta «Hosted by us» (`#beta`).
 
 Fuera de la lista, a propósito:
 
@@ -314,7 +476,7 @@ Fuera de la lista, a propósito:
 **La sección de descargas** sigue al interruptor (§2), no a esta lista: su
 «Próximamente» marca lo que ya está en `main` y aún no tiene archivo
 publicado, y desaparece al encender cada descarga. Lo que de verdad falta
-(las tiendas y el servidor alojado) lo nombran la lista de arriba y «On the
+(las tiendas y el registro abierto en nuestro servidor) lo nombran la lista de arriba y «On the
 way» en los docs, y la sección de descargas enlaza ahí solo con `docs`
 encendido.
 

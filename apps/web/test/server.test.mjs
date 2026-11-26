@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 import { createSite, DOWNLOADS, inlineHashes, OPENABLE, openDatabase, parseOpen, renderPage } from "../server.mjs";
 import { ASSETS } from "../../../scripts/release/kit.mjs";
@@ -115,7 +116,14 @@ describe("waitlist signup", () => {
 
   test("the table has no column for addresses or agents", () => {
     const cols = s.db.prepare("PRAGMA table_info(waitlist)").all().map((c) => c.name);
-    assert.deepEqual(cols, ["id", "email", "lang", "created_at"]);
+    assert.deepEqual(cols, ["id", "email", "lang", "created_at", "invited_at", "note"]);
+  });
+
+  test("a signup is pending: no invite date, no note", () => {
+    for (const row of s.rows()) {
+      assert.equal(row.invited_at, null);
+      assert.equal(row.note, null);
+    }
   });
 });
 
@@ -165,9 +173,9 @@ describe("export", () => {
       assert.match(res.headers.get("content-type"), /^text\/csv/);
       assert.equal(res.headers.get("cache-control"), "no-store");
       const lines = (await res.text()).trim().split("\r\n");
-      assert.equal(lines[0], "email,lang,created_at");
-      assert.match(lines[1], /^ana@example\.com,es,\d{4}-/);
-      assert.match(lines[2], /^bo@example\.com,en,/);
+      assert.equal(lines[0], "email,lang,created_at,invited_at,note");
+      assert.match(lines[1], /^ana@example\.com,es,\d{4}-[^,]+,,$/);
+      assert.match(lines[2], /^bo@example\.com,en,[^,]+,,$/);
     } finally {
       await s.stop();
     }
@@ -179,6 +187,194 @@ describe("export", () => {
       s.db.prepare("INSERT INTO waitlist (email, lang, created_at) VALUES (?, ?, ?)").run("=cmd@example.com", null, "2026-11-05T00:00:00.000Z");
       const text = await (await fetch(`${s.base}/api/waitlist/export`, { headers: { Authorization: `Bearer ${TOKEN}` } })).text();
       assert.match(text, /\r\n'=cmd@example\.com,,2026/);
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("defuses the note too, and quotes what needs quoting", async () => {
+    const s = await start({ adminToken: TOKEN });
+    try {
+      const add = s.db.prepare("INSERT INTO waitlist (email, lang, created_at, invited_at, note) VALUES (?, ?, ?, ?, ?)");
+      add.run("a@example.com", "en", "2026-11-05T00:00:00.000Z", "2026-11-06T00:00:00.000Z", "=HYPERLINK(\"http://evil.example\")");
+      add.run("b@example.com", "es", "2026-11-05T00:00:00.000Z", "2026-11-06T00:00:00.000Z", "@SUM(A1)");
+      add.run("c@example.com", "es", "2026-11-05T00:00:00.000Z", "2026-11-06T00:00:00.000Z", "waitlist, wave 1");
+      const text = await (await fetch(`${s.base}/api/waitlist/export`, { headers: { Authorization: `Bearer ${TOKEN}` } })).text();
+      const lines = text.trim().split("\r\n");
+      assert.equal(lines[1], 'a@example.com,en,2026-11-05T00:00:00.000Z,2026-11-06T00:00:00.000Z,"\'=HYPERLINK(""http://evil.example"")"');
+      assert.equal(lines[2], "b@example.com,es,2026-11-05T00:00:00.000Z,2026-11-06T00:00:00.000Z,'@SUM(A1)");
+      assert.equal(lines[3], 'c@example.com,es,2026-11-05T00:00:00.000Z,2026-11-06T00:00:00.000Z,"waitlist, wave 1"');
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("?pending=1 keeps only who hasn't been sent an invite", async () => {
+    const s = await start({ adminToken: TOKEN });
+    const csv = async (query) => {
+      const res = await fetch(`${s.base}/api/waitlist/export${query}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+      assert.equal(res.status, 200, query);
+      return (await res.text()).trim().split("\r\n");
+    };
+    try {
+      for (const email of ["ana@example.com", "bo@example.com", "cy@example.com"]) await s.post({ email, lang: "en" });
+      s.db.prepare("UPDATE waitlist SET invited_at = ?, note = ? WHERE email = ?").run("2026-11-25T10:00:00.000Z", "waitlist", "bo@example.com");
+      const pending = await csv("?pending=1");
+      assert.equal(pending[0], "email,lang,created_at,invited_at,note");
+      assert.deepEqual(pending.slice(1).map((l) => l.split(",")[0]), ["ana@example.com", "cy@example.com"]);
+      const every = await csv("");
+      assert.deepEqual(every.slice(1).map((l) => l.split(",")[0]), ["ana@example.com", "bo@example.com", "cy@example.com"]);
+      assert.match(every[2], /,2026-11-25T10:00:00\.000Z,waitlist$/);
+      // Anything but 1 is the whole list.
+      for (const query of ["?pending=0", "?pending=true", "?pending="]) assert.equal((await csv(query)).length, 4, query);
+      // The token still decides, whatever the query.
+      assert.equal((await fetch(`${s.base}/api/waitlist/export?pending=1`)).status, 401);
+    } finally {
+      await s.stop();
+    }
+  });
+});
+
+describe("mark-invited", () => {
+  const URL_ = "/api/waitlist/mark-invited";
+  const mark = (s, body, headers = {}) =>
+    fetch(`${s.base}${URL_}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}`, ...headers },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+
+  test("is 404 when no admin token is configured", async () => {
+    const s = await start();
+    try {
+      const res = await mark(s, { emails: ["ana@example.com"] });
+      assert.equal(res.status, 404);
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("needs the exact token, and refuses before reading the body", async () => {
+    const s = await start({ adminToken: TOKEN });
+    try {
+      await s.post({ email: "ana@example.com" });
+      for (const auth of [undefined, "Bearer nope", `Basic ${TOKEN}`, TOKEN, `Bearer ${TOKEN}x`]) {
+        const headers = { "Content-Type": "application/json" };
+        if (auth) headers.Authorization = auth;
+        const res = await fetch(`${s.base}${URL_}`, { method: "POST", headers, body: JSON.stringify({ emails: ["ana@example.com"] }) });
+        assert.equal(res.status, 401, String(auth));
+        assert.equal(res.headers.get("www-authenticate"), "Bearer");
+      }
+      // Not even a malformed or oversized body gets past a wrong token.
+      assert.equal((await mark(s, "{nope", { Authorization: "Bearer nope" })).status, 401);
+      assert.equal((await mark(s, "x".repeat(20_000), { Authorization: "Bearer nope", "Content-Type": "text/plain" })).status, 401);
+      assert.equal(s.rows()[0].invited_at, null);
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("only POST, only JSON, at most 16 KB, a well-formed body", async () => {
+    const s = await start({ adminToken: TOKEN });
+    try {
+      const get = await fetch(`${s.base}${URL_}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+      assert.equal(get.status, 405);
+      assert.equal(get.headers.get("allow"), "POST");
+      assert.equal((await mark(s, "emails=a%40b.co", { "Content-Type": "application/x-www-form-urlencoded" })).status, 415);
+      assert.equal((await mark(s, JSON.stringify({ emails: ["a@b.co"] }), { "Content-Type": "text/plain" })).status, 415);
+      // 16 KB is the limit: just under answers, just over is 413.
+      const under = JSON.stringify({ emails: ["a@b.co"], pad: "" });
+      assert.equal((await mark(s, under.replace('""', JSON.stringify("x".repeat(16 * 1024 - under.length))))).status, 200);
+      const big = await mark(s, { emails: ["a@b.co"], pad: "x".repeat(16 * 1024) });
+      assert.equal(big.status, 413);
+      for (const body of ["{nope", "null", "[1]", "42", '"a@b.co"']) {
+        assert.equal((await mark(s, body)).status, 400, body);
+      }
+      const shapes = [
+        [{}, "emails_required"],
+        [{ emails: [] }, "emails_required"],
+        [{ emails: "ana@example.com" }, "emails_required"],
+        [{ emails: ["ana@example.com", 42] }, "invalid_email"],
+        [{ emails: ["ana@example.com", "not-an-email"] }, "invalid_email"],
+        [{ emails: [`${"a".repeat(250)}@x.io`] }, "invalid_email"],
+        [{ emails: ["ana@example.com"], note: 7 }, "invalid_note"],
+        [{ emails: ["ana@example.com"], note: "n".repeat(201) }, "invalid_note"],
+      ];
+      for (const [body, error] of shapes) {
+        const res = await mark(s, body);
+        assert.equal(res.status, 400, JSON.stringify(body));
+        assert.equal((await res.json()).error, error, JSON.stringify(body));
+      }
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("at most 200 emails in one call; more is 400 and marks none", async () => {
+    const s = await start({ adminToken: TOKEN, rateLimit: { max: 1000, windowMs: 60_000 } });
+    try {
+      await s.post({ email: "u0@example.com" });
+      const emails = Array.from({ length: 201 }, (_, i) => `u${i}@example.com`);
+      const over = await mark(s, { emails });
+      assert.equal(over.status, 400);
+      assert.deepEqual(await over.json(), { error: "too_many_emails", max: 200 });
+      assert.equal(s.rows()[0].invited_at, null);
+      const ok = await mark(s, { emails: emails.slice(0, 200) });
+      assert.equal(ok.status, 200);
+      assert.deepEqual(await ok.json(), { marked: 1, unknown: 199 });
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("marks the emails it has, counts the ones it doesn't, and keeps the note", async () => {
+    let clock = Date.parse("2026-11-25T12:00:00.000Z");
+    const s = await start({ adminToken: TOKEN, now: () => clock, rateLimit: { max: 1000, windowMs: 60_000 } });
+    try {
+      for (const email of ["ana@example.com", "bo@example.com", "cy@example.com"]) await s.post({ email });
+      // The same address in another case or with spaces is the same row, counted once.
+      const res = await mark(s, { emails: [" ANA@example.com", "ana@example.com", "bo@example.com", "nobody@example.com"], note: " wave 1 " });
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-type"), /^application\/json/);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+      assert.deepEqual(await res.json(), { marked: 2, unknown: 1 });
+      const byEmail = Object.fromEntries(s.rows().map((r) => [r.email, r]));
+      assert.equal(byEmail["ana@example.com"].invited_at, "2026-11-25T12:00:00.000Z");
+      assert.equal(byEmail["ana@example.com"].note, "wave 1");
+      assert.equal(byEmail["bo@example.com"].invited_at, "2026-11-25T12:00:00.000Z");
+      assert.equal(byEmail["cy@example.com"].invited_at, null);
+      assert.equal(byEmail["cy@example.com"].note, null);
+      // Nothing new is stored for an email that isn't on the list.
+      assert.equal(s.rows().length, 3);
+
+      // Marked again without a note: a new date, the note stays.
+      clock += 86_400_000;
+      assert.deepEqual(await (await mark(s, { emails: ["ana@example.com"] })).json(), { marked: 1, unknown: 0 });
+      const ana = s.rows().find((r) => r.email === "ana@example.com");
+      assert.equal(ana.invited_at, "2026-11-26T12:00:00.000Z");
+      assert.equal(ana.note, "wave 1");
+      // A null or blank note also leaves it; a new one replaces it.
+      await mark(s, { emails: ["ana@example.com"], note: null });
+      await mark(s, { emails: ["ana@example.com"], note: "   " });
+      assert.equal(s.rows().find((r) => r.email === "ana@example.com").note, "wave 1");
+      await mark(s, { emails: ["ana@example.com"], note: "resent" });
+      assert.equal(s.rows().find((r) => r.email === "ana@example.com").note, "resent");
+
+      // And the pending export no longer has them.
+      const text = await (await fetch(`${s.base}/api/waitlist/export?pending=1`, { headers: { Authorization: `Bearer ${TOKEN}` } })).text();
+      assert.deepEqual(text.trim().split("\r\n").slice(1).map((l) => l.split(",")[0]), ["cy@example.com"]);
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("doesn't need an Origin, and one from elsewhere doesn't stop it: the token is the authentication", async () => {
+    const s = await start({ adminToken: TOKEN });
+    try {
+      await s.post({ email: "ana@example.com" });
+      const res = await mark(s, { emails: ["ana@example.com"] }, { Origin: "https://evil.example" });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { marked: 1, unknown: 0 });
     } finally {
       await s.stop();
     }
@@ -249,6 +445,22 @@ describe("static files and headers", () => {
     }
   });
 
+  test("the privacy policy says the waitlist keeps when an invite went out and a note, in both languages and in privacidad.md", () => {
+    const html = readFileSync(join(WEB, "public", "privacy", "index.html"), "utf8");
+    const md = readFileSync(join(WEB, "..", "..", "docs", "privacidad.md"), "utf8");
+    const en = html.slice(html.indexOf('<article id="en"'), html.indexOf('<article id="es"'));
+    const es = html.slice(html.indexOf('<article id="es"'));
+    assert.match(en, /Once we send you the invite, it also stores that we sent it and when, and sometimes a note of ours/);
+    assert.match(es, /Cuando te mandamos la invitación, guarda también que te la mandamos y cuándo, y a veces una nota nuestra/);
+    assert.match(md, /also stores that we sent it and when, and sometimes a note of ours/);
+    assert.match(md, /guarda también que te la mandamos y cuándo, y a veces una nota nuestra/);
+    // The same date on the page and in the source, in both languages.
+    const enDate = en.match(/Last updated: ([A-Z][a-z]+ \d+, \d{4})/)[1];
+    const esDate = es.match(/Última actualización: (\d+ de [a-z]+ de \d{4})/)[1];
+    assert.ok(md.includes(`**Last updated:** ${enDate}`), enDate);
+    assert.ok(md.includes(`**Última actualización:** ${esDate}`), esDate);
+  });
+
   test("serves fonts and the OG image with their types", async () => {
     for (const [path, type] of [["/fonts/geist.woff2", "font/woff2"], ["/fonts/departure-mono-400.woff2", "font/woff2"], ["/og.png", "image/png"]]) {
       const res = await fetch(`${s.base}${path}`);
@@ -272,6 +484,75 @@ describe("static files and headers", () => {
     assert.equal((await fetch(`${s.base}/`, { method: "DELETE" })).status, 405);
     const health = await fetch(`${s.base}/healthz`);
     assert.equal(health.status, 200);
+  });
+});
+
+describe("the beta invite on the page (ADR 0048 §4)", () => {
+  const html = readFileSync(join(WEB, "public", "index.html"), "utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  // The Spanish catalog, as the page's own script builds it.
+  const ES = new Function(`${script.slice(script.indexOf("const ES = {"), script.indexOf("const META"))}; return ES;`)();
+  const keys = [...html.matchAll(/data-i18n(?:-html|-placeholder)?="([^"]+)"/g)].map((m) => m[1]);
+  const english = (key) => {
+    // The element that carries the key, up to its own closing tag.
+    const m = html.match(new RegExp(`<(\\w+)\\b[^>]*\\sdata-i18n(?:-html)?="${key.replace(".", "\\.")}"[^>]*>([\\s\\S]*?)</\\1>`));
+    assert.ok(m, key);
+    return m[2];
+  };
+
+  test("the inline script parses, and every translated element has its Spanish string", () => {
+    assert.doesNotThrow(() => new vm.Script(script));
+    assert.deepEqual(keys.filter((key) => typeof ES[key] !== "string"), []);
+  });
+
+  test("#beta and #waitlist each name exactly one element, so old and new links both land on the form", () => {
+    for (const id of ["beta", "waitlist"]) assert.equal(html.match(new RegExp(`\\sid="${id}"`, "g"))?.length, 1, id);
+    assert.match(html, /<article class="plan plan-hosted" id="beta">/);
+    assert.match(html, /<form class="waitlist" id="waitlist" action="\/api\/waitlist"/);
+    // Every in-page link to the request goes to #beta.
+    assert.equal(/href=\\?"#waitlist\\?"/.test(html), false);
+    assert.ok((html.match(/href=\\?"#beta\\?"/g) ?? []).length >= 4);
+  });
+
+  test("the call to action asks for a free beta invite, in both languages", () => {
+    assert.equal(english("hero.waitlist"), "Request a free beta invite");
+    assert.equal(english("wl.join"), "Request a free beta invite");
+    assert.equal(ES["hero.waitlist"], "Pide una invitación a la beta gratuita");
+    assert.equal(ES["wl.join"], "Pide una invitación a la beta gratuita");
+  });
+
+  test("under the form: free during the beta, 20 USD a year after it with 60 days' notice, self-hosting free, and no promise to move the account", () => {
+    for (const terms of [english("wl.terms"), ES["wl.terms"]]) {
+      assert.ok(terms.includes("<code>api.klav.dev</code>"), terms);
+      assert.ok(terms.includes("20 USD"), terms);
+      assert.ok(terms.includes("60"), terms);
+      // `klav account set-server` only changes the URL of an account the new server
+      // already has; nothing moves an account to an empty server yet (sitio-web.md §6).
+      assert.equal(terms.includes("set-server"), false, terms);
+      assert.equal(/href=/.test(terms), false, "no links in the terms");
+    }
+    assert.match(english("wl.terms"), /free while the beta is invite-only/);
+    assert.match(english("wl.terms"), /stays free, for good/);
+    assert.match(ES["wl.terms"], /gratis mientras la beta sea por invitación/);
+    assert.match(ES["wl.terms"], /sigue siendo gratis, siempre/);
+  });
+
+  test("nothing on the page still says the hosted server is closed or only a paid plan", () => {
+    const english = html.replace(/<script>[\s\S]*?<\/script>/, "");
+    for (const stale of ["Join the waitlist", "isn’t open yet", "when it opens", "20 USD a year on ours", "A paid plan", "$20"]) {
+      assert.equal(english.includes(stale), false, stale);
+    }
+    for (const stale of ["Unirme a la lista", "todavía no abre", "cuando abra", "20 USD al año en el nuestro", "Un plan de pago"]) {
+      assert.equal(Object.values(ES).some((v) => v.includes(stale)), false, stale);
+    }
+    assert.equal(/when the hosted plan opens|cuando abra el plan alojado/.test(script), false);
+  });
+
+  test("the form is still email-only, with its honeypot", () => {
+    const form = html.match(/<form class="waitlist"[\s\S]*?<\/form>/)[0];
+    const fields = [...form.matchAll(/<input[^>]*\sname="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(fields, ["email", "website"]);
+    assert.match(form, /<div class="wl-trap" aria-hidden="true">/);
   });
 });
 
@@ -512,14 +793,15 @@ describe("downloads", () => {
 });
 
 describe("database", () => {
-  test("creates schema 1 and keeps rows across restarts", async () => {
+  test("creates schema 2 and keeps rows across restarts", async () => {
     const path = dbPath();
     const s = await start({ dbPath: path });
     await s.post({ email: "keep@example.com" });
     await s.stop();
     const db = new DatabaseSync(path);
     try {
-      assert.equal(db.prepare("PRAGMA user_version").get().user_version, 1);
+      assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+      assert.deepEqual(db.prepare("PRAGMA table_info(waitlist)").all().map((c) => c.name), ["id", "email", "lang", "created_at", "invited_at", "note"]);
       assert.equal(db.prepare("SELECT count(*) AS c FROM waitlist").get().c, 1);
     } finally {
       db.close();
@@ -529,6 +811,62 @@ describe("database", () => {
       assert.equal(again.rows()[0].email, "keep@example.com");
     } finally {
       await again.stop();
+    }
+  });
+
+  test("brings a schema 1 database to 2, keeping its rows and their uniqueness", async () => {
+    const path = dbPath();
+    const old = new DatabaseSync(path);
+    // Schema 1 exactly as the previous server created it.
+    old.exec(`
+      CREATE TABLE waitlist (
+        id INTEGER PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        lang TEXT,
+        created_at TEXT NOT NULL
+      );
+      PRAGMA user_version = 1;
+    `);
+    old.prepare("INSERT INTO waitlist (email, lang, created_at) VALUES (?, ?, ?)").run("old@example.com", "es", "2026-11-05T00:00:00.000Z");
+    old.close();
+
+    const s = await start({ dbPath: path, adminToken: TOKEN });
+    try {
+      assert.equal(s.db.prepare("PRAGMA user_version").get().user_version, 2);
+      assert.deepEqual(s.rows().map((r) => ({ ...r })), [{ id: 1, email: "old@example.com", lang: "es", created_at: "2026-11-05T00:00:00.000Z", invited_at: null, note: null }]);
+      await s.post({ email: "OLD@example.com" });
+      assert.equal(s.rows().length, 1);
+      const text = await (await fetch(`${s.base}/api/waitlist/export?pending=1`, { headers: { Authorization: `Bearer ${TOKEN}` } })).text();
+      assert.equal(text, "email,lang,created_at,invited_at,note\r\nold@example.com,es,2026-11-05T00:00:00.000Z,,\r\n");
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("after a rollback by hand (user_version = 1, columns left), comes forward again without losing a mark", () => {
+    const path = dbPath();
+    let db = openDatabase(path);
+    db.prepare("INSERT INTO waitlist (email, lang, created_at, invited_at, note) VALUES (?, ?, ?, ?, ?)").run("x@example.com", "en", "2026-11-05T00:00:00.000Z", "2026-11-25T00:00:00.000Z", "waitlist");
+    db.exec("PRAGMA user_version = 1");
+    db.close();
+    db = openDatabase(path);
+    try {
+      assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+      const row = db.prepare("SELECT invited_at, note FROM waitlist").get();
+      assert.equal(row.invited_at, "2026-11-25T00:00:00.000Z");
+      assert.equal(row.note, "waitlist");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a fresh database goes from nothing to schema 2 in one open", () => {
+    const db = openDatabase(":memory:");
+    try {
+      assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+      assert.deepEqual(db.prepare("PRAGMA table_info(waitlist)").all().map((c) => c.name), ["id", "email", "lang", "created_at", "invited_at", "note"]);
+    } finally {
+      db.close();
     }
   });
 
