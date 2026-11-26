@@ -15,8 +15,8 @@ use klav_core::ids::{AgentId, ApprovalId};
 use klav_proto::Blob;
 use klav_proto::agent::{
     AgentMe, AgentStatus, ApprovalInfo, ApprovalStatus, GrantPayload, HEADER_AGENT, HEADER_NONCE,
-    HEADER_SIGNATURE, HEADER_TIMESTAMP, MAX_APPROVAL_WAIT_SECS, RegisterAgent,
-    RegisterAgentResponse,
+    HEADER_SIGNATURE, HEADER_TIMESTAMP, HostedRegistrationProof, MAX_APPROVAL_WAIT_SECS,
+    RegisterAgent, RegisterAgentResponse, RegisterHostedAgent,
 };
 use klav_proto::rotate::AgentRequestProof;
 use reqwest::{Method, Response};
@@ -67,6 +67,24 @@ pub struct Registered {
     pub key_store: String,
 }
 
+/// What [`Agent::in_memory`] needs.
+pub struct MemoryAgent {
+    /// Local name, shown to the person.
+    pub name: String,
+    /// Agent ID.
+    pub agent_id: AgentId,
+    /// Server URL.
+    pub server: String,
+    /// E-mail of the account.
+    pub email: String,
+    /// The account, pinned from the start.
+    pub account_id: klav_core::ids::AccountId,
+    /// The account's public identity (kind `0x05`), pinned from the start.
+    pub account_public_identity: Blob,
+    /// How it reaches the server.
+    pub http: reqwest::Client,
+}
+
 /// The agent's state as the server reports it, after the local checks.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentState {
@@ -105,7 +123,9 @@ pub struct AgentState {
 
 /// An agent identity, loaded with its private key.
 pub struct Agent {
-    pub(crate) home: Home,
+    /// Where its config lives; `None` for an agent that lives only in
+    /// memory ([`Agent::in_memory`]), which writes nothing.
+    pub(crate) home: Option<Home>,
     pub(crate) config: AgentConfig,
     pub(crate) keys: IdentityKeyPair,
     pub(crate) server: ServerUrl,
@@ -164,7 +184,7 @@ impl Agent {
         };
         Ok((
             Self {
-                home: home.clone(),
+                home: Some(home.clone()),
                 config,
                 keys,
                 server,
@@ -172,6 +192,77 @@ impl Agent {
             },
             registered,
         ))
+    }
+
+    /// An agent that lives only in memory: Klav Cloud's hosted proxy, whose
+    /// per-account keys come from the enclave's seed and are never written
+    /// anywhere (ADR 0051 §3.1, §4.3). Its account is pinned from the
+    /// start, by the identity the account's enroll request was signed
+    /// with (§6.1), so the first `GET /v1/agent/me` checks it rather than
+    /// pinning whatever the server says. `http` is how it reaches the
+    /// server (inside the enclave, through the parent's egress).
+    pub fn in_memory(agent: MemoryAgent, keys: IdentityKeyPair) -> ClientResult<Self> {
+        validate_name(&agent.name)?;
+        let server = ServerUrl::parse(&agent.server)?;
+        let mut config = AgentConfig::new(
+            &agent.name,
+            agent.agent_id,
+            server.as_str(),
+            agent.email.trim(),
+            Blob::new(keys.public().encode().to_vec()),
+            // Never read: an agent without a home has no key store.
+            KeyStore::File {
+                path: std::path::PathBuf::new(),
+            },
+            now_ms(),
+        );
+        PublicIdentity::decode(agent.account_public_identity.as_bytes())?;
+        config.account_id = Some(agent.account_id);
+        config.account_public_identity = Some(agent.account_public_identity);
+        Ok(Self {
+            home: None,
+            config,
+            keys,
+            server,
+            http: agent.http,
+        })
+    }
+
+    /// Sends this agent's registration (`POST /v1/agents/register`), as
+    /// [`Agent::register`] does, with `hosted`: the hosted proxy's mark
+    /// (ADR 0051 §8, spec §15.8) in [`RegisterHostedAgent::hosted`]. A
+    /// server refuses a marked registration with `403` unless the mark
+    /// verifies and the account is entitled; a server older than ADR 0051
+    /// layer 4 refuses the field with `400`. Without `hosted`, the body is
+    /// byte for byte the one [`Agent::register`] sends.
+    pub async fn register_self(
+        &self,
+        note: Option<String>,
+        hosted: Option<HostedRegistrationProof>,
+    ) -> ClientResult<Registered> {
+        let res = self
+            .http
+            .post(self.server.join("/v1/agents/register"))
+            .json(&RegisterHostedAgent {
+                id: self.config.agent_id,
+                email: self.config.email.clone(),
+                name: self.config.name.clone(),
+                public_identity: Blob::new(self.keys.public().encode().to_vec()),
+                note,
+                hosted,
+            })
+            .send()
+            .await
+            .map_err(|e| ClientError::Network(api::without_url(&e)))?;
+        let accepted: RegisterAgentResponse = api::json(res).await?;
+        Ok(Registered {
+            agent_id: self.config.agent_id,
+            name: self.config.name.clone(),
+            public_identity: Blob::new(self.keys.public().encode().to_vec()),
+            pairing_code: pairing_code(self.keys.public()),
+            expires_at: accepted.expires_at,
+            key_store: "memory".into(),
+        })
     }
 
     /// Loads the agent `name` from `home`.
@@ -191,7 +282,7 @@ impl Agent {
         }
         let server = ServerUrl::parse(&config.server)?;
         Ok(Self {
-            home: home.clone(),
+            home: Some(home.clone()),
             config,
             keys,
             server,
@@ -231,10 +322,22 @@ impl Agent {
         self.keys.public()
     }
 
-    /// Forgets the agent on this machine: config and stored key.
+    /// Forgets the agent on this machine: config and stored key. An agent
+    /// in memory has neither.
     pub fn forget(self) -> ClientResult<()> {
+        let Some(home) = &self.home else {
+            return Ok(());
+        };
         self.config.key_store.delete(self.config.agent_id)?;
-        self.config.remove(&self.home)
+        self.config.remove(home)
+    }
+
+    /// Saves the config, if the agent has a home.
+    fn save_config(&self) -> ClientResult<()> {
+        match &self.home {
+            Some(home) => self.config.save(home),
+            None => Ok(()),
+        }
     }
 
     /// Sends a signed request and returns the raw response.
@@ -416,7 +519,7 @@ impl Agent {
                 PublicIdentity::decode(me.account_public_identity.as_bytes())?;
                 self.config.account_public_identity = Some(me.account_public_identity.clone());
                 self.config.account_id = Some(me.account_id);
-                self.config.save(&self.home)?;
+                self.save_config()?;
             }
         }
         Ok(me)
@@ -464,12 +567,14 @@ impl Agent {
             .ok()
             .flatten()?;
         // Saved from the file on disk: another process may have changed it.
-        let mut on_disk = AgentConfig::load(&self.home, &self.config.name).ok()?;
+        // An agent in memory has none, and stays where it is.
+        let home = self.home.clone()?;
+        let mut on_disk = AgentConfig::load(&home, &self.config.name).ok()?;
         if on_disk.agent_id != self.config.agent_id || on_disk.server != self.config.server {
             return None;
         }
         on_disk.server = new.clone();
-        on_disk.save(&self.home).ok()?;
+        on_disk.save(&home).ok()?;
         self.config = on_disk;
         self.server = target;
         Some(new)
@@ -560,7 +665,7 @@ impl Agent {
         }
         if payload.version > self.config.grant_version {
             self.config.grant_version = payload.version;
-            self.config.save(&self.home)?;
+            self.save_config()?;
         }
         OpenGrant::open(&self.keys, payload)
     }
