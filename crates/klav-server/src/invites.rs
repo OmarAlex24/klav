@@ -356,7 +356,7 @@ fn db_error(e: sqlx::Error) -> String {
 }
 
 /// A random (version 4) UUID, for an invite's `id`.
-fn random_uuid() -> String {
+pub(crate) fn random_uuid() -> String {
     let mut b = random::array::<16>();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;

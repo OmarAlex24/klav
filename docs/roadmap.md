@@ -503,6 +503,14 @@ Omar lo aceptó el 2026-11-25 con la opción (a) en Q1–Q6: una URL por servido
 - [ ] Capa 7 (pruebas a mano): Maple desde Claude Code en el Mac y desde un sandbox de Boat; después un *preset* por PR
 - [ ] Capa 8 (argumentos sellados, `0x27`), cuando existan la ruta, la columna y la ocultación del ADR 0041 §5.3
 
+### Invitaciones a la beta emitidas solas (aceptado, ADR [0050](decisiones/0050-auto-beta-invites.md))
+Omar lo aprobó el 2026-11-26: mientras queden lugares (tope de 50), quien pide una invitación en `klav.dev` la recibe al momento por correo. `klav-server` la emite por una ruta interna con token (`POST /v1/internal/invites/auto`), ligada al correo, de un uso y de 14 días; `klav-web` la manda con Cloudflare Email Sending y la revoca si el correo falla; Cloudflare Turnstile protege el formulario. Enmienda el ADR 0048 §1.4, §4 y §7.
+- [x] ADR 0050 aceptado el 2026-11-26; modelo de amenazas §5.27 (T267–T272 y riesgos 106–108)
+- [x] Capa 1 (servidor): `klav_core::crypto::token::same_token`, `invites.auto_token` / `KLAV_AUTO_INVITE_TOKEN` e `invites.auto_max` / `KLAV_AUTO_INVITE_MAX`, la ruta de emisión y la de revocación, pruebas en SQLite y Postgres
+- [x] Capa 2 (sitio): Turnstile opcional, la invitación automática con el tope doble y el límite por IP, el correo en inglés y español, los estados en la página; pruebas contra *mocks* locales
+- [x] Capa 3 (documentos): `sitio-web.md`, `self-hosting.md`, `configuration.mdx`, la política de privacidad y el glosario
+- [ ] Encenderlo (Omar): `klav.dev` en Email Sending, el widget de Turnstile y las variables de los dos servicios en Railway (ADR 0050, «What Omar does»)
+
 ### Agentes personales en la nube (idea de Omar, sin ADR)
 Omar lo pidió el 2026-11-06: que los agentes personales como Muse (Meta), Grok Bot (xAI) y Dots (OpenAI) usen las contraseñas de la persona sin ver los valores. Los tres corren en una computadora en la nube de su proveedor (Muse en la «Muse Secure VM» de Meta, cada Dot en la suya y los Grok Bots en una compartida), y hoy Klav solo habla con los agentes por la CLI y `klav mcp` locales. Falta diseñar la pieza que los conecte. La página de `klav.dev` los lista en «También en camino», sin fecha. No cambia la fase en curso.
 - [ ] ADR que conecte a los agentes personales en la nube (Muse, Grok Bot, Dots) con Klav sin que vean los valores

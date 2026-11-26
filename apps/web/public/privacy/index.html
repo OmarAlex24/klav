@@ -81,7 +81,7 @@ li + li { margin-top: 6px; }
 <main class="wrap">
 <article id="en" lang="en">
   <h1>Privacy policy</h1>
-  <p class="updated">Last updated: November 25, 2026</p>
+  <p class="updated">Last updated: November 26, 2026</p>
 
   <div class="summary">
     <p>Klav is an end-to-end encrypted password manager. Your vaults are encrypted on your devices before they leave for the server, and the key that opens them never leaves your devices. Neither Klav’s server nor whoever runs it can read your passwords, notes, cards or the sites you save.</p>
@@ -132,10 +132,10 @@ li + li { margin-top: 6px; }
   <p>The breached-password check is <strong>off by default</strong>. If you turn it on, your device sends Have I Been Pwned (<code>api.pwnedpasswords.com</code>) only the first 5 characters of each password’s SHA-1 hash, with padding so the size of the answer reveals nothing. The comparison happens on your device. Have I Been Pwned sees your IP address and the time, but not your passwords or their full hashes. Its own privacy policy applies.</p>
 
   <h2>Analytics, tracking and ads</h2>
-  <p>None. Not in the apps, the extension or the website: no tracking cookies, no pixels, no third-party SDKs, no automatic crash reports. Klav does not sell, rent or share your data, and does not use it for advertising or for credit or insurance decisions.</p>
+  <p>None. Not in the apps, the extension or the website: no tracking cookies, no pixels, no third-party SDKs, no automatic crash reports. Klav does not sell, rent or share your data, and does not use it for advertising or for credit or insurance decisions. The one outside script on the website is Cloudflare Turnstile on the beta invite form, when it is on (see “The klav.dev waitlist”).</p>
 
   <h2>The klav.dev waitlist</h2>
-  <p>If you request an invite to the beta of our server, the site stores your email address, the language of the page and the date. Once we send you the invite, it also stores that we sent it and when, and sometimes a note of ours (for example, “waitlist”). Nothing else: no IP address, no browser, no cookies. It is only used to email you the invite. To remove your address from the waitlist at any time, write to <a href="mailto:support@klav.dev">support@klav.dev</a> from that address.</p>
+  <p>If you request an invite to the beta of our server, the site stores your email address, the language of the page and the date. Once we send you the invite, it also stores that we sent it and when, and sometimes a note of ours (for example, “waitlist”). Nothing else: no IP address, no browser, no cookies. It is only used to email you the invite. When our site sends you the invite by itself, that email goes through Cloudflare’s email service (Cloudflare Email Sending), which receives your address and the text of the email to deliver it. To keep bots out, the form may show a check from Cloudflare Turnstile: while it runs, Cloudflare sees your IP address and signals from your browser, under Cloudflare’s privacy policy, and tells our site only whether the check passed. Our site doesn’t send it your IP address, and doesn’t keep it. To remove your address from the waitlist at any time, write to <a href="mailto:support@klav.dev">support@klav.dev</a> from that address.</p>
 
   <h2>How long data is kept</h2>
   <ul>
@@ -177,7 +177,7 @@ li + li { margin-top: 6px; }
 
 <article id="es" lang="es">
   <h1>Política de privacidad</h1>
-  <p class="updated">Última actualización: 25 de noviembre de 2026</p>
+  <p class="updated">Última actualización: 26 de noviembre de 2026</p>
 
   <div class="summary">
     <p>Klav es un gestor de contraseñas con cifrado de extremo a extremo. Tus bóvedas se cifran en tus dispositivos antes de salir hacia el servidor, y la llave para abrirlas nunca sale de ellos. Ni el servidor de Klav ni quien lo opere puede leer tus contraseñas, tus notas, tus tarjetas ni los sitios que guardas.</p>
@@ -228,10 +228,10 @@ li + li { margin-top: 6px; }
   <p>La comprobación de contraseñas filtradas está <strong>apagada de fábrica</strong>. Si la activas, tu dispositivo envía a Have I Been Pwned (<code>api.pwnedpasswords.com</code>) solo los 5 primeros caracteres del hash SHA-1 de cada contraseña, con relleno para que el tamaño de la respuesta no revele nada. La comparación se hace en tu dispositivo. Have I Been Pwned ve tu IP y la hora, pero no tus contraseñas ni sus hashes completos. Su política de privacidad es la de ese servicio.</p>
 
   <h2>Analítica, rastreo y publicidad</h2>
-  <p>No hay. Ni en las apps, ni en la extensión, ni en el sitio web: sin cookies de rastreo, sin píxeles, sin SDK de terceros, sin informes de fallos automáticos. Klav no vende, no alquila ni comparte tus datos, y no los usa para publicidad ni para decidir sobre créditos o seguros.</p>
+  <p>No hay. Ni en las apps, ni en la extensión, ni en el sitio web: sin cookies de rastreo, sin píxeles, sin SDK de terceros, sin informes de fallos automáticos. Klav no vende, no alquila ni comparte tus datos, y no los usa para publicidad ni para decidir sobre créditos o seguros. El único <em>script</em> de fuera en el sitio web es Cloudflare Turnstile en el formulario de la beta, cuando está encendido (abajo, «La lista de espera de klav.dev»).</p>
 
   <h2>La lista de espera de klav.dev</h2>
-  <p>Si pides una invitación a la beta de nuestro servidor, el sitio guarda tu correo, el idioma de la página y la fecha. Cuando te mandamos la invitación, guarda también que te la mandamos y cuándo, y a veces una nota nuestra (por ejemplo, «lista de espera»). Nada más: ni IP, ni navegador, ni cookies. Solo se usa para mandarte la invitación por correo. Para darte de baja en cualquier momento, escribe a <a href="mailto:support@klav.dev">support@klav.dev</a> desde ese mismo correo.</p>
+  <p>Si pides una invitación a la beta de nuestro servidor, el sitio guarda tu correo, el idioma de la página y la fecha. Cuando te mandamos la invitación, guarda también que te la mandamos y cuándo, y a veces una nota nuestra (por ejemplo, «lista de espera»). Nada más: ni IP, ni navegador, ni cookies. Solo se usa para mandarte la invitación por correo. Cuando nuestro sitio te manda la invitación por su cuenta, ese correo sale por el servicio de correo de Cloudflare (Cloudflare Email Sending), que recibe tu dirección y el texto del correo para entregarlo. Para dejar fuera a los bots, el formulario puede mostrar una verificación de Cloudflare Turnstile: mientras corre, Cloudflare ve tu dirección IP y señales de tu navegador, bajo su política de privacidad, y a nuestro sitio solo le dice si pasó. Nuestro sitio no le manda tu IP ni la guarda. Para darte de baja en cualquier momento, escribe a <a href="mailto:support@klav.dev">support@klav.dev</a> desde ese mismo correo.</p>
 
   <h2>Cuánto tiempo se guardan los datos</h2>
   <ul>

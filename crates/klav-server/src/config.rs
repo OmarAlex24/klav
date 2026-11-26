@@ -208,6 +208,46 @@ impl Default for SessionConfig {
     }
 }
 
+/// Auto-issued beta invites (ADR 0050): the internal route the site calls
+/// to issue a bound, single-use invite for a waitlist email, up to a cap.
+///
+/// Off unless `auto_max > 0`, `auto_token` is set and the server is in
+/// `invite` mode. `Debug` is written by hand: the token prints redacted.
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InvitesConfig {
+    /// The shared bearer secret of `POST /v1/internal/invites/auto`, at
+    /// least [`MIN_AUTO_INVITE_TOKEN_BYTES`] bytes (`KLAV_AUTO_INVITE_TOKEN`).
+    /// Never logged.
+    #[serde(deserialize_with = "secret_string")]
+    pub auto_token: Option<SecretString>,
+    /// How many auto-issued invites may exist at once, not counting revoked
+    /// ones (`KLAV_AUTO_INVITE_MAX`). `0`, the default, turns the route off.
+    pub auto_max: u64,
+}
+
+/// Shortest accepted auto-invite token, in bytes (ADR 0050 §2.1).
+pub const MIN_AUTO_INVITE_TOKEN_BYTES: usize = 32;
+
+impl InvitesConfig {
+    /// The token, if auto-issued invites can be on at all.
+    pub fn auto_enabled(&self) -> bool {
+        self.auto_max > 0 && self.auto_token.is_some()
+    }
+}
+
+impl std::fmt::Debug for InvitesConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvitesConfig")
+            .field(
+                "auto_token",
+                &self.auto_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("auto_max", &self.auto_max)
+            .finish()
+    }
+}
+
 /// Push notifications for approvals (ADR 0018 §5). Without `apns`, the
 /// server sends nothing and everything else works as before.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -287,6 +327,8 @@ pub struct Config {
     pub rate_limit: RateLimitConfig,
     /// Push notifications.
     pub push: PushConfig,
+    /// Auto-issued beta invites (ADR 0050).
+    pub invites: InvitesConfig,
     /// Accept Argon2id parameters below the production floor at sign-up.
     ///
     /// **Only for in-process test suites**, which use reduced parameters to
@@ -313,6 +355,7 @@ impl Default for Config {
             limits: Limits::default(),
             rate_limit: RateLimitConfig::default(),
             push: PushConfig::default(),
+            invites: InvitesConfig::default(),
             insecure_accept_weak_kdf: false,
         }
     }
@@ -397,6 +440,19 @@ impl Config {
                 "KLAV_MAX_VAULTS_PER_ACCOUNT" => {
                     self.limits.max_vaults_per_account =
                         parse(&value, "KLAV_MAX_VAULTS_PER_ACCOUNT")?
+                }
+                "KLAV_AUTO_INVITE_TOKEN" => {
+                    // Empty means "unset", so a template can leave it blank.
+                    self.invites.auto_token = Some(value)
+                        .filter(|v| !v.is_empty())
+                        .map(SecretString::from);
+                }
+                "KLAV_AUTO_INVITE_MAX" => {
+                    self.invites.auto_max = if value.trim().is_empty() {
+                        0
+                    } else {
+                        parse(value.trim(), "KLAV_AUTO_INVITE_MAX")?
+                    }
                 }
                 "KLAV_LOG_FORMAT" => {
                     self.log.format = match value.as_str() {
@@ -565,6 +621,20 @@ impl Config {
                 ));
             }
         }
+        if let Some(token) = &self.invites.auto_token {
+            use secrecy::ExposeSecret as _;
+            if token.expose_secret().len() < MIN_AUTO_INVITE_TOKEN_BYTES {
+                return Err(ConfigError::Invalid(
+                    "invites.auto_token (KLAV_AUTO_INVITE_TOKEN) must be at least 32 bytes",
+                ));
+            }
+        }
+        if self.invites.auto_max > 0 && self.invites.auto_token.is_none() {
+            return Err(ConfigError::Invalid(
+                "invites.auto_max (KLAV_AUTO_INVITE_MAX) above 0 needs invites.auto_token \
+                 (KLAV_AUTO_INVITE_TOKEN)",
+            ));
+        }
         if self.sessions.access_ttl_secs == 0
             || self.sessions.refresh_ttl_secs < self.sessions.access_ttl_secs
         {
@@ -592,6 +662,7 @@ impl std::fmt::Debug for Config {
             .field("limits", &self.limits)
             .field("rate_limit", &self.rate_limit)
             .field("push", &self.push)
+            .field("invites", &self.invites)
             .field("insecure_accept_weak_kdf", &self.insecure_accept_weak_kdf)
             .finish()
     }
@@ -814,6 +885,67 @@ mod tests {
         assert!(Config::from_toml("insecure_accept_weak_kdf = true").is_err());
         let config = Config::load(None, env(&[("KLAV_INSECURE_ACCEPT_WEAK_KDF", "true")])).unwrap();
         assert!(!config.insecure_accept_weak_kdf);
+    }
+
+    #[test]
+    fn auto_invites_are_off_by_default_and_need_a_long_token() {
+        let token = "t".repeat(MIN_AUTO_INVITE_TOKEN_BYTES);
+        let c = Config::load(None, env(&[])).unwrap();
+        assert_eq!(c.invites.auto_max, 0);
+        assert!(c.invites.auto_token.is_none());
+        assert!(!c.invites.auto_enabled());
+        // Blank values are unset, as a template leaves them.
+        let c = Config::load(
+            None,
+            env(&[("KLAV_AUTO_INVITE_TOKEN", ""), ("KLAV_AUTO_INVITE_MAX", "")]),
+        )
+        .unwrap();
+        assert!(!c.invites.auto_enabled());
+        let c = Config::load(
+            None,
+            env(&[
+                ("KLAV_AUTO_INVITE_TOKEN", &token),
+                ("KLAV_AUTO_INVITE_MAX", "50"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(c.invites.auto_max, 50);
+        assert!(c.invites.auto_enabled());
+        assert_eq!(
+            c.invites.auto_token.as_ref().unwrap().expose_secret(),
+            token
+        );
+        // The token never prints.
+        assert!(!format!("{c:?}").contains(&token));
+        // A token alone (max 0) is allowed and stays off.
+        let c = Config::load(None, env(&[("KLAV_AUTO_INVITE_TOKEN", &token)])).unwrap();
+        assert!(!c.invites.auto_enabled());
+        // Too short, a cap without a token, a cap that isn't a number.
+        let short = "t".repeat(MIN_AUTO_INVITE_TOKEN_BYTES - 1);
+        assert!(Config::load(None, env(&[("KLAV_AUTO_INVITE_TOKEN", &short)])).is_err());
+        assert!(Config::load(None, env(&[("KLAV_AUTO_INVITE_MAX", "1")])).is_err());
+        assert!(
+            Config::load(
+                None,
+                env(&[
+                    ("KLAV_AUTO_INVITE_TOKEN", &token),
+                    ("KLAV_AUTO_INVITE_MAX", "-1")
+                ])
+            )
+            .is_err()
+        );
+        // And from the file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(
+            &path,
+            format!("[invites]\nauto_token = \"{token}\"\nauto_max = 3\n"),
+        )
+        .unwrap();
+        let c = Config::load(Some(&path), env(&[])).unwrap();
+        assert_eq!(c.invites.auto_max, 3);
+        std::fs::write(&path, "[invites]\nauto_max = 3\n").unwrap();
+        assert!(Config::load(Some(&path), env(&[])).is_err());
     }
 
     #[test]

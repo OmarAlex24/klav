@@ -22,11 +22,12 @@ De dónde sale cada afirmación (para revisarla contra el código):
 | La papelera y las bóvedas borradas se purgan a los 30 días y dejan solo el identificador del elemento | `trash_days` en `crates/klav-server/src/config.rs`: 30 por defecto, y solo cambia con un archivo TOML en `KLAV_CONFIG`, que ni la imagen de Railway (`deploy/railway/Dockerfile`) ni [self-hosting.md](self-hosting.md) §8.1 ponen. `purge_item` en `crates/klav-server/src/purge.rs` |
 | Qué borra el borrado de una cuenta | `ON DELETE CASCADE` desde `accounts` en `crates/klav-server/migrations/`: todas las tablas salvo `server_state`. Los adjuntos del disco, `remove_orphan_files` en `crates/klav-server/src/purge.rs` |
 | La lista de espera guarda correo, idioma y fecha y, al mandar la invitación a la beta, cuándo se mandó y una nota opcional | [sitio-web.md](sitio-web.md) §2 y §3 (esquema 2, `mark-invited`) |
+| El correo de la invitación que el sitio manda solo sale por Cloudflare Email Sending (las que Omar manda a mano, desde su buzón); Turnstile, si está encendido, es el único *script* de fuera, y el sitio no manda la IP a `siteverify` | [sitio-web.md](sitio-web.md) §2 y §3, «Invitaciones automáticas»; `verifyTurnstile` y `sendInvite` en `apps/web/server.mjs`; ADR [0050](decisiones/0050-auto-beta-invites.md) |
 | Avisos de iOS sin contenido | T75 |
 
 ---
 
-**Última actualización:** 25 de noviembre de 2026
+**Última actualización:** 26 de noviembre de 2026
 
 ## Resumen
 
@@ -150,7 +151,9 @@ sus hashes completos. Su política de privacidad es la de ese servicio.
 No hay. Ni en las apps, ni en la extensión, ni en el sitio web: sin cookies de
 rastreo, sin píxeles, sin SDK de terceros, sin informes de fallos automáticos.
 Klav no vende, no alquila ni comparte tus datos, y no los usa para publicidad
-ni para decidir sobre créditos o seguros.
+ni para decidir sobre créditos o seguros. El único *script* de fuera en el
+sitio web es Cloudflare Turnstile en el formulario de la beta, cuando está
+encendido (abajo, «La lista de espera de klav.dev»).
 
 ## La lista de espera de klav.dev
 
@@ -158,8 +161,15 @@ Si pides una invitación a la beta de nuestro servidor, el sitio guarda tu
 correo, el idioma de la página y la fecha. Cuando te mandamos la invitación,
 guarda también que te la mandamos y cuándo, y a veces una nota nuestra (por
 ejemplo, «lista de espera»). Nada más: ni IP, ni navegador, ni cookies. Solo se
-usa para mandarte la invitación por correo. Para darte de baja en cualquier
-momento, escribe a `support@klav.dev` desde ese mismo correo.
+usa para mandarte la invitación por correo. Cuando nuestro sitio te manda la
+invitación por su cuenta, ese correo sale por el servicio de correo de
+Cloudflare (Cloudflare Email Sending), que recibe tu dirección y el texto del
+correo para entregarlo. Para dejar fuera a los bots, el formulario puede
+mostrar una verificación de Cloudflare Turnstile: mientras corre, Cloudflare ve
+tu dirección IP y señales de tu navegador, bajo su política de privacidad, y a
+nuestro sitio solo le dice si pasó. Nuestro sitio no le manda tu IP ni la
+guarda. Para darte de baja en cualquier momento, escribe a `support@klav.dev`
+desde ese mismo correo.
 
 ## Cuánto tiempo se guardan los datos
 
@@ -243,7 +253,7 @@ completo está en el repositorio.
 
 # Privacy policy
 
-**Last updated:** November 25, 2026
+**Last updated:** November 26, 2026
 
 ## Summary
 
@@ -360,16 +370,25 @@ privacy policy applies.
 None. Not in the apps, the extension or the website: no tracking cookies, no
 pixels, no third-party SDKs, no automatic crash reports. Klav does not sell,
 rent or share your data, and does not use it for advertising or for credit or
-insurance decisions.
+insurance decisions. The one outside script on the website is Cloudflare
+Turnstile on the beta invite form, when it is on (see "The klav.dev
+waitlist").
 
 ## The klav.dev waitlist
 
 If you request an invite to the beta of our server, the site stores your email
 address, the language of the page and the date. Once we send you the invite, it
 also stores that we sent it and when, and sometimes a note of ours (for
-example, "waitlist"). Nothing else: no IP address, no browser, no cookies. It is
-only used to email you the invite. To remove your address from the waitlist at
-any time, write to `support@klav.dev` from that address.
+example, "waitlist"). Nothing else: no IP address, no browser, no cookies. It
+is only used to email you the invite. When our site sends you the invite by
+itself, that email goes through Cloudflare's email service (Cloudflare Email
+Sending), which receives your address and the text of the email to deliver it.
+To keep bots out, the form may show a check from Cloudflare Turnstile: while it
+runs, Cloudflare sees your IP address and signals from your browser, under
+Cloudflare's privacy policy, and tells our site only whether the check passed.
+Our site doesn't send it your IP address, and doesn't keep it. To remove your
+address from the waitlist at any time, write to `support@klav.dev` from that
+address.
 
 ## How long data is kept
 

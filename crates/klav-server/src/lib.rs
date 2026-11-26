@@ -38,8 +38,8 @@ mod validate;
 mod vaultdb;
 
 pub use config::{
-    ApnsConfig, Config, ConfigError, Limits, LogConfig, LogFormat, PushConfig, RateLimitConfig,
-    RetentionConfig, SessionConfig,
+    ApnsConfig, Config, ConfigError, InvitesConfig, Limits, LogConfig, LogFormat,
+    MIN_AUTO_INVITE_TOKEN_BYTES, PushConfig, RateLimitConfig, RetentionConfig, SessionConfig,
 };
 pub use db::{AdminDbError, DbError};
 pub use keys::KeysError;
