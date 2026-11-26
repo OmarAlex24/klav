@@ -13,6 +13,12 @@ publish.workspace = true
 # and the optional breach check (Have I Been Pwned, off by default).
 # zxcvbn's dictionaries weigh about 1 MB, so klav-wasm never builds this.
 health = ["dep:zxcvbn", "klav-core/breach-check"]
+# Klav Cloud's hosted proxy (ADR 0051): the account's signature on its
+# enroll request. Off by default: it turns on klav-core's
+# `nitro-attestation`, which the Mac and iOS apps don't carry yet (ADR 0051
+# §14, the DMG's cap). Layer 5 decides where it turns on; today only the
+# enclave's tests in klav-proxy use it.
+hosted-proxy = ["klav-core/nitro-attestation"]
 
 [dependencies]
 klav-core = { workspace = true, features = ["rp-id"] }

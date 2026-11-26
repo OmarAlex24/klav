@@ -824,6 +824,10 @@ jobs:
           # their vectors: no binary turns the feature on yet, so the
           # workspace run above does not build it.
           cargo test -p klav-core --features nitro-attestation --locked --lib nitro
+          # The enclave engine and klav-nitro-parent (ADR 0051 layer 3), with
+          # klav-core's fake NSM: no default build turns them on. The real
+          # /dev/nsm and vsock code compiles here, on Linux.
+          cargo test -p klav-proxy --features enclave-testkit,nitro-parent --locked
           # Swift bindings of klav-ffi (uniffi, library mode; ADR 0018).
           cargo build -p klav-ffi --features bindgen --locked
           target/debug/uniffi-bindgen generate --library target/debug/libklav_ffi.so \
@@ -898,6 +902,9 @@ jobs:
           cargo clippy -p klav-daemon --no-default-features --lib --locked -- -D warnings
           # klav-core with the Nitro attestation feature (ADR 0051).
           cargo clippy -p klav-core --features nitro-attestation --all-targets --locked -- -D warnings
+          # The enclave build as it ships, and with its tests (ADR 0051 layer 3).
+          cargo clippy -p klav-proxy --features enclave,nitro-parent --locked -- -D warnings
+          cargo clippy -p klav-proxy --features enclave-testkit,nitro-parent --all-targets --locked -- -D warnings
           EOF
 
       - name: "test (postgres): start"

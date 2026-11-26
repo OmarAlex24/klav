@@ -12,12 +12,14 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use super::attestation::{verify_document_with_root, verify_hosted_proxy_with_root};
+use super::hosted::{HandoffKey, seal_handoff_with_rng};
 use super::manifest::verify_manifest_with_keys;
 use super::testkit::*;
 use super::tests::*;
 use super::*;
 use crate::crypto::identity::IdentityKeyPair;
 use crate::crypto::sign::Signature as EdSignature;
+use crate::crypto::vectors::FixedRng;
 use crate::ids::{AccountId, AgentId};
 
 const ENCODING: &str = "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.";
@@ -259,9 +261,28 @@ fn render_attestation() -> Value {
     let joiner_nonce = det::<32>("handoff nonce from holder");
     let holder_pcr0 = test_pcr(0);
     let joiner_pcr0 = det::<48>("joiner pcr0");
+    let info = handoff_info(&holder_pcr0, &joiner_pcr0, &joiner_nonce, &holder_nonce);
+    let mix_os = det::<32>("hosted seed os random");
+    let mix_entropy = det::<32>("hosted seed nsm entropy");
+    let mixed = HostedSeed::mix(&mix_os, &mix_entropy);
+    let service = hosted_service_keys(&seed);
+    let gen0 = derive_account_keys(&seed, account, 0);
+    let registration = sign_hosted_registration(&service, account, agent, gen0.public(), 0);
+    let joiner_secret = det::<32>("handoff joiner x25519");
+    let joiner = HandoffKey::from_secret(&joiner_secret);
+    let handoff_state = br#"{"v":1,"accounts":[]}"#;
+    let ikm_e = det::<32>("handoff ikm_e");
+    let sealed = seal_handoff_with_rng(
+        &seed,
+        handoff_state,
+        &joiner.public(),
+        &info,
+        &mut FixedRng(ikm_e.to_vec()),
+    )
+    .expect("seals");
 
     json!({
-        "description": "AWS Nitro Enclaves attestation (ADR 0051): the pinned Root-G1, a real document of a debug-mode enclave, a synthetic AWS-format P-384 chain with a document that verifies and mutated documents (each re-signed) that must be refused, the per-account keys, the binding, the hand-off info and the enroll signature",
+        "description": "AWS Nitro Enclaves attestation (ADR 0051): the pinned Root-G1, a real document of a debug-mode enclave, a synthetic AWS-format P-384 chain with a document that verifies and mutated documents (each re-signed) that must be refused, the per-account keys, the binding, the hand-off info, a sealed hand-off (kind 0x28), the seed mix, the service key with its registration mark and the enroll signature",
         "spec": "docs/especificacion-cripto.md §15",
         "format_version": 1,
         "encoding": ENCODING,
@@ -308,7 +329,25 @@ fn render_attestation() -> Value {
                 "joiner_pcr0": hx(&joiner_pcr0),
                 "holder_document_nonce": hx(&joiner_nonce),
                 "joiner_document_nonce": hx(&holder_nonce),
-                "info": hx(&handoff_info(&holder_pcr0, &joiner_pcr0, &joiner_nonce, &holder_nonce)),
+                "info": hx(&info),
+                "joiner_x25519_secret": hx(&joiner_secret),
+                "joiner_x25519_public": hx(&joiner.public()),
+                "state": hx(handoff_state),
+                "ikm_e": hx(&ikm_e),
+                "sealed": hx(&sealed),
+            },
+            "seed_mix": {
+                "os_random": hx(&mix_os),
+                "nsm_entropy": hx(&mix_entropy),
+                "seed": hx(mixed.expose()),
+            },
+            "service": {
+                "public_identity": hx(&service.public().encode()),
+                "registration": {
+                    "generation": 0,
+                    "agent_public_identity": hx(&gen0.public().encode()),
+                    "signature": hx(&registration.to_bytes()),
+                },
             },
         },
     })
@@ -373,6 +412,41 @@ fn check_attestation(stored: &Value) {
             assert_eq!(doc.user_data(), Some(binding.as_slice()));
         }
     }
+
+    let hosted = &stored["hosted"];
+    let handoff = &hosted["handoff"];
+    let joiner = HandoffKey::from_secret(
+        &unhex(&handoff["joiner_x25519_secret"])
+            .try_into()
+            .expect("32"),
+    );
+    let (opened, state) = open_handoff(
+        &joiner,
+        &unhex(&handoff["sealed"]),
+        &unhex(&handoff["info"]),
+    )
+    .expect("the stored hand-off opens");
+    assert_eq!(opened.expose().to_vec(), unhex(&hosted["seed"]));
+    assert_eq!(state.to_vec(), unhex(&handoff["state"]));
+    let service = &hosted["service"];
+    let service_public =
+        crate::crypto::identity::PublicIdentity::decode(&unhex(&service["public_identity"]))
+            .expect("public identity");
+    let reg = &service["registration"];
+    let agent_public =
+        crate::crypto::identity::PublicIdentity::decode(&unhex(&reg["agent_public_identity"]))
+            .expect("public identity");
+    assert_eq!(
+        verify_hosted_registration(
+            &service_public,
+            AccountId::from_bytes(unhex(&hosted["account_id"]).try_into().expect("16")),
+            AgentId::from_bytes(unhex(&hosted["agent_id"]).try_into().expect("16")),
+            &agent_public,
+            0,
+            &EdSignature::from_bytes(unhex(&reg["signature"]).try_into().expect("64")),
+        ),
+        Ok(())
+    );
 
     let enroll = &stored["hosted"]["enroll"];
     let public = crate::crypto::identity::PublicIdentity::decode(&unhex(&enroll["account_public"]))

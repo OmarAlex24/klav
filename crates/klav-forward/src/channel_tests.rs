@@ -19,8 +19,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use super::channel::{
-    AnyChannelKey, PinnedProxy, certified_with, client_config, peer_key, server_config,
+    AnyChannelKey, KeysByName, PinnedProxy, certified_with, client_config, peer_key, server_config,
+    server_config_by_name,
 };
+use super::forward::{LEGACY_SERVER_NAME, server_name_for};
 
 /// What each end saw: the server's peer key, or that it failed; and
 /// whether the client's round trip worked.
@@ -30,6 +32,20 @@ struct Outcome {
 }
 
 async fn run(server: Arc<rustls::ServerConfig>, client: Arc<rustls::ClientConfig>) -> Outcome {
+    run_named(
+        server,
+        client,
+        ServerName::try_from("proxy.invalid").expect("name"),
+    )
+    .await
+}
+
+/// [`run`], with the client sending `name` (SNI).
+async fn run_named(
+    server: Arc<rustls::ServerConfig>,
+    client: Arc<rustls::ClientConfig>,
+    name: ServerName<'static>,
+) -> Outcome {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let serve = tokio::spawn(async move {
@@ -46,7 +62,6 @@ async fn run(server: Arc<rustls::ServerConfig>, client: Arc<rustls::ClientConfig
         Ok::<_, String>(key)
     });
     let tcp = TcpStream::connect(addr).await.expect("connect");
-    let name = ServerName::try_from("proxy.invalid").expect("name");
     let client_round_trip = async {
         let mut tls = TlsConnector::from(client).connect(name, tcp).await.ok()?;
         tls.write_all(b"ping").await.ok()?;
@@ -218,4 +233,120 @@ fn any_channel_key(provider: &rustls::crypto::CryptoProvider) -> AnyChannelKey {
 
 fn pinned(provider: &rustls::crypto::CryptoProvider, pin: [u8; 32]) -> PinnedProxy {
     PinnedProxy::with_algorithms(pin, provider.signature_verification_algorithms)
+}
+
+/// ADR 0051 §3.4: the forwarder sends the URL's host as SNI; an IP literal
+/// sends none; a host that is not a name falls back to the old fixed one.
+#[test]
+fn the_server_name_is_the_urls_host() {
+    let dns = |s: &str| ServerName::try_from(s.to_owned()).expect("name");
+    for (address, expected) in [
+        (
+            "a0123abcd.proxy.klav.dev:443",
+            dns("a0123abcd.proxy.klav.dev"),
+        ),
+        (
+            "A0123ABCD.Proxy.Klav.Dev:443",
+            dns("a0123abcd.proxy.klav.dev"),
+        ),
+        ("proxy.example.com:8443", dns("proxy.example.com")),
+        ("127.0.0.1:4443", dns("127.0.0.1")),
+        ("[::1]:4443", dns("::1")),
+        ("[2001:db8::7]:443", dns("2001:db8::7")),
+        ("under_score!:443", dns(LEGACY_SERVER_NAME)),
+        (":443", dns(LEGACY_SERVER_NAME)),
+        ("no-port", dns(LEGACY_SERVER_NAME)),
+        ("[::1", dns(LEGACY_SERVER_NAME)),
+    ] {
+        assert_eq!(server_name_for(address), expected, "{address}");
+    }
+    assert!(matches!(
+        server_name_for("[::1]:4443"),
+        ServerName::IpAddress(_)
+    ));
+    assert!(matches!(
+        server_name_for("10.0.0.7:443"),
+        ServerName::IpAddress(_)
+    ));
+}
+
+/// A hosted proxy (keys by name): the account's name gets the account's
+/// key; the fixed name of an older forwarder, another account's name and
+/// no name at all get nothing, and the handshake fails closed.
+#[tokio::test]
+async fn keys_by_name_serve_only_the_named_account() {
+    let (a, pin_a) = proxy();
+    let (b, pin_b) = proxy();
+    let keys = Arc::new(KeysByName::default());
+    keys.insert("a0a.proxy.klav.dev", TlsSigner::server(&a))
+        .expect("insert");
+    keys.insert("A0B.proxy.klav.dev", TlsSigner::server(&b))
+        .expect("insert");
+    assert!(keys.contains("a0b.PROXY.klav.dev"));
+    assert!(
+        keys.insert("a0c.proxy.klav.dev", TlsSigner::channel_key())
+            .is_err()
+    );
+    let server = server_config_by_name(Arc::clone(&keys)).expect("server");
+    let client = |pin| Arc::new(client_config(TlsSigner::channel_key(), pin).expect("client"));
+    let name = |s: &str| server_name_for(&format!("{s}:443"));
+
+    let ok = run_named(
+        Arc::clone(&server),
+        client(pin_a),
+        name("a0a.proxy.klav.dev"),
+    )
+    .await;
+    assert!(ok.server.is_ok() && ok.client_round_trip, "account A");
+    let ok = run_named(
+        Arc::clone(&server),
+        client(pin_b),
+        name("a0b.proxy.klav.dev"),
+    )
+    .await;
+    assert!(ok.server.is_ok() && ok.client_round_trip, "account B");
+
+    // A's pin with B's name: B's key is presented, and the pin refuses it.
+    let crossed = run_named(
+        Arc::clone(&server),
+        client(pin_a),
+        name("a0b.proxy.klav.dev"),
+    )
+    .await;
+    assert_refused(&crossed, "A's pin at B's name");
+    // An older forwarder: the fixed name matches no account.
+    let legacy = run_named(
+        Arc::clone(&server),
+        client(pin_a),
+        ServerName::try_from(LEGACY_SERVER_NAME).expect("name"),
+    )
+    .await;
+    assert_refused(&legacy, "the fixed name");
+    // An IP literal sends no SNI at all.
+    let none = run_named(Arc::clone(&server), client(pin_a), name("127.0.0.1")).await;
+    assert_refused(&none, "no SNI");
+    // A removed account is gone at once.
+    keys.remove("a0a.proxy.klav.dev");
+    let removed = run_named(server, client(pin_a), name("a0a.proxy.klav.dev")).await;
+    assert_refused(&removed, "a removed account");
+}
+
+/// A self-hosted proxy ignores SNI: the new forwarder (the URL's host) and
+/// an older one (the fixed name) both reach it.
+#[tokio::test]
+async fn a_self_hosted_proxy_ignores_the_server_name() {
+    let (identity, pin) = proxy();
+    for name in [
+        server_name_for("proxy.example.com:443"),
+        server_name_for("127.0.0.1:443"),
+        ServerName::try_from(LEGACY_SERVER_NAME).expect("name"),
+    ] {
+        let server = server_config(TlsSigner::server(&identity)).expect("server");
+        let client = Arc::new(client_config(TlsSigner::channel_key(), pin).expect("client"));
+        let outcome = run_named(server, client, name.clone()).await;
+        assert!(
+            outcome.server.is_ok() && outcome.client_round_trip,
+            "{name:?}"
+        );
+    }
 }

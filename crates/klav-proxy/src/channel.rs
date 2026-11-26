@@ -130,10 +130,27 @@ pub struct Peer {
     pub key: [u8; 32],
 }
 
+/// What a channel connection runs over once its handshake is done: TLS
+/// over TCP here, TLS over vsock or a test transport in Klav Cloud's
+/// enclave (ADR 0051 §1).
+pub trait ChannelIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static {}
+
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> ChannelIo for T {}
+
 /// A connection that finished its handshake, and its slot.
 pub struct Accepted {
-    io: TlsStream<TcpStream>,
+    io: Box<dyn ChannelIo>,
     _slot: OwnedSemaphorePermit,
+}
+
+impl Accepted {
+    /// A connection the hosted enclave accepted and routed to this
+    /// account's listener (ADR 0051 §3.4), holding one of `slots`; `None`
+    /// when they are all taken.
+    pub fn routed(io: Box<dyn ChannelIo>, slots: &Arc<Semaphore>) -> Option<Self> {
+        let slot = Arc::clone(slots).try_acquire_owned().ok()?;
+        Some(Self { io, _slot: slot })
+    }
 }
 
 /// The TLS listener: hands [`serve`] only connections whose handshake is
@@ -215,8 +232,15 @@ pub async fn bind_with(
                     tracing::debug!(%addr, "channel full: connection closed");
                     return;
                 };
+                let io: TlsStream<TcpStream> = io;
                 let _ = tx
-                    .send((Accepted { io, _slot: slot }, Peer { addr, key }))
+                    .send((
+                        Accepted {
+                            io: Box::new(io),
+                            _slot: slot,
+                        },
+                        Peer { addr, key },
+                    ))
                     .await;
             });
         }
@@ -229,6 +253,21 @@ pub async fn bind_with(
 }
 
 impl ChannelListener {
+    /// A listener fed by someone else's acceptor: Klav Cloud's enclave
+    /// finishes each handshake itself, picks the account by SNI and sends
+    /// the connection to that account's listener (ADR 0051 §3.4).
+    pub fn from_receiver(
+        ready: mpsc::Receiver<(Accepted, Peer)>,
+        local: SocketAddr,
+        limits: ChannelLimits,
+    ) -> Self {
+        Self {
+            ready,
+            local,
+            limits,
+        }
+    }
+
     /// The address it listens on.
     pub fn local_addr(&self) -> SocketAddr {
         self.local
@@ -290,7 +329,8 @@ pub async fn serve(
     serve_routes(listener, state, routes, stop).await
 }
 
-/// [`serve`] with these routes (tests add slow ones).
+/// [`serve`] with these routes (tests add slow ones; Klav Cloud's enclave
+/// adds its per-account quotas, ADR 0051 §3.3).
 pub(crate) async fn serve_routes(
     mut listener: ChannelListener,
     state: Arc<ProxyState>,

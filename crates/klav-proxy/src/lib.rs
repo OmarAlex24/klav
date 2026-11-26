@@ -19,6 +19,8 @@ pub mod claims;
 pub mod cli;
 pub mod counts;
 mod cuts;
+#[cfg(feature = "enclave")]
+pub mod enclave;
 pub mod errors;
 pub mod heartbeat;
 pub mod listener;
@@ -26,11 +28,15 @@ pub mod local;
 pub mod mcp;
 pub mod memory;
 pub mod net;
+#[cfg(feature = "nitro-parent")]
+pub mod parent;
 pub mod paths;
 pub mod profiles;
 pub mod proxy;
 pub mod rate;
 pub mod sandboxes;
+#[cfg(any(feature = "enclave", feature = "nitro-parent"))]
+pub mod transport;
 
 #[cfg(test)]
 mod channel_e2e_tests;

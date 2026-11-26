@@ -37,7 +37,7 @@ pub mod writes;
 pub use actions::{
     InjectRequest, Redactor, RunOutput, RunRequest, StreamRedactor, inject_file, run,
 };
-pub use agent::{Agent, AgentState, Registered, Registration};
+pub use agent::{Agent, AgentState, MemoryAgent, Registered, Registration};
 pub use browser::{
     BrowserTarget, FieldSelector, FillOptions, FillReport, Target, fill, fill_target,
 };

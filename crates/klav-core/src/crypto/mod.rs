@@ -35,6 +35,6 @@ pub mod wrap;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod vectors;
+pub(crate) mod vectors;
 
 pub use error::CryptoError;

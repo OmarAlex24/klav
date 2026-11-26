@@ -5,7 +5,8 @@
 use ed25519_dalek::Signer as _;
 
 use super::attestation::{
-    verify_document_with_root, verify_handoff_peer_with_root, verify_hosted_proxy_with_root,
+    verify_document_with_root, verify_handoff_holder_with_root, verify_handoff_peer_with_root,
+    verify_hosted_proxy_with_root,
 };
 use super::manifest::verify_manifest_with_keys;
 use super::testkit::*;
@@ -583,6 +584,54 @@ fn a_peer_is_handed_the_seed_only_when_it_qualifies() {
         check(&spec, &manifest, &own_newer),
         Err(NitroError::Downgrade)
     );
+}
+
+/// ADR 0051 §4.2 step 3, in both directions of a rolling upgrade: a new
+/// joiner takes the seed from an older holder (the holder refuses only an
+/// older joiner, above), and the joiner refuses a holder on another role,
+/// a revoked or unlisted image, or a document with another nonce.
+#[test]
+fn a_joiner_takes_the_seed_only_from_a_qualifying_holder() {
+    let f = Fixture::new();
+    let check = |spec: &DocSpec, manifest: &VerifiedManifest| {
+        verify_handoff_holder_with_root(
+            &spec.build(&f.chain),
+            &f.chain.root,
+            manifest,
+            &f.nonce,
+            NOW_MS,
+        )
+        .map(|h| h.image.version())
+    };
+    // The holder runs 0.12.0; the manifest also lists a newer 0.13.0,
+    // which the joiner runs: an older holder is accepted.
+    let newer: ImageLine = (
+        "0.13.0",
+        det("newer 0"),
+        det("newer 1"),
+        det("newer 2"),
+        "current",
+    );
+    let manifest = manifest_from(&[newer, current_image()]);
+    let spec = f.spec();
+    assert_eq!(check(&spec, &manifest), Ok((0, 12, 0)));
+    // No public key is needed from the holder.
+    assert_eq!(spec.public_key, None);
+
+    let mut role = spec.clone();
+    role.set_pcr(3, &det::<48>("someone else's role"));
+    assert_eq!(check(&role, &manifest), Err(NitroError::ParentRole));
+
+    let mut unlisted = spec.clone();
+    unlisted.set_pcr(0, &det::<48>("an image nobody listed"));
+    assert_eq!(check(&unlisted, &manifest), Err(NitroError::ImageNotListed));
+
+    let revoked = manifest_from(&[("0.12.0", test_pcr(0), test_pcr(1), test_pcr(2), "revoked")]);
+    assert_eq!(check(&spec, &revoked), Err(NitroError::ImageRevoked));
+
+    let mut other_nonce = spec.clone();
+    other_nonce.nonce = Some(det::<32>("another nonce").to_vec());
+    assert_eq!(check(&other_nonce, &manifest), Err(NitroError::Nonce));
 }
 
 // ---------------------------------------------------------------- manifest --

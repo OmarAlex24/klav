@@ -1142,15 +1142,32 @@ impl Raw {
 
     /// The key of `config`.
     pub(crate) async fn with(config: &Arc<rustls::ClientConfig>, addr: SocketAddr) -> Self {
+        Self::named(
+            config,
+            addr,
+            rustls::pki_types::ServerName::try_from("klav-proxy").expect("name"),
+        )
+        .await
+        .expect("handshake")
+    }
+
+    /// [`Raw::with`], sending `name` as SNI; `None` when the handshake
+    /// fails (Klav Cloud's enclave routes by SNI, ADR 0051 §3.4).
+    pub(crate) async fn named(
+        config: &Arc<rustls::ClientConfig>,
+        addr: SocketAddr,
+        name: rustls::pki_types::ServerName<'static>,
+    ) -> Option<Self> {
         let tcp = tokio::net::TcpStream::connect(addr).await.expect("tcp");
-        let io = tokio_rustls::TlsConnector::from(Arc::clone(config))
-            .connect(
-                rustls::pki_types::ServerName::try_from("klav-proxy").expect("name"),
-                tcp,
-            )
+        let mut io = tokio_rustls::TlsConnector::from(Arc::clone(config))
+            .connect(name, tcp)
             .await
-            .expect("handshake");
-        Self { io }
+            .ok()?;
+        // In TLS 1.3 a refused client key or a server that found no key
+        // for the name shows on the first round trip: flush and peek.
+        use tokio::io::AsyncWriteExt;
+        io.flush().await.ok()?;
+        Some(Self { io })
     }
 
     pub(crate) async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
@@ -1161,7 +1178,7 @@ impl Raw {
 
     /// A whole answer (head and a `content-length` body), or `None` when
     /// the connection closed or nothing came within `wait`.
-    async fn answer(&mut self, wait: std::time::Duration) -> Option<(u16, String)> {
+    pub(crate) async fn answer(&mut self, wait: std::time::Duration) -> Option<(u16, String)> {
         self.whole(wait)
             .await
             .map(|(status, _, body)| (status, body))
@@ -1888,12 +1905,14 @@ async fn a_sandbox_call_in_ask_waits_for_its_own_approval() {
 
 /// Every line this test binary logs, from any thread: a sandbox's call
 /// runs on the runtime's workers, where a thread's own subscriber does not
-/// reach. Set once; a test reads only the lines of its own sandbox.
-fn global_log() -> &'static crate::proxy::tests::LogBuffer {
+/// reach. Set once; a test reads only the lines of its own sandbox. Klav's
+/// own crates log at TRACE here, so a test that looks for what must never
+/// be logged sees every line.
+pub(crate) fn global_log() -> &'static crate::proxy::tests::LogBuffer {
     static LOG: std::sync::OnceLock<crate::proxy::tests::LogBuffer> = std::sync::OnceLock::new();
     LOG.get_or_init(|| {
         let log = crate::proxy::tests::LogBuffer::default();
-        tracing::subscriber::set_global_default(log.subscriber())
+        tracing::subscriber::set_global_default(log.verbose_subscriber())
             .expect("the only global subscriber");
         log
     })

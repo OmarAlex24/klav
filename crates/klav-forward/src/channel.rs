@@ -26,8 +26,14 @@
 //!   how every claim starts. The proxy's application layer decides, by the
 //!   SHA-256 of the key ([`peer_key`]), which sandbox, if any, the
 //!   connection speaks for. A client without a key fails the handshake.
+//! - [`KeysByName`] (Klav Cloud's hosted proxy, ADR 0051 §3.4): one raw
+//!   key per account, picked by the ClientHello's server name
+//!   (`a<agent_id>.proxy.klav.dev`). An unknown name, or none, aborts the
+//!   handshake: a forwarder that sends the old fixed name gets no key and
+//!   fails closed.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use klav_core::crypto::channel::{Side, TlsSigner};
 use klav_core::crypto::sandbox::{PIN_LEN, ed25519_from_spki, spki_matches_pin};
@@ -59,19 +65,95 @@ pub fn server_config(signer: TlsSigner) -> Result<Arc<ServerConfig>, Error> {
             "a client key cannot serve the channel".into(),
         ));
     }
-    let provider = provider();
     let key = certified(signer);
+    server_config_with(Arc::new(AlwaysResolvesServerRawPublicKeys::new(key)))
+}
+
+/// The hosted proxy's side (ADR 0051 §3.4): [`server_config`], with the
+/// raw key chosen by the ClientHello's server name from `keys`.
+pub fn server_config_by_name(keys: Arc<KeysByName>) -> Result<Arc<ServerConfig>, Error> {
+    server_config_with(keys)
+}
+
+fn server_config_with(
+    resolver: Arc<dyn rustls::server::ResolvesServerCert>,
+) -> Result<Arc<ServerConfig>, Error> {
+    let provider = provider();
     let mut config = ServerConfig::builder_with_provider(Arc::clone(&provider))
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_client_cert_verifier(Arc::new(AnyChannelKey::with_algorithms(
             provider.signature_verification_algorithms,
         )))
-        .with_cert_resolver(Arc::new(AlwaysResolvesServerRawPublicKeys::new(key)));
+        .with_cert_resolver(resolver);
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     // No resumption: every connection proves its key again.
     config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
     config.send_tls13_tickets = 0;
     Ok(Arc::new(config))
+}
+
+/// The raw keys of many proxies behind one listener, by server name (the
+/// hosted proxy: one per account, ADR 0051 §3.4). Names are compared in
+/// ASCII lowercase. No entry for the ClientHello's name (or no name at
+/// all) aborts the handshake: never a fallback key.
+#[derive(Default)]
+pub struct KeysByName {
+    by_name: RwLock<HashMap<String, Arc<CertifiedKey>>>,
+}
+
+impl std::fmt::Debug for KeysByName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names = self.by_name.read().map(|m| m.len()).unwrap_or(0);
+        f.debug_struct("KeysByName").field("names", &names).finish()
+    }
+}
+
+impl KeysByName {
+    /// Presents `signer` (a server key) to connections that name `name`.
+    pub fn insert(&self, name: &str, signer: TlsSigner) -> Result<(), Error> {
+        if signer.side() != Side::Server {
+            return Err(Error::General(
+                "a client key cannot serve the channel".into(),
+            ));
+        }
+        let key = certified(signer);
+        self.by_name
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name.to_ascii_lowercase(), key);
+        Ok(())
+    }
+
+    /// Stops presenting any key for `name`.
+    pub fn remove(&self, name: &str) {
+        self.by_name
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&name.to_ascii_lowercase());
+    }
+
+    /// Whether a key answers to `name`.
+    pub fn contains(&self, name: &str) -> bool {
+        self.by_name
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&name.to_ascii_lowercase())
+    }
+}
+
+impl rustls::server::ResolvesServerCert for KeysByName {
+    fn resolve(&self, hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let name = hello.server_name()?;
+        self.by_name
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&name.to_ascii_lowercase())
+            .cloned()
+    }
+
+    fn only_raw_public_keys(&self) -> bool {
+        true
+    }
 }
 
 /// The forwarder's side: TLS 1.3 only, the proxy accepted only with the

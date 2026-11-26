@@ -413,3 +413,47 @@ pub(crate) fn verify_handoff_peer_with_root<'m>(
         x25519,
     })
 }
+
+/// A holder that passed [`verify_handoff_holder`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffHolder<'m> {
+    /// Its image in the manifest.
+    pub image: &'m ManifestImage,
+    /// Its PCRs.
+    pub measurement: Measurement,
+}
+
+/// ADR 0051 §4.2 step 3: what a joining enclave checks of the holder before
+/// it takes a seed from it. Steps 2–4 and 6 of §2.2, plus: `nonce` is the
+/// joiner's, and PCR3 is one of the manifest's `parent_roles`.
+///
+/// Unlike [`verify_handoff_peer`] it neither asks for a `public_key` nor
+/// refuses an older image: in a rolling upgrade the holder runs the older
+/// image (§7.4), and the holder is the one that refuses a downgrade. That
+/// the manifest is the published one is the caller's check (§4.2).
+pub fn verify_handoff_holder<'m>(
+    document: &[u8],
+    manifest: &'m VerifiedManifest,
+    nonce: &[u8],
+    now_ms: u64,
+) -> Result<HandoffHolder<'m>, NitroError> {
+    verify_handoff_holder_with_root(document, chain::AWS_NITRO_ROOT_G1, manifest, nonce, now_ms)
+}
+
+pub(crate) fn verify_handoff_holder_with_root<'m>(
+    document: &[u8],
+    root: &[u8],
+    manifest: &'m VerifiedManifest,
+    nonce: &[u8],
+    now_ms: u64,
+) -> Result<HandoffHolder<'m>, NitroError> {
+    let doc = verify_document_with_root(document, root, now_ms)?;
+    doc.check_fresh(nonce, now_ms)?;
+    let measurement = doc.measurement()?;
+    let image = manifest.image_for(&measurement)?;
+    let role = doc.pcr(3).ok_or(NitroError::ParentRole)?;
+    if !manifest.parent_roles().contains(role) {
+        return Err(NitroError::ParentRole);
+    }
+    Ok(HandoffHolder { image, measurement })
+}
