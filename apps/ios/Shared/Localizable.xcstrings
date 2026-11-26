@@ -16261,12 +16261,12 @@
         }
       }
     },
-    "Your devices check the enclave’s attestation before anything is shared. Sandboxes then use Klav Cloud’s proxy; your own proxy keeps its credentials and keeps serving the local agents of the Mac it runs on.": {
+    "Your devices check the enclave’s attestation before anything is shared. Sandboxes then use Klav Cloud’s proxy; your own proxy keeps its credentials and keeps serving the local agents of the machine it runs on.": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tus dispositivos comprueban la atestación del enclave antes de compartir nada. Desde entonces los sandboxes usan el proxy de Klav Cloud; tu propio proxy conserva sus credenciales y sigue atendiendo a los agentes locales del Mac donde corre."
+            "value": "Tus dispositivos comprueban la atestación del enclave antes de compartir nada. Desde entonces los sandboxes usan el proxy de Klav Cloud; tu propio proxy conserva sus credenciales y sigue atendiendo a los agentes locales de la máquina donde corre."
           }
         }
       }

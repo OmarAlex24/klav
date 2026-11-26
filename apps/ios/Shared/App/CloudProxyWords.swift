@@ -61,7 +61,7 @@ enum CloudProxyWords {
     /// The sheet's text before «Use Klav Cloud Proxy» asks for Touch ID.
     static func useNote(replacesOwn: Bool) -> String {
         replacesOwn
-            ? String(localized: "Your devices check the enclave’s attestation before anything is shared. Sandboxes then use Klav Cloud’s proxy; your own proxy keeps its credentials and keeps serving the local agents of the Mac it runs on.")
+            ? String(localized: "Your devices check the enclave’s attestation before anything is shared. Sandboxes then use Klav Cloud’s proxy; your own proxy keeps its credentials and keeps serving the local agents of the machine it runs on.")
             : String(localized: "Your devices check the enclave’s attestation before anything is shared. Klav can’t see your credentials: only an enclave running an image Klav published holds them.")
     }
 

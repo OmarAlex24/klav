@@ -2329,3 +2329,129 @@ async fn the_person_verifies_the_enclave_before_every_wrap() {
     // A grant can't reach it any more: no proxy, and it was revoked here.
     assert!(grant(&mut person, "Third", &upstream).await.is_err());
 }
+
+/// Q5 (a): the person's own proxy stays beside Klav Cloud's. `use klav`
+/// with an own proxy that holds a credential warns instead of refusing,
+/// and the own proxy keeps its agent and its grant (it goes on serving the
+/// local agents of its machine); new grants go to the hosted proxy.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_own_proxy_keeps_its_credentials_beside_klav_cloud() {
+    use klav_client::hosted_proxy::HostedState;
+    use klav_core::model::preferences::ProxyMode;
+
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let enclave = world.enclave_with(&img, &server.url, QuotaLimits::default());
+    enclave.start_fresh().expect("seed");
+    key_server_for(&mut server, &enclave);
+    let host = reqwest::Url::parse(&server.url)
+        .expect("url")
+        .host_str()
+        .expect("host")
+        .to_owned();
+    let release = FakeReleaseKey::new(RELEASE);
+    let seq1 = manifest_for(1, &[(&img, "current")], &release, &host, now() - 60_000, 20);
+    enclave.load_manifest(seq1).expect("manifest");
+    let parent =
+        tampering_parent(api(&enclave).await, Arc::new(Mutex::new(Tamper::default()))).await;
+    let upstream = Upstream::start().await;
+
+    let email = "dee@example.com";
+    let mut person = account(&server, &dir, email, "tok_live_dee_0123456789abcdef").await;
+    add_item(&mut person, "Second", "tok_live_dee_second_0123456789").await;
+    person
+        .set_hosted_proxy_endpoint(Some(&parent))
+        .expect("endpoint");
+    person.set_hosted_proxy_test_anchors(world.nitro.root(), &[release.public()]);
+
+    // The person's own proxy, holding Northflank.
+    let own = Agent::register(
+        &Home::at(dir.path().join("agent-own")),
+        Registration {
+            name: "own-proxy".into(),
+            server: server.url.clone(),
+            email: email.into(),
+            note: None,
+            key_store: KeyStore::File {
+                path: dir.path().join("own.key"),
+            },
+        },
+    )
+    .await
+    .expect("register")
+    .0;
+    let prepared = person
+        .prepare_proxy_use(Some("own-proxy"))
+        .await
+        .expect("use own");
+    person.commit_proxy_use(prepared).await.expect("use own");
+    let mut credential = crate::sandbox_e2e_tests::credential_at(
+        "northflank",
+        &format!("https://upstream.test:{}", upstream.port),
+    );
+    credential.methods = vec!["GET".into()];
+    let prepared = person
+        .prepare_proxy_grant("Northflank", &credential, PairingCheck::InPrompt)
+        .await
+        .expect("grant own");
+    prepared.require_updated_devices(true).expect("ack");
+    assert!(
+        person
+            .commit_proxy_change(prepared)
+            .await
+            .expect("grant own")
+            .complete()
+    );
+    hosted_proxy_switch(&server, "enable", email);
+
+    // `use klav`: a warning, not a refusal.
+    let prepared = person.prepare_hosted_proxy_use().await.expect("prepare");
+    assert_eq!(prepared.view.state, HostedState::Verified);
+    assert!(
+        prepared
+            .warnings
+            .iter()
+            .any(|w| w.contains("own-proxy") && w.contains("keeps its credentials")),
+        "{:?}",
+        prepared.warnings
+    );
+    let hosted = prepared.agent_id;
+    person
+        .commit_hosted_proxy_use(prepared)
+        .await
+        .expect("commit");
+    let setting = person.preferences().expect("prefs").proxy();
+    assert_eq!(
+        (setting.mode, setting.agent_id),
+        (ProxyMode::Klav, Some(hosted))
+    );
+
+    // The own proxy is untouched: active, with Northflank in its grant.
+    let own_view = person
+        .agents()
+        .await
+        .expect("agents")
+        .into_iter()
+        .find(|a| a.id == own.id())
+        .expect("own proxy listed");
+    assert_eq!(own_view.status, AgentStatus::Active);
+    let items = own_view.grant.expect("grant").items;
+    assert_eq!(items.len(), 1, "{items:?}");
+
+    // New grants go to Klav Cloud's proxy, after its check.
+    assert!(
+        grant(&mut person, "Second", &upstream)
+            .await
+            .expect("grant")
+            .complete()
+    );
+    let status = person.proxy_status().await.expect("status");
+    assert_eq!(status.agent_id, Some(hosted));
+    assert_eq!(
+        status.credentials.len(),
+        1,
+        "only Second, on the hosted proxy"
+    );
+}

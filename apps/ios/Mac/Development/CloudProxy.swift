@@ -53,9 +53,8 @@ struct CloudProxyRow: View {
     var edge: Edge.Set = .top
 
     var body: some View {
-        // A stack, not a `Group`: an empty `Group` has no view to run
-        // `.task` on, so the row would never load. With nothing to show it
-        // has no size, and the parents use no spacing.
+        // With nothing to show the stack has no size, and the parents use
+        // no spacing: the gap to the neighbour comes only with content.
         VStack(alignment: .leading, spacing: 0) {
             if let info = model.cloudProxy {
                 content(info).padding(edge, 12)

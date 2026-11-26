@@ -530,7 +530,7 @@ Omar lo pidió y lo aceptó el 2026-11-26, con la opción (a) en Q1–Q7: Klav C
   - [x] El tope del DMG sube de 25 MB a 26 MB (Omar, 2026-11-26), porque `klav`, `klavd` y la app enlazan ya la verificación de la atestación
   - [ ] Fijar las llaves de la autoridad de publicación en `klav-core` (las crea Omar; hasta entonces toda compilación real falla cerrada con `no_release_key`). Bloquea la capa 6
   - [ ] Un perfil de red estricto del ADR 0044 firmado con la salida que declare el manifiesto
-  - [ ] `klav proxy grant --local` para el proxy propio del Mac con la cuenta en `klav` (hoy `grant` va al proxy de la cuenta)
+  - [ ] `klav proxy grant --local` para el proxy propio con la cuenta en `klav` (hoy `grant`, `revoke` e `issuer` van al proxy alojado, así que el grant del propio solo se revoca entero), y que `klav agent approve` siga negándose a darle proyectos enteros
   - [ ] Una comprobación diaria en segundo plano (hoy se comprueba al leer el estado y antes de cada grant)
   - [ ] Pedir que la persona confirme que todos sus dispositivos están actualizados al pasar a `klav` (hoy solo avisa de que un Klav anterior se niega a todo comando del proxy)
   - [ ] Medir el DMG publicado con la feature activa

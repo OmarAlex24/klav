@@ -14,8 +14,6 @@ struct CloudProxySection: View {
     @State private var busy = false
 
     var body: some View {
-        // A stack, not a `Group`: an empty `Group` has no view to run
-        // `.task` on, so the section would never load.
         VStack(alignment: .leading, spacing: 0) {
             if let info, info.needsAttention || CloudProxyWords.headline(info) != nil {
                 VStack(alignment: .leading, spacing: 8) {

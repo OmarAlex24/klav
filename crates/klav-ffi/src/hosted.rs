@@ -57,8 +57,9 @@ pub struct HostedProxyInfo {
     /// server or `klavd` older than it, or when it couldn't be read. The
     /// apps offer «Use Klav Cloud Proxy» only on `Some(true)`.
     pub entitled: Option<bool>,
-    /// The account uses its own proxy (an agent of the account): the button
-    /// says it replaces it, which needs that proxy revoked first.
+    /// The account uses its own proxy (an agent of the account): the note
+    /// under the button says sandboxes move to Klav Cloud's while the own
+    /// proxy keeps its credentials for its machine's local agents (Q5 (a)).
     pub replaces_own: bool,
     /// A short code of why, when not verified (`image_revoked`, …).
     pub reason: Option<String>,

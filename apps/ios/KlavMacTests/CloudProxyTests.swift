@@ -105,7 +105,7 @@ final class CloudProxyTests: XCTestCase {
     }
 
     /// The row loads itself when it appears, also while it shows nothing
-    /// yet (an empty `Group` never ran its `.task`).
+    /// yet: no pane has to call `loadCloudProxy` for it.
     @MainActor
     func testTheRowLoadsWhenItAppears() async throws {
         let engine = SampleEngine(locked: false, touchID: true)
