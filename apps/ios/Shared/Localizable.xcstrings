@@ -2554,6 +2554,16 @@
         }
       }
     },
+    "Attested: version %@, commit %@, checked just now.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Atestado: versión %@, commit %@, comprobado hace un momento."
+          }
+        }
+      }
+    },
     "Authy has no export": {
       "localizations": {
         "es": {
@@ -2723,6 +2733,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "llamó a %@"
+          }
+        }
+      }
+    },
+    "Channel": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Canal"
+          }
+        }
+      }
+    },
+    "Check again": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volver a comprobar"
           }
         }
       }
@@ -3503,6 +3533,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Línea de comandos"
+          }
+        }
+      }
+    },
+    "Commit": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Commit"
           }
         }
       }
@@ -4458,6 +4498,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Destruye también tu kit de emergencia: con él y tu contraseña se abre cualquier copia que quede."
+          }
+        }
+      }
+    },
+    "Details": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detalles"
           }
         }
       }
@@ -5657,6 +5707,16 @@
         }
       }
     },
+    "Hide details": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocultar detalles"
+          }
+        }
+      }
+    },
     "Hide other browser folders": {
       "localizations": {
         "es": {
@@ -6316,6 +6376,36 @@
         }
       }
     },
+    "It runs an image Klav revoked. Stop using it, then rotate the provider tokens it held.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Corre una imagen que Klav revocó. Deja de usarlo y luego rota los tokens de los proveedores que tenía."
+          }
+        }
+      }
+    },
+    "It served an older list of approved images than this device already checked.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entregó una lista de imágenes aprobadas más antigua que la que este dispositivo ya comprobó."
+          }
+        }
+      }
+    },
+    "It serves accounts of another Klav server.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Atiende cuentas de otro servidor de Klav."
+          }
+        }
+      }
+    },
     "It stays": {
       "localizations": {
         "es": {
@@ -6352,6 +6442,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Elemento: %@"
+          }
+        }
+      }
+    },
+    "Its attestation or its list of approved images doesn’t check out.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Su atestación o su lista de imágenes aprobadas no cuadra."
+          }
+        }
+      }
+    },
+    "Its list of approved images expired. That’s most likely a late release, not an attack.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Su lista de imágenes aprobadas caducó. Lo más probable es una versión que se retrasó, no un ataque."
           }
         }
       }
@@ -6714,6 +6824,76 @@
           "stringUnit": {
             "state": "translated",
             "value": "Klav las revisa en este Mac; nada sale de él."
+          }
+        }
+      }
+    },
+    "Klav Cloud": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klav Cloud"
+          }
+        }
+      }
+    },
+    "Klav Cloud can run your credential proxy in an attested enclave, so sandboxes keep working while your devices are off.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klav Cloud puede correr tu proxy de credenciales en un enclave atestado, para que los sandboxes sigan funcionando con tus dispositivos apagados."
+          }
+        }
+      }
+    },
+    "Klav Cloud’s proxy": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El proxy de Klav Cloud"
+          }
+        }
+      }
+    },
+    "Klav Cloud’s proxy agent is revoked or gone. Stop using it, or set it up again.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El agente del proxy de Klav Cloud está revocado o ya no existe. Deja de usarlo o vuelve a configurarlo."
+          }
+        }
+      }
+    },
+    "Klav Cloud’s proxy can’t be checked right now. Nothing new is shared with it until it can.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ahora no se puede comprobar el proxy de Klav Cloud. No se le comparte nada nuevo hasta que se pueda."
+          }
+        }
+      }
+    },
+    "Klav Cloud’s proxy couldn’t be verified. Klav won’t share new credentials with it.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo verificar el proxy de Klav Cloud. Klav no le compartirá credenciales nuevas."
+          }
+        }
+      }
+    },
+    "Klav Cloud’s proxy lost its keys. Set it up again to keep using your credentials from sandboxes.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El proxy de Klav Cloud perdió sus llaves. Vuelve a configurarlo para seguir usando tus credenciales desde los sandboxes."
           }
         }
       }
@@ -7884,6 +8064,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "macOS no quitó el proxy de credenciales de Ítems de inicio: %@"
+          }
+        }
+      }
+    },
+    "Manifest": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manifiesto"
           }
         }
       }
@@ -9699,6 +9889,36 @@
         }
       }
     },
+    "PCR0": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PCR0"
+          }
+        }
+      }
+    },
+    "PCR1": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PCR1"
+          }
+        }
+      }
+    },
+    "PCR2": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PCR2"
+          }
+        }
+      }
+    },
     "PIN": {
       "comment": "Field name",
       "localizations": {
@@ -11453,12 +11673,22 @@
         }
       }
     },
-    "Running on this Mac, at 127.0.0.1:%lld.": {
+    "Running on this Mac for its local agents, at 127.0.0.1:%@. Sandboxes use Klav Cloud’s proxy.": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Funciona en este Mac, en 127.0.0.1:%lld."
+            "value": "Funciona en este Mac para sus agentes locales, en 127.0.0.1:%@. Los sandboxes usan el proxy de Klav Cloud."
+          }
+        }
+      }
+    },
+    "Running on this Mac, at 127.0.0.1:%@.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Funciona en este Mac, en 127.0.0.1:%@."
           }
         }
       }
@@ -11480,6 +11710,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "sandbox %@"
+          }
+        }
+      }
+    },
+    "Set it up again": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volver a configurarlo"
+          }
+        }
+      }
+    },
+    "Set Klav Cloud’s proxy up again and move your credentials to it": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volver a configurar el proxy de Klav Cloud y pasarle tus credenciales"
           }
         }
       }
@@ -12908,6 +13158,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "¿Detener el otro klavd y usar el de esta app?"
+          }
+        }
+      }
+    },
+    "Stop using it": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dejar de usarlo"
+          }
+        }
+      }
+    },
+    "Stop using Klav Cloud’s proxy and change the keys of what it held": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dejar de usar el proxy de Klav Cloud y cambiar las llaves de lo que tenía"
           }
         }
       }
@@ -14472,6 +14742,26 @@
         }
       }
     },
+    "This version of Klav can’t check Klav Cloud’s proxy. Update Klav.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta versión de Klav no puede comprobar el proxy de Klav Cloud. Actualiza Klav."
+          }
+        }
+      }
+    },
+    "This version of Klav can’t verify it yet.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta versión de Klav todavía no puede verificarlo."
+          }
+        }
+      }
+    },
     "Through %@’s own command:": {
       "localizations": {
         "es": {
@@ -15124,6 +15414,26 @@
         }
       }
     },
+    "Use Klav Cloud Proxy": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar el proxy de Klav Cloud"
+          }
+        }
+      }
+    },
+    "Use Klav Cloud’s proxy as your credential proxy": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar el proxy de Klav Cloud como tu proxy de credenciales"
+          }
+        }
+      }
+    },
     "Use Klav’s (keep a copy)": {
       "localizations": {
         "es": {
@@ -15630,6 +15940,16 @@
         }
       }
     },
+    "What it already holds stays shared until you stop using it. Stopping changes the keys of those credentials; then rotate the tokens at each provider.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo que ya tiene sigue compartido hasta que dejes de usarlo. Al dejarlo cambian las llaves de esas credenciales; después rota los tokens en cada proveedor."
+          }
+        }
+      }
+    },
     "What it can do": {
       "localizations": {
         "es": {
@@ -15917,6 +16237,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "Escribiendo…"
+          }
+        }
+      }
+    },
+    "Your account isn’t entitled to Klav Cloud’s proxy any more, so it serves nothing for you.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu cuenta ya no tiene acceso al proxy de Klav Cloud, así que no te atiende."
+          }
+        }
+      }
+    },
+    "Your devices check the enclave’s attestation before anything is shared. Klav can’t see your credentials: only an enclave running an image Klav published holds them.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tus dispositivos comprueban la atestación del enclave antes de compartir nada. Klav no puede ver tus credenciales: solo las tiene un enclave que corre una imagen publicada por Klav."
+          }
+        }
+      }
+    },
+    "Your devices check the enclave’s attestation before anything is shared. Sandboxes then use Klav Cloud’s proxy; your own proxy keeps its credentials and keeps serving the local agents of the Mac it runs on.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tus dispositivos comprueban la atestación del enclave antes de compartir nada. Desde entonces los sandboxes usan el proxy de Klav Cloud; tu propio proxy conserva sus credenciales y sigue atendiendo a los agentes locales del Mac donde corre."
           }
         }
       }

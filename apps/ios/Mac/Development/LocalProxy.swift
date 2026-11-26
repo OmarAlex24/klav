@@ -13,6 +13,9 @@ struct LocalProxyBoard: Equatable {
     let state: LocalProxyState?
     /// The account's proxy (its agent ID), if the list says.
     let accountProxy: String?
+    /// The account uses Klav Cloud's proxy (ADR 0051): the one here is this
+    /// Mac's own, for its local agents (Q5 (a)), not another's.
+    var cloud = false
 
     /// It answers on its socket.
     var info: LocalProxyInfo? {
@@ -28,7 +31,7 @@ struct LocalProxyBoard: Equatable {
 
     /// A proxy runs here that isn't the account's: its socket is not
     /// asked to revoke the account's sandboxes.
-    var otherProxy: Bool { info != nil && accountProxy != nil && !onThisMac }
+    var otherProxy: Bool { info != nil && accountProxy != nil && !onThisMac && !cloud }
 
     /// Whether a proxy is registered here (its agent file), running or not.
     var registered: Bool {
@@ -70,7 +73,10 @@ enum LocalProxyWords {
             if board.otherProxy {
                 return String(localized: "Another credential proxy runs on this Mac (ID \(SandboxWords.idPrefix(info.proxyId))), not your account’s.")
             }
-            return String(localized: "Running on this Mac, at 127.0.0.1:\(Int64(info.port)).")
+            if board.cloud {
+                return String(localized: "Running on this Mac for its local agents, at 127.0.0.1:\(String(info.port)). Sandboxes use Klav Cloud’s proxy.")
+            }
+            return String(localized: "Running on this Mac, at 127.0.0.1:\(String(info.port)).")
         case .notRunning(let registered)?:
             if !registered { return String(localized: "No credential proxy is set up on this Mac.") }
             if agent == .requiresApproval {
@@ -127,7 +133,8 @@ extension MacModel {
 
     /// The proxy on this Mac against the account's proxy in the last list.
     var localProxyBoard: LocalProxyBoard {
-        LocalProxyBoard(state: localProxy, accountProxy: sandboxList?.proxy?.agentId)
+        LocalProxyBoard(state: localProxy, accountProxy: sandboxList?.proxy?.agentId,
+                        cloud: cloudProxy.map { $0.state != .notUsed } ?? false)
     }
 
     /// «Revoke» through the proxy on this Mac (E2.3): no signature and no

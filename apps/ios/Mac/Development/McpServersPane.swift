@@ -53,6 +53,7 @@ struct McpServersPane: View {
     private func content(_ info: McpServersInfo) -> some View {
         // Local clients reach these servers only through the proxy on this
         // Mac (ADR 0049 §3.1): whether it runs, and Start or Stop.
+        CloudProxyRow(edge: .bottom)
         if info.proxy != nil {
             LocalProxyRow().padding(.bottom, 20)
         }

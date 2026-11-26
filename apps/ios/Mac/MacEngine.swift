@@ -65,6 +65,11 @@ protocol MacEngine: VaultEngine {
     // with Touch ID in klavd or the master password.
     func mcpServers() throws -> McpServersInfo
     func turnMcpGatewayOnWithPassword(everyDeviceUpdated: Bool, password: String?) throws -> Bool
+    // Klav Cloud's proxy (ADR 0051): its row, as klavd checks it now (the
+    // signed manifest and a fresh attestation), and «Use», «Stop using it»
+    // and «Set it up again», with Touch ID in klavd or the master password.
+    func hostedProxy() throws -> HostedProxyInfo
+    func hostedProxyActWithPassword(action: HostedProxyAction, password: String?) throws -> HostedProxyOutcomeInfo
     // The credential proxy on this Mac (ADR 0036 E3.5, layer 11), through
     // its local socket: never klavd, so both work while Klav is locked.
     // Revoking asks nothing and only takes access away (E2.3).

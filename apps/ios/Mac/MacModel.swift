@@ -185,6 +185,12 @@ final class MacModel: ObservableObject, RequestsModel {
     /// The credential proxy on this Mac, as its local socket last answered
     /// (ADR 0036 E3.5): nil until the first read. Read while locked too.
     @Published var localProxy: LocalProxyState?
+    /// Klav Cloud's proxy (ADR 0051), as klavd last checked it; what its
+    /// last action said, and why the last read or action failed.
+    @Published var cloudProxy: HostedProxyInfo?
+    @Published var cloudProxyNotes: [String] = []
+    @Published var cloudProxyProblem: String?
+    @Published var cloudProxyBusy = false
     /// When `sandboxList` was read, by this Mac's clock (Unix ms): the
     /// heartbeat's age grows from it, and the footer says it.
     @Published var sandboxListReadMs: Int64 = 0

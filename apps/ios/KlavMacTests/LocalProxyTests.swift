@@ -29,7 +29,7 @@ final class LocalProxyTests: XCTestCase {
         XCTAssertEqual(mine.connected("b7c8d9e0-1f2a-4b3c-8d4e-5f6a7b8c9d0e"), false)
         XCTAssertNil(mine.connected("not-there"))
         XCTAssertEqual(LocalProxyWords.status(mine, agent: .enabled),
-                       String(localized: "Running on this Mac, at 127.0.0.1:\(Int64(8790))."))
+                       "Running on this Mac, at 127.0.0.1:8790.")
 
         // Another proxy runs here: never the account's rows, never «On this Mac».
         let other = LocalProxyBoard(state: .running(info: info(proxy: SandboxSamples.oldProxy)),
