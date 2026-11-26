@@ -11,6 +11,7 @@ mod cli;
 mod clients;
 mod commands;
 mod context;
+mod dotenv;
 mod error;
 mod input;
 mod mcp;
@@ -31,8 +32,8 @@ use klav_client::Home;
 
 use crate::cli::{Cli, Command};
 use crate::commands::{
-    account, agent, client, deletion, extension, generate, generated, health, import, inject, item,
-    log, presence as presence_command, proxy, run as run_command, sandbox, secret_request,
+    account, agent, client, deletion, env, extension, generate, generated, health, import, inject,
+    item, log, presence as presence_command, proxy, run as run_command, sandbox, secret_request,
     skill as skill_command, task, vault,
 };
 use crate::context::Ctx;
@@ -60,6 +61,7 @@ async fn run(cli: Cli) -> CliResult<()> {
         Command::Item(cmd) => item::item_cmd(&mut ctx, cmd).await,
         Command::Totp(args) => item::totp_cmd(&mut ctx, args).await,
         Command::Import(args) => import::import_cmd(&mut ctx, args).await,
+        Command::Env(cmd) => env::env_cmd(&mut ctx, cmd).await,
         Command::Run(args) => run_command::run_cmd(&mut ctx, args).await,
         Command::Inject(args) => inject::inject_cmd(&mut ctx, args).await,
         Command::Agent(cmd) => agent::agent_cmd(&mut ctx, cmd).await,

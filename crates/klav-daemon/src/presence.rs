@@ -89,6 +89,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::Totp { .. }
         | Request::GeneratedValue { .. }
         | Request::Resolve { .. }
+        | Request::EnvironmentImportReview { .. }
         | Request::Autofill { .. } => Gate::Window,
         Request::ExtensionAttach { .. } => Gate::ExtensionConnection,
         Request::PasskeyGet { .. } | Request::PasskeyCreate { .. } => Gate::PasskeyWindow,
@@ -114,7 +115,9 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::McpGatewayOn { .. }
         | Request::ResumeAgents { .. }
         | Request::CancelAccountDeletion { .. }
-        | Request::ConfirmPresence { .. } => Gate::AlreadyAsks,
+        | Request::ConfirmPresence { .. }
+        | Request::EnvironmentSave { .. }
+        | Request::EnvironmentTrash { .. } => Gate::AlreadyAsks,
         Request::PasskeyUv {
             window: Some(_), ..
         }
@@ -145,6 +148,8 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::CreateVault { .. }
         | Request::CreateProject { .. }
         | Request::SetProjectRepos { .. }
+        | Request::Environments { .. }
+        | Request::Environment { .. }
         | Request::List { .. }
         | Request::View { reveal: false, .. }
         | Request::Create { .. }
@@ -222,6 +227,7 @@ pub(crate) fn take_password(request: &mut Request) -> Option<SecretText> {
         | Request::Totp { password, .. }
         | Request::GeneratedValue { password, .. }
         | Request::Resolve { password, .. }
+        | Request::EnvironmentImportReview { password, .. }
         | Request::Autofill { password, .. } => password.take(),
         _ => None,
     }
@@ -381,7 +387,11 @@ pub(crate) enum Purpose<'a> {
     /// A value that asks every time (ADR 0032's protected set), from any
     /// peer, a held connection included. `reason` is the prompt.
     #[cfg_attr(not(test), allow(dead_code))]
-    EveryTime { reason: &'a str },
+    EveryTime {
+        reason: &'a str,
+        /// The one value it hands out, for the client's prompt.
+        value: Option<&'a AskValue>,
+    },
 }
 
 /// What a master password sent again after `presence_required` must be
@@ -1146,7 +1156,12 @@ impl Presence {
             }
             let value = match (lasts, purpose) {
                 (None, Purpose::Window { value }) => Some(value.clone()),
+                (_, Purpose::EveryTime { value, .. }) => value.cloned(),
                 _ => None,
+            };
+            let protected = match purpose {
+                Purpose::EveryTime { reason, .. } => Some(reason.to_owned()),
+                Purpose::Window { .. } => None,
             };
             let pending = Pending {
                 generation,
@@ -1158,6 +1173,7 @@ impl Presence {
                     lasts: lasts.map(wire_lasts),
                     value,
                     browser: None,
+                    protected,
                 },
                 bound: bound.clone(),
                 version,
@@ -1379,7 +1395,7 @@ fn reason(
     lang: Lang,
 ) -> String {
     match (purpose, lasts) {
-        (Purpose::EveryTime { reason }, _) => reason.to_owned(),
+        (Purpose::EveryTime { reason, .. }, _) => reason.to_owned(),
         // No window: the value, and who it is for (Omar's decision C).
         (Purpose::Window { value }, None) => Prompt::Value {
             ask: value_ask(value),

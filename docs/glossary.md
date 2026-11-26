@@ -96,7 +96,7 @@ When the UI and the code disagree, prose follows the UI and identifiers are quot
 | ¿De dónde vienes? (asistente de importación) | Where are you coming from? | UI, extension and iOS (ADR 0024) |
 | fusionar (al importar) | merge | CLI `klav import`: the `merge` action; UI "Merged" |
 | passkey | passkey | ADR 0020; never translated |
-| entorno | environment | ADR 0032; `ItemKind::Environment` (`kind = environment`) in `klav-core` and the server since layers 1–2; `klav env` comes later |
+| entorno | environment | ADR 0032; `ItemKind::Environment` (`kind = environment`) in `klav-core` and the server since layers 1–2; `klav env`, `klav run --env` and `klav inject --env --dotenv` since layer 3 |
 | código de salida | exit code | Docs site, Reference › CLI commands; `crates/klav-cli/src/error.rs` |
 
 ## Passwords and the generator
@@ -401,7 +401,7 @@ Terms from ADR [0038](decisiones/0038-deployed-services.md) (accepted). The sand
 | fusión (al importar) | merge | ADR 0024 §3 |
 | asistente (de importación) | wizard | ADR 0024; UI "Where are you coming from?" |
 | Tinta, Papel, Niebla, Gris, Cobalto… (colores de la paleta) | kept as is | `docs/diseno-visual`; they are identifiers in code (`tinta`, `--niebla` in `Theme.swift` and `klav.css`) |
-| conjunto protegido | protected set | ADR 0032 §3.1; `protected_set` in `klav-core`: the items a protected environment's references point to |
+| conjunto protegido | protected set | ADR 0032 §3.1; `protected_set` in `klav-core`: the items a protected environment's references point to. Each device keeps its own in `protection.bin` (layer 3), which only shrinks with proof |
 | interruptor «Desarrollo» | "Development" switch | ADR 0032 §7; system item `kind = preferences`. Shows or hides the Mac app's Development section (ADR 0033 E1) |
 | pedir cada vez (`ask once`) | ask every time | ADR 0032 §4.2; `Rule.once`: no lease, one use, never in a task |
 | regla heredada (`origin: "protected"`) | inherited rule | ADR 0032 §3.1; `Rule::protected`, `RuleOrigin::Protected`: an `ask once` rule on the items of the protected set, which only tightens a decision |

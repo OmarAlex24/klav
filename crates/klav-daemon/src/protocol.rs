@@ -118,6 +118,65 @@ pub enum Request {
         /// Repository URLs or normalized `host/owner/repo` identifiers.
         repos: Vec<String>,
     },
+    /// The environments of a project, or of every project (ADR 0032 §6).
+    /// Answer: [`klav_client::environments::EnvironmentListing`] list.
+    Environments {
+        /// `vault/project`, a project name or ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// One environment: names, origins and what an agent changed, never a
+    /// value. Answer: [`klav_client::environments::EnvironmentDetail`] or
+    /// `null` when there is none of that name.
+    Environment {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// The environment's name.
+        name: String,
+    },
+    /// The review of `klav env import` (ADR 0032 §6): compares the values
+    /// in memory with the environment and the vault's fields, so it is
+    /// gated as a value. Answer: [`klav_client::environments::ImportReview`]
+    /// list, with no value.
+    EnvironmentImportReview {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// The environment's name.
+        name: String,
+        /// Name and value of each variable read from the file.
+        variables: Vec<(String, klav_client::ops::SecretText)>,
+        /// Master password for the presence gate, where there is no Touch
+        /// ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<klav_client::ops::SecretText>,
+    },
+    /// Saves a change to an environment (ADR 0032 §3.1): one that makes
+    /// the protection grow reissues the agents' grants first; one that
+    /// lowers it asks for Touch ID or the master password first. Answer:
+    /// [`klav_client::environments::EnvironmentSaved`].
+    EnvironmentSave {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// The environment's name.
+        name: String,
+        /// The change.
+        edit: klav_client::environments::EnvironmentEdit,
+        /// Master password, where there is no Touch ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<klav_client::ops::SecretText>,
+    },
+    /// Moves an environment to the trash; a protected one is first saved
+    /// unprotected, with presence. Answer:
+    /// [`klav_client::environments::EnvironmentSaved`].
+    EnvironmentTrash {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// The environment's name.
+        name: String,
+        /// Master password, where there is no Touch ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<klav_client::ops::SecretText>,
+    },
     /// List items.
     List {
         /// Filter.
@@ -1229,6 +1288,10 @@ pub struct PresenceAsk {
     /// for the extension's frame to word as `klavd`'s Touch ID dialog does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserAsk>,
+    /// Why this value asks every time, whatever the window (ADR 0032 §3.1):
+    /// «uses “Stripe”, protected by “production”». Only then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected: Option<String>,
 }
 
 /// [`PresenceAsk::browser`]: what an extension connection's presence
@@ -1870,6 +1933,7 @@ mod tests {
                 count: None,
             }),
             browser: None,
+            protected: None,
         };
         assert_eq!(
             serde_json::to_value(&ask).unwrap(),

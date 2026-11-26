@@ -1,10 +1,12 @@
 //! `klav run -- <cmd>`: resolves `klav.toml` (`[env]`, `[files]`), `-e`
-//! and inherited `NAME=klav://…` variables, then runs the command with the
-//! values in its environment only. Nothing goes in argv or on stdout.
+//! and inherited `NAME=klav://…` variables, or an environment (`--env`,
+//! ADR 0032 §5), then runs the command with the values in its environment
+//! only. Nothing goes in argv or on stdout.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use klav_client::environments::EnvironmentDetail;
 use klav_core::model::item::FieldKind;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
@@ -14,37 +16,278 @@ use crate::cli::RunArgs;
 use crate::context::Ctx;
 use crate::error::{CliError, CliResult, usage};
 use crate::output;
-use crate::project::{self, is_reference};
+use crate::project::{self, ProjectConfig, is_reference};
 use crate::secret_files::{
     Cleanup, Signals, warn_if_not_ignored, warn_leftovers, write_new_private,
 };
 
+/// The environment `klav run` uses without `--env` (ADR 0032 §5): (1)
+/// `default_env`; (2) with text variables in `[env]`, none (today's
+/// behavior, no environment item read); (3) the only one among the
+/// project's environments and the `[env.<name>]` tables; (4) with several,
+/// an error that lists them. It never picks one by its name.
+async fn default_environment(
+    ctx: &mut Ctx,
+    config: Option<&ProjectConfig>,
+) -> CliResult<Option<String>> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    if let Some(default) = &config.default_env {
+        return Ok(Some(default.clone()));
+    }
+    if !config.env.is_empty() {
+        return Ok(None);
+    }
+    let mut names: Vec<String> = config.envs.keys().cloned().collect();
+    if let Some(project) = &config.project {
+        for listing in ctx.backend().await?.environments(Some(project)).await? {
+            if !names.contains(&listing.name) {
+                names.push(listing.name);
+            }
+        }
+    }
+    names.sort();
+    match names.len() {
+        0 => Ok(None),
+        1 => Ok(names.pop()),
+        _ => Err(usage(format!("there are {}: use --env", and_list(&names)))),
+    }
+}
+
+fn and_list(names: &[String]) -> String {
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        Some((last, _)) => last.clone(),
+        None => String::new(),
+    }
+}
+
+/// An environment ready to inject: variable → reference, the confirmation
+/// it needs, and the vault's environment (for its flag and agent changes).
+pub(crate) struct ChosenEnvironment {
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) confirmation: project::EnvConfirmation,
+    pub(crate) detail: Option<EnvironmentDetail>,
+}
+
+/// The variables of environment `name` (ADR 0032 §5), later sources
+/// winning: `inherited` (the process's `klav://` variables), the project's
+/// environment item `name`, `[env.name]` of `klav.toml`, then `extra`
+/// (`-e`). Fails before anything runs when neither the vault nor the
+/// `klav.toml` has it.
+pub(crate) async fn environment_variables(
+    ctx: &mut Ctx,
+    config: Option<&ProjectConfig>,
+    name: &str,
+    inherited: BTreeMap<String, String>,
+    extra: &[(String, String)],
+) -> CliResult<ChosenEnvironment> {
+    let mut project = config.and_then(|c| c.project.clone());
+    let mut warnings = Vec::new();
+    let repo = std::env::current_dir()
+        .ok()
+        .and_then(|d| project::detect_git_repo(&d, "origin"));
+    // The link only suggests a project, and only through the same question
+    // (ADR 0032 §2).
+    let projects = ctx.backend().await?.projects(None).await?;
+    if project.is_none()
+        && let Some(repo) = &repo
+    {
+        let linked: Vec<&klav_client::ProjectSummary> =
+            projects.iter().filter(|p| p.repos.contains(repo)).collect();
+        if let [one] = linked.as_slice() {
+            let suggested = format!("{}/{}", one.vault, one.name);
+            match ctx.input.question(&format!(
+                "This repository looks like {suggested}, by origin = {repo}. Use it? [y/N] "
+            ))? {
+                Some(a) if matches!(a.to_lowercase().as_str(), "y" | "yes" | "s" | "si" | "sí") => {
+                    project = Some(suggested);
+                }
+                Some(_) => return Err(usage("cancelled")),
+                // No terminal to ask on: the link only suggests, so the
+                // run goes on with what klav.toml names, without the
+                // vault's environment of that project.
+                None => warnings.push(format!(
+                    "this repository looks like {suggested}: write project = \"{suggested}\" in klav.toml to use its environments"
+                )),
+            }
+        }
+    }
+    if let (Some(project), Some(repo)) = (&project, &repo) {
+        let wanted = projects
+            .iter()
+            .find(|p| format!("{}/{}", p.vault, p.name).eq_ignore_ascii_case(project));
+        let linked_elsewhere = projects.iter().any(|p| p.repos.contains(repo));
+        if let Some(p) = wanted
+            && !p.repos.contains(repo)
+            && linked_elsewhere
+        {
+            warnings.push(format!(
+                "this klav.toml asks for secrets from {project}, which isn't linked to {repo}"
+            ));
+        }
+        if let Some(c) = config {
+            let prefix = format!("klav://{project}/");
+            for reference in c.envs.get(name).into_iter().flat_map(|e| e.values()) {
+                if !reference.to_lowercase().starts_with(&prefix.to_lowercase())
+                    && let Some(other) = reference
+                        .strip_prefix("klav://")
+                        .map(|r| r.splitn(3, '/').take(2).collect::<Vec<_>>().join("/"))
+                {
+                    let note = format!(
+                        "this klav.toml asks for secrets from {other}, which isn't linked to {repo}"
+                    );
+                    if !warnings.contains(&note) {
+                        warnings.push(note);
+                    }
+                }
+            }
+        }
+    }
+    let detail = match &project {
+        Some(p) => ctx.backend().await?.environment(Some(p), name).await?,
+        None => None,
+    };
+    let from_toml = config.and_then(|c| c.envs.get(name));
+    if detail.is_none() && from_toml.is_none() {
+        let mut known: Vec<String> = config
+            .map(|c| c.envs.keys().cloned().collect())
+            .unwrap_or_default();
+        if let Some(p) = &project {
+            for l in ctx.backend().await?.environments(Some(p)).await? {
+                if !known.contains(&l.name) {
+                    known.push(l.name);
+                }
+            }
+        }
+        known.sort();
+        return Err(usage(if known.is_empty() {
+            format!("no environment {name:?} in the vault or klav.toml")
+        } else {
+            format!("no environment {name:?}: there are {}", and_list(&known))
+        }));
+    }
+    let mut env = inherited;
+    let mut origins: BTreeMap<String, String> = env
+        .keys()
+        .map(|k| (k.clone(), "process environment".to_owned()))
+        .collect();
+    if let Some(d) = &detail {
+        for v in &d.variables {
+            env.insert(v.name.clone(), v.resolve.clone());
+            origins.insert(
+                v.name.clone(),
+                match &v.origin {
+                    klav_client::environments::VariableOrigin::Value => "vault".to_owned(),
+                    o => format!("vault, {}", crate::commands::env::origin_text(o)),
+                },
+            );
+        }
+    }
+    if let Some(vars) = from_toml {
+        for (k, v) in vars {
+            env.insert(k.clone(), v.clone());
+            origins.insert(k.clone(), "klav.toml".to_owned());
+        }
+    }
+    for (k, v) in extra {
+        env.insert(k.clone(), v.clone());
+        origins.insert(k.clone(), "-e".to_owned());
+    }
+    Ok(ChosenEnvironment {
+        env,
+        confirmation: project::EnvConfirmation {
+            project,
+            environment: name.to_owned(),
+            variables: origins.into_iter().collect(),
+            warnings,
+        },
+        detail,
+    })
+}
+
+/// Before a value of an environment is read: what an agent changed since
+/// the person's version, and that a protected one asks for presence (ADR
+/// 0032 §3), on stderr.
+pub(crate) fn before_presence(chosen: &ChosenEnvironment) {
+    if let Some(d) = &chosen.detail {
+        if let Some(changes) = &d.agent_changes {
+            output::warn(&crate::commands::env::agent_changes_text(changes));
+        }
+        if d.listing.protected {
+            output::info(&format!(
+                "“{}” is protected: Klav asks for your presence for this command.",
+                d.listing.name
+            ));
+        }
+    }
+}
+
 pub(crate) async fn run_cmd(ctx: &mut Ctx, args: RunArgs) -> CliResult<()> {
     let config = project::load(args.config.as_deref())?;
-    if let Some(c) = &config {
-        project::confirm_trusted(&ctx.home, c, args.trust)?;
+    // `--env NAME=REF` is `-e`, as before environments.
+    let mut pairs = args.vars.clone();
+    let mut named = Vec::new();
+    for value in &args.environment {
+        if value.contains('=') {
+            pairs.push(value.clone());
+        } else {
+            named.push(value.clone());
+        }
+    }
+    if named.len() > 1 {
+        return Err(usage("give one --env"));
     }
     let project_name = config.as_ref().and_then(|c| c.project.clone());
-
-    // Variable → reference. Later sources win: inherited, klav.toml, -e.
-    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    let mut extra = Vec::new();
+    for pair in &pairs {
+        let (name, value) = pair
+            .split_once('=')
+            .ok_or_else(|| usage(format!("-e expects NAME=REF, got {pair:?}")))?;
+        let reference = project::expand(project_name.as_deref(), value)
+            .map_err(|e| usage(format!("-e {name}: {e}")))?;
+        extra.push((name.to_owned(), reference));
+    }
+    let mut inherited: BTreeMap<String, String> = BTreeMap::new();
     for (name, value) in std::env::vars_os() {
         if let (Some(name), Some(value)) = (name.to_str(), value.to_str())
             && is_reference(value)
         {
-            env.insert(name.to_owned(), value.trim().to_owned());
+            inherited.insert(name.to_owned(), value.trim().to_owned());
         }
     }
-    if let Some(c) = &config {
-        env.extend(c.env.clone());
-    }
-    for pair in &args.env {
-        let (name, value) = pair
-            .split_once('=')
-            .ok_or_else(|| usage(format!("-e expects NAME=REF, got {pair:?}")))?;
-        let reference = project::expand(project_name.as_deref(), value).map_err(usage)?;
-        env.insert(name.to_owned(), reference);
-    }
+    let environment = match named.pop() {
+        Some(name) => Some(name),
+        None => default_environment(ctx, config.as_ref()).await?,
+    };
+
+    // Variable → reference. Later sources win: inherited, klav.toml, -e.
+    let env: BTreeMap<String, String> = match &environment {
+        Some(name) => {
+            let chosen =
+                environment_variables(ctx, config.as_ref(), name, inherited, &extra).await?;
+            project::confirm_environment(
+                &ctx.home,
+                config.as_ref(),
+                &chosen.confirmation,
+                args.trust,
+            )?;
+            before_presence(&chosen);
+            chosen.env
+        }
+        None => {
+            if let Some(c) = &config {
+                project::confirm_trusted(&ctx.home, c, args.trust)?;
+            }
+            let mut all = inherited;
+            if let Some(c) = &config {
+                all.extend(c.env.clone());
+            }
+            all.extend(extra);
+            all
+        }
+    };
     let files: BTreeMap<PathBuf, String> = match (&config, args.no_files) {
         (Some(c), false) => c.files.clone(),
         _ => BTreeMap::new(),

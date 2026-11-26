@@ -86,6 +86,17 @@ Todo vive en `$KLAV_HOME`. Por defecto es
   sobrescribe; firmar un grant se detiene hasta apartarlo. Si lo escribió
   una versión más nueva de Klav, el error pide actualizar Klav y no
   apartarlo, y el archivo queda intacto.
+- `protection.bin` guarda el conjunto protegido de los entornos (ADR 0032
+  §3.1): lo que aporta cada entorno protegido, los elementos que alguna vez
+  estuvieron protegidos, lo que protegen las reglas `origin: "protected"`
+  de los grants vigentes, las bóvedas cuya versión de la persona no se pudo
+  saber y la última versión de la persona de cada entorno. Va sellado con la
+  llave local (propósito `protection`, especificación §12.2), aparte de
+  `cache.bin` por la misma razón. Se recalcula tras cada sincronización. El
+  conjunto solo se achica con prueba: un entorno purgado o en una bóveda que
+  no abre sigue protegiendo lo que protegía, y si el archivo existe y no
+  abre, todo valor pide presencia y no se firma un grant que conserve
+  permisos hasta la siguiente sincronización.
 - En disco no hay contraseñas, tokens ni títulos en claro.
 - `health.json` guarda los ajustes de la salud de la bóveda (la consulta de
   contraseñas filtradas, apagada por defecto); no es secreto.
@@ -403,6 +414,88 @@ del elemento. Una lista sin `--codes` sigue sin abrir ningún detalle.
     cambios, y la versión nueva es tuya.
   - `--remove URL` quita una URL tal como está guardada (repetible).
 
+**Marca de protección (ADR 0032 §3).** `klav item get` añade la línea
+`protected: by production (presence every time; agents ask once)` a un elemento que un entorno protegido alcanza
+(una variable suya o el destino de una de sus referencias), y `klav item ls`
+añade una columna, `protected by …`, cuando alguno lo está. En `--json`,
+`protected_by` lista los entornos, y falta cuando no hay ninguno. Revelar un
+valor de ese elemento pide presencia cada vez (§8).
+
+### Entornos (`klav env`)
+
+> ADR 0032 §2, §6 y §8. Un entorno es un elemento de tipo `environment` de un
+> proyecto: variables con un valor propio o una referencia a un campo de otro
+> elemento. Nunca se imprime un valor sin `--reveal`, tampoco en los errores.
+
+```sh
+klav env ls                                         # los entornos del proyecto de klav.toml
+klav env show production                            # nombres y origen; valores enmascarados
+klav env create staging                             # production y prod nacen protegidos
+klav env set staging -s STRIPE_KEY                  # valor por pregunta oculta
+klav env set staging --ref DATABASE_URL=Postgres/url
+klav env set production --protected false           # bajar la protección pide presencia
+klav env rm staging OLD_VAR                         # sin variables: el entorno a la papelera
+klav env import .env --env development              # revisa, nunca imprime un valor
+klav env import klav.toml --env development         # migra el [env] plano por referencia
+klav env link Trabajo/acme-api                      # enlaza este repositorio al proyecto
+klav env scan                                       # busca .env y dice qué hace git con ellos
+```
+
+- **`--project`** elige el proyecto; por defecto, el `project` del
+  `klav.toml` (`klav env ls` sin él lista todos).
+- **`show`** dice de dónde sale cada variable: `value` o `reference` con su
+  destino, y si ese destino está protegido. Si un agente cambió el entorno
+  desde la última versión de la persona, lo dice (qué variables añadió,
+  cambió o quitó) antes de nada. `--reveal` pasa por la presencia de §8:
+  cada vez si el entorno está protegido.
+- **`create`**: el nombre es `[a-z0-9][a-z0-9_-]{0,63}`. `production` y
+  `prod` nacen protegidos salvo `--no-protected`; cualquier otro, con
+  `--protected`.
+- Un entorno solo se cambia con `klav env`: `klav item add` y `klav item
+  edit` (y las operaciones `create` y `edit` de `klavd`) lo rechazan, porque
+  no vuelven a firmar los grants. `klav item rm` sí lo manda a la papelera,
+  pero lo que protegía sigue protegido (sale de la versión de la persona).
+- **`set`**: `-s VAR` pregunta el valor sin eco, `--secret-stdin VAR` lo
+  lee de la siguiente línea de stdin y `--ref VAR=REF` guarda una
+  referencia (corta si hay `project`). Una referencia se guarda por los
+  IDs de su destino, así que renombrar el elemento no la rompe; no puede
+  apuntar a otro entorno.
+- **Proteger y desproteger (§3.1).** Un cambio que hace crecer la
+  protección (proteger un entorno, o añadir a uno protegido una variable o
+  una referencia nueva) sincroniza, vuelve a firmar los grants de los
+  agentes que alcanzan esos elementos con reglas `origin: "protected"`
+  (escribiendo antes como reglas explícitas los permisos por defecto, ADR
+  0006 §2) y solo después sube la versión. Si algo de eso falla, no guarda
+  nada: «could not protect …: the environment was not saved». Uno que la
+  baja pide presencia primero (Touch ID o la contraseña maestra, en
+  `/dev/tty`), sube la versión y después vuelve a firmar los grants con
+  `released`; si esa segunda parte falla, avisa y los grants siguen
+  protegiendo de más hasta el siguiente cambio.
+- **`rm`** sin variables manda el entorno a la papelera, tras confirmar (o
+  `--yes`). Uno protegido pide presencia y primero se guarda sin
+  protección, como prueba para liberar los grants; si se restaura de la
+  papelera, vuelve sin protección.
+- **`import`** lee un `.env` (o `-` para stdin) en memoria que se borra al
+  terminar. Muestra por variable si es nueva, igual, distinta o igual a un
+  campo de la bóveda que podría referenciar, sin el valor, y pregunta
+  antes de guardar (`--dry-run` solo muestra, `--yes` acepta todo). La
+  revisión compara valores, así que pasa por la presencia de §8. Al
+  terminar ofrece borrar el archivo, y avisa si git lo sigue: borrarlo
+  solo lo desenlaza, no lo borra de forma segura ni de la historia. Un
+  error de sintaxis nombra la línea y el motivo, nunca el valor. Si el
+  archivo se llama `klav.toml`, migra su `[env]` plano a un entorno por
+  referencia y ofrece reescribir el archivo con `default_env`.
+- **`link`/`unlink`** guardan `host/owner/repo` en los metadatos cifrados
+  del proyecto. Sin `--remote`, usan `origin` o el remoto que elegiste
+  antes para ese repositorio (`repo-remotes.json`). `link` ofrece escribir
+  `project = …` en el `klav.toml`. El enlace solo sugiere: nunca da acceso
+  ni se salta una confirmación.
+- **`scan`** busca `.env` y `.env.*` (no `.env.example`)
+  sin seguir enlaces simbólicos ni entrar en `.git`, `target` o
+  `node_modules`, dice si git ignora, sigue o no ve cada uno, y ofrece
+  importarlos si hay terminal. Nunca abre un archivo para listarlo.
+  `--json` da la lista.
+
 ### Generar contraseñas
 
 ```sh
@@ -596,6 +689,26 @@ DATABASE_URL = "Postgres/url"         # corta: klav://Trabajo/acme-api/Postgres/
 "secrets/AuthKey.p8" = "klav://Trabajo/app-ios/APNs/key"
 ```
 
+Con entornos (ADR 0032 §5), las variables van por entorno:
+
+```toml
+project = "Trabajo/acme-api"
+default_env = "development"
+
+[env.development]
+DATABASE_URL = "Postgres-dev/url"
+
+[env.production]
+DATABASE_URL = "Postgres/url"
+```
+
+- `[env.NOMBRE]` se suma al entorno `NOMBRE` del proyecto en la bóveda, y
+  gana en un nombre repetido.
+- `default_env` dice cuál usar sin `--env`. No puede convivir con un
+  `[env]` plano: el error pide moverlas a `[env.X]`.
+- `klav env import klav.toml --env NOMBRE` mueve un `[env]` plano al
+  entorno `NOMBRE` por referencia.
+
 - `klav run` e `inject` buscan el `klav.toml` más cercano, desde el
   directorio actual hacia arriba, hasta la raíz del repositorio git o tu
   directorio personal, lo que llegue antes: un `klav.toml` en `/tmp` o en
@@ -606,7 +719,10 @@ DATABASE_URL = "Postgres/url"         # corta: klav://Trabajo/acme-api/Postgres/
   puede meter así cualquiera de tus secretos en el entorno de un comando que
   también controla. Lo aprobado queda fijado (el texto exacto, por ruta) en
   `$KLAV_HOME/trusted-projects.json`. Sin terminal, `--trust` lo aprueba sin
-  preguntar.
+  preguntar. Con entornos, se confirma además cada entorno: la pregunta
+  dice de dónde sale cada variable (entorno del proceso, bóveda, `klav.toml`
+  o `-e`) y los avisos de enlace, y el fijado guarda también los entornos
+  aprobados. Un fijado sin entornos se sigue escribiendo como antes.
 - **`project`**:
   - es `Bóveda/Proyecto`;
   - permite referencias cortas `elemento/campo` dentro de ese proyecto;
@@ -628,13 +744,29 @@ DATABASE_URL = "Postgres/url"         # corta: klav://Trabajo/acme-api/Postgres/
 ```sh
 klav run -- npm run dev
 klav run -e EXTRA=klav://Personal/General/Token/value -- ./script.sh
+klav run --env production -- ./deploy.sh
 STRIPE_KEY=klav://Trabajo/acme-api/Stripe/api_key klav run -- env
 ```
 
 1. Junta las variables. Si un nombre se repite, gana la fuente posterior:
    - primero, las variables del entorno cuyo valor es `klav://…`;
-   - después, el `[env]` del `klav.toml`;
-   - al final, `-e NOMBRE=REF`.
+   - después, el entorno elegido de la bóveda, si hay uno;
+   - después, el `[env.NOMBRE]` del entorno elegido o el `[env]` plano del
+     `klav.toml`;
+   - al final, `-e NOMBRE=REF` (o `--var`).
+
+   **Qué entorno** (ADR 0032 §5): `--env NOMBRE`; si no, `default_env`; si
+   no, ninguno cuando hay `[env]` plano; si no, el único que hay entre la
+   bóveda y `[env.*]`. Con más de uno, falla y los nombra. Un `--env` que
+   lleva `=` se lee como `-e`, como antes de los entornos. Si el
+   repositorio está enlazado a un solo proyecto y el `klav.toml` no dice
+   `project`, pregunta si usarlo; sin terminal, avisa de qué escribir y sigue sin los
+   entornos de ese proyecto en la bóveda.
+   Avisa si el `klav.toml` pide secretos de un proyecto que no está
+   enlazado a este repositorio. Antes de pedir un valor, dice si un agente
+   cambió el entorno desde tu última versión y si está protegido: uno
+   protegido pide presencia **cada vez** (§8), también con `--trust` o con
+   una ventana abierta.
 2. Resuelve todas las referencias. Si falta una, falla **antes** de ejecutar
    nada.
 3. Escribe los `[files]`:
@@ -684,6 +816,8 @@ klav inject -i .env.tpl -o .env                    # plantilla → archivo 0600
 klav inject -r klav://Trabajo/app-ios/APNs/key -o ./AuthKey.p8 --ttl 10m
 klav inject -r APNs/key -o ./AuthKey.p8 --fifo     # tubería con nombre, se lee una vez
 klav inject -i config.tpl > config.json            # sin -o: a stdout
+klav inject --env staging --dotenv -o .env         # un entorno como .env, 0600
+klav inject --env staging --dotenv -o .env --fifo  # el mismo, por una tubería
 ```
 
 - **Plantilla** (`-i`, o stdin sin `-i` ni `-r`):
@@ -736,6 +870,13 @@ klav inject -i config.tpl > config.json            # sin -o: a stdout
   - el secreto nunca toca el disco;
   - espera al lector hasta `--ttl` (10 minutos por defecto).
 
+- **`--env NOMBRE --dotenv`** escribe el entorno (con las mismas reglas
+  de elección, mezcla, confirmación y presencia que `klav run --env`) como
+  un `.env`: `NOMBRE='valor'` entre comillas simples, o entre dobles con
+  `\\`, `\"`, `\n`, `\r` y `\$` escapados si el valor lleva una comilla
+  simple o un salto de línea. Usa `-o`, `--force`, `--ttl` y `--fifo` como
+  arriba; `--trust` aprueba el `klav.toml` sin preguntar.
+
 Un archivo inyectado es texto plano en disco mientras existe (amenaza T35).
 Prefiere `klav run` o `--fifo` cuando la herramienta lo permita.
 
@@ -767,12 +908,17 @@ conexión; [`klavd.md`](klavd.md) §3, «The presence gate»). Las capas 2 a 5
 la construyeron apagada, tras una opción oculta, `klavd --presence-gate`,
 que ya no existe. Con un `klavd` anterior, o uno de esas capas con la puerta
 apagada, la CLI hace lo mismo que antes. El modo directo (`--no-daemon`) no
-pasa por `klavd` y no pide presencia.
+pasa por `klavd` y no pide presencia, salvo para los valores de un elemento
+protegido por un entorno (abajo).
 
 - **Qué comandos.** Los que piden un valor a `klavd`: `klav item get
   --reveal` (`view`), `klav item history --reveal N` (`previous_password`),
   `klav totp` (`totp`), `klav generated show N` (`generated_value`), `klav run`
-  y `klav inject` (`resolve`). Ningún comando de agente pasa por aquí: `klav
+  y `klav inject` (`resolve`). Un valor de un elemento protegido por un
+  entorno (ADR 0032 §3) pide presencia **cada vez**: no usa ni abre
+  ventana, y la pregunta dice «It lets klav …, this once: used by …». En
+  modo directo (`--no-daemon`), esos valores también la piden: la
+  contraseña maestra en `/dev/tty` (sin terminal, sale con 9). Ningún comando de agente pasa por aquí: `klav
   agent …` y `klav mcp` no piden valores a `klavd` (`klav agent list`, por
   ejemplo, no pide nada). Los que ya piden
   presencia por su cuenta, como `klav agent resume`, `klav agent approve` y

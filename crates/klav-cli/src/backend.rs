@@ -1,6 +1,9 @@
 //! Where commands run: in this process (direct mode: unlock with the master
 //! password, sync, act, forget) or, when `klavd` is running, in the daemon.
 
+use klav_client::environments::{
+    EnvironmentDetail, EnvironmentEdit, EnvironmentListing, EnvironmentSaved, ImportReview,
+};
 use klav_client::health::{BREACH_API, HealthSettings, VaultHealth};
 use klav_client::history::{GeneratedSelection, GeneratedView, PasswordHistoryView};
 use klav_client::import::{ImportPreview, ImportResult};
@@ -22,6 +25,16 @@ use crate::error::{CliError, CliResult};
 use crate::input::Input;
 use crate::output;
 use crate::presence::{self, Busy};
+
+/// In direct mode, a value of a protected environment or of an item it
+/// protects asks for the master password on the terminal every time (ADR
+/// 0032 §3 and §3.1); `klavd` asks the same with its gate.
+fn direct_protected(u: &Unlocked, items: &[klav_client::ItemLocation]) -> CliResult<()> {
+    match u.protection_reason(items) {
+        Some(reason) => presence::direct_protected(u.home(), &reason),
+        None => Ok(()),
+    }
+}
 
 /// Pieces of a file sent to `klavd` (its lines carry up to 100 MiB, base64).
 const IMPORT_PIECE: usize = 16 * 1024 * 1024;
@@ -191,6 +204,50 @@ pub(crate) async fn unlock_daemon(
         }
     }
     Ok(unlocked)
+}
+
+/// A `klavd` operation that asks for presence only in some cases (lowering
+/// an environment's protection): sent without a password; if `klavd` has no
+/// Touch ID to show, the master password from the terminal (or stdin with
+/// `--password-stdin`, as every operation that already asks), once.
+async fn confirmed_call<R: serde::de::DeserializeOwned>(
+    client: &mut DaemonClient,
+    home: &Home,
+    input: &mut Input,
+    request: impl Fn(Option<SecretText>) -> Request,
+) -> CliResult<R> {
+    match client.call::<R>(request(None)).await {
+        Ok((value, warnings)) => {
+            presence::warn_all(&warnings);
+            Ok(value)
+        }
+        Err(e)
+            if matches!(
+                e.code,
+                ErrorCode::BiometryFailed | ErrorCode::BiometryUnavailable
+            ) =>
+        {
+            let gate = client.presence_gate();
+            output::warn(&format!(
+                "{}; confirm with the master password",
+                from_klavd(gate, &e.message)
+            ));
+            let email = klav_client::account(home)?.email;
+            let password = if gate && !input.password_from_stdin() {
+                presence::confirm_password(&email)?
+            } else {
+                input.password(&format!("Master password for {email}: "))?
+            };
+            let answer = client
+                .call::<R>(request(Some(SecretText::new(password.as_str()))))
+                .await;
+            drop(password);
+            let (value, warnings) = answer.map_err(|e| presence::refused(e, Busy::Password))?;
+            presence::warn_all(&warnings);
+            Ok(value)
+        }
+        Err(e) => Err(presence::refused(e, Busy::Dialog)),
+    }
 }
 
 /// `klavd`'s own words: cleaned with the presence gate on, as every other
@@ -378,7 +435,12 @@ impl Backend {
 
     pub(crate) async fn view(&mut self, query: &str, reveal: bool) -> CliResult<ItemView> {
         match self {
-            Backend::Direct(u) => Ok(u.view_item(query, reveal)?),
+            Backend::Direct(u) => {
+                if reveal {
+                    direct_protected(u, &[u.find_item(query)?])?;
+                }
+                Ok(u.view_item(query, reveal)?)
+            }
             // Without `reveal`, no value: `klavd` never asks for presence.
             Backend::Daemon(d) => {
                 presence::value_call(d, |password| Request::View {
@@ -544,7 +606,10 @@ impl Backend {
 
     pub(crate) async fn totp(&mut self, query: &str, field: Option<&str>) -> CliResult<TotpCode> {
         match self {
-            Backend::Direct(u) => Ok(u.totp_code(query, field)?),
+            Backend::Direct(u) => {
+                direct_protected(u, &[u.find_item(query)?])?;
+                Ok(u.totp_code(query, field)?)
+            }
             Backend::Daemon(d) => {
                 presence::value_call(d, |password| Request::Totp {
                     query: query.to_owned(),
@@ -558,7 +623,11 @@ impl Backend {
 
     pub(crate) async fn resolve(&mut self, references: &[String]) -> CliResult<Vec<ResolvedValue>> {
         match self {
-            Backend::Direct(u) => Ok(u.resolve_all(references).await?),
+            Backend::Direct(u) => {
+                let targets = u.reference_targets(references)?;
+                direct_protected(u, &targets)?;
+                Ok(u.resolve_all(references).await?)
+            }
             Backend::Daemon(d) => {
                 presence::value_call(d, |password| Request::Resolve {
                     references: references.to_vec(),
@@ -649,6 +718,7 @@ impl Backend {
         match self {
             Backend::Direct(u) => {
                 let loc = u.find_item(query)?;
+                direct_protected(u, &[loc])?;
                 Ok(u.previous_password(loc, index)?)
             }
             Backend::Daemon(d) => {
@@ -675,6 +745,133 @@ impl Backend {
             Backend::Daemon(d) => {
                 presence::value_call(d, |password| Request::GeneratedValue {
                     created_at,
+                    password,
+                })
+                .await
+            }
+        }
+    }
+
+    // ------------------------------------------------- environments --
+
+    pub(crate) async fn environments(
+        &mut self,
+        project: Option<&str>,
+    ) -> CliResult<Vec<EnvironmentListing>> {
+        match self {
+            Backend::Direct(u) => Ok(u.environments(project)?),
+            Backend::Daemon(d) => {
+                call(
+                    d,
+                    Request::Environments {
+                        project: project.map(str::to_owned),
+                    },
+                )
+                .await
+            }
+        }
+    }
+
+    pub(crate) async fn environment(
+        &mut self,
+        project: Option<&str>,
+        name: &str,
+    ) -> CliResult<Option<EnvironmentDetail>> {
+        match self {
+            Backend::Direct(u) => Ok(u.environment_detail(project, name).await?),
+            Backend::Daemon(d) => {
+                call(
+                    d,
+                    Request::Environment {
+                        project: project.map(str::to_owned),
+                        name: name.to_owned(),
+                    },
+                )
+                .await
+            }
+        }
+    }
+
+    /// The review of an import: values compared in memory, none returned.
+    /// Through `klavd` it is gated as a value.
+    pub(crate) async fn import_review(
+        &mut self,
+        project: Option<&str>,
+        name: &str,
+        variables: &[(String, SecretText)],
+    ) -> CliResult<Vec<ImportReview>> {
+        match self {
+            Backend::Direct(u) => Ok(u.import_review(project, name, variables)?),
+            Backend::Daemon(d) => {
+                presence::value_call(d, |password| Request::EnvironmentImportReview {
+                    project: project.map(str::to_owned),
+                    name: name.to_owned(),
+                    variables: variables.to_vec(),
+                    password,
+                })
+                .await
+            }
+        }
+    }
+
+    /// Saves a change to an environment: a change that lowers the
+    /// protection asks for presence first (Touch ID in `klavd`, else the
+    /// master password on the terminal).
+    pub(crate) async fn environment_save(
+        &mut self,
+        home: &Home,
+        input: &mut Input,
+        project: Option<&str>,
+        name: &str,
+        edit: &EnvironmentEdit,
+    ) -> CliResult<EnvironmentSaved> {
+        match self {
+            Backend::Direct(u) => {
+                let prepared = u.prepare_environment(project, name, edit).await?;
+                if prepared.plan.shrinks {
+                    presence::direct_protected(
+                        u.home(),
+                        &format!("lower the protection of the environment “{name}”"),
+                    )?;
+                }
+                Ok(u.commit_environment(prepared).await?)
+            }
+            Backend::Daemon(d) => {
+                confirmed_call(d, home, input, |password| Request::EnvironmentSave {
+                    project: project.map(str::to_owned),
+                    name: name.to_owned(),
+                    edit: edit.clone(),
+                    password,
+                })
+                .await
+            }
+        }
+    }
+
+    pub(crate) async fn environment_trash(
+        &mut self,
+        home: &Home,
+        input: &mut Input,
+        project: Option<&str>,
+        name: &str,
+    ) -> CliResult<EnvironmentSaved> {
+        match self {
+            Backend::Direct(u) => {
+                if u.environments(project)?
+                    .iter()
+                    .any(|l| l.name == name && l.protected)
+                {
+                    presence::direct_protected(
+                        u.home(),
+                        &format!("lower the protection of the environment “{name}”"),
+                    )?;
+                }
+                Ok(u.trash_environment(project, name).await?)
+            }
+            Backend::Daemon(d) => {
+                confirmed_call(d, home, input, |password| Request::EnvironmentTrash {
+                    project: project.map(str::to_owned),
+                    name: name.to_owned(),
                     password,
                 })
                 .await

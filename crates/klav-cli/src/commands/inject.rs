@@ -31,22 +31,27 @@ pub(crate) async fn inject_cmd(ctx: &mut Ctx, args: InjectArgs) -> CliResult<()>
     }
     let config = project::load(args.config.as_deref())?;
     let project_name = config.as_ref().and_then(|c| c.project.clone());
-    let content: Zeroizing<Vec<u8>> = match &args.reference {
-        Some(reference) => {
-            let reference = project::expand(project_name.as_deref(), reference).map_err(usage)?;
-            let mut resolved = ctx.backend().await?.resolve(&[reference]).await?;
-            let value = resolved.pop().ok_or_else(|| usage("nothing resolved"))?;
-            Zeroizing::new(value.value.expose().to_vec())
-        }
-        None => {
-            let template = match &args.template {
-                Some(path) => Zeroizing::new(
-                    std::fs::read_to_string(path)
-                        .map_err(|e| usage(format!("{}: {e}", path.display())))?,
-                ),
-                None => ctx.input.stdin_rest()?,
-            };
-            render(ctx, &template).await?
+    let content: Zeroizing<Vec<u8>> = if let Some(name) = &args.environment {
+        dotenv_content(ctx, config.as_ref(), name, args.trust).await?
+    } else {
+        match &args.reference {
+            Some(reference) => {
+                let reference =
+                    project::expand(project_name.as_deref(), reference).map_err(usage)?;
+                let mut resolved = ctx.backend().await?.resolve(&[reference]).await?;
+                let value = resolved.pop().ok_or_else(|| usage("nothing resolved"))?;
+                Zeroizing::new(value.value.expose().to_vec())
+            }
+            None => {
+                let template = match &args.template {
+                    Some(path) => Zeroizing::new(
+                        std::fs::read_to_string(path)
+                            .map_err(|e| usage(format!("{}: {e}", path.display())))?,
+                    ),
+                    None => ctx.input.stdin_rest()?,
+                };
+                render(ctx, &template).await?
+            }
         }
     };
     ctx.close();
@@ -104,6 +109,40 @@ pub(crate) async fn inject_cmd(ctx: &mut Ctx, args: InjectArgs) -> CliResult<()>
     cleanup.remove_all();
     output::info(&format!("Removed {}.", out.display()));
     Ok(())
+}
+
+/// Environment `name` as a `.env` (ADR 0032 §6): its variables from the
+/// vault and `[env.name]`, confirmed once per `klav.toml` text like `klav
+/// run`, with presence every time for a protected one.
+async fn dotenv_content(
+    ctx: &mut Ctx,
+    config: Option<&project::ProjectConfig>,
+    name: &str,
+    trust: bool,
+) -> CliResult<Zeroizing<Vec<u8>>> {
+    let chosen =
+        crate::commands::run::environment_variables(ctx, config, name, Default::default(), &[])
+            .await?;
+    project::confirm_environment(&ctx.home, config, &chosen.confirmation, trust)?;
+    crate::commands::run::before_presence(&chosen);
+    let names: Vec<String> = chosen.env.keys().cloned().collect();
+    let references: Vec<String> = chosen.env.values().cloned().collect();
+    let resolved = if references.is_empty() {
+        Vec::new()
+    } else {
+        ctx.backend().await?.resolve(&references).await?
+    };
+    let mut variables = Vec::with_capacity(names.len());
+    for (name, value) in names.into_iter().zip(&resolved) {
+        if value.kind == FieldKind::File {
+            return Err(usage(format!(
+                "{name}: {} is a file: write it with klav inject -r … -o <path>",
+                value.canonical
+            )));
+        }
+        variables.push((name, Zeroizing::new(value.text()?.to_owned())));
+    }
+    Ok(crate::dotenv::render(&variables))
 }
 
 /// Replaces every `{{ klav://… }}` in `template`; other `{{ … }}` blocks

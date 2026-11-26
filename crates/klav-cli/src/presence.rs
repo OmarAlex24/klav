@@ -180,6 +180,15 @@ pub(crate) fn grant(ask: Option<&PresenceAsk>) -> String {
     let Some(ask) = ask else {
         return "It lets klav have this value.".to_owned();
     };
+    // A protected value asks every time, whatever the window (ADR 0032
+    // §3.1): the words say why, and open nothing.
+    if let Some(why) = &ask.protected {
+        return format!(
+            "It lets klav {}, this once: {}.",
+            value_words(ask.value.as_ref()),
+            said(why)
+        );
+    }
     match ask.lasts {
         Some(lasts) => format!(
             "It lets {} use your vault {}.",
@@ -594,6 +603,28 @@ pub(crate) fn unlock_password(
     })
 }
 
+/// Presence for a protected value in direct mode (`--no-daemon`, no
+/// `klavd`; ADR 0032 §3): the master password on this process's terminal,
+/// never from stdin, checked here before anything is handed out. With no
+/// terminal, exit code 9.
+pub(crate) fn direct_protected(home: &klav_client::Home, reason: &str) -> CliResult<()> {
+    let account = klav_client::account(home)?;
+    let password = ask_password(
+        &format!(
+            "It lets klav have these values, this once: {}.",
+            said(reason)
+        ),
+        Some(&account.email),
+        || no_terminal(Need::Value),
+    )?;
+    let checked = klav_client::unlock_with_password(
+        home,
+        &klav_core::crypto::kdf::MasterPassword::new(password.as_str()),
+    );
+    drop(password);
+    checked.map(drop).map_err(Into::into)
+}
+
 /// The master password for an operation that already asks (`klavd`'s own
 /// Touch ID failed or isn't there), with the gate on: it confirms that one
 /// action and opens no window.
@@ -831,6 +862,7 @@ mod tests {
                 count: None,
             }),
             browser: None,
+            protected: None,
         }
     }
 

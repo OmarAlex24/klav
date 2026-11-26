@@ -295,6 +295,10 @@ pub(crate) enum Prompt<'a> {
     /// Resume an agent, or every agent (`None`), after a pause (ADR 0033
     /// §7, P2).
     Resume { agent: Option<&'a str> },
+    /// Lower the protection of environment `environment` (ADR 0032 §3):
+    /// turn `protected` off, remove a reference it protects, or move it to
+    /// the trash.
+    LowerProtection { environment: &'a str },
     /// Make `agent` the account's credential proxy, or use none (ADR 0036
     /// §3). `replaces`: an agent wrote the account's preferences, and this
     /// replaces them whole.
@@ -657,6 +661,12 @@ impl Prompt<'_> {
             }
             (Prompt::Resume { agent: None }, Lang::En) => {
                 "let your agents use Klav again".to_owned()
+            }
+            (Prompt::LowerProtection { environment }, Lang::En) => {
+                format!("lower the protection of the environment {}", name(environment))
+            }
+            (Prompt::LowerProtection { environment }, Lang::Es) => {
+                format!("bajar la protección del entorno {}", name(environment))
             }
             (Prompt::Resume { agent: None }, Lang::Es) => {
                 "dejar que tus agentes vuelvan a usar Klav".to_owned()
@@ -2071,6 +2081,15 @@ mod tests {
         assert_eq!(
             Prompt::Resume { agent: None }.reason(Lang::Es, Some(Source::App)),
             "dejar que tus agentes vuelvan a usar Klav (desde la app de Klav)"
+        );
+
+        // Lowering an environment's protection (ADR 0032 §3).
+        assert_eq!(
+            Prompt::LowerProtection {
+                environment: "production"
+            }
+            .reason(Lang::En, None),
+            "lower the protection of the environment “production”"
         );
 
         // The credential proxy (ADR 0036 §14).

@@ -550,6 +550,7 @@ mod tests {
                 count: None,
             }),
             browser: None,
+            protected: None,
         };
         let info = PresenceAskInfo::from(ask);
         let title = info.value.and_then(|v| v.title).expect("title");

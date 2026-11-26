@@ -503,7 +503,9 @@ impl Unlocked {
         };
         let decision = policy::evaluate(&grant.policy, &request);
         Decision {
-            once: grant.policy.may_require_once(&request),
+            // The protected set as this device knows it counts too, even if
+            // the grant does not say so yet (ADR 0032 §3.1).
+            once: grant.policy.may_require_once(&request) || self.always_asks(loc.item),
             ..decision
         }
     }
