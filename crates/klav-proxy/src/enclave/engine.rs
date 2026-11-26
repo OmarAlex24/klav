@@ -11,8 +11,9 @@
 //!   key it was shown: account A's channel holds none of B's keys, grants or
 //!   credentials.
 //! - **API** (§6.4): `GET`/`POST /v1/manifest`, `GET /v1/attest`, `POST
-//!   /v1/enroll`, the hand-off (`POST /v1/handoff/hello` and `/seal`) and
-//!   `GET /healthz`. Every answer is self-authenticating or signed by the
+//!   /v1/enroll`, the hand-off (`POST /v1/handoff/hello` and `/seal`),
+//!   `GET /v1/status` (the service key's public half, §18) and `GET
+//!   /healthz`. Every answer is self-authenticating or signed by the
 //!   account, so the API's transport is not trusted.
 //! - **Hand-off** (§4.2): the holder checks the joiner's attestation
 //!   against a manifest the release authority signed **and** published in
@@ -26,7 +27,7 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::{DefaultBodyLimit, Query, State};
@@ -166,6 +167,12 @@ pub struct Enclave {
     /// This enclave's own image, from its own attestation.
     own: Measurement,
     seed: RwLock<Option<Arc<HostedSeed>>>,
+    /// The Ed25519 public half of the service key, as 64 lowercase hex
+    /// digits: set with the seed, served by `GET /v1/status` and logged
+    /// once, so the operator can set `KLAV_HOSTED_PROXY_SERVICE_KEY` on
+    /// the server (ADR 0051 §15, §18). Public; the private half is never
+    /// kept, only derived when a registration is marked.
+    service_key: OnceLock<String>,
     manifest: RwLock<Option<Arc<CurrentManifest>>>,
     accounts: RwLock<HashMap<AccountId, Arc<Account>>>,
     by_name: RwLock<HashMap<String, AccountId>>,
@@ -209,6 +216,7 @@ impl Enclave {
             published,
             own,
             seed: RwLock::new(None),
+            service_key: OnceLock::new(),
             manifest: RwLock::new(None),
             accounts: RwLock::new(HashMap::new()),
             by_name: RwLock::new(HashMap::new()),
@@ -237,8 +245,25 @@ impl Enclave {
         if slot.is_some() {
             return Err("this enclave already holds a seed".into());
         }
+        // Only the public half leaves this function; the key pair is
+        // dropped (and zeroized) here.
+        let service_key =
+            data_encoding::HEXLOWER.encode(hosted_service_keys(&seed).public().ed25519());
         *slot = Some(Arc::new(seed));
+        drop(slot);
+        tracing::info!(
+            service_key = %service_key,
+            "service key: KLAV_HOSTED_PROXY_SERVICE_KEY on the server must be this public key"
+        );
+        let _ = self.service_key.set(service_key);
         Ok(())
+    }
+
+    /// The Ed25519 public half of the service key, as 64 lowercase hex
+    /// digits, once the enclave holds a seed (genesis or a hand-off: the
+    /// same seed, so the same key on every enclave that holds it).
+    pub fn service_key(&self) -> Option<&str> {
+        self.service_key.get().map(String::as_str)
     }
 
     /// The first enclave, or the first after a total loss (§4.4): a new
@@ -585,6 +610,7 @@ impl Enclave {
     pub fn api_router(self: &Arc<Self>, handoff: bool) -> Router {
         let router = Router::new()
             .route("/healthz", get(|| async { "ok" }))
+            .route("/v1/status", get(status))
             .route("/v1/manifest", get(get_manifest).post(post_manifest))
             .route("/v1/attest", get(attest))
             .route("/v1/enroll", post(enroll));
@@ -888,6 +914,14 @@ pub struct SealAnswer {
     pub sealed: Blob,
 }
 
+/// What `GET /v1/status` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct StatusAnswer {
+    /// The service key's Ed25519 public half (64 lowercase hex digits),
+    /// what `KLAV_HOSTED_PROXY_SERVICE_KEY` takes; `null` with no seed.
+    pub service_key: Option<String>,
+}
+
 // --------------------------------------------------------------- routes --
 
 fn starting() -> Response {
@@ -925,6 +959,16 @@ fn handoff_refused(reason: &'static str) -> Response {
         HeaderValue::from_static("klav_handoff_refused"),
     );
     res
+}
+
+/// `GET /v1/status`: always `200`, with the service key's public half once
+/// the enclave holds a seed and `null` before. Nothing else: no account,
+/// no count, no private key.
+async fn status(State(e): State<Arc<Enclave>>) -> Response {
+    Json(StatusAnswer {
+        service_key: e.service_key().map(str::to_owned),
+    })
+    .into_response()
 }
 
 async fn get_manifest(State(e): State<Arc<Enclave>>) -> Response {

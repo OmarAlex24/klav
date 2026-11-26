@@ -12,15 +12,16 @@
 //! - [`quota`]: the per-account quotas (§3.3).
 //! - [`engine`]: the [`Enclave`]: the seed, the accounts and their
 //!   [`crate::proxy::ProxyState`]s, the channel routed by SNI (§3.4), the
-//!   public API (`/v1/manifest`, `/v1/attest`, `/v1/enroll`) and the
-//!   attested hand-off (§4.2).
+//!   public API (`/v1/manifest`, `/v1/attest`, `/v1/enroll`, `/v1/status`)
+//!   and the attested hand-off (§4.2).
 //! - [`run`]: `klav-proxy enclave`, the entry point the image starts: it
 //!   opens `/dev/nsm`, listens on vsock, bridges egress to the parent, and
 //!   starts a new seed or joins a live peer.
 //!
 //! Nothing here writes to a disk. The seed and every derived private key
 //! stay in [`klav_core`] types that zeroize and print nothing; no log line
-//! carries a key, a token, an e-mail or a body.
+//! carries a private key, a token, an e-mail or a body. The one key logged
+//! is public: the service key's Ed25519 half, once, when the seed arrives.
 
 pub mod attest;
 pub mod engine;

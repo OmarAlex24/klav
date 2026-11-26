@@ -10,10 +10,13 @@
 #      image ships as `stable` (the `rustc` line of the "rust: install rustup
 #      and the toolchain" step in a CI log): CI reuses it. Any other release
 #      is downloaded on every CI run (5–150 s), and that step warns.
-#   2. Pin the same release in the `rust:` base image of the four
+#   2. Pin the same release in the `rust:` base image of the six
 #      Dockerfiles (`Dockerfile`, `deploy/railway/Dockerfile`,
-#      `deploy/proxy/Dockerfile` and `deploy/linux/Dockerfile`, the Linux
-#      release build): the Docker build doesn't read this file, so the
+#      `deploy/proxy/Dockerfile`, `deploy/linux/Dockerfile`, the Linux
+#      release build, and `deploy/nitro/Dockerfile.enclave` and
+#      `deploy/nitro/Dockerfile.parent`; a new rustc changes the enclave's
+#      PCRs, so it is a new image in the manifest): the Docker build doesn't
+#      read this file, so the
 #      shipped binary would otherwise come from another rustc. Take the
 #      "Digest:" line of
 #      `docker buildx imagetools inspect rust:<release>-slim-bookworm`.

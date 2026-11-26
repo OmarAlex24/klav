@@ -1,0 +1,32 @@
+# Copy to terraform.tfvars (git-ignored here) and adjust. Nothing here is a
+# secret, but it names Klav's account layout: keep it out of the repository.
+
+region = "us-east-1"
+name   = "klav-hosted-proxy"
+
+# One parent per zone; at most ONE in service (a validation refuses two).
+# The other is the standby: it holds the seed and serves nobody. Swap them to
+# fail over or upgrade (runbook §6, §7); never remove both.
+zones = {
+  a = { az_index = 0, in_service = true }
+  b = { az_index = 1, in_service = false }
+}
+
+instance_type          = "c7g.large"
+termination_protection = true
+
+# A new VPC with two public subnets...
+create_vpc = true
+vpc_cidr   = "10.42.0.0/16"
+# ...or an existing one (two public subnets in two zones, in az_index order):
+# create_vpc          = false
+# existing_vpc_id     = "vpc-0123456789abcdef0"
+# existing_subnet_ids = ["subnet-0aaa…", "subnet-0bbb…"]
+
+api_domain = "proxy.klav.dev"
+# klav.dev's DNS is not in Route 53: leave empty and create the records in
+# the outputs dns_records and acm_validation_records by hand.
+route53_zone_id = ""
+
+# An SNS topic that pages the operator.
+alarm_actions = []

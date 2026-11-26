@@ -1,0 +1,11 @@
+# Build context for deploy/nitro/Dockerfile.enclave (BuildKit reads this file
+# instead of the root .dockerignore): the workspace manifests, crates/,
+# skill/ and the enclave's start script, nothing else. Anything else in the
+# context could only make two builds of one commit differ.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!skill/
+!deploy/nitro/enclave-start.sh
+crates/**/target/

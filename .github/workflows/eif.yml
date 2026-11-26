@@ -1,0 +1,284 @@
+name: Enclave image (EIF)
+
+# Klav Cloud's hosted proxy enclave images (ADR 0051 §7.2): builds the EIFs
+# of one commit TWICE, on two independent GitHub-hosted Arm runners, and
+# fails unless PCR0, PCR1 and PCR2 are byte-identical between the two
+# (ADR 0051's layer 6 stop rule: nothing is listed in a manifest before two
+# builds agree). Then it builds the parent bundle and drafts the next
+# manifest, UNSIGNED.
+#
+# It never holds, reads or asks for the release authority's key: the
+# release authority signs the draft offline (deploy/nitro/runbook.md §2).
+# It publishes nothing: everything is a run artifact.
+#
+# Not a task of ci.yml's Boat job (ADR 0034, ADR 0051 §7.2): it runs on
+# GitHub's hosted `ubuntu-24.04-arm` runners (Graviton, like c7g.large), only
+# on a release tag or by hand:
+#   gh workflow run eif.yml -f sha=<40-hex SHA> [-f parent_role_arn=…] [-f egress=…]
+#
+# Artifacts (kept 30 days):
+#   - klav-nitro-measurements: images.json (the manifest entries), both
+#     builds' build-info.json, the PCR comparison and SHA256SUMS;
+#   - klav-nitro-bundle: klav-nitro-bundle-<commit>.tar.gz, what
+#     deploy/nitro/parent/install.sh installs (the parent binary and units,
+#     both EIFs) with its SHA-256;
+#   - klav-nitro-manifest-draft: <seq>.json, UNSIGNED, when the inputs give
+#     a parent role (or a published manifest gives one to carry over).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full 40-character SHA of the commit to build"
+        required: true
+        type: string
+      parent_role_arn:
+        description: "The parents' IAM role ARN (terraform output parent_role_arn), for the draft's parent_roles; empty: carry over"
+        required: false
+        type: string
+        default: ""
+      egress:
+        description: "The parents' egress IPs as comma-separated /32s (terraform output egress_cidrs); empty: carry over"
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: eif-${{ inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: eif build ${{ matrix.run }}
+    # Two jobs, so two machines that share nothing: no cache, no artifact,
+    # no Docker layer. A difference between them is a reproducibility bug.
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [a, b]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read # check out the commit
+    steps:
+      - name: Check the input
+        env:
+          SHA: ${{ inputs.sha || github.sha }}
+        run: |
+          if ! [[ $SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit SHA in lowercase hex"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Build both enclave images
+        env:
+          SHA: ${{ inputs.sha || github.sha }}
+          RUN: ${{ matrix.run }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SHA"
+          if ! timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done'; then
+            echo "::error::Docker did not answer within 60 s"
+            exit 1
+          fi
+          docker buildx version
+          deploy/nitro/build-eif.sh --variant all --no-cache --out "$RUNNER_TEMP/eif-$RUN" | tee "$RUNNER_TEMP/pcrs-$RUN.txt"
+
+      - name: Upload this build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eif-build-${{ matrix.run }}
+          path: ${{ runner.temp }}/eif-${{ matrix.run }}/
+          retention-days: 7
+          if-no-files-found: error
+
+  compare:
+    name: eif reproducibility
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read # check out the commit (the parent's Dockerfile and the published manifests)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Download build a
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: eif-build-a
+          path: ${{ runner.temp }}/a
+
+      - name: Download build b
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: eif-build-b
+          path: ${{ runner.temp }}/b
+
+      - name: Compare PCR0, PCR1 and PCR2
+        env:
+          SHA: ${{ inputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          a="$RUNNER_TEMP/a"
+          b="$RUNNER_TEMP/b"
+          mkdir -p "$RUNNER_TEMP/measurements"
+          status=0
+          report="$RUNNER_TEMP/measurements/comparison.txt"
+          : > "$report"
+          for v in join genesis; do
+            for pcr in PCR0 PCR1 PCR2; do
+              pa=$(jq -er ".$pcr" "$a/klav-enclave-$v.measurements.json")
+              pb=$(jq -er ".$pcr" "$b/klav-enclave-$v.measurements.json")
+              if [[ $pa =~ ^[0-9a-f]{96}$ && $pa == "$pb" ]]; then
+                echo "$v $pcr $pa identical" >> "$report"
+              else
+                echo "::error::$v $pcr differs between the two builds: a=$pa b=$pb"
+                echo "$v $pcr DIFFERS a=$pa b=$pb" >> "$report"
+                status=1
+              fi
+            done
+          done
+          cat "$report"
+          if ! cmp -s "$a/images.json" "$b/images.json"; then
+            echo "::error::images.json differs between the two builds"
+            status=1
+          fi
+          # The EIF files may differ outside the measured sections (nitro-cli
+          # writes build metadata); the PCRs are what devices check.
+          for v in join genesis; do
+            if cmp -s "$a/klav-enclave-$v.eif" "$b/klav-enclave-$v.eif"; then
+              echo "$v: the EIF files are byte-identical too" | tee -a "$report"
+            else
+              echo "$v: the EIF files differ outside the PCRs (metadata)" | tee -a "$report"
+            fi
+          done
+          if [[ $status -ne 0 ]]; then
+            echo "::error::NOT REPRODUCIBLE: no image of $SHA may be listed in a manifest (ADR 0051 layer 6 stop rule)"
+            exit 1
+          fi
+          cp "$a/images.json" "$RUNNER_TEMP/measurements/images.json"
+          cp "$a/build-info.json" "$RUNNER_TEMP/measurements/build-info-a.json"
+          cp "$b/build-info.json" "$RUNNER_TEMP/measurements/build-info-b.json"
+          cp "$a"/klav-enclave-*.measurements.json "$RUNNER_TEMP/measurements/"
+          (cd "$RUNNER_TEMP/measurements" && sha256sum -- * > SHA256SUMS)
+
+      - name: Build the parent bundle
+        env:
+          SHA: ${{ inputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          commit_time=$(git show -s --format=%ct "$SHA")
+          docker buildx build --platform linux/arm64 -f deploy/nitro/Dockerfile.parent \
+            --build-arg KLAV_BUILD_COMMIT="$SHA" \
+            --build-arg KLAV_BUILD_COMMIT_TIME="$commit_time" \
+            --target export --output "type=local,dest=$RUNNER_TEMP/bundle" .
+          # It prints its version number only (no build identity at a4866c6f);
+          # the bundle's name carries the commit.
+          "$RUNNER_TEMP/bundle/bin/klav-nitro-parent" --version
+          mkdir -p "$RUNNER_TEMP/bundle/eif"
+          cp "$RUNNER_TEMP/a/klav-enclave-join.eif" "$RUNNER_TEMP/a/klav-enclave-genesis.eif" "$RUNNER_TEMP/bundle/eif/"
+          cp "$RUNNER_TEMP/measurements/images.json" "$RUNNER_TEMP/bundle/eif/"
+          (cd "$RUNNER_TEMP/bundle" && find . -type f -printf '%P\n' | sort | xargs sha256sum > "$RUNNER_TEMP/bundle.sums")
+          mv "$RUNNER_TEMP/bundle.sums" "$RUNNER_TEMP/bundle/SHA256SUMS"
+          mkdir -p "$RUNNER_TEMP/bundle-out"
+          name="klav-nitro-bundle-$SHA"
+          tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
+            --transform "s,^\.,$name," -C "$RUNNER_TEMP/bundle" -czf "$RUNNER_TEMP/bundle-out/$name.tar.gz" .
+          (cd "$RUNNER_TEMP/bundle-out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - name: Draft the next manifest (unsigned)
+        id: draft
+        env:
+          PARENT_ROLE_ARN: ${{ inputs.parent_role_arn }}
+          EGRESS: ${{ inputs.egress }}
+        run: |
+          set -euo pipefail
+          # The highest published seq at this commit, if any.
+          prev=$(find deploy/nitro/manifests -maxdepth 1 -name '[0-9]*.json' -printf '%f\n' 2>/dev/null \
+            | sed 's/\.json$//' | sort -n | tail -1)
+          args=(--images "$RUNNER_TEMP/measurements/images.json" --out "$RUNNER_TEMP/draft/next.json")
+          if [[ -n $prev ]]; then
+            args+=(--seq "$((prev + 1))" --previous "deploy/nitro/manifests/$prev.json")
+          else
+            args+=(--seq 1)
+          fi
+          if [[ -n $PARENT_ROLE_ARN ]]; then
+            args+=(--parent-role-arn "$PARENT_ROLE_ARN")
+          fi
+          IFS=',' read -ra cidrs <<< "$EGRESS"
+          for c in "${cidrs[@]}"; do
+            [[ -n ${c// /} ]] && args+=(--egress "${c// /}")
+          done
+          mkdir -p "$RUNNER_TEMP/draft"
+          if deploy/nitro/draft-manifest.sh "${args[@]}" > /dev/null; then
+            seq=$(jq -r .seq "$RUNNER_TEMP/draft/next.json")
+            mv "$RUNNER_TEMP/draft/next.json" "$RUNNER_TEMP/draft/$seq.json"
+            echo "seq=$seq" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no manifest draft: give parent_role_arn (no published manifest to carry it over)"
+            rm -rf "$RUNNER_TEMP/draft"
+          fi
+
+      - name: Summary
+        env:
+          SHA: ${{ inputs.sha || github.sha }}
+          SEQ: ${{ steps.draft.outputs.seq }}
+        run: |
+          {
+            echo "## Enclave images of \`$SHA\`"
+            echo
+            echo "Two independent builds agree on PCR0, PCR1 and PCR2. Nothing was signed or published."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/measurements/comparison.txt"
+            echo '```'
+            echo
+            echo "Bundle:"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP"/bundle-out/*.sha256
+            echo '```'
+            if [[ -n $SEQ ]]; then
+              echo
+              echo "Draft manifest \`$SEQ.json\` (UNSIGNED): review it, sign it offline and commit it with its \`.sig\` under \`deploy/nitro/manifests/\` (runbook §2, §6)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the measurements
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: klav-nitro-measurements
+          path: ${{ runner.temp }}/measurements/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload the parent bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: klav-nitro-bundle
+          path: ${{ runner.temp }}/bundle-out/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload the manifest draft
+        if: steps.draft.outputs.seq != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: klav-nitro-manifest-draft
+          path: ${{ runner.temp }}/draft/
+          retention-days: 30
+          if-no-files-found: error

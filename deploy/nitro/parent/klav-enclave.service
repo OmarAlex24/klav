@@ -1,0 +1,37 @@
+# Starts Klav Cloud's hosted proxy enclave from the JOIN image (ADR 0051
+# §4.2): at boot, after a reboot or an instance recovery, it takes the seed
+# and every account's state from the other zone's live enclave, or gives up
+# after 60 attempts (5 minutes) and stays down.
+#
+# It never starts the genesis image. A genesis enclave makes a NEW seed, so
+# starting one by accident while a peer holds the current seed would split
+# the service in two; genesis is a command the operator types (runbook §4,
+# §8). Never add --debug-mode or --attach-console: a debug enclave reports
+# zero PCRs, devices refuse it, and its console would show its logs.
+#
+# 1 vCPU and 2048 MiB, the allocator's reservation (allocator.yaml); CID 16,
+# the one klav-nitro-parent.service connects to.
+#
+# Installed by deploy/nitro/parent/install.sh as
+# /etc/systemd/system/klav-enclave.service.
+
+[Unit]
+Description=Klav Cloud hosted proxy enclave, join image (ADR 0051)
+Documentation=https://github.com/OmarAlex24/klav/blob/main/deploy/nitro/runbook.md
+Requires=nitro-enclaves-allocator.service
+After=nitro-enclaves-allocator.service klav-nitro-parent.service
+Wants=klav-nitro-parent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nitro-cli run-enclave \
+    --eif-path /opt/klav/eif/klav-enclave-join.eif \
+    --cpu-count 1 \
+    --memory 2048 \
+    --enclave-cid 16 \
+    --enclave-name klav-proxy
+ExecStop=/usr/bin/nitro-cli terminate-enclave --enclave-name klav-proxy
+
+[Install]
+WantedBy=multi-user.target

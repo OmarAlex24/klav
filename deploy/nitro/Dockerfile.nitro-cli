@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.20.0@sha256:26147acbda4f14c5add9946e2fd2ed543fc402884fd75146bd342a7f6271dc1d
+#
+# A pinned `nitro-cli` for deploy/nitro/build-eif.sh, so an EIF can be built
+# on any Linux or macOS machine with Docker, not only on Amazon Linux. Its
+# kernel, init and NSM driver blobs (/usr/share/nitro_enclaves/blobs) are
+# what PCR1 measures, so the package version is pinned exactly and the
+# Amazon Linux repository is locked to one release (`--releasever`): the
+# same blobs on every build. build-eif.sh records their SHA-256 next to the
+# PCRs.
+#
+# To bump: pick a release from
+#   docker run --rm public.ecr.aws/amazonlinux/amazonlinux:2023@<digest> \
+#     dnf list --showduplicates aws-nitro-enclaves-cli
+# change the three values below together, and expect a new PCR1 (a new
+# image in the manifest).
+
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:5c38fd85b00ce8c094315d9b71f671f880052314a22bd25f1a027821bf61d9d7
+ARG AL2023_RELEASE=2023.12.20261120
+ARG NITRO_CLI_VERSION=1.5.3-0.amzn2023
+RUN dnf --releasever="$AL2023_RELEASE" install -y \
+        "aws-nitro-enclaves-cli-$NITRO_CLI_VERSION" \
+        "aws-nitro-enclaves-cli-devel-$NITRO_CLI_VERSION" \
+    && dnf clean all \
+    && mkdir -p /var/log/nitro_enclaves \
+    && nitro-cli --version
+ENTRYPOINT ["nitro-cli"]
