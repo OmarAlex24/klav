@@ -15,7 +15,7 @@ use klav_core::crypto::identity::PublicIdentity;
 use klav_core::crypto::sign::{SIGNATURE_LEN, Signature};
 use klav_core::ids::{AgentId, ApprovalId, ItemId, ProjectId, TaskId, VaultId};
 use klav_core::model::{FieldKind, ItemKind};
-use klav_core::policy::{self, Effect, Permission, Target};
+use klav_core::policy::{self, Decision, Effect, Permission, Target};
 use klav_core::task::TaskAccessDecision;
 use klav_core::task::{self, ItemFacts, Proposal, TaskAccessRequest, TaskDecision, TaskRequest};
 use klav_proto::Blob;
@@ -50,6 +50,11 @@ pub struct TaskCardPermission {
     /// cannot be checked.
     #[serde(default)]
     pub no_site: bool,
+    /// The grant says `ask once` for it (ADR 0032 §4.2): «Always asks for
+    /// approval», unchecked, and it cannot be checked. Omitted when false,
+    /// so the card's JSON stays what the apps read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always_asks: bool,
 }
 
 /// One item on a task card.
@@ -195,6 +200,7 @@ impl TaskCardRow {
                     added_by_klav: p.added_by_klav,
                     denied_by_policy: p.denied_by_policy,
                     no_site: p.no_site,
+                    always_asks: p.always_asks,
                 })
                 .collect(),
         }
@@ -454,44 +460,52 @@ impl Unlocked {
             .map(|item| facts_of(&item, &summary))
     }
 
-    /// The grant policy's effect for `permission` on a requested item.
+    /// The grant policy's decision for `permission` on a requested item.
+    /// Its `once` also says, without trusting the claims, whether the target
+    /// may always ask ([`policy::Policy::may_require_once`], ADR 0032 §4.2):
+    /// such a target never goes in a task.
     pub(crate) fn task_effect(
         &self,
         grant: &GrantView,
         asked: &TaskAccessRequest,
         permission: Permission,
         domain: Option<&str>,
-    ) -> Effect {
+    ) -> Decision {
         let loc = ItemLocation {
             vault: asked.vault_id,
             project: asked.project_id,
             item: asked.item_id,
         };
         let Ok(summary) = self.item_summary(loc) else {
-            return Effect::Deny;
+            return Decision {
+                effect: Effect::Deny,
+                reason: policy::Reason::OutOfScope,
+                once: false,
+            };
         };
-        policy::evaluate(
-            &grant.policy,
-            &policy::Request {
-                permission,
-                vault: Target {
-                    id: summary.vault_id,
-                    name: summary.vault,
-                },
-                project: Target {
-                    id: summary.project_id,
-                    name: summary.project,
-                },
-                tags: summary.tags,
-                domain: domain.map(str::to_owned),
-                item: Some(loc.item),
-                method: None,
-                path: None,
-                mcp_tool: None,
-                now: u64::try_from(now_ms() / 1000).unwrap_or(0),
+        let request = policy::Request {
+            permission,
+            vault: Target {
+                id: summary.vault_id,
+                name: summary.vault,
             },
-        )
-        .effect
+            project: Target {
+                id: summary.project_id,
+                name: summary.project,
+            },
+            tags: summary.tags,
+            domain: domain.map(str::to_owned),
+            item: Some(loc.item),
+            method: None,
+            path: None,
+            mcp_tool: None,
+            now: u64::try_from(now_ms() / 1000).unwrap_or(0),
+        };
+        let decision = policy::evaluate(&grant.policy, &request);
+        Decision {
+            once: grant.policy.may_require_once(&request),
+            ..decision
+        }
     }
 
     /// The proposal for a pending request (ADR 0021 §3), against the
@@ -503,7 +517,15 @@ impl Unlocked {
                 |asked| self.task_item_facts(asked, grant),
                 |asked, permission, domain| self.task_effect(grant, asked, permission, domain),
             ),
-            None => task::propose(request, |_| None, |_, _, _| Effect::Deny),
+            None => task::propose(
+                request,
+                |_| None,
+                |_, _, _| Decision {
+                    effect: Effect::Deny,
+                    reason: policy::Reason::OutOfScope,
+                    once: false,
+                },
+            ),
         }
     }
 
@@ -557,6 +579,7 @@ impl Unlocked {
                         added_by_klav: p.added_by_klav,
                         denied_by_policy: p.denied_by_policy,
                         no_site: p.no_site,
+                        always_asks: p.always_asks,
                     })
                     .collect();
                 card
@@ -584,6 +607,7 @@ impl Unlocked {
                         added_by_klav: a.added_by_klav.contains(&permission),
                         denied_by_policy: false,
                         no_site: false,
+                        always_asks: false,
                     })
                     .collect();
                 card
@@ -609,6 +633,7 @@ impl Unlocked {
                     added_by_klav: false,
                     denied_by_policy: false,
                     no_site: false,
+                    always_asks: false,
                 });
             }
         }
@@ -753,6 +778,16 @@ impl Unlocked {
             {
                 return Err(ClientError::Invalid(format!(
                     "`{p}` is not on the card for item {item}"
+                )));
+            }
+            if let Some(p) = permission
+                && row
+                    .permissions
+                    .iter()
+                    .any(|x| x.permission == *p && x.always_asks)
+            {
+                return Err(ClientError::Denied(format!(
+                    "`{p}` on item {item} always asks for approval (a protected environment or an item it uses): it cannot go in a task"
                 )));
             }
             if let Some(p) = permission
@@ -1307,6 +1342,7 @@ mod tests {
                     added_by_klav: false,
                     denied_by_policy: false,
                     no_site: false,
+                    always_asks: false,
                 })
                 .collect(),
         }

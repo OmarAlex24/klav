@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ids::{AgentId, ItemId, ProjectId, TaskId, VaultId};
-use crate::policy::{Effect, Permission, normalize_host};
+use crate::policy::{Decision, Effect, Permission, normalize_host};
 use crate::site;
 
 /// Version of [`TaskRequest`] and [`TaskDecision`].
@@ -717,6 +717,11 @@ pub struct ProposedPermission {
     /// It checks the site and the item has none («No site», ADR 0030 §6):
     /// it cannot be checked.
     pub no_site: bool,
+    /// The grant says `ask once` for it (ADR 0032 §4.2): a protected
+    /// environment or an item it points to. «Always asks for approval»:
+    /// unchecked, and it cannot be checked (the server rejects a decision
+    /// that includes it).
+    pub always_asks: bool,
 }
 
 /// One item on the card.
@@ -761,14 +766,19 @@ impl ProposalRow {
         let row_ok = !self.missing && !self.domain_mismatch;
         for p in &mut self.permissions {
             if permission.is_none_or(|wanted| wanted == p.permission) {
-                p.checked = checked && row_ok && !p.denied_by_policy && !p.no_site;
+                p.checked =
+                    checked && row_ok && !p.denied_by_policy && !p.no_site && !p.always_asks;
             }
         }
     }
 
     /// Whether `p` may be checked on this row.
     pub fn can_check(&self, p: &ProposedPermission) -> bool {
-        !p.denied_by_policy && !p.no_site && !self.missing && !self.domain_mismatch
+        !p.denied_by_policy
+            && !p.no_site
+            && !p.always_asks
+            && !self.missing
+            && !self.domain_mismatch
     }
 }
 
@@ -796,7 +806,11 @@ fn item_hosts(urls: &[String]) -> Vec<String> {
 ///
 /// * `facts` gives what the vault says about each item (`None`: not found).
 /// * `evaluate` is the grant policy (`klav_core::policy::evaluate` with the
-///   item's real vault, project and tags) for a permission on a host.
+///   item's real vault, project and tags) for a permission on a host. Its
+///   `once` marks a target that always asks (ADR 0032 §4.2); for `passkey`
+///   and `rotate`, which the policy always denies outside a task, the
+///   caller sets it when the item is protected
+///   ([`crate::policy::Policy::may_require_once`]).
 ///
 /// Rules: hosts come from the item's URLs; a `domain` that matches none of
 /// them leaves the row unchecked and uncheckable; `fill`, `passkey` and
@@ -809,7 +823,7 @@ fn item_hosts(urls: &[String]) -> Vec<String> {
 pub fn propose(
     request: &TaskRequest,
     facts: impl Fn(&TaskAccessRequest) -> Option<ItemFacts>,
-    evaluate: impl Fn(&TaskAccessRequest, Permission, Option<&str>) -> Effect,
+    evaluate: impl Fn(&TaskAccessRequest, Permission, Option<&str>) -> Decision,
 ) -> Proposal {
     let rows = request
         .access
@@ -834,6 +848,7 @@ pub fn propose(
                             added_by_klav: false,
                             denied_by_policy: false,
                             no_site: false,
+                            always_asks: false,
                         })
                         .collect(),
                 };
@@ -881,13 +896,18 @@ pub fn propose(
             let permissions: Vec<ProposedPermission> = wanted
                 .into_iter()
                 .map(|(permission, checked, added_by_klav)| {
-                    let denied = if permission.checks_domain() && !domains.is_empty() {
-                        domains
-                            .iter()
-                            .all(|d| evaluate(asked, permission, Some(d)) == Effect::Deny)
-                    } else {
-                        evaluate(asked, permission, None) == Effect::Deny
-                    };
+                    let decisions: Vec<Decision> =
+                        if permission.checks_domain() && !domains.is_empty() {
+                            domains
+                                .iter()
+                                .map(|d| evaluate(asked, permission, Some(d)))
+                                .collect()
+                        } else {
+                            vec![evaluate(asked, permission, None)]
+                        };
+                    let denied = decisions.iter().all(|d| d.effect == Effect::Deny);
+                    // `ask once` on any of its hosts: never in a task.
+                    let always_asks = decisions.iter().any(|d| d.once);
                     // passkey and rotate are `deny` for any policy outside
                     // a task: only an explicit deny on fill would matter,
                     // and that is not theirs. Never strike them.
@@ -895,10 +915,15 @@ pub fn propose(
                     let no_site = permission.checks_domain() && domains.is_empty();
                     ProposedPermission {
                         permission,
-                        checked: checked && !denied_by_policy && !domain_mismatch && !no_site,
+                        checked: checked
+                            && !denied_by_policy
+                            && !domain_mismatch
+                            && !no_site
+                            && !always_asks,
                         added_by_klav,
                         denied_by_policy,
                         no_site,
+                        always_asks,
                     }
                 })
                 .collect();
@@ -990,6 +1015,15 @@ pub fn denial(task_id: TaskId, agent_id: AgentId) -> TaskDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{Decision, Reason};
+
+    fn decided(effect: Effect) -> Decision {
+        Decision {
+            effect,
+            reason: Reason::Default,
+            once: false,
+        }
+    }
 
     fn ids() -> (VaultId, ProjectId, ItemId, ItemId) {
         (
@@ -1199,7 +1233,11 @@ mod tests {
                 pending_urls: vec!["https://bank-fake.example".into()],
                 ..login(confirmed, false)
             };
-            let mut proposal = propose(&r, |_| Some(facts.clone()), |_, _, _| Effect::Allow);
+            let mut proposal = propose(
+                &r,
+                |_| Some(facts.clone()),
+                |_, _, _| decided(Effect::Allow),
+            );
             let row = &mut proposal.rows[0];
             assert!(row.domain_mismatch, "{confirmed:?}");
             assert!(!row.domains.iter().any(|d| d == "bank-fake.example"));
@@ -1225,7 +1263,7 @@ mod tests {
                     login(&["https://banco.example"], false)
                 })
             },
-            |_, _, _| Effect::Ask,
+            |_, _, _| decided(Effect::Ask),
         );
         let aws_row = &proposal.rows[0];
         assert_eq!(
@@ -1242,6 +1280,7 @@ mod tests {
                     added_by_klav: false,
                     denied_by_policy: false,
                     no_site: false,
+                    always_asks: false,
                 },
                 ProposedPermission {
                     permission: Permission::Totp,
@@ -1249,6 +1288,7 @@ mod tests {
                     added_by_klav: true,
                     denied_by_policy: false,
                     no_site: false,
+                    always_asks: false,
                 },
             ]
         );
@@ -1277,11 +1317,11 @@ mod tests {
             &r,
             |_| Some(login(&["https://telmex.com"], true)),
             |_, permission, _| {
-                if permission == Permission::Totp {
+                decided(if permission == Permission::Totp {
                     Effect::Deny
                 } else {
                     Effect::Allow
-                }
+                })
             },
         );
         let row = &mut proposal.rows[1];
@@ -1305,7 +1345,7 @@ mod tests {
             has_passkey: true,
             ..login(&["https://signin.aws.amazon.com"], false)
         };
-        let proposal = propose(&r, |_| Some(only.clone()), |_, _, _| Effect::Allow);
+        let proposal = propose(&r, |_| Some(only.clone()), |_, _, _| decided(Effect::Allow));
         let perms: Vec<_> = proposal.rows[0]
             .permissions
             .iter()
@@ -1316,7 +1356,7 @@ mod tests {
             has_passkey: true,
             ..login(&["https://signin.aws.amazon.com"], false)
         };
-        let proposal = propose(&r, |_| Some(both.clone()), |_, _, _| Effect::Allow);
+        let proposal = propose(&r, |_| Some(both.clone()), |_, _, _| decided(Effect::Allow));
         let perms: Vec<_> = proposal.rows[0]
             .permissions
             .iter()
@@ -1334,10 +1374,45 @@ mod tests {
     #[test]
     fn missing_items_cannot_be_approved() {
         let r = request();
-        let mut proposal = propose(&r, |_| None, |_, _, _| Effect::Allow);
+        let mut proposal = propose(&r, |_| None, |_, _, _| decided(Effect::Allow));
         assert!(proposal.rows.iter().all(|row| row.missing));
         proposal.rows[0].set(None, true);
         assert!(!proposal.any_checked());
+    }
+
+    #[test]
+    fn ask_once_targets_never_go_in_a_task() {
+        let (_, _, aws, _) = ids();
+        let r = request();
+        let mut proposal = propose(
+            &r,
+            |_| Some(login(&["https://signin.aws.amazon.com/"], true)),
+            |asked, permission, _| Decision {
+                once: asked.item_id == aws && permission == Permission::Fill,
+                ..decided(Effect::Ask)
+            },
+        );
+        let row = proposal.row_mut(aws).unwrap();
+        let fill = row
+            .permissions
+            .iter()
+            .find(|p| p.permission == Permission::Fill)
+            .copied()
+            .unwrap();
+        assert!(fill.always_asks && !fill.checked && !row.can_check(&fill));
+        row.set(Some(Permission::Fill), true);
+        assert!(
+            !row.permissions
+                .iter()
+                .any(|p| p.permission == Permission::Fill && p.checked)
+        );
+        let decision = proposal.decision(TaskId::generate(), AgentId::generate(), 1);
+        assert!(
+            !decision
+                .access
+                .iter()
+                .any(|a| a.item_id == aws && a.permissions.contains(&Permission::Fill))
+        );
     }
 
     fn approved() -> (TaskRequest, TaskDecision) {
@@ -1351,7 +1426,7 @@ mod tests {
                     login(&["https://signin.aws.amazon.com"], true)
                 })
             },
-            |_, _, _| Effect::Ask,
+            |_, _, _| decided(Effect::Ask),
         );
         let decision = proposal.decision(
             TaskId::from_bytes([9; 16]),
@@ -1505,7 +1580,11 @@ mod tests {
         // without a domain from the agent; totp and inject still go.
         for domain in [None, Some("bank.example")] {
             let r = siteless_request(domain, &[Permission::Fill, Permission::Inject]);
-            let mut proposal = propose(&r, |_| Some(login(&[], true)), |_, _, _| Effect::Ask);
+            let mut proposal = propose(
+                &r,
+                |_| Some(login(&[], true)),
+                |_, _, _| decided(Effect::Ask),
+            );
             let row = &mut proposal.rows[0];
             assert!(row.no_site && !row.domain_claimed && row.domains.is_empty());
             let fill = row.permissions[0];
@@ -1533,7 +1612,7 @@ mod tests {
     fn a_card_is_tied_to_the_site_the_agent_asked_for() {
         // With a domain: checked, tied to it, shown as the agent's claim.
         let r = siteless_request(Some("Shop.Example"), &[Permission::Fill]);
-        let proposal = propose(&r, |_| Some(card_facts()), |_, _, _| Effect::Ask);
+        let proposal = propose(&r, |_| Some(card_facts()), |_, _, _| decided(Effect::Ask));
         let row = &proposal.rows[0];
         assert!(row.domain_claimed && !row.no_site && !row.domain_mismatch);
         assert_eq!(row.domains, vec!["shop.example".to_owned()]);
@@ -1549,7 +1628,7 @@ mod tests {
         assert!(!d.covers(vault, project, item, Permission::Fill, Some("evil.example")));
         // Without a domain: «No site», not checked.
         let r = siteless_request(None, &[Permission::Fill]);
-        let proposal = propose(&r, |_| Some(card_facts()), |_, _, _| Effect::Ask);
+        let proposal = propose(&r, |_| Some(card_facts()), |_, _, _| decided(Effect::Ask));
         assert!(proposal.rows[0].no_site);
         assert!(!proposal.any_checked());
     }
@@ -1679,7 +1758,7 @@ mod tests {
                 ..ItemFacts::default()
             })
         };
-        let mut proposal = propose(&req, facts, |_, _, _| Effect::Ask);
+        let mut proposal = propose(&req, facts, |_, _, _| decided(Effect::Ask));
         assert!(!proposal.any_checked());
         proposal.rows[0].set(Some(Permission::Rotate), true);
         assert!(!proposal.any_checked());
@@ -1692,7 +1771,7 @@ mod tests {
                 ..ItemFacts::default()
             })
         };
-        let proposal = propose(&req, with_url, |_, _, _| Effect::Ask);
+        let proposal = propose(&req, with_url, |_, _, _| decided(Effect::Ask));
         assert!(proposal.any_checked());
         let decision = proposal.decision(
             TaskId::from_bytes([5; 16]),

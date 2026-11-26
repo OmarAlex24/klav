@@ -1,0 +1,175 @@
+{
+  "cases": [
+    {
+      "details": "{\"v\":1,\"kind\":\"environment\",\"fields\":[],\"notes\":\"rotated 2026-11\",\"variables\":[{\"name\":\"DATABASE_URL\",\"value\":\"postgres://app:s3cret@db.internal/acme\"},{\"name\":\"STRIPE_KEY\",\"ref\":\"klav://0e6f5a3c-1b2d-4c8e-9f70-112233445566/1f7a6b4d-2c3e-4d9f-8a81-223344556677/2a8b7c5e-3d4f-4ea0-9b92-334455667788/3b9c8d6f-4e50-4fb1-8ca3-445566778899\"}]}",
+      "name": "production-value-and-reference",
+      "notes": "rotated 2026-11",
+      "overview": "{\"v\":1,\"kind\":\"environment\",\"title\":\"production\",\"tags\":[\"acme-api\"],\"environment\":{\"protected\":true,\"variables\":[\"DATABASE_URL\",\"STRIPE_KEY\"]}}",
+      "protected": true,
+      "tags": [
+        "acme-api"
+      ],
+      "title": "production",
+      "variables": [
+        {
+          "name": "DATABASE_URL",
+          "value": "postgres://app:s3cret@db.internal/acme"
+        },
+        {
+          "name": "STRIPE_KEY",
+          "ref": "klav://0e6f5a3c-1b2d-4c8e-9f70-112233445566/1f7a6b4d-2c3e-4d9f-8a81-223344556677/2a8b7c5e-3d4f-4ea0-9b92-334455667788/3b9c8d6f-4e50-4fb1-8ca3-445566778899"
+        }
+      ]
+    },
+    {
+      "details": "{\"v\":1,\"kind\":\"environment\",\"fields\":[],\"variables\":[{\"name\":\"SENTRY_DSN\",\"ref\":\"klav://0e6f5a3c-1b2d-4c8e-9f70-112233445566/1f7a6b4d-2c3e-4d9f-8a81-223344556677/4cad9e70-5f61-40c2-9db4-5566778899aa/5dbeaf81-6072-41d3-8ec5-66778899aabb\"}]}",
+      "name": "development-reference-only",
+      "overview": "{\"v\":1,\"kind\":\"environment\",\"title\":\"development\",\"environment\":{\"protected\":false,\"variables\":[\"SENTRY_DSN\"]}}",
+      "protected": false,
+      "title": "development",
+      "variables": [
+        {
+          "name": "SENTRY_DSN",
+          "ref": "klav://0e6f5a3c-1b2d-4c8e-9f70-112233445566/1f7a6b4d-2c3e-4d9f-8a81-223344556677/4cad9e70-5f61-40c2-9db4-5566778899aa/5dbeaf81-6072-41d3-8ec5-66778899aabb"
+        }
+      ]
+    },
+    {
+      "details": "{\"kind\":\"environment\",\"v\":1,\"variables\":[{\"name\":\"API_KEY\",\"value\":\"a\"},{\"name\":\"API_KEY\",\"value\":\"b\"}]}",
+      "error": "duplicate variable",
+      "name": "reject-duplicate-variable",
+      "overview": "{\"environment\":{\"protected\":true,\"variables\":[\"API_KEY\",\"API_KEY\"]},\"kind\":\"environment\",\"title\":\"production\",\"v\":1}"
+    },
+    {
+      "details": "{\"kind\":\"environment\",\"v\":1,\"variables\":[{\"name\":\"STRIPE_KEY\",\"ref\":\"klav://0e6f5a3c-1b2d-4c8e-9f70-112233445566/1f7a6b4d-2c3e-4d9f-8a81-223344556677/2a8b7c5e-3d4f-4ea0-9b92-334455667788/3b9c8d6f-4e50-4fb1-8ca3-445566778899\",\"value\":\"sk_live_x\"}]}",
+      "error": "invalid variable",
+      "name": "reject-value-and-reference",
+      "overview": "{\"environment\":{\"protected\":true,\"variables\":[\"STRIPE_KEY\"]},\"kind\":\"environment\",\"title\":\"production\",\"v\":1}"
+    },
+    {
+      "details": "{\"kind\":\"environment\",\"v\":1,\"variables\":[{\"name\":\"STRIPE_KEY\",\"ref\":\"klav://0e6f5a3c-1b2d-4c8e-9f70-112233445566/1f7a6b4d-2c3e-4d9f-8a81-223344556677/7fd0c1a3-8294-43f5-a0e7-8899aabbccdd/3b9c8d6f-4e50-4fb1-8ca3-445566778899\"}]}",
+      "error": "points to an environment",
+      "kinds": {
+        "7fd0c1a3-8294-43f5-a0e7-8899aabbccdd": "environment"
+      },
+      "name": "reject-reference-to-environment",
+      "overview": "{\"environment\":{\"protected\":true,\"variables\":[\"STRIPE_KEY\"]},\"kind\":\"environment\",\"title\":\"production\",\"v\":1}"
+    },
+    {
+      "details": "{\"kind\":\"environment\",\"v\":1,\"variables\":[{\"name\":\"DATABASE_URL\",\"value\":\"x\"},{\"name\":\"STRIPE_KEY\",\"ref\":\"klav://0e6f5a3c-1b2d-4c8e-9f70-112233445566/1f7a6b4d-2c3e-4d9f-8a81-223344556677/2a8b7c5e-3d4f-4ea0-9b92-334455667788/3b9c8d6f-4e50-4fb1-8ca3-445566778899\"}]}",
+      "error": "overview and details do not match",
+      "name": "reject-mismatched-variable-lists",
+      "overview": "{\"environment\":{\"protected\":true,\"variables\":[\"STRIPE_KEY\",\"DATABASE_URL\"]},\"kind\":\"environment\",\"title\":\"production\",\"v\":1}"
+    },
+    {
+      "details": "{\"kind\":\"environment\",\"v\":1,\"variables\":[{\"name\":\"STRIPE_KEY\",\"ref\":\"klav://Trabajo/acme-api/Stripe/api_key\"}]}",
+      "error": "invalid variable",
+      "name": "reject-reference-by-name",
+      "overview": "{\"environment\":{\"protected\":true,\"variables\":[\"STRIPE_KEY\"]},\"kind\":\"environment\",\"title\":\"production\",\"v\":1}"
+    },
+    {
+      "name": "protected-set-person-and-agents",
+      "protected_environments": [
+        "6ecfb092-7183-42e4-9fd6-778899aabbcc",
+        "80e1d2b4-93a5-4406-b1f8-99aabbccddee"
+      ],
+      "protected_set": [
+        "2a8b7c5e-3d4f-4ea0-9b92-334455667788"
+      ],
+      "versions": [
+        {
+          "author": "person",
+          "item": "6ecfb092-7183-42e4-9fd6-778899aabbcc",
+          "protected": true,
+          "refs": [
+            "2a8b7c5e-3d4f-4ea0-9b92-334455667788"
+          ],
+          "title": "production",
+          "version": 1
+        },
+        {
+          "author": "agent",
+          "item": "6ecfb092-7183-42e4-9fd6-778899aabbcc",
+          "protected": false,
+          "refs": [
+            "91f2e3c5-a4b6-4517-82a9-aabbccddeeff"
+          ],
+          "title": "production",
+          "version": 2
+        },
+        {
+          "author": "person",
+          "item": "7fd0c1a3-8294-43f5-a0e7-8899aabbccdd",
+          "protected": false,
+          "refs": [
+            "4cad9e70-5f61-40c2-9db4-5566778899aa"
+          ],
+          "title": "staging",
+          "version": 1
+        },
+        {
+          "author": "agent",
+          "item": "80e1d2b4-93a5-4406-b1f8-99aabbccddee",
+          "protected": false,
+          "refs": [
+            "91f2e3c5-a4b6-4517-82a9-aabbccddeeff"
+          ],
+          "title": "prod",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "protected-set-person-turns-off",
+      "protected_environments": [
+        "7fd0c1a3-8294-43f5-a0e7-8899aabbccdd"
+      ],
+      "protected_set": [],
+      "versions": [
+        {
+          "author": "person",
+          "item": "6ecfb092-7183-42e4-9fd6-778899aabbcc",
+          "protected": true,
+          "refs": [
+            "2a8b7c5e-3d4f-4ea0-9b92-334455667788",
+            "4cad9e70-5f61-40c2-9db4-5566778899aa"
+          ],
+          "title": "production",
+          "version": 3
+        },
+        {
+          "author": "person",
+          "item": "6ecfb092-7183-42e4-9fd6-778899aabbcc",
+          "protected": false,
+          "refs": [
+            "2a8b7c5e-3d4f-4ea0-9b92-334455667788"
+          ],
+          "title": "production",
+          "version": 4
+        },
+        {
+          "author": "person",
+          "item": "7fd0c1a3-8294-43f5-a0e7-8899aabbccdd",
+          "protected": true,
+          "refs": [
+            "91f2e3c5-a4b6-4517-82a9-aabbccddeeff"
+          ],
+          "title": "staging",
+          "version": 1
+        },
+        {
+          "author": "person",
+          "item": "7fd0c1a3-8294-43f5-a0e7-8899aabbccdd",
+          "protected": true,
+          "refs": [],
+          "title": "staging",
+          "version": 2
+        }
+      ]
+    }
+  ],
+  "description": "Environments (ADR 0032): overview and details of an environment item with a value and a reference, documents to reject, and the protected set from the person's and agents' versions",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §7.1"
+}

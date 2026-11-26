@@ -64,6 +64,7 @@ fn kind_name(kind: ItemKind) -> &'static str {
         ItemKind::GeneratorHistory => "generator-history",
         ItemKind::Preferences => "preferences",
         ItemKind::AgentLabels => "agent-labels",
+        ItemKind::Environment => "environment",
     }
 }
 

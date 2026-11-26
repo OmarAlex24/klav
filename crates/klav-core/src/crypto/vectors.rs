@@ -2290,6 +2290,14 @@ fn files() -> Vec<VectorFile> {
             check: mcp_check,
         },
         VectorFile {
+            name: "entorno",
+            description: "Environments (ADR 0032): overview and details of an environment item with a value and a reference, documents to reject, and the protected set from the person's and agents' versions",
+            spec: "§7.1",
+            inputs: environment_inputs,
+            compute: environment_compute,
+            check: environment_check,
+        },
+        VectorFile {
             name: "invite",
             description: "Invite codes: canonical spelling, other spellings, digest and codes to reject (ADR 0048)",
             spec: "§4.7",
@@ -3173,6 +3181,8 @@ fn mcp_policy() -> crate::policy::Policy {
             ..base.clone()
         },
         expires_at: None,
+        once: false,
+        origin: None,
     };
     Policy {
         rules: vec![
@@ -3445,6 +3455,251 @@ fn invite_check(case: &Value) {
         );
         assert_eq!(code.digest().ok().map(|d| d.to_vec()), Some(digest.clone()));
     }
+}
+
+// ---------------------------------------------------- environments --
+
+const ENV_VAULT: &str = "0e6f5a3c-1b2d-4c8e-9f70-112233445566";
+const ENV_PROJECT: &str = "1f7a6b4d-2c3e-4d9f-8a81-223344556677";
+const ENV_STRIPE: &str = "2a8b7c5e-3d4f-4ea0-9b92-334455667788";
+const ENV_STRIPE_FIELD: &str = "3b9c8d6f-4e50-4fb1-8ca3-445566778899";
+const ENV_SENTRY: &str = "4cad9e70-5f61-40c2-9db4-5566778899aa";
+const ENV_SENTRY_FIELD: &str = "5dbeaf81-6072-41d3-8ec5-66778899aabb";
+const ENV_PRODUCTION: &str = "6ecfb092-7183-42e4-9fd6-778899aabbcc";
+const ENV_STAGING: &str = "7fd0c1a3-8294-43f5-a0e7-8899aabbccdd";
+const ENV_AGENT_ONLY: &str = "80e1d2b4-93a5-4406-b1f8-99aabbccddee";
+const ENV_DATABASE: &str = "91f2e3c5-a4b6-4517-82a9-aabbccddeeff";
+
+fn env_ref(item: &str, field: &str) -> String {
+    format!("klav://{ENV_VAULT}/{ENV_PROJECT}/{item}/{field}")
+}
+
+fn environment_inputs() -> Vec<Value> {
+    let stripe = env_ref(ENV_STRIPE, ENV_STRIPE_FIELD);
+    let sentry = env_ref(ENV_SENTRY, ENV_SENTRY_FIELD);
+    let staging = env_ref(ENV_STAGING, ENV_STRIPE_FIELD);
+    let overview = |vars: &[&str]| {
+        json!({"v": 1, "kind": "environment", "title": "production",
+               "environment": {"protected": true, "variables": vars}})
+        .to_string()
+    };
+    let version =
+        |item: &str, version: u64, author: &str, title: &str, protected: bool, refs: &[&str]| {
+            json!({"item": item, "version": version, "author": author, "title": title,
+               "protected": protected, "refs": refs})
+        };
+    vec![
+        json!({
+            "name": "production-value-and-reference",
+            "title": "production",
+            "protected": true,
+            "tags": ["acme-api"],
+            "variables": [
+                {"name": "DATABASE_URL", "value": "postgres://app:s3cret@db.internal/acme"},
+                {"name": "STRIPE_KEY", "ref": stripe},
+            ],
+            "notes": "rotated 2026-11",
+        }),
+        json!({
+            "name": "development-reference-only",
+            "title": "development",
+            "protected": false,
+            "variables": [{"name": "SENTRY_DSN", "ref": sentry}],
+        }),
+        json!({
+            "name": "reject-duplicate-variable",
+            "overview": overview(&["API_KEY", "API_KEY"]),
+            "details": json!({"v": 1, "kind": "environment", "variables": [
+                {"name": "API_KEY", "value": "a"}, {"name": "API_KEY", "value": "b"}]}).to_string(),
+            "error": "duplicate variable",
+        }),
+        json!({
+            "name": "reject-value-and-reference",
+            "overview": overview(&["STRIPE_KEY"]),
+            "details": json!({"v": 1, "kind": "environment", "variables": [
+                {"name": "STRIPE_KEY", "value": "sk_live_x", "ref": stripe}]}).to_string(),
+            "error": "invalid variable",
+        }),
+        json!({
+            "name": "reject-reference-to-environment",
+            "overview": overview(&["STRIPE_KEY"]),
+            "details": json!({"v": 1, "kind": "environment", "variables": [
+                {"name": "STRIPE_KEY", "ref": staging}]}).to_string(),
+            "kinds": {ENV_STAGING: "environment"},
+            "error": "points to an environment",
+        }),
+        json!({
+            "name": "reject-mismatched-variable-lists",
+            "overview": overview(&["STRIPE_KEY", "DATABASE_URL"]),
+            "details": json!({"v": 1, "kind": "environment", "variables": [
+                {"name": "DATABASE_URL", "value": "x"}, {"name": "STRIPE_KEY", "ref": stripe}]}).to_string(),
+            "error": "overview and details do not match",
+        }),
+        json!({
+            "name": "reject-reference-by-name",
+            "overview": overview(&["STRIPE_KEY"]),
+            "details": json!({"v": 1, "kind": "environment", "variables": [
+                {"name": "STRIPE_KEY", "ref": "klav://Trabajo/acme-api/Stripe/api_key"}]}).to_string(),
+            "error": "invalid variable",
+        }),
+        json!({
+            "name": "protected-set-person-and-agents",
+            "versions": [
+                // The person protects production and points it at Stripe.
+                version(ENV_PRODUCTION, 1, "person", "production", true, &[ENV_STRIPE]),
+                // An agent turns it off and points at the database: ignored.
+                version(ENV_PRODUCTION, 2, "agent", "production", false, &[ENV_DATABASE]),
+                // Staging is not protected: its reference protects nothing.
+                version(ENV_STAGING, 1, "person", "staging", false, &[ENV_SENTRY]),
+                // An agent created "prod": protected by its name, protects nothing else.
+                version(ENV_AGENT_ONLY, 1, "agent", "prod", false, &[ENV_DATABASE]),
+            ],
+        }),
+        json!({
+            "name": "protected-set-person-turns-off",
+            "versions": [
+                version(ENV_PRODUCTION, 3, "person", "production", true, &[ENV_STRIPE, ENV_SENTRY]),
+                version(ENV_PRODUCTION, 4, "person", "production", false, &[ENV_STRIPE]),
+                version(ENV_STAGING, 1, "person", "staging", true, &[ENV_DATABASE]),
+                version(ENV_STAGING, 2, "person", "staging", true, &[]),
+            ],
+        }),
+    ]
+}
+
+fn environment_item(case: &Value) -> crate::model::Item {
+    use crate::model::environment::Variable;
+    use crate::model::{Item, ItemKind, Reference};
+    let mut item = Item::new(ItemKind::Environment, text(case, "title")).expect("title");
+    for tag in case["tags"].as_array().into_iter().flatten() {
+        item.add_tag(tag.as_str().expect("tag")).expect("tag");
+    }
+    if let Some(notes) = case["notes"].as_str() {
+        item.set_notes(Some(notes));
+    }
+    let env = item.environment_mut().expect("environment");
+    env.set_protected(case["protected"].as_bool().expect("protected"));
+    for v in case["variables"].as_array().expect("variables") {
+        let name = v["name"].as_str().expect("name");
+        let variable = match (v["value"].as_str(), v["ref"].as_str()) {
+            (Some(value), None) => Variable::with_value(name, value),
+            (None, Some(r)) => Variable::with_reference(name, Reference::parse(r).expect("ref")),
+            _ => panic!("value or ref"),
+        }
+        .expect("variable");
+        env.add(variable).expect("unique");
+    }
+    item
+}
+
+fn ids(values: &Value) -> Vec<ItemId> {
+    values
+        .as_array()
+        .expect("list")
+        .iter()
+        .map(|v| v.as_str().expect("id").parse().expect("item ID"))
+        .collect()
+}
+
+fn environment_compute(case: &Value) -> Value {
+    use crate::model::environment::{
+        Author, Environment, EnvironmentVersion, Variable, protected_environments, protected_set,
+    };
+    use crate::model::reference::{Reference, Selector};
+    if case.get("title").is_some() {
+        let (overview, details) = environment_item(case).encode_sections();
+        return json!({
+            "overview": String::from_utf8(overview).expect("UTF-8"),
+            "details": String::from_utf8(details.to_vec()).expect("UTF-8"),
+        });
+    }
+    let Some(versions) = case["versions"].as_array() else {
+        return json!({});
+    };
+    let envs: Vec<(Value, Environment)> = versions
+        .iter()
+        .map(|v| {
+            let mut env = Environment::new(v["protected"].as_bool().expect("protected"));
+            for (i, target) in ids(&v["refs"]).into_iter().enumerate() {
+                let reference = Reference {
+                    vault: Selector::Id(ENV_VAULT.parse().expect("ID")),
+                    project: Selector::Id(ENV_PROJECT.parse().expect("ID")),
+                    item: Selector::Id(target),
+                    field: Selector::Id(ENV_STRIPE_FIELD.parse().expect("ID")),
+                };
+                env.add(
+                    Variable::with_reference(&format!("VAR_{i}"), reference).expect("variable"),
+                )
+                .expect("unique");
+            }
+            (v.clone(), env)
+        })
+        .collect();
+    let versions: Vec<EnvironmentVersion<'_>> = envs
+        .iter()
+        .map(|(v, env)| EnvironmentVersion {
+            item: v["item"].as_str().expect("item").parse().expect("ID"),
+            version: v["version"].as_u64().expect("version"),
+            author: match v["author"].as_str() {
+                Some("person") => Author::Person,
+                Some("agent") => Author::Agent,
+                other => panic!("author {other:?}"),
+            },
+            title: v["title"].as_str().expect("title"),
+            environment: env,
+        })
+        .collect();
+    let list = |set: std::collections::BTreeSet<ItemId>| -> Value {
+        set.into_iter().map(|id| json!(id.to_string())).collect()
+    };
+    json!({
+        "protected_environments": list(protected_environments(&versions)),
+        "protected_set": list(protected_set(&versions)),
+    })
+}
+
+fn environment_check(case: &Value) {
+    use crate::model::{Item, ItemKind};
+    let id: ItemId = ENV_PRODUCTION.parse().expect("ID");
+    if case.get("title").is_some() {
+        // The stored sections decode to the same item and encode back byte
+        // for byte.
+        let item = Item::decode_sections(
+            id,
+            text(case, "overview").as_bytes(),
+            text(case, "details").as_bytes(),
+        )
+        .expect("decodes");
+        let (o, d) = item.encode_sections();
+        assert_eq!(o, text(case, "overview").as_bytes());
+        assert_eq!(&*d, text(case, "details").as_bytes());
+        assert!(!text(case, "overview").contains("klav://"));
+        return;
+    }
+    let Some(error) = case["error"].as_str() else {
+        return;
+    };
+    let decoded = Item::decode_sections(
+        id,
+        text(case, "overview").as_bytes(),
+        text(case, "details").as_bytes(),
+    );
+    let message = match decoded {
+        Err(e) => e.to_string(),
+        Ok(item) => {
+            let kinds = &case["kinds"];
+            item.environment()
+                .expect("environment")
+                .check_references(id, |target| {
+                    kinds[target.to_string()]
+                        .as_str()
+                        .map(|_| ItemKind::Environment)
+                })
+                .expect_err(text(case, "name"))
+                .to_string()
+        }
+    };
+    assert!(message.contains(error), "{}: {message}", text(case, "name"));
 }
 
 fn render(file: &VectorFile) -> Value {

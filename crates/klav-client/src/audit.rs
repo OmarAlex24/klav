@@ -3225,6 +3225,7 @@ mod tests {
                 issuers: Vec::new(),
                 sandbox: None,
                 local_clients: Vec::new(),
+                released: Vec::new(),
             })
             .unwrap();
             let signature = agent::sign_grant(
@@ -3325,6 +3326,7 @@ mod tests {
                 grant_version: 1,
                 requested_at: AT,
                 caller: None,
+                items: Vec::new(),
             })
             .unwrap();
             let parsed: ApprovalRequest = serde_json::from_slice(&request).unwrap();
@@ -4859,6 +4861,7 @@ mod tests {
                 grant_version: 1,
                 requested_at: AT,
                 caller,
+                items: Vec::new(),
             })
             .unwrap();
             let parsed: ApprovalRequest = serde_json::from_slice(&request).unwrap();

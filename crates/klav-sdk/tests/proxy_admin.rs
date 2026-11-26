@@ -116,6 +116,7 @@ async fn proxied(session: &Session, item: ItemId) -> Result<Item, ClientError> {
                 include_attachments: false,
                 sandbox: None,
                 local_client: None,
+                items: Vec::new(),
             }),
         )
         .await?;

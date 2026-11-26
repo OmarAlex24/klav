@@ -3853,3 +3853,52 @@ async fn an_agent_revoked_while_its_write_waits_for_the_lock_writes_nothing() {
     }
     assert!(taken.is_empty(), "written after the revocation: {taken:#?}");
 }
+
+/// ADR 0032 §4.2: a target the grant says always asks for (an inherited
+/// protection) never goes in a task. A decision that includes it is
+/// refused, a task approved before the protection no longer covers it, and
+/// `passkey` on a protected item is denied even inside a task.
+#[tokio::test]
+async fn ask_once_targets_never_go_in_a_task() {
+    let w = world().await;
+    // A task approved before the protection: it covers AWS.
+    let (_, _) = w.approved_task().await;
+    let res = w
+        .access(w.aws, "fill", Some("signin.aws.amazon.com"), json!({}))
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    // The person protects AWS (a production environment points to it).
+    let mut policy = ask_policy();
+    policy
+        .rules
+        .push(Rule::new(Permission::Inject, Effect::Allow));
+    policy.rules.extend(
+        [Permission::Fill, Permission::Totp, Permission::Inject]
+            .map(|p| Rule::protected(p, vec![w.aws])),
+    );
+    let grant = TestServer::build_grant(&w.ana, &w.agent, 2, policy, &[(&w.vault, &w.project)]);
+    assert_eq!(
+        w.server.post_grant(&w.ana, &w.agent, &grant).await.status(),
+        StatusCode::OK
+    );
+    // The running task no longer opens it: the use asks, once.
+    let res = w
+        .access(w.aws, "fill", Some("signin.aws.amazon.com"), json!({}))
+        .await;
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    // Nor does it allow `passkey` on it.
+    let res = w
+        .access(w.aws, "passkey", Some("signin.aws.amazon.com"), json!({}))
+        .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    // A new decision that includes it is refused.
+    let id = w.pending_task().await;
+    let decision = w.approval(id, u64::try_from(now_ms() + 3_600_000).expect("test"));
+    let res = w.decide(id, true, &decision).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert!(error_text(res).await.contains("always asks"));
+    // Without it, the same task is fine.
+    let mut without = decision.clone();
+    without.access.retain(|a| a.item_id != w.aws);
+    assert_eq!(w.decide(id, true, &without).await.status(), StatusCode::OK);
+}

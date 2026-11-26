@@ -82,6 +82,7 @@ impl Session {
             return Decision {
                 effect: Effect::Deny,
                 reason: policy::Reason::OutOfScope,
+                once: false,
             };
         };
         policy::evaluate(
@@ -153,6 +154,7 @@ impl Session {
             include_attachments: false,
             sandbox: call.sandbox,
             local_client: call.local_client.map(str::to_owned),
+            items: Vec::new(),
         };
         let bytes =
             serde_json::to_vec(&body).map_err(|e| ClientError::Invalid(format!("request: {e}")))?;
@@ -368,6 +370,7 @@ mod tests {
             grant_version: 1,
             requested_at: 0,
             caller,
+            items: Vec::new(),
         }
     }
 

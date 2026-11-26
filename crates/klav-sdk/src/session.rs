@@ -416,6 +416,7 @@ impl Session {
             return Decision {
                 effect: Effect::Deny,
                 reason: policy::Reason::OutOfScope,
+                once: false,
             };
         };
         self.evaluate_entry(e, permission, domain, &e.overview.tags)
@@ -695,6 +696,7 @@ impl Session {
             include_attachments: with_files,
             sandbox: None,
             local_client: None,
+            items: Vec::new(),
         };
         let bytes =
             serde_json::to_vec(&body).map_err(|e| ClientError::Invalid(format!("request: {e}")))?;

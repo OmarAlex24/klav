@@ -442,11 +442,30 @@ async fn grant(
             "the agent is denied or revoked: it must register again",
         ));
     }
-    let current: i64 = sqlx::query_scalar("SELECT grant_version FROM agents WHERE id = $1")
+    let row = sqlx::query("SELECT grant_version, grant_payload FROM agents WHERE id = $1")
         .bind(agent_id.to_string())
         .fetch_one(&state.db().pool)
         .await?;
+    let current: i64 = row.try_get("grant_version")?;
+    let previous: Option<Vec<u8>> = row.try_get("grant_payload")?;
     let payload = check_grant(&state, &auth, &agent, current, &grant).await?;
+    // The protection only shrinks with proof (ADR 0032 §3.1): an inherited
+    // (`origin: "protected"`) rule of the grant in force stays unless the
+    // new grant names its item in `released`. A second barrier against a
+    // device with an old cache; the update below only lands on `current`,
+    // the version this was checked against.
+    if let Some(previous) = previous {
+        let previous: GrantPayload = serde_json::from_slice(&previous)
+            .map_err(|_| ApiError::Internal("corrupt grant payload".into()))?;
+        let lost = payload.lost_protection(&previous);
+        if !lost.is_empty() {
+            let items: Vec<String> = lost.iter().map(ToString::to_string).collect();
+            return Err(ApiError::conflict(format!(
+                "the new grant drops the inherited protection of item(s) {} without naming them in `released`: sync and reissue it",
+                items.join(", ")
+            )));
+        }
+    }
 
     let now = now_ms();
     let mut tx = state.db().pool.begin().await?;

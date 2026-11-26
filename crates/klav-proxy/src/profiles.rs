@@ -553,6 +553,7 @@ mod tests {
                 issuers: Vec::new(),
                 sandbox: None,
                 local_clients: Vec::new(),
+                released: Vec::new(),
             },
             keys: HashMap::new(),
             items: HashMap::from([(plain, key(plain)), (mcp, key(mcp))]),

@@ -107,6 +107,9 @@ pub struct SignedGrant {
     pub signature: Blob,
 }
 
+/// Most items one grant may name in `released` (ADR 0032 §3.1).
+pub const MAX_RELEASED: usize = 1024;
+
 /// Version of the grant payload format for project grants. Clients keep
 /// signing it whenever the grant needs nothing of version 2, so those
 /// grants stay byte for byte what older runtimes accept.
@@ -166,6 +169,15 @@ pub struct GrantPayload {
     /// the loopback listener, each with its token's digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local_clients: Vec<LocalClient>,
+    /// Items whose inherited protection (`origin: "protected"` rules, ADR
+    /// 0032 §3.1) this grant drops on purpose: the person's client saw the
+    /// person's version of the environment that left each one out. A new
+    /// grant that loses an inherited rule of the previous one without naming
+    /// its item here gets `409`. Any version may carry it; omitted when
+    /// empty, so grants without it keep their bytes, and older runtimes and
+    /// servers reject a grant with it (they fail closed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released: Vec<ItemId>,
 }
 
 /// Most local clients one proxy's grant may carry.
@@ -546,6 +558,11 @@ impl GrantPayload {
     /// allow for it. A later format may allow it; older runtimes then
     /// reject the duplicate, which fails closed.
     pub fn check_format(&self) -> Result<(), String> {
+        // ADR 0032 §3.1 and §4.2, in every version: `once` only with `ask`,
+        // inherited rules well formed, and `released` naming each item once
+        // and none an inherited rule still protects.
+        self.policy.check_once().map_err(|e| e.to_string())?;
+        self.check_released()?;
         if self.v < GRANT_PAYLOAD_VERSION_MCP && self.uses_mcp() {
             return Err(
                 "a grant with MCP profiles, tool rules or local clients must be version 4".into(),
@@ -603,7 +620,15 @@ impl GrantPayload {
                 return Err(format!("item {} is granted twice", item.item_id));
             }
         }
-        for rule in &self.policy.rules {
+        // A `proxy` rule names items of this grant. Rules of other
+        // permissions may name items of the granted projects (ADR 0032
+        // §4.1), which the grant shares through the project key.
+        for rule in self
+            .policy
+            .rules
+            .iter()
+            .filter(|r| r.permission == Permission::Proxy)
+        {
             if let Some(item) = rule.scope.items.iter().find(|i| !items.contains(*i)) {
                 return Err(format!(
                     "a rule names item {item}, which the grant does not share"
@@ -662,6 +687,45 @@ impl GrantPayload {
             }
         }
         self.check_mcp()
+    }
+
+    /// `released` (ADR 0032 §3.1): at most [`MAX_RELEASED`] items, each
+    /// once, and none still named by an inherited rule of this grant.
+    fn check_released(&self) -> Result<(), String> {
+        if self.released.len() > MAX_RELEASED {
+            return Err(format!("at most {MAX_RELEASED} released items"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for item in &self.released {
+            if !seen.insert(*item) {
+                return Err(format!("item {item} is released twice"));
+            }
+            if self.policy.protects(*item) {
+                return Err(format!(
+                    "item {item} is released and still protected by an inherited rule"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The items whose inherited protection this grant loses against
+    /// `previous`, the agent's grant in force (ADR 0032 §3.1): an inherited
+    /// `(permission, item)` of `previous` that this grant has no inherited
+    /// rule for, and whose item it does not name in `released`. The server
+    /// answers `409` when this is not empty. Sorted, without repeats.
+    pub fn lost_protection(&self, previous: &GrantPayload) -> Vec<ItemId> {
+        let now = self.policy.protected_pairs();
+        let mut lost: Vec<ItemId> = previous
+            .policy
+            .protected_pairs()
+            .into_iter()
+            .filter(|pair| !now.contains(pair) && !self.released.contains(&pair.1))
+            .map(|(_, item)| item)
+            .collect();
+        lost.sort();
+        lost.dedup();
+        lost
     }
 
     /// Whether the payload uses anything of `v: 4` (ADR 0049 §2.1).
@@ -1163,7 +1227,18 @@ pub struct AccessRequest {
     /// `mcp_gateway` switch is on. Outside `claims`, like `sandbox`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_client: Option<String>,
+    /// With `inject` on an environment (ADR 0032 §3.1): the other items the
+    /// same call resolves, the protected items its references point to. One
+    /// approval then covers the environment and each of them, one access to
+    /// each; each item is then fetched with its own `access` naming that
+    /// approval. At most [`MAX_APPROVAL_ITEMS`], without repeats and without
+    /// `item_id`. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ItemId>,
 }
+
+/// Most items one approval covers besides its own (ADR 0032 §3.1).
+pub const MAX_APPROVAL_ITEMS: usize = 64;
 
 /// Largest total ciphertext of the attachments one `access` delivers to an
 /// agent (ADR 0016).
@@ -1442,6 +1517,14 @@ pub struct ApprovalRequest {
     /// request's bytes stay what they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<ApprovalCaller>,
+    /// The other items this one approval covers (ADR 0032 §3.1): the
+    /// protected items an environment's references point to, sorted. The
+    /// approval serves one access to `item_id` and one to each of them,
+    /// never a lease and never a task. Absent otherwise, so every other
+    /// request's bytes stay what they are; older devices reject a request
+    /// with it and show no card (they fail closed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ItemId>,
 }
 
 /// Who a proxied call is for, as the person signs it (ADR 0049 §5.4):
@@ -1553,6 +1636,79 @@ mod tests {
         let file: serde_json::Value = serde_json::from_str(&text).expect("json");
         let payload = file["cases"][0]["grant_payload"].as_str().expect("payload");
         serde_json::from_str(payload).expect("a GrantPayload")
+    }
+
+    /// ADR 0032: the grant vectors read and write back unchanged with
+    /// `released`, `once` and `origin` known, and a project grant may name
+    /// items in its rules, mark them `once` or inherit a protection, in
+    /// `v: 1`, while `released` and `lost_protection` keep the protection
+    /// from shrinking without proof.
+    #[test]
+    fn environments_keep_old_grants_and_shrink_only_with_proof() {
+        use klav_core::policy::{Effect, Rule};
+
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/vectores/item-grant.json"
+        ))
+        .expect("vector file");
+        let file: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let text = file["cases"][0]["grant_payload"].as_str().expect("payload");
+        let payload: GrantPayload = serde_json::from_str(text).expect("a GrantPayload");
+        // Grants are stored as signed and never written again; what matters
+        // is that nothing new appears when the new fields are empty.
+        let mut all = vec![payload];
+        all.extend(sandbox_vectors());
+        for v in all {
+            let json = serde_json::to_string(&v).expect("json");
+            for key in ["\"released\"", "\"once\"", "\"origin\""] {
+                assert!(!json.contains(key), "{key}");
+            }
+        }
+
+        let stripe = ItemId::generate();
+        let mut grant = vector();
+        grant.v = GRANT_PAYLOAD_VERSION;
+        grant.items.clear();
+        grant.profiles.clear();
+        grant.policy.rules = vec![
+            Rule::new(Permission::Inject, Effect::Allow),
+            Rule::protected(Permission::Inject, vec![stripe]),
+            Rule::protected(Permission::Reveal, vec![stripe]),
+        ];
+        assert_eq!(grant.check_format(), Ok(()));
+        assert_eq!(grant.needed_version(), GRANT_PAYLOAD_VERSION);
+        // `once` only with `ask`, in any version.
+        let mut bad = grant.clone();
+        bad.policy.rules.push(Rule {
+            once: true,
+            ..Rule::new(Permission::Fill, Effect::Allow)
+        });
+        assert!(bad.check_format().is_err());
+        // An inherited rule hollowed out by a tag is not a kept one.
+        let mut hollow = grant.clone();
+        hollow.policy.rules[1].scope.tags = vec!["never".into()];
+        assert!(hollow.check_format().is_err());
+        // Losing one inherited pair without `released` is a loss.
+        let mut next = grant.clone();
+        next.policy.rules.pop();
+        assert_eq!(next.lost_protection(&grant), vec![stripe]);
+        next.released = vec![stripe];
+        assert!(next.lost_protection(&grant).is_empty());
+        // `released` cannot name an item still protected, nor twice.
+        assert!(next.check_format().is_err(), "still protected for inject");
+        let mut all = grant.clone();
+        all.policy.rules.truncate(1);
+        all.released = vec![stripe, stripe];
+        assert!(all.check_format().is_err());
+        all.released = vec![stripe];
+        assert_eq!(all.check_format(), Ok(()));
+        assert!(all.lost_protection(&grant).is_empty());
+        assert!(
+            serde_json::to_string(&all)
+                .expect("json")
+                .contains(&format!("\"released\":[\"{stripe}\"]"))
+        );
     }
 
     /// The `v: 3` payloads of `docs/vectores/sandbox-grant.json`.

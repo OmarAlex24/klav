@@ -20,6 +20,7 @@ use crate::agentauth::{CLOCK_SKEW_MS, effective_status};
 use crate::audit;
 use crate::db::now_ms;
 use crate::error::{ApiError, ApiJson, ApiResult};
+use crate::routes::agent_access::approval_is_once;
 use crate::routes::agents::account_identity;
 use crate::routes::tasks::covering_task;
 use crate::session::{Auth, parse_id};
@@ -188,6 +189,17 @@ async fn decide(
         .map_err(|_| ApiError::bad_request("the decision's signature does not verify"))?;
     let request: ApprovalRequest = serde_json::from_slice(info.request.as_bytes())
         .map_err(|_| ApiError::Internal("corrupt approval request".into()))?;
+    // «Ask every time» (ADR 0032 §4.2): a protected environment, an item it
+    // points to, or an environment with its protected items. No lease, and
+    // never «Add to the task».
+    if req.approve
+        && (req.lease_until != 0 || req.task_id.is_some())
+        && approval_is_once(&state, &request, now).await?
+    {
+        return Err(ApiError::bad_request(
+            "this target always asks for approval: approve it once, without a lease or a task",
+        ));
+    }
     // «Add to the task»: the task must be this agent's, running, and cover
     // the request now (the person revised it first).
     if let Some(task) = req.task_id {

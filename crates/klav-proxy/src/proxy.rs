@@ -2471,6 +2471,8 @@ pub(crate) mod tests {
                 ..Scope::default()
             },
             expires_at: None,
+            once: false,
+            origin: None,
         };
         let policy = Policy {
             rules: vec![rule(Effect::Allow, &["GET"], "/v1")],

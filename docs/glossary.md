@@ -96,7 +96,7 @@ When the UI and the code disagree, prose follows the UI and identifiers are quot
 | ¿De dónde vienes? (asistente de importación) | Where are you coming from? | UI, extension and iOS (ADR 0024) |
 | fusionar (al importar) | merge | CLI `klav import`: the `merge` action; UI "Merged" |
 | passkey | passkey | ADR 0020; never translated |
-| entorno | environment | ADR 0032 (accepted, not built); `klav env` |
+| entorno | environment | ADR 0032; `ItemKind::Environment` (`kind = environment`) in `klav-core` and the server since layers 1–2; `klav env` comes later |
 | código de salida | exit code | Docs site, Reference › CLI commands; `crates/klav-cli/src/error.rs` |
 
 ## Passwords and the generator
@@ -402,6 +402,10 @@ Terms from ADR [0038](decisiones/0038-deployed-services.md) (accepted). The sand
 | conjunto protegido | protected set | ADR 0032 §3.1; `protected_set` in `klav-core`: the items a protected environment's references point to |
 | interruptor «Desarrollo» | "Development" switch | ADR 0032 §7; system item `kind = preferences`. Shows or hides the Mac app's Development section (ADR 0033 E1) |
 | pedir cada vez (`ask once`) | ask every time | ADR 0032 §4.2; `Rule.once`: no lease, one use, never in a task |
+| regla heredada (`origin: "protected"`) | inherited rule | ADR 0032 §3.1; `Rule::protected`, `RuleOrigin::Protected`: an `ask once` rule on the items of the protected set, which only tightens a decision |
+| marca efectiva (`protected`) | effective flag | ADR 0032 §3; `effective_protected`: the `protected` flag of the latest version the person wrote; with none, on or named `production`/`prod` |
+| liberados (`released`) | released | ADR 0032 §3.1; `GrantPayload.released`: the items a reissued grant stops protecting, with proof; without them the server answers `409` |
+| variable (de un entorno) | variable | ADR 0032 §1; `Variable`: a name (`[A-Za-z_][A-Za-z0-9_]{0,127}`, case-sensitive) with a value or a `klav://` reference |
 | volver a emitir (un grant) | reissue | ADR 0032 §3.1, ADR 0033 F1; `regrant_agents` |
 | pin de confianza (de `klav run`) | trust pin | `trusted-projects.json`, by path and exact text; ADR 0032 §2 |
 | autoría por versión / sitios confirmados | per-version authorship / confirmed sites | ADR 0030 §7; `author_agent_id`. The sites of the latest version the person wrote |

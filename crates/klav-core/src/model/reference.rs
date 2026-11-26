@@ -10,7 +10,11 @@
 //! * segments are percent-decoded as UTF-8 and may not contain control
 //!   characters; a decoded segment shaped like a UUID is an ID;
 //! * the field segment, when a name, must be a valid field name
-//!   ([`validate_field_name`]).
+//!   ([`validate_field_name`]) or a valid variable name
+//!   ([`validate_variable_name`]): in an `environment` item the fourth
+//!   segment names a variable, case-sensitively (ADR 0032 §1), and
+//!   [`resolve_variable`] finds it; in any other item it names a field
+//!   ([`resolve_field`]).
 //!
 //! Names are displayed as people wrote them (`klav://Mi bóveda/…`): only
 //! `%`, `/`, `?`, `#`, control characters and whitespace at either end of a
@@ -23,7 +27,8 @@ use std::str::FromStr;
 use percent_encoding::percent_decode_str;
 use thiserror::Error;
 
-use super::item::{Field, Item, validate_field_name};
+use super::environment::{Variable, validate_variable_name};
+use super::item::{Field, Item, ItemKind, validate_field_name};
 use crate::ids::{FieldId, ItemId, ProjectId, VaultId, looks_like_id};
 
 /// Scheme prefix.
@@ -175,7 +180,10 @@ fn selector<I: FromStr>(raw: &str, level: Level) -> Result<Selector<I>, Referenc
             .map(Selector::Id)
             .map_err(|_| ReferenceError::InvalidSegment(level));
     }
-    if level == Level::Field && validate_field_name(&decoded).is_err() {
+    if level == Level::Field
+        && validate_field_name(&decoded).is_err()
+        && validate_variable_name(&decoded).is_err()
+    {
         return Err(ReferenceError::InvalidSegment(level));
     }
     Ok(Selector::Name(decoded))
@@ -390,6 +398,22 @@ pub fn resolve_field<'a>(
     .ok_or(ReferenceError::NotFound(Level::Field))
 }
 
+/// Finds the referenced variable in a decrypted `environment` item: by
+/// exact, case-sensitive name (a variable has no ID). Any other kind has
+/// no variables.
+pub fn resolve_variable<'a>(
+    item: &'a Item,
+    variable: &Selector<FieldId>,
+) -> Result<&'a Variable, ReferenceError> {
+    match (item.kind(), item.environment(), variable) {
+        (ItemKind::Environment, Some(environment), Selector::Name(name)) => {
+            environment.variable(name)
+        }
+        _ => None,
+    }
+    .ok_or(ReferenceError::NotFound(Level::Field))
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -501,7 +525,8 @@ mod tests {
             ("klav://a/b/%FF/d", E::InvalidSegment(Level::Item)),
             ("klav://a/b/%0A/d", E::InvalidSegment(Level::Item)),
             ("klav://a/b/50%/d", E::InvalidSegment(Level::Item)),
-            ("klav://a/b/c/API_KEY", E::InvalidSegment(Level::Field)),
+            ("klav://a/b/c/9KEY", E::InvalidSegment(Level::Field)),
+            ("klav://a/b/c/api-KEY", E::InvalidSegment(Level::Field)),
             ("klav://a/b/c/api key", E::InvalidSegment(Level::Field)),
         ];
         for (text, expected) in cases {

@@ -565,6 +565,7 @@ impl Unlocked {
             issuers: Vec::new(),
             sandbox,
             local_clients: Vec::new(),
+            released: Vec::new(),
         };
         payload.v = payload.version_after(slot.floor);
         self.upload_grant(id, public, payload).await

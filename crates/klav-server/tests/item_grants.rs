@@ -1193,6 +1193,7 @@ async fn a_sandbox_grant_naming_another_accounts_agent_is_refused() {
             }),
         }),
         local_clients: Vec::new(),
+        released: Vec::new(),
     };
     let post = |agent: &TestAgent, payload: &GrantPayload| {
         let signed = TestServer::sign_payload(&w.ana, agent, payload);

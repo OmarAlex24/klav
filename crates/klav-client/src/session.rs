@@ -18,8 +18,8 @@ use klav_core::model::history::is_system_project;
 use klav_core::model::item::{FieldKind, FieldValue, ItemKind, Overview};
 use klav_core::model::record::{PasswordRecord, is_recorded};
 use klav_core::model::{
-    Catalog, Item, Meta, Named, Reference, SealedItem, SecretValue, open_item, open_overview,
-    open_project_meta, open_vault_meta, resolve_field, seal_item, seal_project_meta,
+    Catalog, Item, Meta, ModelError, Named, Reference, SealedItem, SecretValue, open_item,
+    open_overview, open_project_meta, open_vault_meta, resolve_field, seal_item, seal_project_meta,
     seal_vault_meta,
 };
 use klav_core::totp::Totp;
@@ -151,6 +151,19 @@ fn split_sites(
     urls.iter().cloned().partition(|u| {
         klav_core::site::item_host(u).is_some_and(|h| klav_core::site::host_matches(&h, person))
     })
+}
+
+/// The warning for an item whose overview does not open. A kind this build
+/// does not know was written by a newer Klav: not tampering, so it says so
+/// (ADR 0032 §1); the item is skipped all the same, and this build can
+/// neither edit nor overwrite it.
+fn item_open_warning(item_id: ItemId, error: &ClientError) -> String {
+    match error {
+        ClientError::Model(ModelError::UnknownKind(kind)) => {
+            format!("item {item_id} is of an unknown item kind ({kind:?}); update Klav to see it")
+        }
+        e => format!("item {item_id} does not decrypt: {e}"),
+    }
 }
 
 /// The URLs of the person's last version of an item, if it opens.
@@ -329,7 +342,7 @@ fn open_vault(
                     },
                 ));
             }
-            Err(e) => warnings.push(format!("item {item_id} does not decrypt: {e}")),
+            Err(e) => warnings.push(item_open_warning(*item_id, &e)),
         }
     }
     Ok(Some(OpenedVault {
@@ -2578,4 +2591,25 @@ fn push_extra(
         }
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unknown_kind_asks_to_update_instead_of_crying_tampering() {
+        let id = ItemId::generate();
+        let unknown = ClientError::Model(ModelError::UnknownKind("vault_of_the_future".into()));
+        let warning = item_open_warning(id, &unknown);
+        assert!(warning.contains(&id.to_string()), "{warning}");
+        assert!(warning.contains("\"vault_of_the_future\""), "{warning}");
+        assert!(warning.contains("update Klav"), "{warning}");
+        assert!(!warning.contains("does not decrypt"), "{warning}");
+
+        let broken = ClientError::Corrupt("item without key".into());
+        let warning = item_open_warning(id, &broken);
+        assert!(warning.contains("does not decrypt"), "{warning}");
+        assert!(!warning.contains("update Klav"), "{warning}");
+    }
 }

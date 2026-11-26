@@ -140,6 +140,7 @@ impl Session {
                     include_attachments: false,
                     sandbox: None,
                     local_client: None,
+                    items: Vec::new(),
                 },
             )
             .await?;
