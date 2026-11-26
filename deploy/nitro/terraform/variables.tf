@@ -137,7 +137,7 @@ variable "alarm_actions" {
 }
 
 variable "auto_recover" {
-  description = "Recover a parent automatically when AWS's system status check fails. The recovered enclave joins again from the zone in service (klav-enclave.service)."
+  description = "Recover a parent automatically when AWS's system status check fails. A recovered standby joins again from the zone in service; a recovered parent in service needs a failover (runbook §7)."
   type        = bool
   default     = true
 }

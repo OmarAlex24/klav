@@ -4,11 +4,12 @@
 region = "us-east-1"
 name   = "klav-hosted-proxy"
 
-# One parent per zone. Set in_service = false to drain one from both load
-# balancers during a rolling upgrade (runbook §6); never remove both.
+# One parent per zone; at most ONE in service (a validation refuses two).
+# The other is the standby: it holds the seed and serves nobody. Swap them to
+# fail over or upgrade (runbook §6, §7); never remove both.
 zones = {
   a = { az_index = 0, in_service = true }
-  b = { az_index = 1, in_service = true }
+  b = { az_index = 1, in_service = false }
 }
 
 instance_type          = "c7g.large"

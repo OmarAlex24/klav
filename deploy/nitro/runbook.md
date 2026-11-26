@@ -158,16 +158,22 @@ From release R1 (running on both zones) to R2. The hand-off only goes to an imag
    ```
 3. **Standby (`b`) to R2:** install R2's bundle (`install.sh`, no `--start`), then `systemctl restart klav-enclave.service`. The R2 enclave joins from `a` (R1). Wait for `/v1/manifest` 200 on `b`.
 4. **Switch right away** (ADR 0051 §16: the hand-off goes right before the old enclave leaves the load balancer). Swap `in_service` (`a = false`, `b = true`) and run `terraform apply`. The apply registers `b` and deregisters `a`. `a` keeps its open connections for `deregistration_delay_seconds` (60 s), and new connections go to `b` once it passes two health checks (about 20 s). Whether connections fail in that gap is **not measured yet** (§10).
-5. **The old zone (`a`) to R2:** install R2's bundle, then `systemctl restart klav-enclave.service`. It joins from `b` (R2) and becomes the standby.
+5. **The old zone (`a`) to R2:** first confirm `b` serves (`/v1/manifest` 200 through `https://proxy.klav.dev`). Install R2's bundle on `a`, then stop its enclave explicitly and start the unit:
+   ```sh
+   nitro-cli terminate-enclave --enclave-name klav-proxy   # needed after genesis: that enclave was started by hand, not by the unit
+   systemctl restart klav-enclave.service
+   ```
+   It joins from `b` (R2) and becomes the standby.
 6. Later, once no enclave runs R1, publish a manifest that drops R1 (or revokes it, §8.1).
 
 Never stop the last enclave holding the current seed. Check the standby has joined before you touch the zone in service.
 
 ## 7. Failover when the zone in service fails
-1. Alarm `…-no-healthy-target`. Check the standby on `b`: `/v1/manifest` 200.
-2. Swap `in_service` and run `terraform apply`. Sandboxes claimed after the standby's last join must claim again, and some may end as `theft` (§1). Tell affected people to start their sandbox again.
-3. Repair `a`: reboot it or let AWS recover it. `klav-enclave.service` is enabled, so at boot it joins from `b`. Check `/v1/manifest` 200 on `a`, which is now the standby.
-4. If both zones fail at once, that is a total loss (§8.2).
+1. The signal: alarm `…-no-healthy-target` or `…-status-check-failed` for the zone in service, or `https://proxy.klav.dev/v1/manifest` answering anything but 200. **A rebooted or auto-recovered parent in service does not trip the health alarm:** its new enclave accepts connections at once (`/healthz` 200) while it has no seed (`503 klav_hosted_starting`), and its join image dials `proxy.klav.dev`, which routes back to itself, so it can never join while its zone is in service. It retries for about 5 minutes, then gives up. Check `/v1/manifest` after any event on the zone in service.
+2. Check the standby on `b`: `/v1/manifest` 200.
+3. Swap `in_service` and run `terraform apply`. Sandboxes claimed after the standby's last join must claim again, and some may end as `theft` (§1). Tell affected people to start their sandbox again.
+4. Repair `a` (reboot it, or let AWS recover it), then **after the swap** start its join explicitly: `nitro-cli terminate-enclave --enclave-name klav-proxy; systemctl restart klav-enclave.service`. The join at boot has already given up, or failed against itself. Check `/v1/manifest` 200 on `a`, which is now the standby.
+5. If both zones fail at once, that is a total loss (§8.2).
 
 ## 8. Revoking an image, and total loss
 
@@ -190,6 +196,7 @@ What happens to people is in ADR 0051 §4.4: sandboxes fail with `klav_proxy_unr
 
 ## 9. Monitoring and routine
 - **Alarms** (`terraform/alarms.tf`): no healthy target, an unhealthy target, failed status checks, and automatic recovery on a failed system check. Point `alarm_actions` at an SNS topic that pages.
+- **A parent in service that reboots or recovers comes back without a seed and stays "healthy"** (§7, step 1): check `https://proxy.klav.dev/v1/manifest` after any event on it, and fail over.
 - **The standby is not monitored by AWS.** Through SSM, after every change and once a day:
   ```sh
   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8443/v1/manifest   # on the standby: 200

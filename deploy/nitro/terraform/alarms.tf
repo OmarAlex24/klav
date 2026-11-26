@@ -4,8 +4,11 @@
 #     the standby (runbook §7) before anything else.
 #   - an unhealthy target: the parent in service fails its health check.
 #   - a parent's status check: a host problem, in service or standby; the
-#     system check recovers the instance automatically (auto_recover), and
-#     its enclave joins again from the zone in service.
+#     system check recovers the instance automatically (auto_recover). A
+#     recovered standby joins again from the zone in service. A recovered
+#     parent IN SERVICE comes back without a seed, its join dials itself,
+#     and its /healthz is 200 anyway, so "no healthy target" stays quiet:
+#     fail over (runbook §7) on this alarm for the zone in service.
 # NOT covered: the standby's enclave. It is attached to no load balancer, so
 # nothing here sees whether it holds the seed; klav-enclave.service is a
 # oneshot that stays "active" even after a failed join. Check it after every
