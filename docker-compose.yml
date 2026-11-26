@@ -1,26 +1,30 @@
-# klav-server con SQLite en un volumen. Guía: docs/self-hosting.md.
+# klav-server with SQLite on a volume. Guide: docs/self-hosting.md §1.
 #
-# El puerto queda en 127.0.0.1: pon delante un proxy inverso con TLS
-# (Caddy, nginx, Traefik) y no lo publiques en claro.
+# The published image of this release, so nothing is compiled. The release's
+# version-bump PR raises the tag (docs/releasing.md §2, step 1). To build from
+# this checkout instead:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# The port stays on 127.0.0.1: put Tailscale Serve, Caddy or another reverse
+# proxy with TLS in front (§3), and never publish it in plain HTTP.
 services:
   klav:
-    # To use a prebuilt release image from GHCR once published (instead of
-    # building from source), remove `build: .` and set:
-    #   image: ghcr.io/omaralex24/klav-server:latest
-    build: .
-    image: klav-server:local
+    image: ghcr.io/omaralex24/klav-server:0.9.2
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      # Registro cerrado por defecto. Para crear tus cuentas, ábrelo solo en
-      # ese arranque y vuelve a cerrarlo después (docs/self-hosting.md §1):
-      #   KLAV_ALLOW_REGISTRATION=true docker compose up -d --build
-      #   docker compose up -d
-      KLAV_ALLOW_REGISTRATION: "${KLAV_ALLOW_REGISTRATION:-false}"
-      # Solo si el proxy inverso fija X-Forwarded-For (ver la guía, §3.2).
-      # La alternativa, KLAV_TRUSTED_IP_HEADER, queda sin poner: excluye a
-      # esta y solo vale si el proxy reemplaza esa cabecera.
+      # Only people with an invite you create sign up (§1):
+      #   docker compose exec klav klav-server invite create --email you@example.com
+      # KLAV_ALLOW_REGISTRATION=false stays next to it: an image from before
+      # registration_mode ignores KLAV_REGISTRATION_MODE and reads only this
+      # one, so a rollback stays closed. Remove it only to open the server to
+      # everyone, with KLAV_REGISTRATION_MODE: open (§2.1).
+      KLAV_ALLOW_REGISTRATION: "false"
+      KLAV_REGISTRATION_MODE: invite
+      # Only if the reverse proxy sets X-Forwarded-For, as Caddy does (§3.2).
+      # The alternative, KLAV_TRUSTED_IP_HEADER, stays unset: it excludes
+      # this one, and only works if the proxy replaces that header.
       KLAV_TRUST_FORWARDED_FOR: "false"
       KLAV_LOG: info
     volumes:

@@ -15,6 +15,7 @@ Releases are GitHub Releases of `OmarAlex24/klav`, which only work once the repo
 | `klav-extension-chromium.zip` | The extension for Chrome, Brave, Edge, Arc and Dia, loaded unpacked (§3) | `scripts/extension/package.sh` | `/download/extension/chromium` |
 | `klav-extension-firefox.xpi` | The extension for Firefox, ID `klav@klav.dev`, signed by Mozilla as an unlisted add-on (§3). Optional: until Mozilla signs it, the release has no Firefox file, and the unsigned zip is never published | `scripts/extension/package.sh`, then addons.mozilla.org | `/download/extension/firefox` |
 | `klav-linux-x86_64.tar.gz` | `klav`, `klavd` and `klav-native-host` for Linux, x86_64, glibc 2.36 or later (Debian 12), in a folder `klav-linux-x86_64/`. Optional until the CI build of §6 has run | CI (§6) | `/download/linux` |
+| `klav-server-linux-x86_64.tar.gz` | `klav-server`, its hardened systemd unit (`klav-server.service`) and `server.toml.example` (invite mode, `127.0.0.1:8080`), from [`deploy/server/`](../deploy/server/), in a folder `klav-server-linux-x86_64/`; x86_64, glibc 2.36 or later. Optional until the CI build of §6 has run (ADR [0048](decisiones/0048-invite-beta-and-distribution.md) §5.2) | CI (§6) | — (the docs and Homebrew use the tag's GitHub URL) |
 | `RELEASE.txt` | The tag, the commit, and where each file came from, including which Chromium build it is | the kit | — |
 | `SHA256SUMS` | SHA-256 of every file above | the kit | `/download/checksums` |
 
@@ -22,25 +23,26 @@ Releases are GitHub Releases of `OmarAlex24/klav`, which only work once the repo
 
 The same CI run also leaves the Linux `klav-forward` and `klav-proxy` as a separate artifact, for testing agent sandboxes; it is not part of a release, and once the repository is public anyone signed in to GitHub can download it for the day it is kept (§6).
 
-**The names are a contract.** `ASSETS` in `scripts/release/kit.mjs` and the redirects in `apps/web/server.mjs` use the same names. Renaming one breaks every link already published: change both in one PR.
+**The names are a contract.** `ASSETS` in `scripts/release/kit.mjs` and the redirects in `apps/web/server.mjs` use the same names. Renaming one breaks every link already published: change both in one PR. `klav-server-linux-x86_64.tar.gz` has no site route: the self-hosting docs and the Homebrew formula name it by `releases/download/vX.Y.Z/…`, so renaming it breaks those instead.
 
-**No macOS CLI on its own.** On a Mac, the CLI comes from the app ("Set up this Mac" links `/usr/local/bin/klav` to the app's copy, which updates with it). The binaries in `target/release` are not signed or notarized: downloaded from a browser, macOS quarantines them and refuses to run them, and a bare `klavd` shows Touch ID without Klav's name and icon ([macos.md](macos.md) §3, "klavd va en su propio *bundle*"). An Intel Mac builds from source.
+**No macOS CLI on its own.** On a Mac, the CLI comes from the app ("Set up this Mac" links `/usr/local/bin/klav` to the app's copy, which updates with it). The binaries in `target/release` are not signed or notarized: downloaded from a browser, macOS quarantines them and refuses to run them, and a bare `klavd` shows Touch ID without Klav's name and icon ([macos.md](macos.md) §3, "klavd va en su propio *bundle*"). An Intel Mac builds from source. For the same reason there is no macOS `klav-server`: Homebrew's formula builds it from the tag's source (§2, step 11).
 
 ## 2. The steps, in order
 
 "Owner" marks what only Omar can do: it needs Omar's signing identity, keys or accounts. Nothing in the kit does any of it, and an agent never does it in Omar's place.
 
-1. **The version.** One version for the Mac app, the extension and the CLI, and a tag `vX.Y.Z` for it; the first release is `v0.9.0` (§8). Raising it is a separate PR, merged before the tag: the workspace version in `Cargo.toml` (and `Cargo.lock`), `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `apps/ios/project.yml` (the build always goes up: Sparkle compares it), and the `version` in `apps/extension/package.json` and `packages/sdk/package.json`. It touches `crates/`, `Cargo.*` and the Mac app, so it isn't part of the release kit's PRs.
+1. **The version.** One version for the Mac app, the extension and the CLI, and a tag `vX.Y.Z` for it; the first release is `v0.9.0` (§8). Raising it is a separate PR, merged before the tag: the workspace version in `Cargo.toml` (and `Cargo.lock`), `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `apps/ios/project.yml` (the build always goes up: Sparkle compares it), the `version` in `apps/extension/package.json` and `packages/sdk/package.json`, and the image tag in the root `docker-compose.yml` (`ghcr.io/omaralex24/klav-server:X.Y.Z`, the image `release-docker.yml` publishes for that version, so the file at the tag names its own image). It touches `crates/`, `Cargo.*` and the Mac app, so it isn't part of the release kit's PRs.
 
    **The release commit** is that merge on `main`, and every step below uses its full SHA: the Mac app and the extension are built from a clean checkout of it, the Linux workflow builds it (§6), and the tag names it. `assemble` refuses a checkout with changes and writes its commit in `RELEASE.txt`; `seal` prints `gh release create --target <that commit>`, because without `--target` GitHub cuts a new tag from the newest commit on `main` when the draft is published.
 2. **The Mac app (owner),** from a clean checkout of the release commit. `nice -n 19 env CARGO_BUILD_JOBS=2 scripts/macos/build-app.sh release`. The version and the build come from `apps/ios/project.yml` (step 1), and the DMG takes its name from the app's `Info.plist`; `build-app.sh`'s `KLAV_MAC_VERSION` and `KLAV_MAC_BUILD` overrides are for the update test ([probar-mac.md](probar-mac.md)), not for a release. It signs with the Developer ID in the owner's keychain and notarizes with the owner's App Store Connect key, and leaves `target/macos/dist/Klav-X.Y.Z.dmg`. The key's path, key ID and issuer ID come from the environment or the owner's local build config ([ios.md](ios.md) §5), which lives outside the checkout, so the checkout stays clean; without them the script stops before building. Its DerivedData goes in `target/xcode/mac-release-derived` unless that config says otherwise.
 3. **The extension.** `pnpm install && scripts/extension/package.sh`, from the same clean checkout. It leaves the three zips (store, keyed and Firefox), the source archive and their `SHA256SUMS` in `target/extension/`.
    - **Firefox (owner):** upload the Firefox zip and the source archive to addons.mozilla.org for signing (§3, "Signing the Firefox build"). When the signed `.xpi` is back, install it in release Firefox (`about:addons` › gear › *Install Add-on From File…*) and check that Klav loads: the kit doesn't verify Mozilla's signature. If that's done before step 5, pass it with `--firefox-xpi`; otherwise the release goes out without Firefox, and step 10 adds it.
-4. **Linux (owner):** run the workflow of §6 from `main` on the release commit (the same full SHA), which must contain the build identity (§6, "When it can run"), then download its tarball with `gh run download`.
+4. **Linux (owner):** run the workflow of §6 from `main` on the release commit (the same full SHA), which must contain the build identity (§6, "When it can run"), then download its two tarballs with `gh run download` (`klav-linux-x86_64` and `klav-server-linux-x86_64`).
 5. **Assemble:**
 
    ```sh
-   node scripts/release/kit.mjs assemble --tag vX.Y.Z --chromium dev [--firefox-xpi klav-signed.xpi] [--linux klav-linux-x86_64.tar.gz]
+   node scripts/release/kit.mjs assemble --tag vX.Y.Z --chromium dev [--firefox-xpi klav-signed.xpi] \
+     [--linux klav-linux-x86_64.tar.gz] [--server-linux klav-server-linux-x86_64.tar.gz]
    ```
 
    It checks each input before it copies or removes anything:
@@ -50,7 +52,8 @@ The same CI run also leaves the Linux `klav-forward` and `klav-proxy` as a separ
    - the Firefox ID is `klav@klav.dev`;
    - a `.xpi` holds exactly the files of `package.sh`'s Firefox zip, plus `META-INF/` signature files. The kit doesn't verify the signature (Firefox does when it installs), so install the `.xpi` in release Firefox before publishing;
    - the Chromium zip carries exactly the development key (`--chromium dev`) or no key (`--chromium store`);
-   - the Linux tarball holds the three binaries, as regular files, executable.
+   - the Linux tarball holds the three binaries, as regular files, executable;
+   - the server tarball (`--server-linux`) holds `klav-server-linux-x86_64/klav-server`, executable, and `klav-server.service` and `server.toml.example`, all as regular files. `RELEASE.txt` gets a `server-linux:` line, and `seal` lists it in `SHA256SUMS`.
 
    `--chromium` has no default: which build people get is a decision (§3). Each command takes only its own flags, each once: a misspelled `--xpi` fails instead of leaving Firefox out.
 
@@ -95,6 +98,8 @@ The same CI run also leaves the Linux `klav-forward` and `klav-proxy` as a separ
 
     First check that the kit is the published one: `gh release download vX.Y.Z --repo OmarAlex24/klav --pattern SHA256SUMS --output - | diff - target/release-kit/vX.Y.Z/SHA256SUMS` prints nothing. Before running `firefox`, install the `.xpi` in release Firefox and check that Klav loads (step 3): the kit doesn't verify Mozilla's signature. `firefox` refuses a kit where anything changed since `seal`, or that holds a file `SHA256SUMS` doesn't list (`.DS_Store` included): assemble and seal again then. It checks the `.xpi` as `assemble` does (its files, not the signature), adds it as `klav-extension-firefox.xpi`, rewrites `RELEASE.txt` and `SHA256SUMS`, and prints the `gh release upload --clobber` command for the three files. Then switch `firefox` on ([sitio-web.md](sitio-web.md) §2).
 
+11. **The Homebrew tap (owner),** after step 8, once the release and its source archive exist: a PR to `OmarAlex24/homebrew-tap` that bumps the tag in every URL of `Casks/klav.rb`, `Formula/klav-cli.rb` and `Formula/klav-server.rb`, with the `sha256` values copied from this release's `SHA256SUMS` (and, for `klav-server`'s source archive, `curl -fsSL https://github.com/OmarAlex24/klav/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`). The templates and the exact commands are in [`deploy/homebrew/README.md`](../deploy/homebrew/README.md). No token in Klav's CI can write to the tap (ADR 0048 §5.3, T250); creating the tap and its ruleset is a one-time step there.
+
 ## 3. The browser extension
 
 A zip loaded with "Load unpacked" is an unpacked extension, and its ID decides whether `klav-native-host` lets it reach `klavd` ([extension.md](extension.md) §3, "Who can call"). There are two builds, and neither is as safe as the store's:
@@ -135,6 +140,7 @@ The first submission creates the add-on under Omar's AMO account, which doesn't 
 - Set `KLAV_WEB_OPEN` and `KLAV_WEB_TESTFLIGHT_URL` on Railway.
 - Upload the Firefox build and its source to addons.mozilla.org for signing (§3), install the signed `.xpi` in release Firefox before it ships, and anything else in App Store Connect, the Chrome Web Store or addons.mozilla.org.
 - Merge the version bump (§2, step 1) and run the Linux workflow (§6).
+- Create `OmarAlex24/homebrew-tap` with its ruleset, and bump it each release (§2, step 11).
 
 ## 5. After the first release
 
@@ -163,14 +169,14 @@ What only the first release can test, and what to do if it fails:
 
 - **Run only by hand** (`workflow_dispatch`), with the full SHA of the commit to build. It runs on no push or PR, so the `ci` job and its cost don't change. Its job is called `linux release build`, a name no check of `ci.yml` uses.
 - **Only a commit on `main`.** It checks out the full history and stops before building unless `git merge-base --is-ancestor <sha> origin/main` passes, so a commit from another branch or a fork's never reaches the kit as release binaries.
-- **One job on `boat-large`.** Under ADR 0034 that is one machine start per run, plus the build time. A release build of `klav`, `klavd` and `klav-native-host` with the Mac app's settings (fat LTO, one codegen unit, stripped: `scripts/macos/build-app.sh`), plus `klav-forward` and `klav-proxy`, took 2 min 46 s for the whole job on its first run (2026-11-16), about 145 s of it the build step. Expect a cold build every time: there is no compile cache. Boat's pages don't publish the price per second per size (ADR 0034, "Tamaño"), so the cost is a start plus a few minutes of `boat-large`, once per release. The job stops at 60 minutes, which only bounds a hung run.
+- **One job on `boat-large`.** Under ADR 0034 that is one machine start per run, plus the build time. A release build of `klav`, `klavd` and `klav-native-host` with the Mac app's settings (fat LTO, one codegen unit, stripped: `scripts/macos/build-app.sh`), plus `klav-forward` and `klav-proxy`, took 2 min 46 s for the whole job on its first run (2026-11-16), about 145 s of it the build step; `klav-server` (ADR 0048 §5.2) makes it a sixth binary. Expect a cold build every time: there is no compile cache. Boat's pages don't publish the price per second per size (ADR 0034, "Tamaño"), so the cost is a start plus a few minutes of `boat-large`, once per release. The job stops at 60 minutes, which only bounds a hung run.
 - **Inside the pinned builder image** that the root `Dockerfile` already uses (`rust:1.98.1-slim-bookworm@sha256:ff52…`), so no new image enters the supply chain. Its glibc is 2.36: the binaries run on Debian 12, Ubuntu 23.04 and newer, and not on Ubuntu 22.04 (§8). The job summary lists the newest glibc symbol each binary needs.
 - **No compile cache.** With fat LTO and one codegen unit, sccache would hit almost nothing, the ci-cache session is read-only from `main`, and it would put a token in the environment of every build script. Paths are the image's (`/src`, `/usr/local/cargo`), so nothing from the runner ends up in the binaries and no `--remap-path-prefix` (no `RUSTFLAGS`) is needed. `deploy/linux/Dockerfile.dockerignore` replaces the root `.dockerignore` for this build, which would leave out `skill/SKILL.md`.
-- **Its output is two workflow artifacts.** `klav-linux-x86_64`, kept 7 days, holds `klav-linux-x86_64.tar.gz` and its `.sha256`, also printed in the job summary; Omar downloads it and passes it to `kit.mjs assemble --linux`. `klav-sandbox-linux-x86_64`, kept 1 day, holds `klav-forward` and `klav-proxy`, for testing agent sandboxes; it is not part of a release. Workflow artifacts are not private to Omar: once the repository is public, anyone signed in to GitHub can download a run's artifacts while they are kept.
+- **Its output is three workflow artifacts.** `klav-linux-x86_64`, kept 7 days, holds `klav-linux-x86_64.tar.gz` and its `.sha256`, also printed in the job summary; Omar downloads it and passes it to `kit.mjs assemble --linux`. `klav-server-linux-x86_64`, kept 7 days, holds `klav-server-linux-x86_64.tar.gz` (the server, its systemd unit and example configuration from `deploy/server/`) and its `.sha256`, also in the summary, for `kit.mjs assemble --server-linux`. `klav-sandbox-linux-x86_64`, kept 1 day, holds `klav-forward` and `klav-proxy`, for testing agent sandboxes; it is not part of a release. Workflow artifacts are not private to Omar: once the repository is public, anyone signed in to GitHub can download a run's artifacts while they are kept.
 - **A test pre-release may carry the Linux tarballs** before the first release: a tag without the `v` prefix, marked pre-release, so `releases/latest` never points at it. It is not a release of Klav's downloads, and it becomes public with the repository unless it is deleted first.
 - **The job's only permission is `contents: read`,** for the checkout: it can't create a release, upload to one or get an OIDC token.
 
-**When it can run.** GitHub offers a `workflow_dispatch` workflow only once its file is on the default branch, so the first run waits until this stack is merged. It builds the commit in `sha` with that commit's own `deploy/linux/Dockerfile`, so that commit must already contain it: the release commit, after the version bump (§2, step 1). Dispatch it only on a commit that contains the build identity (PR #385: `klav --version` names the commit and its date): the workflow passes the commit to the build and stops unless the tarball's `klav --version` names it, so on an older commit it fails after the build. It also stops unless `klav-forward --version` and `klav-proxy --version` name it, so the commit must also be one where those two carry the build identity (they print only `0.0.0` before it).
+**When it can run.** GitHub offers a `workflow_dispatch` workflow only once its file is on the default branch, so the first run waits until this stack is merged. It builds the commit in `sha` with that commit's own `deploy/linux/Dockerfile`, so that commit must already contain it: the release commit, after the version bump (§2, step 1). Dispatch it only on a commit that contains the build identity (PR #385: `klav --version` names the commit and its date): the workflow passes the commit to the build and stops unless the tarball's `klav --version` names it, so on an older commit it fails after the build. It also stops unless `klav-forward --version`, `klav-proxy --version` and `klav-server --version` name it, so the commit must also be one where those three carry the build identity (`klav-forward` and `klav-proxy` print only `0.0.0` before it; `klav-server` printed only its version until it gained the identity, ADR 0048 §5.2). Then it stops unless every binary's newest glibc symbol is `GLIBC_2.36` or older (the floor, §8).
 
 Run it from a checkout signed in to `gh`, and dispatch it from `main` (the default: no `--ref`), so the workflow file that runs is `main`'s:
 
@@ -178,6 +184,7 @@ Run it from a checkout signed in to `gh`, and dispatch it from `main` (the defau
 gh workflow run release-linux.yml -f sha=<full SHA of the release commit>
 gh run list --workflow release-linux.yml --limit 1        # the run's ID
 gh run download <run ID> -n klav-linux-x86_64              # once it has finished
+gh run download <run ID> -n klav-server-linux-x86_64
 ```
 
 ## 7. Tests

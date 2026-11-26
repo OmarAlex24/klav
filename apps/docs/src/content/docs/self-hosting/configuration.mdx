@@ -1,11 +1,11 @@
 ---
 title: "Configuration"
-description: "Every klav-server setting as an environment variable or a TOML key, with its default; the logs; and approval notifications to the iPhone through APNs."
+description: "Every klav-server setting as an environment variable or a TOML key, with its default; who can register; per-account quotas; the logs; and approval notifications to the iPhone through APNs."
 sidebar:
   order: 2
 ---
 
-This page lists every setting of `klav-server`, with its default, and explains its logs and how to send approval notifications to the iPhone. Every setting has a safe default.
+This page lists every setting of `klav-server`, with its default, and explains who can register, the quotas per account, the logs and how to send approval notifications to the iPhone. Every setting has a safe default.
 
 ## Where settings come from
 
@@ -15,7 +15,7 @@ This page lists every setting of `klav-server`, with its default, and explains i
 An unknown key in the file is an error, so a typo doesn't pass silently:
 
 ```text
-klav-server: invalid config file: unknown field `lisen`, expected one of `listen`, `database_url`, `data_dir`, `trust_forwarded_for`, `trusted_ip_header`, `allow_registration`, `sessions`, `retention`, `log`, `limits`, `rate_limit`, `push`
+klav-server: invalid config file: unknown field `lisen`, expected one of `listen`, `database_url`, `data_dir`, `trust_forwarded_for`, `trusted_ip_header`, `allow_registration`, `registration_mode`, `sessions`, `retention`, `log`, `limits`, `rate_limit`, `push`
 ```
 
 ## Environment variables
@@ -26,7 +26,8 @@ klav-server: invalid config file: unknown field `lisen`, expected one of `listen
 | `KLAV_LISTEN` | `listen` | `127.0.0.1:8080` (`0.0.0.0:8080` in the image) | Address and port |
 | `KLAV_DATABASE_URL` | `database_url` | `sqlite://data/klav.db` (`sqlite:///data/klav.db` in the image) | `sqlite://…` or `postgres://…` |
 | `KLAV_DATA_DIR` | `data_dir` | `data` (`/data` in the image) | Folder for attachments |
-| `KLAV_ALLOW_REGISTRATION` | `allow_registration` | `true` (`false` in `docker-compose.yml`) | Accept new accounts |
+| `KLAV_REGISTRATION_MODE` | `registration_mode` | `open` (`invite` in `docker-compose.yml`, Homebrew and the systemd example) | Who can create an account: `open`, `invite` or `closed`. See [Registration](#registration) |
+| `KLAV_ALLOW_REGISTRATION` | `allow_registration` | `true` (`false` in `docker-compose.yml`, Homebrew and the systemd example) | The older switch: `true` means `open`, `false` means `closed`, or `invite` with `KLAV_REGISTRATION_MODE=invite` |
 | `KLAV_TRUST_FORWARDED_FOR` | `trust_forwarded_for` | `false` | Take the client's IP address from `X-Forwarded-For` |
 | `KLAV_TRUSTED_IP_HEADER` | `trusted_ip_header` | none | A header your proxy sets to the client's IP address, such as `x-real-ip`; not with the one above |
 | `KLAV_LOG_FORMAT` | `log.format` | `json` | `json` or `pretty` |
@@ -36,6 +37,10 @@ klav-server: invalid config file: unknown field `lisen`, expected one of `listen
 | `KLAV_APNS_KEY_ID` | `push.apns.key_id` | — | That key's ID |
 | `KLAV_APNS_TEAM_ID` | `push.apns.team_id` | — | Your Apple team ID |
 | `KLAV_APNS_TOPIC` | `push.apns.topic` | — | The iPhone app's bundle ID |
+| `KLAV_MAX_ACCOUNT_ATTACHMENT_BYTES` | `limits.max_account_attachment_bytes` | `10737418240` (10 GiB) | Attachments per account. See [Quotas](#quotas-per-account) |
+| `KLAV_MAX_ACCOUNT_VAULT_BYTES` | `limits.max_account_vault_bytes` | `1073741824` (1 GiB) | Encrypted vault data per account, besides attachments |
+| `KLAV_MAX_ITEMS_PER_ACCOUNT` | `limits.max_items_per_account` | `100000` | Items per account |
+| `KLAV_MAX_VAULTS_PER_ACCOUNT` | `limits.max_vaults_per_account` | `1000` | Vaults per account |
 
 Booleans take `true`/`false`, `1`/`0` and `yes`/`no`. For the two IP settings, see [The client's IP address](/self-hosting/tls-and-reverse-proxy/#the-clients-ip-address).
 
@@ -50,6 +55,7 @@ data_dir = "data"
 trust_forwarded_for = false
 # trusted_ip_header = "x-real-ip"   # or this one, never both
 allow_registration = true
+registration_mode = "open"     # or "invite" or "closed"; see Registration
 
 [sessions]
 access_ttl_secs = 900          # access token: 15 min
@@ -72,6 +78,10 @@ max_item_versions = 50                # earlier versions kept per item
 max_attachment_bytes = 104857600      # 100 MiB per attachment (encrypted)
 max_attachment_chunk_bytes = 8388608  # 8 MiB per upload chunk
 max_pending_upload_bytes = 1073741824 # 1 GiB of unfinished uploads per account
+max_account_attachment_bytes = 10737418240 # 10 GiB of attachments per account; 0: no limit
+max_account_vault_bytes = 1073741824  # 1 GiB of vault data per account; 0: no limit
+max_items_per_account = 100000        # 0: no limit
+max_vaults_per_account = 1000         # 0: no limit
 
 [rate_limit]                   # token buckets: refill per minute, and burst
 ip_per_minute = 600            # every request, per IP address
@@ -82,6 +92,8 @@ auth_email_per_minute = 10     # attempts per email and IP address
 auth_email_burst = 5
 account_per_minute = 1200      # signed-in requests per account
 account_burst = 300
+invite_ip_per_minute = 1       # invite checks and failed invites, per IP address
+invite_ip_burst = 10
 
 # Approval notifications to the iPhone: off by default.
 # Uncomment key_path (or key), key_id, team_id and topic; with one missing,
@@ -95,6 +107,30 @@ account_burst = 300
 ```
 
 Over a limit, the server answers `429` with `Retry-After`. Limits per IP address group IPv6 addresses by their `/64`. The sign-in limit per email counts by email **and** IP address, so someone who knows your email can't lock you out from another network.
+
+## Registration
+
+`registration_mode` decides who can create an account on your server:
+
+- **`open`:** anyone who reaches it. The default of the bare binary, as before invites existed.
+- **`invite`:** only someone with an invite code you create with `klav-server invite create` (see [Invites](/self-hosting/quick-start/#invites)). `docker-compose.yml`, the Homebrew configuration and the systemd example start here.
+- **`closed`:** nobody.
+
+`allow_registration` is the older switch, and is still read. When both are set, they must agree, or the server doesn't start: `true` goes only with `open`, and `false` with `closed` or `invite`. Keep `allow_registration = false` (or `KLAV_ALLOW_REGISTRATION=false`) next to `invite`: a `klav-server` from before invites ignores `KLAV_REGISTRATION_MODE` and would otherwise start open to everyone, after a rollback for example. Remove it only to choose `open`.
+
+`/v1/health` reports the mode in `registration_mode`. In `invite` and `closed` mode, `registration_open` is `false`, so an app too old to know invites stops before it asks for a password; update it to sign up with an invite.
+
+## Quotas per account
+
+Four limits keep one account from filling the server. `0` turns a limit off. The vault's owner is the one counted.
+
+- **`max_account_attachment_bytes`:** every attachment that isn't purged, finished or still uploading, including those of items in the trash.
+- **`max_account_vault_bytes`:** everything else that is encrypted: items with their earlier versions, and the metadata of vaults and projects.
+- **`max_items_per_account` and `max_vaults_per_account`:** items in the trash and deleted vaults count until they are purged.
+
+Over a quota, a write that would grow the account gets `403` with a message that names the limit, what is used and the maximum. Edits that don't grow it, deleting anything, moving it to the trash and reading always work, so an account over a quota it was given later can still clean up. A quota on attachments must be at least `max_attachment_bytes`, so that one allowed attachment always fits.
+
+The quotas are per account: nothing caps the sum. On a server with many accounts, keep the disk larger than the accounts times their quotas, or watch it.
 
 ## Logs
 

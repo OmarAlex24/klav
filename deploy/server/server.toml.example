@@ -1,0 +1,23 @@
+# /etc/klav/server.toml for klav-server.service (docs/self-hosting.md §2).
+# Every key not here keeps its default; the full list, with the defaults, is
+# in docs/self-hosting.md §2.2. KLAV_* variables in /etc/klav/server.env win
+# over this file. Keep secrets out of it: the service's user must read it, so
+# it is 0644.
+
+# Only on this machine: put Tailscale Serve or Caddy in front (§3).
+listen = "127.0.0.1:8080"
+
+# SQLite and attachments in the service's own directory (StateDirectory=klav).
+database_url = "sqlite:///var/lib/klav/klav.db"
+data_dir = "/var/lib/klav"
+
+# Leave it off unless your proxy sets X-Forwarded-For (§3.2).
+trust_forwarded_for = false
+
+# Nobody signs up without an invite you create with
+# `klav-server invite create --email you@example.com`, run through
+# systemd-run as the comment in klav-server.service shows.
+# `allow_registration = false` agrees with "invite" and stays next to it, so
+# that removing registration_mode never opens the server to everyone (§2.1).
+allow_registration = false
+registration_mode = "invite"

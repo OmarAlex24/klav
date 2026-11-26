@@ -19,32 +19,40 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY skill skill
+# The server tarball's systemd unit and example configuration (ADR 0048 §5.2).
+COPY deploy/server/klav-server.service deploy/server/server.toml.example deploy/server/
 # The Mac app's release settings for its helpers (scripts/macos/build-app.sh):
-# stripped, fat LTO, one codegen unit. /out gets two folders: the public
-# tarball's three binaries, and the sandbox binaries (not part of a release).
-# glibc.txt records the newest glibc symbol version each binary needs.
+# stripped, fat LTO, one codegen unit. /out gets three folders: the public
+# tarball's three binaries; the server tarball's klav-server with its systemd
+# unit and example configuration; and the sandbox binaries (not part of a
+# release). glibc.txt records the newest glibc symbol version each binary
+# needs.
 #
 # The commit and its committer time (Unix seconds), from the workflow's
 # --build-arg: the build identity that `klav --version`, `klavd --version`,
-# `klav-forward --version` and `klav-proxy --version` print
-# (crates/klav-daemon/build.rs). The source here has
-# no .git, so without them the binaries say "commit unknown". Declared last,
-# right before the build, so the layers above stay cached across commits;
+# `klav-forward --version`, `klav-proxy --version` and `klav-server --version`
+# print (crates/klav-daemon/build.rs). The source here has no .git, so
+# without them the binaries say "commit unknown". Declared last, right before
+# the build, so the layers above stay cached across commits;
 # RUN sees each ARG as an environment variable of the same name.
 ARG KLAV_BUILD_COMMIT
 ARG KLAV_BUILD_COMMIT_TIME
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \
-        -p klav-cli -p klav-daemon -p klav-forward -p klav-proxy \
+        -p klav-cli -p klav-daemon -p klav-forward -p klav-proxy -p klav-server \
         --bin klav --bin klavd --bin klav-native-host --bin klav-forward --bin klav-proxy \
+        --bin klav-server \
         --config 'profile.release.strip="symbols"' \
         --config 'profile.release.lto="fat"' \
         --config 'profile.release.codegen-units=1' \
-    && mkdir -p /out/klav-linux-x86_64 /out/sandbox \
+    && mkdir -p /out/klav-linux-x86_64 /out/klav-server-linux-x86_64 /out/sandbox \
     && cp target/release/klav target/release/klavd target/release/klav-native-host /out/klav-linux-x86_64/ \
+    && cp target/release/klav-server /out/klav-server-linux-x86_64/ \
+    && install -m 0644 deploy/server/klav-server.service deploy/server/server.toml.example \
+        /out/klav-server-linux-x86_64/ \
     && cp target/release/klav-forward target/release/klav-proxy /out/sandbox/ \
-    && for bin in /out/klav-linux-x86_64/* /out/sandbox/*; do \
+    && for bin in /out/klav-linux-x86_64/* /out/klav-server-linux-x86_64/klav-server /out/sandbox/*; do \
         printf '%s %s\n' "$(basename "$bin")" \
             "$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"; \
     done > /out/glibc.txt \

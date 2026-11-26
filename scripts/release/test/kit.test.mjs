@@ -18,6 +18,7 @@ import {
   ASSETS,
   KitError,
   LINUX_BINARIES,
+  SERVER_LINUX_FILES,
   addFirefox,
   assemble,
   checkXpi,
@@ -137,9 +138,11 @@ function tarGz(files, types = {}) {
 }
 
 const LINUX_OK = Object.fromEntries(LINUX_BINARIES.map((b) => [`klav-linux-x86_64/${b}`, 0o755]));
+/** The server tarball as CI packs it: the binary executable, the unit and the example not. */
+const SERVER_OK = Object.fromEntries(SERVER_LINUX_FILES.map((f) => [`klav-server-linux-x86_64/${f}`, f === "klav-server" ? 0o755 : 0o644]));
 
 /** The inputs build-app.sh, package.sh and CI would leave. */
-function inputs({ chromiumKey = DEV_KEY, storeKey = null, chromiumVersion = "0.1.0", firefoxId = "klav@klav.dev", linux = LINUX_OK, linuxTypes = {} } = {}) {
+function inputs({ chromiumKey = DEV_KEY, storeKey = null, chromiumVersion = "0.1.0", firefoxId = "klav@klav.dev", linux = LINUX_OK, linuxTypes = {}, server = SERVER_OK, serverTypes = {} } = {}) {
   const d = fresh();
   const dmg = join(d, "Klav-0.9.0.dmg");
   writeFileSync(dmg, Buffer.concat([Buffer.alloc(4096, 7), Buffer.from("koly"), Buffer.alloc(508)]));
@@ -160,10 +163,12 @@ function inputs({ chromiumKey = DEV_KEY, storeKey = null, chromiumVersion = "0.1
   writeFileSync(join(ext, "SHA256SUMS"), sums.join("\n") + "\n");
   const tarball = join(d, "klav-linux-x86_64.tar.gz");
   writeFileSync(tarball, tarGz(linux, linuxTypes));
+  const serverTarball = join(d, "klav-server-linux-x86_64.tar.gz");
+  writeFileSync(serverTarball, tarGz(server, serverTypes));
   // What addons.mozilla.org gives back: the same files plus its signature.
   const xpi = join(d, "klav-0.1.0-signed.xpi");
   writeFileSync(xpi, zip({ ...firefoxFiles, "META-INF/cose.sig": "sig", "META-INF/mozilla.rsa": "rsa", "META-INF/manifest.mf": "mf" }));
-  return { d, dmg, ext, tarball, xpi, firefoxFiles, firefoxZip: join(ext, "klav-0.1.0-firefox.zip"), out: join(d, "kit") };
+  return { d, dmg, ext, tarball, serverTarball, xpi, firefoxFiles, firefoxZip: join(ext, "klav-0.1.0-firefox.zip"), out: join(d, "kit") };
 }
 
 /**
@@ -194,15 +199,17 @@ ${item.repeat(items)}  </channel>
 describe("assemble", () => {
   test("copies each file under its stable name, with the keyed Chromium build, and records the commit", () => {
     const i = inputs();
-    assemble({ tag: TAG, chromium: "dev", dmg: i.dmg, extension: i.ext, linux: i.tarball, "firefox-xpi": i.xpi, out: i.out }, quiet, CTX);
+    assemble({ tag: TAG, chromium: "dev", dmg: i.dmg, extension: i.ext, linux: i.tarball, "server-linux": i.serverTarball, "firefox-xpi": i.xpi, out: i.out }, quiet, CTX);
     assert.deepEqual(readFileSync(join(i.out, ASSETS.dmg)), readFileSync(i.dmg));
     assert.deepEqual(readFileSync(join(i.out, ASSETS.chromium)), readFileSync(join(i.ext, "klav-0.1.0-chromium-dev.zip")));
     assert.deepEqual(readFileSync(join(i.out, ASSETS.firefox)), readFileSync(i.xpi));
     assert.deepEqual(readFileSync(join(i.out, ASSETS.linux)), readFileSync(i.tarball));
+    assert.deepEqual(readFileSync(join(i.out, ASSETS.server_linux)), readFileSync(i.serverTarball));
     const info = readFileSync(join(i.out, ASSETS.info), "utf8");
     assert.match(info, /^Klav v0\.9\.0\ncommit: 0123456789abcdef0123456789abcdef01234567\n/);
     assert.match(info, /development key: needs install-host --dev/);
     assert.match(info, /firefox: klav-extension-firefox\.xpi \(signed by Mozilla/);
+    assert.match(info, /^server-linux: klav-server-linux-x86_64\.tar\.gz \(klav-server, klav-server\.service, server\.toml\.example\)$/m);
   });
 
   test("refuses a checkout with changes: the tag must name exactly what was built", () => {
@@ -257,7 +264,8 @@ describe("assemble", () => {
     const i = inputs();
     assemble({ tag: TAG, chromium: "store", dmg: i.dmg, extension: i.ext, out: i.out }, quiet, CTX);
     assert.deepEqual(readFileSync(join(i.out, ASSETS.chromium)), readFileSync(join(i.ext, "klav-0.1.0-chromium.zip")));
-    assert.match(readFileSync(join(i.out, ASSETS.info), "utf8"), /linux: none/);
+    assert.match(readFileSync(join(i.out, ASSETS.info), "utf8"), /^linux: none$/m);
+    assert.match(readFileSync(join(i.out, ASSETS.info), "utf8"), /^server-linux: none$/m);
     const j = inputs();
     assemble({ tag: TAG, chromium: "none", dmg: j.dmg, extension: j.ext, out: j.out }, quiet, CTX);
     assert.throws(() => readFileSync(join(j.out, ASSETS.chromium)), /ENOENT/);
@@ -297,6 +305,22 @@ describe("assemble", () => {
     assert.throws(run(inputs({ linux: { "klav-linux-x86_64/klav": 0o755 } })), /klav-linux-x86_64\/klavd/);
     assert.throws(run(inputs({ linux: Object.fromEntries(LINUX_BINARIES.map((b) => [`klav-linux-x86_64/${b}`, 0o644])) })), /not executable/);
     assert.throws(run(inputs({ linuxTypes: { "klav-linux-x86_64/klav": "2" } })), /no klav-linux-x86_64\/klav \(as a regular file\)/);
+  });
+
+  test("the server tarball needs klav-server executable, its unit and its example, as regular files", () => {
+    const run = (i) => () => assemble({ tag: TAG, chromium: "none", dmg: i.dmg, extension: i.ext, "server-linux": i.serverTarball, out: i.out }, quiet, CTX);
+    const without = (name) => Object.fromEntries(Object.entries(SERVER_OK).filter(([path]) => path !== `klav-server-linux-x86_64/${name}`));
+    for (const name of SERVER_LINUX_FILES) {
+      const i = inputs({ server: without(name) });
+      assert.throws(run(i), new RegExp(`no klav-server-linux-x86_64/${name.replace(/\./g, "\\.")} \\(as a regular file\\)`));
+      assert.equal(existsSync(i.out), false);
+    }
+    assert.throws(run(inputs({ server: { ...SERVER_OK, "klav-server-linux-x86_64/klav-server": 0o644 } })), /klav-server-linux-x86_64\/klav-server is not executable/);
+    assert.throws(run(inputs({ serverTypes: { "klav-server-linux-x86_64/klav-server": "2" } })), /no klav-server-linux-x86_64\/klav-server \(as a regular file\)/);
+    // The client tarball passed as the server's: its folder isn't the server's.
+    const i = inputs();
+    assert.throws(() => assemble({ tag: TAG, chromium: "none", dmg: i.dmg, extension: i.ext, "server-linux": i.tarball, out: i.out }, quiet, CTX), /no klav-server-linux-x86_64\/klav-server/);
+    assert.throws(() => assemble({ tag: TAG, chromium: "none", dmg: i.dmg, extension: i.ext, "server-linux": join(i.d, "missing.tar.gz"), out: i.out }, quiet, CTX), /no file at/);
   });
 
   test("--out: never deletes what isn't a kit's, and never an input", () => {
@@ -387,6 +411,17 @@ describe("seal", () => {
     const text = lines.join("\n");
     assert.match(text, /gh release create v0\.9\.0 --repo OmarAlex24\/klav --target 0123456789abcdef0123456789abcdef01234567 --draft --title 'Klav 0\.9\.0' --notes-file NOTES\.md/);
     assert.doesNotMatch(text, /<notes>/);
+  });
+
+  test("lists both Linux tarballs in SHA256SUMS", () => {
+    const i = inputs();
+    assemble({ tag: TAG, chromium: "none", dmg: i.dmg, extension: i.ext, linux: i.tarball, "server-linux": i.serverTarball, out: i.out }, quiet, CTX);
+    writeFileSync(join(i.out, ASSETS.appcast), appcast({ dmg: readFileSync(join(i.out, ASSETS.dmg)) }));
+    const { files } = seal({ tag: TAG, out: i.out }, quiet, CTX);
+    assert.deepEqual(files, ["Klav.dmg", "RELEASE.txt", "appcast.xml", "klav-linux-x86_64.tar.gz", "klav-server-linux-x86_64.tar.gz", "SHA256SUMS"]);
+    const sums = new Map(readFileSync(join(i.out, ASSETS.sums), "utf8").trim().split("\n").map((l) => l.split("  ").reverse()));
+    assert.equal(sums.get(ASSETS.server_linux), createHash("sha256").update(readFileSync(i.serverTarball)).digest("hex"));
+    assert.equal(sums.get(ASSETS.linux), createHash("sha256").update(readFileSync(i.tarball)).digest("hex"));
   });
 
   test("refuses an appcast for another tag, DMG or version, or that isn't one item", () => {

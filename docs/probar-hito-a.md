@@ -84,11 +84,16 @@ KLAV_LOG_FORMAT=pretty \
 
 (or `cargo run --release -p klav-server` with the same variables).
 
-**Option B, Docker.** In **T1**, from the repository:
+**Option B, Docker.** In **T1**, from the repository, building this checkout
+(`docker-compose.yml` alone would pull the published image instead):
 
 ```sh
-docker compose -p klav-prueba up --build
+docker compose -p klav-prueba -f docker-compose.yml -f docker-compose.build.yml up --build
 ```
+
+It starts in invite mode: before `klav signup`, create the invite it asks for
+with `docker compose -p klav-prueba exec klav klav-server invite create --email tu@correo.com`
+([self-hosting.md](self-hosting.md) §2.5).
 
 Check it in **T3**:
 
