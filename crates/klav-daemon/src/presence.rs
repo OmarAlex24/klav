@@ -186,6 +186,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::PasskeyUv { window: None, .. }
         | Request::PresenceWindow { window: None, .. }
         | Request::ProxyStatus
+        | Request::ProxyCloudEntitled
         | Request::ProxyGrantPreview { .. }
         | Request::ProxyIssuerPreview { .. }
         | Request::LocalClientPreview { .. }

@@ -485,6 +485,10 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<SecretText>,
     },
+    /// Whether the account is entitled to Klav Cloud's proxy (ADR 0051
+    /// §15, `GET /v1/account/hosted-proxy`): `null` from a server older
+    /// than it. What the apps read to offer «Use Klav Cloud Proxy».
+    ProxyCloudEntitled,
     /// Klav Cloud's proxy (ADR 0051 §6.1, §6.3, §4.4): `use` enrolls the
     /// account, verifies the enclave's attestation and names it the
     /// account's proxy; `stop` revokes its agent (changing the keys of what

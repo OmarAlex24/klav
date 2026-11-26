@@ -2477,6 +2477,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::GrantEditor { .. }
         | Request::GrantChangePrepare { .. }
         | Request::ProxyStatus
+        | Request::ProxyCloudEntitled
         | Request::ProxyGrantPreview { .. }
         | Request::ProxyIssuerPreview { .. }
         | Request::LocalClientPreview { .. }
@@ -4849,6 +4850,7 @@ async fn dispatch(
             warnings.extend(more);
             ok(u.proxy_status().await.map_err(e)?, warnings)
         }
+        Request::ProxyCloudEntitled => ok(u.hosted_proxy_entitlement().await.map_err(e)?, warnings),
         Request::ProxyCloud { action, password } => {
             // Checked before presence: the entitlement, the manifest and a
             // fresh attestation of the agent the enclave registered.

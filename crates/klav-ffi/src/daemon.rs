@@ -1641,6 +1641,36 @@ impl DaemonEngine {
         Ok(crate::mcp::mcp_servers_info(status, gateway_on))
     }
 
+    /// Klav Cloud's proxy (ADR 0051 §6.3), as `klavd` checks it now: the
+    /// signed manifest and a fresh attestation when the account uses it,
+    /// else whether the account is entitled to it. Takes a moment.
+    pub fn hosted_proxy(&self) -> KlavResult<crate::hosted::HostedProxyInfo> {
+        let status: ProxyStatus = self.call(Request::ProxyStatus)?;
+        let entitled = if status.mode == klav_core::model::preferences::ProxyMode::Klav {
+            None
+        } else {
+            self.call_new::<Option<bool>>(Request::ProxyCloudEntitled)?
+                .flatten()
+        };
+        Ok(crate::hosted::hosted_info(&status, entitled))
+    }
+
+    /// «Use Klav Cloud Proxy», «Stop using it» or «Set it up again» (ADR
+    /// 0051 §6.1, §6.3, §4.4): `klavd` checks the enclave, asks for Touch
+    /// ID (or takes the master password), and checks it again before it
+    /// writes anything.
+    pub fn hosted_proxy_act_with_password(
+        &self,
+        action: crate::hosted::HostedProxyAction,
+        password: Option<String>,
+    ) -> KlavResult<crate::hosted::HostedProxyOutcomeInfo> {
+        let outcome: klav_client::hosted_proxy::CloudOutcome = self.call(Request::ProxyCloud {
+            action: crate::hosted::action(action),
+            password: password.map(SecretText::new),
+        })?;
+        Ok(crate::hosted::outcome_info(outcome))
+    }
+
     /// Turns the account's MCP gateway switch on (ADR 0049 §9), after the
     /// sheet's «update every device first»: `every_device_updated` is that
     /// acknowledgement, and `klavd` refuses without it. Asks for Touch ID
