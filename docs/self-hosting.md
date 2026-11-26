@@ -196,6 +196,7 @@ Unknown keys in the TOML are an error: a typo does not pass silently.
 | `KLAV_MAX_ACCOUNT_VAULT_BYTES` | `limits.max_account_vault_bytes` | 1 GiB | Vault data per account, without attachments (§2.6) |
 | `KLAV_MAX_ITEMS_PER_ACCOUNT` | `limits.max_items_per_account` | 100,000 | Items per account (§2.6) |
 | `KLAV_MAX_VAULTS_PER_ACCOUNT` | `limits.max_vaults_per_account` | 1,000 | Vaults per account (§2.6) |
+| `KLAV_HOSTED_PROXY_SERVICE_KEY` | `hosted_proxy.service_key` | — (off) | Only for Klav Cloud: the public half of the hosted proxy's service key, 64 hex digits (§2.7). Leave it unset |
 
 Booleans accept `true`/`false`, `1`/`0` and `yes`/`no`.
 
@@ -251,6 +252,9 @@ invite_ip_burst = 10
 [invites]                      # optional: auto-issued invites for a sign-up site (§2.5)
 # auto_token = "…"             # at least 32 bytes; never logged
 auto_max = 0                   # 0: the internal routes answer 404
+
+[hosted_proxy]                 # only for Klav Cloud's own server (§2.7); leave it out
+# service_key = "…"            # 64 hex digits; a public key, not a secret
 
 [push.apns]                    # optional: approval notifications to the iPhone (§2.4)
 key_path = "/run/secrets/AuthKey_ABC123DEFG.p8"
@@ -428,6 +432,44 @@ auto-issued invite that expires unused keeps its seat until you revoke it with
   `max_pending_upload_bytes` keeps its own meaning.
 - There is no global ceiling: the disk must fit the accounts times their
   quotas (ADR 0048 §3.3).
+
+### 2.7 Klav Cloud's hosted proxy (`api.klav.dev` only)
+
+Klav Cloud runs `klav-proxy` inside an AWS Nitro Enclave for invited accounts
+on `api.klav.dev` (ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md)).
+The enclave serves no self-hosted server (ADR 0051 Q6), so a self-hosted
+server leaves all of this off and loses nothing: your own `klav-proxy` (§9)
+works the same either way.
+
+- **`KLAV_HOSTED_PROXY_SERVICE_KEY`** (`hosted_proxy.service_key`): the Ed25519
+  public key of the enclave's service key, as 64 hex digits. It isn't a
+  secret. A malformed value stops the server at start-up. Unset, the default,
+  the server answers every registration that carries `hosted` with
+  `403 forbidden` and changes nothing else. The key is derived from the
+  enclave's seed, so after a total loss of the enclaves (ADR 0051 §4.4) it
+  changes, and this value has to change with it.
+- **The per-account switch**, off by default, is set from the same binary
+  against the configured database, like invites (§2.5): it never migrates,
+  refuses to run as root on another user's SQLite file, logs nothing and adds
+  no audit event.
+
+  ```text
+  klav-server hosted-proxy enable <EMAIL>
+  klav-server hosted-proxy disable <EMAIL>
+  klav-server hosted-proxy ls
+  ```
+
+  `enable` lets the account's devices turn the hosted proxy on, and its
+  `GET /v1/account/hosted-proxy` answers `{"entitled": true}`. `disable`
+  takes that away: the hosted proxy's agents of the account stay registered
+  and read `entitled: false` in `GET /v1/agent/me`, and the enclave stops
+  serving the account at its next check. The account's own proxies and every
+  other agent are untouched. `ls` lists the entitled accounts, when each was
+  turned on and how many hosted agents each has.
+- **What the server records:** a registration the service key signed marks
+  that agent `hosted` with its key generation. The mark is bookkeeping, not
+  a security boundary; the person's devices verify the enclave's attestation
+  themselves before they share anything with it (ADR 0051 §2.2).
 
 ## 3. TLS and reverse proxy
 

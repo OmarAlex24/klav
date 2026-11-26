@@ -1,0 +1,53 @@
+{
+  "cases": [
+    {
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "agent_ed25519_seed": "db58a44127d5908d4706b1dd7f50837558fb463825f63cf10f46c60c3ff9e21a",
+      "agent_id": "d21990213d9d901fcabbe33b48415382",
+      "agent_public_identity": "0105e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c035d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a",
+      "agent_x25519_seed": "4ff4cb087cad98ce29951eeaf37b65a88bd3ab66eb0cb95b120b16d6b255439b",
+      "generation": 0,
+      "message": "000000256b6c61762f76312f7369672f686f737465642d70726f78792d726567697374726174696f6e00000010a7745fc9c1fb8daabf635acb32603f6c00000010d21990213d9d901fcabbe33b48415382000000205d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a00000020e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c030000000400000000",
+      "name": "registration",
+      "service_ed25519_seed": "3a3707d1a409257fe22b392093e8a8360a7b3684d6089bdb89fa644f7053e59c",
+      "service_public_key": "cc3c1beb7bc614f4538f24297bdd8a1f3a37b025095d0985b0b1a2a21deaec18",
+      "service_x25519_seed": "96fc7f8fd983a5961690a08e8e82b5bb699ab947d9f65d644cfd001bf2f15ca8",
+      "signature": "c5602341a8e6cff17e96ed4d4d8c44389a1715e7974d125f41f2c8d352c106c3b03b78c3f5a7846c8f7d7d1d0e1df11ffa73d72c510de2f80be5dc532ad9680b",
+      "signed_generation": 0
+    },
+    {
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "agent_ed25519_seed": "db58a44127d5908d4706b1dd7f50837558fb463825f63cf10f46c60c3ff9e21a",
+      "agent_id": "d21990213d9d901fcabbe33b48415382",
+      "agent_public_identity": "0105e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c035d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a",
+      "agent_x25519_seed": "4ff4cb087cad98ce29951eeaf37b65a88bd3ab66eb0cb95b120b16d6b255439b",
+      "generation": 3,
+      "message": "000000256b6c61762f76312f7369672f686f737465642d70726f78792d726567697374726174696f6e00000010a7745fc9c1fb8daabf635acb32603f6c00000010d21990213d9d901fcabbe33b48415382000000205d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a00000020e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c030000000400000003",
+      "name": "generation 3",
+      "service_ed25519_seed": "3a3707d1a409257fe22b392093e8a8360a7b3684d6089bdb89fa644f7053e59c",
+      "service_public_key": "cc3c1beb7bc614f4538f24297bdd8a1f3a37b025095d0985b0b1a2a21deaec18",
+      "service_x25519_seed": "96fc7f8fd983a5961690a08e8e82b5bb699ab947d9f65d644cfd001bf2f15ca8",
+      "signature": "418db162310c041621ecfef2417ca715d16a5903f843312e0e6f5382d10d71bd241262e5f6d037c728ef05d264dfefd9b59d1bef01626fbe0ccb84a643368108",
+      "signed_generation": 3
+    },
+    {
+      "account_id": "a7745fc9c1fb8daabf635acb32603f6c",
+      "agent_ed25519_seed": "db58a44127d5908d4706b1dd7f50837558fb463825f63cf10f46c60c3ff9e21a",
+      "agent_id": "d21990213d9d901fcabbe33b48415382",
+      "agent_public_identity": "0105e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c035d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a",
+      "agent_x25519_seed": "4ff4cb087cad98ce29951eeaf37b65a88bd3ab66eb0cb95b120b16d6b255439b",
+      "generation": 4,
+      "message": "000000256b6c61762f76312f7369672f686f737465642d70726f78792d726567697374726174696f6e00000010a7745fc9c1fb8daabf635acb32603f6c00000010d21990213d9d901fcabbe33b48415382000000205d51e5d4988e24bad0649574a1c704f94ea5dcb66b0284cfc93b5727c868362a00000020e7c0aa44c54892bed83d79d02ac0d48298edc035fe1f62b1d7e91cb3f0800c030000000400000003",
+      "name": "signed for generation 3, checked as generation 4: refused",
+      "service_ed25519_seed": "3a3707d1a409257fe22b392093e8a8360a7b3684d6089bdb89fa644f7053e59c",
+      "service_public_key": "cc3c1beb7bc614f4538f24297bdd8a1f3a37b025095d0985b0b1a2a21deaec18",
+      "service_x25519_seed": "96fc7f8fd983a5961690a08e8e82b5bb699ab947d9f65d644cfd001bf2f15ca8",
+      "signature": "418db162310c041621ecfef2417ca715d16a5903f843312e0e6f5382d10d71bd241262e5f6d037c728ef05d264dfefd9b59d1bef01626fbe0ccb84a643368108",
+      "signed_generation": 3
+    }
+  ],
+  "description": "Hosted proxy (ADR 0051 §8): the mark the service key puts on an agent registration, as the server checks it with the key's Ed25519 public half",
+  "encoding": "Los campos binarios van en hexadecimal; las cadenas de texto en UTF-8.",
+  "format_version": 1,
+  "spec": "docs/especificacion-cripto.md §15.8"
+}

@@ -96,6 +96,7 @@ Etiquetas usadas en v1 (todas empiezan con `klav/v1/`):
 | `klav/v1/proxy/enclave-binding` | vínculo que lleva el `user_data` de la atestación del proxy alojado, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
 | `klav/v1/proxy/enclave-handoff` | `info` de HPKE de la semilla que un enclave pasa a otro, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
 | `klav/v1/sig/hosted-proxy-enroll` | la cuenta pide al proxy alojado su agente, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
+| `klav/v1/sig/hosted-proxy-registration` | el enclave marca con su llave de servicio el registro del agente alojado de una cuenta, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) §8 (§15.8) |
 | `klav/v1/sig/enclave-manifest` | la autoridad de publicación firma el manifiesto de los enclaves, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.5) |
 
 Las etiquetas de HKDF (`kdf/…`) y el contexto de OPAQUE se usan como bytes ASCII tal cual, sin `lp`, salvo `kdf/local-key` y `kdf/keystore-wrap`, que llevan contexto y van dentro de `tuple` como `server/decoy-kdf-salt`; `proxy/hosted-account` también va dentro de `tuple`. El resto siempre va dentro de `tuple`.
@@ -571,6 +572,7 @@ Están en [`docs/vectores/`](vectores/), uno por formato, en JSON (campos binari
 | `mcp-gateway.json` | la pasarela MCP: tokens de cliente local (`klc1_`) con su resumen y tokens que hay que rechazar, el resumen de los argumentos (también reordenados y ausentes), la coincidencia de los patrones de herramienta con patrones inválidos, y la evaluación de una llamada con herramienta (§13.4, §13.16) |
 | `nitro-attestation.json` | atestación de Nitro (ADR 0051): la raíz fijada, un documento real de un enclave en modo *debug*, una cadena sintética con un documento que verifica y documentos mutados que hay que rechazar, las llaves por cuenta, el vínculo, la inscripción y el `info` del traspaso (§15). Solo con `--features nitro-attestation` |
 | `enclave-manifest.json` | manifiesto de los enclaves (ADR 0051): el mensaje firmado, manifiestos que se aceptan y que se rechazan, con llaves de prueba (§15.5). Solo con `--features nitro-attestation` |
+| `hosted-proxy-registration.json` | la marca de la llave de servicio del proxy alojado sobre el registro de un agente, como la comprueba el servidor con su llave pública Ed25519, en dos generaciones, y una marca de otra generación que hay que rechazar (§15.8). Sin feature: corre con `cargo test -p klav-core` |
 | `totp.json` | vectores oficiales de RFC 6238 (TOTP, SHA-1/256/512) y RFC 4226 (HOTP), transcritos de los RFC |
 
 Para regenerarlos tras un cambio **intencional** de formato: `KLAV_REGEN_VECTORS=1 cargo test -p klav-core vectors` y, para los dos de §15, `KLAV_REGEN_VECTORS=1 cargo test -p klav-core --features nitro-attestation nitro_vectors`.
@@ -1360,6 +1362,21 @@ Aquí solo queda fijado el `info`. El blob sellado, con su versión y su tipo, l
 
 El documento del enclave propio de Klav se captura en la capa 6 del ADR 0051.
 
+### 15.8 La marca del registro del agente alojado, en el servidor
+
+El enclave registra el agente proxy de cada cuenta en el servidor con el `POST /v1/agents/register` de siempre ([api.md](api.md) §8.15) y lo marca con su **llave de servicio**, una identidad derivada de su semilla e igual para todas las cuentas. La derivación y la firma son del enclave (capa 3 del ADR 0051, en `nitro`):
+
+```
+okm   = HKDF-SHA256(semilla, info = tuple("klav/v1/proxy/hosted-service"), L = 64)      // se parte como las llaves por cuenta (§15.6)
+firma = Ed25519(tuple("klav/v1/sig/hosted-proxy-registration", account_id(16), agent_id(16),
+                      agent_ed25519_pub(32), agent_x25519_pub(32), u32_be(generation)))
+```
+
+- El servidor la comprueba con la llave pública Ed25519 de esa identidad (`KLAV_HOSTED_PROXY_SERVICE_KEY`, 64 dígitos hexadecimales; rechaza un punto fuera de la curva y uno de orden pequeño) con `verify_strict`, como `sign::verify`, y marca el agente `hosted`. El correo no va firmado: el servidor exige que sea el de `account_id`. No es una frontera de seguridad: lo que protege las llaves es la atestación que verifica cada dispositivo (§15.4).
+- Una semilla nueva (tras una pérdida total, ADR 0051 §4.4) da otra llave de servicio, y la configuración del servidor cambia con ella.
+- La comprobación del servidor vive en `klav_core::crypto::hosted`, sin feature, para que el servidor no compile las dependencias de la atestación.
+- Vectores en `hosted-proxy-registration.json` (§11), que corren con `cargo test -p klav-core`.
+
 ## 16. Registro de cambios
 
 | Fecha | Cambio |
@@ -1424,3 +1441,4 @@ El documento del enclave propio de Klav se captura en la capa 6 del ADR 0051.
 | 2026-11-25 | **ADR 0036 en código, capa 11** (el proxy en el Mac): §13.7: el servidor acepta el fin `person_local` (solo `{"reason":"person_local"}`), que el *socket* local del proxy manda sin firma de la persona; el verificador no cambia. Sin formatos nuevos: el *socket* habla líneas JSON con versión (`v: 1`), en [api.md](api.md) §8.14. |
 | 2026-11-25 | **ADR 0032 en código, capa 3** (CLI y `klavd`): §12.2: el propósito `protection` de los datos locales (`0x41`), para `protection.bin`. Ningún formato firmado, del servidor ni binario cambia; los vectores no cambian. |
 | 2026-11-26 | **ADR 0051 aceptado y en código, capas 1–2** (el proxy alojado de Klav Cloud): §1: `p384`, `x509-cert`, `der` y `spki`, detrás de la feature `nitro-attestation`; §2.3: etiquetas `klav/v1/proxy/hosted-account`, `klav/v1/proxy/enclave-binding`, `klav/v1/proxy/enclave-handoff`, `klav/v1/sig/hosted-proxy-enroll` y `klav/v1/sig/enclave-manifest`; §15 nueva: el documento de atestación con su lector CBOR estricto, la cadena hasta AWS Nitro Enclaves Root-G1, lo que comprueban el dispositivo y el enclave en un traspaso, el manifiesto, las llaves por cuenta, el vínculo, la inscripción y el `info` del traspaso, en `klav_core::nitro`. El registro de cambios pasa a §16 (la cita «§15» del ADR 0020 se refiere a él). Vectores nuevos `nitro-attestation.json` y `enclave-manifest.json`; los demás no cambian. |
+| 2026-11-26 | **ADR 0051 en código, capa 4** (el servidor): §2.3: etiqueta `klav/v1/sig/hosted-proxy-registration`, la misma de la capa 3; §15.8 nueva: cómo comprueba el servidor la marca de la llave de servicio en el registro del agente alojado, en `klav_core::crypto::hosted` (sin feature). Vector nuevo `hosted-proxy-registration.json`; los demás no cambian. |

@@ -4,6 +4,7 @@
 //! klav-server [--config <path>]               serve
 //! klav-server healthcheck [--config <path>]   exit 0 if GET /v1/health answers 200
 //! klav-server invite create|ls|revoke …       manage registration invites (ADR 0048 §1.4)
+//! klav-server hosted-proxy enable|disable|ls  the hosted proxy switch per account (ADR 0051 §8)
 //! klav-server --version                       version, commit and its time
 //! ```
 //!
@@ -15,7 +16,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use klav_server::{Config, Server, invites, telemetry};
+use klav_server::{Config, Server, hosted_proxy, invites, telemetry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// The commit this binary was built from (`klav-daemon/build.rs`): only
@@ -25,12 +26,14 @@ mod build {
     include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 }
 
-const USAGE: &str = "usage: klav-server [healthcheck | invite …] [--config <path>] | --version";
+const USAGE: &str =
+    "usage: klav-server [healthcheck | invite … | hosted-proxy …] [--config <path>] | --version";
 
 enum Command {
     Serve,
     Healthcheck,
     Invite(invites::Command),
+    HostedProxy(hosted_proxy::Command),
     Version,
 }
 
@@ -38,21 +41,29 @@ fn parse_args() -> Result<(Command, Option<PathBuf>), String> {
     let mut args = std::env::args().skip(1);
     let mut path = std::env::var_os("KLAV_CONFIG").map(PathBuf::from);
     let mut command = Command::Serve;
-    let mut invite: Option<Vec<String>> = None;
+    // An admin subcommand and the arguments after it.
+    let mut admin: Option<(&str, Vec<String>)> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" | "-c" => {
                 path = Some(PathBuf::from(args.next().ok_or("--config needs a path")?));
             }
-            _ if invite.is_some() => invite.get_or_insert_default().push(arg),
+            _ if admin.is_some() => {
+                if let Some((_, rest)) = admin.as_mut() {
+                    rest.push(arg);
+                }
+            }
             "--version" | "-V" => command = Command::Version,
             "healthcheck" => command = Command::Healthcheck,
-            "invite" => invite = Some(Vec::new()),
+            "invite" => admin = Some(("invite", Vec::new())),
+            "hosted-proxy" => admin = Some(("hosted-proxy", Vec::new())),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
-    if let Some(rest) = invite {
-        command = Command::Invite(invites::parse(&rest)?);
+    match admin {
+        Some(("invite", rest)) => command = Command::Invite(invites::parse(&rest)?),
+        Some((_, rest)) => command = Command::HostedProxy(hosted_proxy::parse(&rest)?),
+        None => {}
     }
     Ok((command, path))
 }
@@ -64,6 +75,20 @@ fn say(to_stderr: bool, message: &str) {
         eprintln!("{message}");
     } else {
         println!("{message}");
+    }
+}
+
+/// What an admin subcommand printed, and its exit code.
+fn admin_exit(result: Result<String, String>) -> ExitCode {
+    match result {
+        Ok(out) => {
+            say(false, out.trim_end());
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            say(true, &format!("klav-server: {message}"));
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -144,17 +169,10 @@ async fn main() -> ExitCode {
         }
         // No telemetry: the code goes to stdout only, and nothing is
         // logged (ADR 0048 §1.4, T251).
-        Command::Invite(invite) => {
-            return match invites::run(&config, invite).await {
-                Ok(out) => {
-                    say(false, out.trim_end());
-                    ExitCode::SUCCESS
-                }
-                Err(message) => {
-                    say(true, &format!("klav-server: {message}"));
-                    ExitCode::FAILURE
-                }
-            };
+        Command::Invite(invite) => return admin_exit(invites::run(&config, invite).await),
+        // No telemetry either: an admin command logs nothing (ADR 0051 §8).
+        Command::HostedProxy(switch) => {
+            return admin_exit(hosted_proxy::run(&config, switch).await);
         }
         other => other,
     };

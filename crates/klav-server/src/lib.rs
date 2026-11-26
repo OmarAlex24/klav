@@ -20,6 +20,7 @@ mod config;
 mod db;
 mod deletion;
 mod error;
+pub mod hosted_proxy;
 mod http;
 pub mod invites;
 mod keys;
@@ -38,8 +39,9 @@ mod validate;
 mod vaultdb;
 
 pub use config::{
-    ApnsConfig, Config, ConfigError, InvitesConfig, Limits, LogConfig, LogFormat,
-    MIN_AUTO_INVITE_TOKEN_BYTES, PushConfig, RateLimitConfig, RetentionConfig, SessionConfig,
+    ApnsConfig, Config, ConfigError, HostedProxyConfig, InvitesConfig, Limits, LogConfig,
+    LogFormat, MIN_AUTO_INVITE_TOKEN_BYTES, PushConfig, RateLimitConfig, RetentionConfig,
+    SessionConfig,
 };
 pub use db::{AdminDbError, DbError};
 pub use keys::KeysError;

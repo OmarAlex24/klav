@@ -21,7 +21,9 @@ use super::item::{self, Section};
 use super::kdf::{self, KdfParams, MasterPassword};
 use super::keys::{AttachmentKey, ItemKey, Kek, LocalKey, ProjectKey, VaultKey, sealed::Sealed};
 use super::secret_key::SecretKey;
-use super::{aead, agent, keystore, local, meta, passkey, record, sandbox, share, sign, wrap};
+use super::{
+    aead, agent, hosted, keystore, local, meta, passkey, record, sandbox, share, sign, wrap,
+};
 use crate::ids::{
     AccountId, AgentId, ApprovalId, AttachmentId, DeviceId, ItemId, ProjectId, SandboxId, TaskId,
     VaultId,
@@ -1772,6 +1774,84 @@ fn signature_check(case: &Value) {
     sign::verify(&public, text(case, "label"), &refs, &sig).expect("verifies");
 }
 
+// ----------------------------------------------- hosted proxy registration --
+
+fn hosted_registration_inputs() -> Vec<Value> {
+    let base = json!({
+        "service_x25519_seed": hx(&det::<32>("hosted service x25519")),
+        "service_ed25519_seed": hx(&det::<32>("hosted service ed25519")),
+        "account_id": hx(&det::<16>("account")),
+        "agent_id": hx(&det::<16>("agent id")),
+        "agent_x25519_seed": hx(&det::<32>("agent x25519")),
+        "agent_ed25519_seed": hx(&det::<32>("agent ed25519")),
+        "generation": 0,
+        "signed_generation": 0,
+    });
+    let mut later = base.clone();
+    later["name"] = json!("generation 3");
+    later["generation"] = json!(3);
+    later["signed_generation"] = json!(3);
+    let mut other = base.clone();
+    other["name"] = json!("signed for generation 3, checked as generation 4: refused");
+    other["generation"] = json!(4);
+    other["signed_generation"] = json!(3);
+    let mut valid = base;
+    valid["name"] = json!("registration");
+    vec![valid, later, other]
+}
+
+fn hosted_registration_parts(case: &Value) -> (IdentityKeyPair, IdentityKeyPair) {
+    (
+        IdentityKeyPair::from_secret_bytes(
+            &array(case, "service_x25519_seed"),
+            &array(case, "service_ed25519_seed"),
+        ),
+        IdentityKeyPair::from_secret_bytes(
+            &array(case, "agent_x25519_seed"),
+            &array(case, "agent_ed25519_seed"),
+        ),
+    )
+}
+
+fn hosted_registration<'a>(
+    case: &Value,
+    agent_keys: &'a PublicIdentity,
+    generation_key: &str,
+) -> hosted::HostedRegistration<'a> {
+    hosted::HostedRegistration {
+        account: AccountId::from_bytes(array(case, "account_id")),
+        agent: AgentId::from_bytes(array(case, "agent_id")),
+        agent_keys,
+        generation: u32::try_from(number(case, generation_key)).expect("u32"),
+    }
+}
+
+fn hosted_registration_compute(case: &Value) -> Value {
+    let (service, agent) = hosted_registration_parts(case);
+    let signed = hosted_registration(case, agent.public(), "signed_generation");
+    let signature = hosted::sign_registration(&service, &signed);
+    json!({
+        "service_public_key": hx(service.public().ed25519()),
+        "agent_public_identity": hx(&agent.public().encode()),
+        "message": hx(&signed.message()),
+        "signature": hx(&signature.to_bytes()),
+    })
+}
+
+fn hosted_registration_check(case: &Value) {
+    let service = hosted::HostedServicePublic::from_bytes(&bytes(case, "service_public_key"))
+        .expect("service key");
+    let agent = PublicIdentity::decode(&bytes(case, "agent_public_identity")).expect("decodes");
+    let registration = hosted_registration(case, &agent, "generation");
+    let sig = sign::Signature::from_bytes(array(case, "signature"));
+    let verified = service.verify_registration(&registration, &sig);
+    if number(case, "generation") == number(case, "signed_generation") {
+        verified.expect("verifies");
+    } else {
+        assert_eq!(verified, Err(super::CryptoError::Signature));
+    }
+}
+
 // -------------------------------------------------------------------- meta --
 
 fn meta_inputs() -> Vec<Value> {
@@ -2408,6 +2488,14 @@ fn files() -> Vec<VectorFile> {
             inputs: keystore_inputs,
             compute: keystore_compute,
             check: keystore_check,
+        },
+        VectorFile {
+            name: "hosted-proxy-registration",
+            description: "Hosted proxy (ADR 0051 §8): the mark the service key puts on an agent registration, as the server checks it with the key's Ed25519 public half",
+            spec: "§15.8",
+            inputs: hosted_registration_inputs,
+            compute: hosted_registration_compute,
+            check: hosted_registration_check,
         },
         VectorFile {
             name: "firma",
