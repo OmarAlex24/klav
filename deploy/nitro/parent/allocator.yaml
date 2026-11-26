@@ -1,0 +1,8 @@
+# /etc/nitro_enclaves/allocator.yaml on each c7g.large parent (ADR 0051
+# §7.4): what nitro-enclaves-allocator.service takes from the instance for
+# the enclave at boot. A c7g.large has 2 vCPUs and 4 GiB: one vCPU and
+# 2 GiB to the enclave, the rest to the parent. klav-enclave.service asks
+# for exactly this (--cpu-count 1 --memory 2048).
+---
+memory_mib: 2048
+cpu_count: 1

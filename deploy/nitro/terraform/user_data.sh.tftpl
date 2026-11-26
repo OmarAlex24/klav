@@ -1,0 +1,18 @@
+#!/bin/bash
+# First boot of a Klav hosted proxy parent (deploy/nitro/terraform). Prepares
+# the host only; deploy/nitro/parent/install.sh installs the bundle over SSM
+# (runbook §3). Holds no secret: user data is readable by anyone with
+# ec2:DescribeInstanceAttribute.
+set -euo pipefail
+
+dnf install -y "aws-nitro-enclaves-cli-${nitro_cli_version}"
+
+install -d -m 0755 /etc/nitro_enclaves
+cat > /etc/nitro_enclaves/allocator.yaml <<'YAML'
+---
+memory_mib: 2048
+cpu_count: 1
+YAML
+
+systemctl enable --now nitro-enclaves-allocator.service
+systemctl enable --now amazon-ssm-agent.service

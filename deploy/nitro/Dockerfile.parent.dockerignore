@@ -1,0 +1,10 @@
+# Build context for deploy/nitro/Dockerfile.parent: the workspace manifests,
+# crates/, skill/ (klav-forward embeds it) and the parent's units and
+# installer, nothing else.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!skill/
+!deploy/nitro/parent/
+crates/**/target/

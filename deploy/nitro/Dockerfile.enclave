@@ -1,0 +1,114 @@
+# syntax=docker/dockerfile:1.20.0@sha256:26147acbda4f14c5add9946e2fd2ed543fc402884fd75146bd342a7f6271dc1d
+#
+# The image of Klav Cloud's hosted proxy enclave (ADR 0051 §7.1): what
+# `nitro-cli build-enclave` turns into the EIF whose PCR0, PCR1 and PCR2 the
+# signed manifest lists. Built by deploy/nitro/build-eif.sh, never by hand:
+# that script passes the only inputs this file takes, all derived from the
+# commit, so a tag alone determines the measurements:
+#
+#   VARIANT                 genesis | join (below)
+#   KLAV_BUILD_COMMIT       the commit's full hash      (klav-proxy --version)
+#   KLAV_BUILD_COMMIT_TIME  its committer time, Unix s  (klav-proxy --version)
+#   SOURCE_DATE_EPOCH       the same committer time     (every file's mtime)
+#
+# Two variants per commit, because an EIF bakes its command line and
+# environment into PCR2 and `nitro-cli run-enclave` passes no arguments:
+#   - join:    `--bootstrap join`, taking the seed from the enclave in
+#              service at https://proxy.klav.dev (the API load balancer,
+#              reached through the parent's egress as a CONNECT to port 443;
+#              runbook §5). The only variant a systemd unit ever starts.
+#   - genesis: `--bootstrap genesis`, a new seed. Started by hand only, for
+#              the first deployment or after a total loss (runbook §4, §8).
+# Both are listed in the manifest with the same version and commit.
+#
+# Reproducible by construction: base images pinned by digest (the same Rust
+# image as the other Dockerfiles: bump them together, rust-toolchain.toml),
+# `--locked`, one codegen unit, fat LTO, stripped, no build ID, path
+# prefixes remapped, no incremental state, no cache mounts, and every file
+# of the root filesystem stamped with SOURCE_DATE_EPOCH and given fixed
+# modes before the final stage copies it in one layer. The CA bundle and
+# glibc come from the pinned Rust image, so a roots update is a new image
+# (ADR 0051 §7.1).
+#
+# The runtime has no package manager and no shell beyond a static busybox,
+# which exists for one reason: an enclave boots with its loopback interface
+# down, and the egress bridge and each account's issuer API listen on it
+# (ADR 0051 §16). /klav-enclave-start brings `lo` up and execs klav-proxy.
+
+ARG VARIANT=join
+
+FROM busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478 AS busybox
+
+FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS build
+WORKDIR /src
+# What the build reads: the workspace manifests, crates/ (cargo needs every
+# member's Cargo.toml), and skill/, which klav-forward embeds.
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+COPY skill skill
+COPY deploy/nitro/enclave-start.sh /stage/klav-enclave-start
+COPY --from=busybox /bin/busybox /stage/busybox
+ARG KLAV_BUILD_COMMIT
+ARG KLAV_BUILD_COMMIT_TIME
+ARG SOURCE_DATE_EPOCH
+ENV CARGO_INCREMENTAL=0 \
+    RUSTFLAGS="-C link-arg=-Wl,--build-id=none --remap-path-prefix=/src=/klav --remap-path-prefix=/usr/local/cargo=/cargo"
+RUN set -eu; \
+    case "${KLAV_BUILD_COMMIT:-}" in \
+        [0-9a-f]*) [ "${#KLAV_BUILD_COMMIT}" -eq 40 ] ;; \
+        *) echo "KLAV_BUILD_COMMIT must be the commit's 40-hex hash (use deploy/nitro/build-eif.sh)" >&2; exit 1 ;; \
+    esac; \
+    [ -n "${SOURCE_DATE_EPOCH:-}" ] && [ "$SOURCE_DATE_EPOCH" = "${KLAV_BUILD_COMMIT_TIME:-}" ] \
+        || { echo "SOURCE_DATE_EPOCH must equal KLAV_BUILD_COMMIT_TIME (use deploy/nitro/build-eif.sh)" >&2; exit 1; }; \
+    cargo build --release --locked -p klav-proxy --features enclave --bin klav-proxy \
+        --config 'profile.release.strip="symbols"' \
+        --config 'profile.release.lto="fat"' \
+        --config 'profile.release.codegen-units=1' \
+        --config 'profile.release.debug=0'; \
+    mkdir -p /rootfs/bin /rootfs/usr/local/bin /rootfs/etc/ssl/certs; \
+    install -m 0755 target/release/klav-proxy /rootfs/usr/local/bin/klav-proxy; \
+    install -m 0755 /stage/busybox /rootfs/bin/busybox; \
+    install -m 0755 /stage/klav-enclave-start /rootfs/klav-enclave-start; \
+    install -m 0644 /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt; \
+    # The dynamic loader and every library the binary needs, from this
+    # pinned image, at the paths the binary asks for.
+    for lib in $(ldd target/release/klav-proxy | awk '$2 == "=>" && $3 ~ /^\// {print $3} $1 ~ /^\// {print $1}' | sort -u); do \
+        mkdir -p "/rootfs$(dirname "$lib")"; \
+        install -m 0755 "$(readlink -f "$lib")" "/rootfs$lib"; \
+    done; \
+    test -e /rootfs/lib/ld-linux-aarch64.so.1 || test -e /rootfs/lib64/ld-linux-x86-64.so.2; \
+    find /rootfs -type d -exec chmod 0755 {} +; \
+    find /rootfs -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +; \
+    sha256sum /rootfs/usr/local/bin/klav-proxy; \
+    find /rootfs -type f | sort
+
+FROM scratch AS base
+COPY --from=build /rootfs/ /
+# Every flag of `klav-proxy enclave` (crates/klav-proxy/src/enclave/run.rs),
+# fixed here so the measurement covers it. Ports: 5000 the channel, 5001 the
+# API (and the hand-off, no --peer: klav-nitro-parent relays two ports), and
+# the parent's egress on vsock 3:5002.
+ENV KLAV_ENCLAVE_CHANNEL=vsock:4294967295:5000 \
+    KLAV_ENCLAVE_API=vsock:4294967295:5001 \
+    KLAV_ENCLAVE_EGRESS=vsock:3:5002 \
+    KLAV_ENCLAVE_SERVER=https://api.klav.dev \
+    KLAV_ENCLAVE_ENDPOINT=proxy.klav.dev \
+    KLAV_ENCLAVE_MANIFESTS=https://raw.githubusercontent.com/OmarAlex24/klav/main/deploy/nitro/manifests/ \
+    KLAV_LOG=info \
+    KLAV_LOG_FORMAT=json \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+# The release authority's Ed25519 public keys (64 hex each, comma-separated),
+# the same ones klav-core pins in RELEASE_AUTHORITY_KEYS. Empty until layer 5
+# pins them; until then /klav-enclave-start refuses to start (ADR 0051 §14).
+ENV KLAV_ENCLAVE_RELEASE_KEYS=""
+CMD ["/bin/busybox", "sh", "/klav-enclave-start"]
+
+FROM base AS variant-genesis
+ENV KLAV_ENCLAVE_BOOTSTRAP=genesis
+
+FROM base AS variant-join
+ENV KLAV_ENCLAVE_BOOTSTRAP=join \
+    KLAV_ENCLAVE_JOIN=https://proxy.klav.dev \
+    KLAV_ENCLAVE_JOIN_ATTEMPTS=60
+
+FROM variant-${VARIANT}

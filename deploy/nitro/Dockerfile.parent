@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.20.0@sha256:26147acbda4f14c5add9946e2fd2ed543fc402884fd75146bd342a7f6271dc1d
+#
+# The parent host's bundle for Klav Cloud's hosted proxy (ADR 0051 §1, §7.4):
+# `klav-nitro-parent` (the byte relay, egress refusal list and health check;
+# no Klav keys), its systemd units, the allocator configuration and the
+# installer. The EIFs come from build-eif.sh and join the bundle in
+# eif.yml. Not measured by any PCR: the parent is untrusted by design, so
+# this build needs no reproducibility, only the same pinned toolchain.
+#
+#   docker buildx build --platform linux/arm64 -f deploy/nitro/Dockerfile.parent \
+#     --build-arg KLAV_BUILD_COMMIT=$(git rev-parse HEAD) \
+#     --build-arg KLAV_BUILD_COMMIT_TIME=$(git show -s --format=%ct HEAD) \
+#     --output type=local,dest=target/nitro/parent .
+#
+# The parent runs Amazon Linux 2023, whose glibc is 2.34, and this builds on
+# Debian bookworm (2.36): the build stops if the binary needs a glibc symbol
+# newer than 2.34, so it never ships something that won't start there.
+
+FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+COPY skill skill
+COPY deploy/nitro/parent /out/parent
+ARG KLAV_BUILD_COMMIT
+ARG KLAV_BUILD_COMMIT_TIME
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p klav-proxy --features nitro-parent --bin klav-nitro-parent \
+        --config 'profile.release.strip="symbols"' \
+        --config 'profile.release.lto="fat"' \
+        --config 'profile.release.codegen-units=1' \
+    && mkdir -p /out/bin \
+    && install -m 0755 target/release/klav-nitro-parent /out/bin/klav-nitro-parent \
+    && newest=$(objdump -T /out/bin/klav-nitro-parent | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1) \
+    && echo "klav-nitro-parent needs $newest" \
+    && if [ "$(printf '%s\nGLIBC_2.34\n' "$newest" | sort -V | tail -1)" != "GLIBC_2.34" ]; then \
+        echo "klav-nitro-parent needs $newest, newer than Amazon Linux 2023's GLIBC_2.34" >&2; exit 1; \
+    fi \
+    && chmod 0755 /out/parent/install.sh \
+    && /out/bin/klav-nitro-parent --version
+
+FROM scratch AS export
+COPY --from=build /out/ /

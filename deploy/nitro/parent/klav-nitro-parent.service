@@ -1,0 +1,71 @@
+# klav-nitro-parent: the untrusted parent of Klav Cloud's hosted proxy
+# enclave (ADR 0051 §1, §1.2). It moves bytes and holds no Klav key:
+#   - TCP 443  -> enclave vsock 16:5000  sandbox channels (the channel NLB,
+#                                        TCP passthrough, SNI routed inside)
+#   - TCP 8443 -> enclave vsock 16:5001  the API: /v1/manifest, /v1/attest,
+#                                        /v1/enroll and the hand-off (the API
+#                                        NLB, and the other zone's enclave)
+#   - vsock *:5002                       the enclave's egress (`CONNECT
+#                                        host:port`), refusing every address
+#                                        that isn't public, and every port
+#                                        but 443
+#   - TCP 8080 /healthz                  the load balancers' health check:
+#                                        200 once the enclave accepts a
+#                                        connection, which is BEFORE it has a
+#                                        seed (runbook §3: attach a parent to
+#                                        the load balancers only after
+#                                        `GET /v1/manifest` answers 200)
+# A joining enclave reaches the holder through its own egress, as a CONNECT
+# to proxy.klav.dev:443 (the API load balancer), so no other port is listed.
+# The enclave's CID is fixed at 16 by klav-enclave.service.
+#
+# Installed by deploy/nitro/parent/install.sh as
+# /etc/systemd/system/klav-nitro-parent.service.
+
+[Unit]
+Description=Klav Cloud hosted proxy: parent relay (ADR 0051)
+Documentation=https://github.com/OmarAlex24/klav/blob/main/deploy/nitro/runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=klav-parent
+Group=klav-parent
+ExecStart=/opt/klav/bin/klav-nitro-parent \
+    --channel-listen 0.0.0.0:443 \
+    --channel-enclave vsock:16:5000 \
+    --api-listen 0.0.0.0:8443 \
+    --api-enclave vsock:16:5001 \
+    --egress-listen vsock:4294967295:5002 \
+    --health-listen 0.0.0.0:8080
+Environment=KLAV_LOG=info
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+
+# Port 443 without root, and nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+# No PrivateDevices: vsock may need /dev/vsock.
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_VSOCK AF_UNIX AF_NETLINK
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
