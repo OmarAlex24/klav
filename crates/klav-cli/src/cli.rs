@@ -1138,7 +1138,8 @@ pub(crate) enum ProxyCommand {
     /// profiles it holds, and what is lost without one. Never a value.
     Status(JsonFlag),
     /// Set which agent is the account's credential proxy: `use own AGENT`,
-    /// or `use none`. Pair the proxy first with `klav-proxy init`.
+    /// `use klav` (Klav Cloud's attested proxy, for invited accounts), or
+    /// `use none`. Pair your own proxy first with `klav-proxy init`.
     Use(ProxyUseArgs),
     /// Grant one credential to the proxy with a profile: where its value
     /// may go and how. Shows the profile, then asks for Touch ID.
@@ -1156,6 +1157,29 @@ pub(crate) enum ProxyCommand {
     /// socket: its live sandboxes, and revoking them without unlocking.
     #[command(subcommand)]
     Local(ProxyLocalCommand),
+    /// Klav Cloud's attested proxy (`klav proxy use klav` sets it up):
+    /// check it, stop using it, or set it up again.
+    #[command(subcommand)]
+    Cloud(ProxyCloudCommand),
+}
+
+/// `klav proxy cloud …` (ADR 0051 §6.3, §4.4): Klav Cloud's proxy, which
+/// runs in an AWS Nitro Enclave your devices verify before they share a
+/// credential with it.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProxyCloudCommand {
+    /// Verify it now: the signed manifest, a fresh attestation of the
+    /// enclave, the image it runs and whether the account is entitled.
+    Status(JsonFlag),
+    /// Stop using it: revoke its agent, change the keys of every credential
+    /// it held, and use no proxy. Then rotate those provider tokens at each
+    /// provider. Asks for Touch ID.
+    Stop(JsonFlag),
+    /// Set it up again (after it lost its keys, or to change its keys): a
+    /// new agent, your credentials shared with it after verifying it, the
+    /// old one revoked. Sandbox issuers are added again afterwards. Asks
+    /// for Touch ID.
+    Reset(JsonFlag),
 }
 
 /// `klav proxy local …` (ADR 0036 E3.5, layer 11): the proxy on this
@@ -1366,13 +1390,16 @@ pub(crate) struct ProxyIssuerRemoveArgs {
 pub(crate) enum ProxyUseMode {
     /// Your own proxy, an agent of the account.
     Own,
+    /// Klav Cloud's attested proxy (ADR 0051): enrolls the account,
+    /// verifies the enclave, then asks for Touch ID.
+    Klav,
     /// No proxy.
     None,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct ProxyUseArgs {
-    /// `own` or `none`.
+    /// `own`, `klav` or `none`.
     #[arg(value_enum)]
     pub(crate) mode: ProxyUseMode,
     /// The proxy's agent name or ID (with `own`).

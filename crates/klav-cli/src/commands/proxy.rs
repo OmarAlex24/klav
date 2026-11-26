@@ -6,6 +6,7 @@
 
 use std::io::{BufRead, IsTerminal, Write};
 
+use klav_client::hosted_proxy::{CloudAction, CloudOutcome, HostedProxyView, HostedState};
 use klav_client::issuers::{IssuerChangeView, IssuerReport, IssuerSpec};
 use klav_client::item_grants::ItemGrantReport;
 use klav_client::proxy_admin::{
@@ -20,8 +21,8 @@ use klav_proto::agent::AgentStatus;
 use super::agent::{with_presence, with_presence_skipping};
 use crate::backend::{Backend, call};
 use crate::cli::{
-    ProxyCommand, ProxyGrantArgs, ProxyIssuerAddArgs, ProxyIssuerCommand, ProxyIssuerRemoveArgs,
-    ProxyRevokeArgs, ProxyUseArgs, ProxyUseMode,
+    ProxyCloudCommand, ProxyCommand, ProxyGrantArgs, ProxyIssuerAddArgs, ProxyIssuerCommand,
+    ProxyIssuerRemoveArgs, ProxyRevokeArgs, ProxyUseArgs, ProxyUseMode,
 };
 use crate::context::Ctx;
 use crate::error::{CliError, CliResult, EXIT_SECURITY, usage};
@@ -35,7 +36,7 @@ pub(crate) async fn proxy_cmd(ctx: &mut Ctx, cmd: ProxyCommand) -> CliResult<()>
                 return output::json(&status);
             }
             print_status(&status);
-            if status.mode == ProxyMode::Own && status.agent.is_some() {
+            if status.mode != ProxyMode::None && status.agent.is_some() {
                 super::proxy_sandboxes::status_line(ctx).await?;
             }
             Ok(())
@@ -47,6 +48,104 @@ pub(crate) async fn proxy_cmd(ctx: &mut Ctx, cmd: ProxyCommand) -> CliResult<()>
         ProxyCommand::Issuer(ProxyIssuerCommand::Remove(args)) => issuer_remove(ctx, args).await,
         ProxyCommand::Sandboxes(args) => super::proxy_sandboxes::sandboxes_cmd(ctx, args).await,
         ProxyCommand::Local(cmd) => super::proxy_local::local_cmd(ctx, cmd).await,
+        ProxyCommand::Cloud(ProxyCloudCommand::Status(flag)) => {
+            let status = status(ctx).await?;
+            if status.mode != ProxyMode::Klav {
+                return Err(CliError::Other(
+                    "The account doesn't use Klav Cloud's proxy (`klav proxy status`); `klav proxy use klav` sets it up.".into(),
+                ));
+            }
+            if flag.json {
+                return output::json(&status.hosted);
+            }
+            print_hosted(status.hosted.as_ref());
+            Ok(())
+        }
+        ProxyCommand::Cloud(ProxyCloudCommand::Stop(flag)) => {
+            cloud(ctx, CloudAction::Stop, flag.json).await
+        }
+        ProxyCommand::Cloud(ProxyCloudCommand::Reset(flag)) => {
+            cloud(ctx, CloudAction::Reset, flag.json).await
+        }
+    }
+}
+
+/// `klav proxy use klav`, `klav proxy cloud stop` and `reset` (ADR 0051):
+/// checked first (the manifest and a fresh attestation), then presence,
+/// then done; the commit verifies the attestation again.
+async fn cloud(ctx: &mut Ctx, action: CloudAction, json: bool) -> CliResult<()> {
+    let outcome: CloudOutcome = match ctx.backend().await? {
+        Backend::Direct(u) => {
+            let prepared = u.prepare_cloud(action).await?;
+            // The master password unlocked this process: that is the
+            // presence here. Said before anything is written.
+            for w in prepared.warnings() {
+                output::warn(w);
+            }
+            u.commit_cloud(prepared).await?
+        }
+        Backend::Daemon(_) => {
+            with_presence(ctx, |password| Request::ProxyCloud { action, password })
+                .await
+                .map_err(older_klavd)?
+        }
+    };
+    if json {
+        return output::json(&outcome);
+    }
+    for note in &outcome.notes {
+        output::warn(note);
+    }
+    print_status(&outcome.status);
+    if action != CloudAction::Stop
+        && outcome.status.mode == ProxyMode::Klav
+        && outcome.status.credentials.is_empty()
+    {
+        output::info(
+            "\nNext: grant it a credential with `klav proxy grant <item> --preset …` or `--profile … --upstream …`. Your devices verify the enclave again before each grant; there are no words to compare.",
+        );
+    }
+    Ok(())
+}
+
+/// Klav Cloud's proxy, as `klav proxy status` and `klav proxy cloud
+/// status` show it: the attested image, or the red row (ADR 0051 §6.3).
+fn print_hosted(hosted: Option<&HostedProxyView>) {
+    let Some(h) = hosted else {
+        output::warn(
+            "Klav Cloud's proxy could not be checked: this klavd is older than it. Update klavd and restart it.",
+        );
+        return;
+    };
+    if h.state == HostedState::Verified {
+        if let Some(image) = &h.image {
+            output::line(&format!(
+                "Klav Cloud's proxy: attested, version {} ({}), commit {}, checked just now",
+                image.version, image.arch, image.commit
+            ));
+            output::line(&format!("PCR0: {}", image.pcr0));
+            output::line(&format!("PCR1: {}", image.pcr1));
+            output::line(&format!("PCR2: {}", image.pcr2));
+        }
+        if let Some(seq) = h.manifest_seq {
+            output::line(&format!(
+                "Manifest: seq {seq} (deploy/nitro/manifests/{seq}.json in Klav's repository)"
+            ));
+        }
+        if let Some(channel) = &h.channel {
+            output::line(&format!("Channel: tls://{channel}:443"));
+        }
+        return;
+    }
+    output::warn(&h.message);
+    match h.state {
+        HostedState::LostKeys | HostedState::Revoked => output::warn(
+            "Set it up again with `klav proxy cloud reset`, or stop using it with `klav proxy cloud stop`.",
+        ),
+        HostedState::Unverified | HostedState::NotEntitled => output::warn(
+            "Klav won't share new credentials with it. Stop using it with `klav proxy cloud stop` (that changes the keys of what it held; then rotate those tokens at each provider).",
+        ),
+        HostedState::Unreachable | HostedState::Unsupported | HostedState::Verified => {}
     }
 }
 
@@ -70,6 +169,12 @@ fn older_klavd(e: CliError) -> CliError {
 
 async fn use_cmd(ctx: &mut Ctx, args: ProxyUseArgs) -> CliResult<()> {
     let agent = match (args.mode, args.agent) {
+        (ProxyUseMode::Klav, None) => return cloud(ctx, CloudAction::Use, args.json.json).await,
+        (ProxyUseMode::Klav, Some(_)) => {
+            return Err(usage(
+                "`klav proxy use klav` takes no agent: Klav Cloud's proxy registers its own",
+            ));
+        }
         (ProxyUseMode::Own, Some(agent)) => Some(agent),
         (ProxyUseMode::Own, None) => {
             return Err(usage(
@@ -774,15 +879,24 @@ fn print_status(status: &ProxyStatus) {
             "Credential proxy: agent {} (not found)",
             status.agent_id.map(|id| id.to_string()).unwrap_or_default()
         )),
-        (ProxyMode::Klav, _) => {
-            output::line("Credential proxy: Klav's hosted proxy (not supported yet)")
+        (ProxyMode::Klav, agent) => {
+            match agent {
+                Some(agent) => output::line(&format!(
+                    "Credential proxy: Klav Cloud ({}), {}{}",
+                    agent.id,
+                    agent.status.as_str(),
+                    if agent.paused { ", paused" } else { "" }
+                )),
+                None => output::line("Credential proxy: Klav Cloud"),
+            }
+            print_hosted(status.hosted.as_ref());
         }
         (ProxyMode::None, _) => output::line("Credential proxy: none"),
     }
     for problem in &status.problems {
         output::warn(problem);
     }
-    if status.mode == ProxyMode::Own {
+    if status.mode != ProxyMode::None {
         if status.credentials.is_empty() {
             output::line("No credentials yet.");
         } else {

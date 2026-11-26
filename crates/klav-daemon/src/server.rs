@@ -2427,6 +2427,7 @@ fn person_write(request: &Request) -> bool {
             | Request::DenySecretRequest { .. }
             | Request::RevokeAgent { .. }
             | Request::ProxyUse { .. }
+            | Request::ProxyCloud { .. }
             | Request::ProxyGrant { .. }
             | Request::ProxyRevoke { .. }
             | Request::ProxyIssuerAdd { .. }
@@ -2534,6 +2535,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::RevokeAgent { .. }
         | Request::GrantChangeApply { .. }
         | Request::ProxyUse { .. }
+        | Request::ProxyCloud { .. }
         | Request::ProxyGrant { .. }
         | Request::ProxyRevoke { .. }
         | Request::ProxyIssuerAdd { .. }
@@ -3748,6 +3750,7 @@ fn will_ask(state: &State, request: &Request, caller: Option<&Caller>) -> bool {
             ..
         }
         | Request::ProxyUse { password, .. }
+        | Request::ProxyCloud { password, .. }
         | Request::ProxyGrant { password, .. }
         | Request::ProxyRevoke { password, .. }
         | Request::ProxyIssuerAdd { password, .. }
@@ -4845,6 +4848,24 @@ async fn dispatch(
             );
             warnings.extend(more);
             ok(u.proxy_status().await.map_err(e)?, warnings)
+        }
+        Request::ProxyCloud { action, password } => {
+            // Checked before presence: the entitlement, the manifest and a
+            // fresh attestation of the agent the enclave registered.
+            let prepared = u.prepare_cloud(action).await.map_err(e)?;
+            let version = prepared.version().map(str::to_owned);
+            confirm(
+                Prompt::HostedProxy {
+                    action,
+                    version: version.as_deref(),
+                },
+                password,
+            )?;
+            let mut warnings = warnings;
+            warnings.extend(prepared.warnings().iter().cloned());
+            // The commit verifies the attestation again with a fresh nonce:
+            // the dialog may have outlasted the first one's freshness.
+            ok(u.commit_cloud(prepared).await.map_err(e)?, warnings)
         }
         Request::ProxyGrantPreview { item, credential } => ok(
             u.preview_proxy_grant(&item, &credential).await.map_err(e)?,

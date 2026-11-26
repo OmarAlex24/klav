@@ -460,6 +460,7 @@ pub(crate) fn carries_password(request: &Request) -> bool {
         | Request::FulfillSecretRequest { password, .. }
         | Request::GrantChangeApply { password, .. }
         | Request::ProxyUse { password, .. }
+        | Request::ProxyCloud { password, .. }
         | Request::ProxyGrant { password, .. }
         | Request::ProxyRevoke { password, .. }
         | Request::ProxyIssuerAdd { password, .. }

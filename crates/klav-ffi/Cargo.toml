@@ -29,7 +29,7 @@ daemon = ["dep:klav-daemon"]
 # `health`: the vault health report and «Fix my reused passwords» (ADR
 # 0022 §4, §6). It brings zxcvbn's dictionaries (about 1 MB) into the
 # library, also in the AutoFill extension's binary, which never calls it.
-klav-client = { workspace = true, features = ["health"] }
+klav-client = { workspace = true, features = ["health", "hosted-proxy"] }
 klav-core.workspace = true
 klav-proto.workspace = true
 # Only the client side of the socket: no Touch ID shim, QR reader or

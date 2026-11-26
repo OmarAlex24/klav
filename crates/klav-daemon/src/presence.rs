@@ -107,6 +107,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         }
         | Request::GrantChangeApply { .. }
         | Request::ProxyUse { .. }
+        | Request::ProxyCloud { .. }
         | Request::ProxyGrant { .. }
         | Request::ProxyRevoke { .. }
         | Request::ProxyIssuerAdd { .. }
