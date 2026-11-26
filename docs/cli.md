@@ -2468,7 +2468,8 @@ nunca un valor, una llave ni un trozo de una.
 
 ```sh
 klav proxy status [--json]
-klav proxy use own AGENTE | none [--json]
+klav proxy use own AGENTE | klav | none [--json]
+klav proxy cloud status | stop | reset [--json]
 klav proxy grant ELEMENTO --profile NOMBRE --upstream https://HOST[:PUERTO] \
     --header CABECERA [--prefix "Bearer "] [--field CAMPO] \
     --method MÉTODO… --path-prefix PREFIJO… [--ask] [--ask-method MÉTODO]… \
@@ -2551,6 +2552,51 @@ klav proxy local init --email CORREO [--server URL] [--json]
     El diálogo de Touch ID dice que reemplaza las preferencias de la cuenta
     que escribió un agente. Si entre la vista y la firma aparece otro elemento escrito por
     un agente, no escribe nada y pide repetirlo.
+- **`use klav`** usa el proxy alojado de Klav Cloud (ADR 0051, capa 5):
+  un enclave de AWS Nitro que guarda las credenciales de la cuenta para
+  sus sandboxes. Antes de Touch ID, `klav-client` pregunta al servidor si
+  la cuenta tiene derecho (`GET /v1/account/hosted-proxy`; si no, se
+  niega), inscribe la cuenta en el enclave con una firma de la cuenta y
+  verifica su atestación y el manifiesto firmado de imágenes aprobadas
+  (`deploy/nitro/manifests/<seq>.json`) en `klav-core`: la cadena hasta la
+  raíz de AWS, los PCR de una imagen listada y no revocada, el enlace con
+  la cuenta, el agente y su llave, un manifiesto que no retrocede ni
+  caduca y que nombra a este servidor. El diálogo de Touch ID dice la
+  versión de la imagen; tras la presencia, guarda el ajuste `klav` con el
+  agente del enclave. No hay 6 palabras que comparar: la atestación las
+  reemplaza.
+  - **Falla cerrado** mientras las llaves de la autoridad de publicación
+    no estén fijadas en `klav-core` (todavía no lo están): sale con 3 y
+    `no_release_key`, y no guarda nada.
+  - **El proxy propio se queda** (Q5 (a)): si la cuenta usaba uno, avisa
+    de que conserva sus credenciales y sigue sirviendo a los agentes
+    locales de su máquina; para quitárselas, `klav agent revoke`.
+  - **Cada credencial se vuelve a verificar:** `grant`, `issuer` y lo que
+    firme un grant para ese agente comprueban otra vez la atestación y el
+    manifiesto justo antes de envolver. Si algo no cuadra, sale con 3,
+    no envuelve nada y lo que el proxy ya tenía se queda ahí hasta que la
+    persona actúe; si el enclave no contesta, sale como un error de red y
+    tampoco envuelve.
+  - `KLAV_HOSTED_PROXY_URL` cambia el enclave (por defecto
+    `https://proxy.klav.dev`), para pruebas; con él no se exige que el
+    host del manifiesto sea el de la URL.
+- **`cloud status`** hace esa misma comprobación y la dice: atestado (con
+  la versión, el commit, la arquitectura, PCR0–2, el manifiesto y el canal
+  `tls://a<agente>.<endpoint>:443` de los sandboxes), no verificado (con el
+  motivo, por ejemplo `image_revoked` o `manifest_expired`), sin derecho,
+  sin llaves, revocado o sin poder comprobarlo. `status` suma la misma
+  línea cuando la cuenta usa `klav`.
+- **`cloud stop`** («Dejar de usarlo») revoca el agente del enclave y
+  cambia la llave de lo que tenía (un agente que ya no existe no es un
+  error), deja la cuenta sin proxy, vuelve a firmar los emisores sin él y
+  lista los tokens que hay que cambiar en cada proveedor.
+- **`cloud reset`** («Configurarlo otra vez», tras perder sus llaves o un
+  agente revocado): inscribe un agente nuevo en la generación siguiente,
+  lo verifica, le concede los elementos, perfiles y reglas del grant
+  anterior (los emisores hay que volver a añadirlos), guarda el ajuste con
+  el agente nuevo y revoca el viejo cambiando las llaves.
+  `stop` y `reset` piden Touch ID o la contraseña maestra en `klavd`
+  (`proxy_cloud`), como `use`.
 - **`grant ELEMENTO`** le concede una credencial al proxy de la cuenta, con
   un perfil y sus reglas. Primero lo muestra todo; luego pide Touch ID.
   - **El diálogo de Touch ID lo arma `klavd`** con lo que va a firmar: el

@@ -103,7 +103,7 @@ Sin Electron, sin `WKWebView` y sin dependencias de terceros en Swift (igual que
 
 | Medida | Presupuesto (arm64) | Cómo se mide |
 |---|---|---|
-| DMG | ≤ 25 MB | tamaño del archivo (`hdiutil create -format ULFO`) |
+| DMG | ≤ 26 MB (25 MB hasta el 2026-11-26) | tamaño del archivo (`hdiutil create -format ULFO`) |
 | `Klav.app` instalada | ≤ 60 MB | `du -sh`; los ayudantes son ~30 MB de ese total |
 | Memoria, solo la barra de menús | ≤ 40 MB | `footprint` de `Klav` tras 10 min en reposo |
 | Memoria, ventana abierta con 1000 elementos | ≤ 120 MB | lo mismo, con una bóveda de prueba |
@@ -111,6 +111,7 @@ Sin Electron, sin `WKWebView` y sin dependencias de terceros en Swift (igual que
 | `klavd` | lo de hoy | ya medido aparte; durante un desbloqueo con contraseña sube 256 MiB por Argon2id (especificación §4.4), solo mientras dura |
 
 - `klav` y `klavd` enlazan cada uno su `klav-client`. Si el DMG pasa del presupuesto, la primera palanca es un solo binario que actúe como `klav` o `klavd` según su nombre. Queda fuera de este ADR.
+- **2026-11-26:** Omar subió el tope del DMG de 25 MB a 26 MB para el proxy alojado de Klav Cloud ([ADR 0051](0051-hosted-nitro-enclave-proxy.md) §17): la verificación de la atestación (`nitro-attestation`) añade unos 85 KB comprimidos a cada binario que la enlaza (`klav`, `klavd` y la app), y al DMG le quedaban unos 60 KB.
 - La CI comprueba el tamaño del DMG cuando exista un *runner* de macOS (ADR 0018 §7). Hasta entonces, el script del DMG falla si se pasa.
 
 ### 6. Distribución: Developer ID, notarización y DMG
