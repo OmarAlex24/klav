@@ -11,6 +11,32 @@ publish.workspace = true
 # klav's.
 build = "../klav-daemon/build.rs"
 
+[features]
+# Klav Cloud's hosted proxy inside an AWS Nitro Enclave (ADR 0051 §1, §5.2):
+# per-account keys from one seed, SNI routing, attestation on demand, the
+# attested hand-off and the per-account quotas. Never in a default build:
+# the `klav` binary and the Mac app run this crate without it. The NSM and
+# vsock crates are Linux only; on other systems the feature builds with the
+# in-memory backends the tests use.
+enclave = ["klav-core/nitro-attestation", "dep:data-encoding", "dep:aws-nitro-enclaves-nsm-api", "dep:tokio-vsock", "dep:vsock"]
+# The enclave's tests: a fake NSM with a test P-384 chain and test release
+# keys (`klav-core`'s `nitro-testkit`, which refuses a release build).
+# `cargo test -p klav-proxy --features enclave-testkit,nitro-parent`.
+enclave-testkit = ["enclave", "klav-core/nitro-testkit", "klav-client/hosted-proxy"]
+# `klav-nitro-parent` (ADR 0051 §1, §5.3): the untrusted host's byte relay,
+# egress refusal list and health check. No Klav keys and no `klav-core`
+# cryptography.
+nitro-parent = ["dep:tokio-vsock", "dep:vsock"]
+
+[[bin]]
+name = "klav-proxy"
+path = "src/main.rs"
+
+[[bin]]
+name = "klav-nitro-parent"
+path = "src/bin/klav-nitro-parent.rs"
+required-features = ["nitro-parent"]
+
 [dependencies]
 klav-client.workspace = true
 klav-core.workspace = true
@@ -20,6 +46,9 @@ klav-sdk.workspace = true
 axum = "0.8"
 bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
+# The enclave's API encodings (base64url, hex); already in the tree
+# through klav-core and klav-proto.
+data-encoding = { version = "2.11", optional = true }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 # The channel's own HTTP/1.1 loop, with a timer for the head and idle
 # deadlines that `axum::serve` does not set (both already locked through
@@ -50,6 +79,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 url = "2"
 zeroize = "1.9"
+
+# The enclave's devices (ADR 0051 §5.2, approved 2026-11-26): `/dev/nsm`
+# through AWS's NSM client, and vsock to the parent. Linux only, and only
+# with `enclave` or `nitro-parent`.
+[target.'cfg(target_os = "linux")'.dependencies]
+aws-nitro-enclaves-nsm-api = { version = "=0.5.2", optional = true }
+tokio-vsock = { version = "=0.7.3", optional = true }
+vsock = { version = "=0.5.5", optional = true }
 
 [dev-dependencies]
 klav-core = { workspace = true, features = ["insecure-test-kdf"] }

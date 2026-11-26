@@ -191,6 +191,19 @@ pub fn verify_handoff_holder_with<'m>(
     verify_handoff_holder_with_root(document, root, manifest, nonce, now_ms)
 }
 
+/// The seed's bytes, for a test that checks they appear in no log.
+pub fn seed_bytes(seed: &super::HostedSeed) -> zeroize::Zeroizing<[u8; 32]> {
+    zeroize::Zeroizing::new(*seed.expose())
+}
+
+/// A key pair's two private keys (X25519 ‖ Ed25519 seed), for a test that
+/// checks they appear in no log.
+pub fn secret_bytes(
+    keys: &crate::crypto::identity::IdentityKeyPair,
+) -> zeroize::Zeroizing<[u8; 64]> {
+    keys.secrets_plaintext()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

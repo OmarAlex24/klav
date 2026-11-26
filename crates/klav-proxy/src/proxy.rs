@@ -228,6 +228,9 @@ pub struct ProxyState {
     /// account's `mcp_gateway` switch (ADR 0049 §9). Off until it does:
     /// then MCP profiles serve in "no tool claims" mode.
     mcp_gateway: std::sync::atomic::AtomicBool,
+    /// Klav Cloud's hosted proxy: the account's live sandboxes, whatever
+    /// their issuer (ADR 0051 §3.3). `None` for every other proxy.
+    account_live_cap: Option<usize>,
 }
 
 impl ProxyState {
@@ -273,6 +276,7 @@ impl ProxyState {
             always_conflict: Mutex::new(None),
             mcp: Arc::new(crate::mcp::McpState::default()),
             mcp_gateway: std::sync::atomic::AtomicBool::new(false),
+            account_live_cap: None,
         }
     }
 
@@ -664,6 +668,19 @@ impl ProxyState {
         };
         drop(session);
         sent
+    }
+
+    /// Caps the account's live sandboxes, whatever their issuer: Klav
+    /// Cloud's per-account quota (ADR 0051 §3.3). A start over it is
+    /// refused with `klav_rate_limited`.
+    pub fn with_account_live_cap(mut self, cap: usize) -> Self {
+        self.account_live_cap = Some(cap);
+        self
+    }
+
+    /// [`ProxyState::with_account_live_cap`], if set.
+    pub(crate) fn account_live_cap(&self) -> Option<usize> {
+        self.account_live_cap
     }
 
     /// Sets the request body limit.
@@ -2929,6 +2946,22 @@ pub(crate) mod tests {
                 .with_writer(move || writer.clone())
                 .with_ansi(false)
                 .with_max_level(tracing::Level::INFO)
+                .finish()
+        }
+
+        /// [`LogBuffer::subscriber`] at TRACE for Klav's own crates (INFO
+        /// for the rest): the zero-logging tests read every line Klav
+        /// writes, debug and trace included.
+        pub(crate) fn verbose_subscriber(
+            &self,
+        ) -> impl tracing::Subscriber + Send + Sync + 'static {
+            let writer = self.clone();
+            tracing_subscriber::fmt()
+                .with_writer(move || writer.clone())
+                .with_ansi(false)
+                .with_env_filter(tracing_subscriber::EnvFilter::new(
+                    "info,klav_proxy=trace,klav_sdk=trace,klav_client=trace,klav_forward=trace,klav_core=trace",
+                ))
                 .finish()
         }
 

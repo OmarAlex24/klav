@@ -40,6 +40,11 @@ ignore = [
   # vulnerability advisory against chrono, which has its own ID. Revisit when
   # zxcvbn moves off chrono, or replace zxcvbn (that needs an ADR).
   { id = "RUSTSEC-2026-0543", reason = "unmaintained notice; zxcvbn only reads the current year with it (ADR 0022 §4)" },
+  # serde_cbor 0.11 is unmaintained. It reaches the tree only through
+  # aws-nitro-enclaves-nsm-api, AWS's /dev/nsm client, which klav-proxy
+  # pulls only on Linux behind its non-default `enclave` feature (ADR 0051
+  # §5.2, Q4 (a)). The ban on serde_cbor below allows that one wrapper.
+  { id = "RUSTSEC-2021-0127", reason = "serde_cbor only through aws-nitro-enclaves-nsm-api, Linux klav-proxy `enclave` feature (ADR 0051 Q4)" },
 ]
 
 [licenses]
@@ -94,6 +99,7 @@ deny = [
   { crate = "openssl", reason = "use RustCrypto instead" },
   { crate = "openssl-sys", reason = "use RustCrypto instead" },
   { crate = "ring", reason = "use RustCrypto instead" },
+  { crate = "serde_cbor", wrappers = ["aws-nitro-enclaves-nsm-api"], reason = "unmaintained (RUSTSEC-2021-0127); only AWS's NSM client may use it (ADR 0051 §5.2)" },
   # RUSTSEC-2026-0387 (timing leaks) is fixed in crypto-bigint 0.7.6; the
   # advisory is ignored by ID for opaque-ke's 0.5.5 above, so this keeps a
   # vulnerable 0.7 out of p256's path (ADR 0020 §6). The workspace pins

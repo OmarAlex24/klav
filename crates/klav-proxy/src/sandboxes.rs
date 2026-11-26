@@ -808,6 +808,19 @@ async fn start_inner(state: &ProxyState, req: Request) -> Result<Response, Issue
     if live >= usize::try_from(issuer.max_live).unwrap_or(usize::MAX) {
         return Err(IssuerError::TooMany);
     }
+    // Klav Cloud's per-account quota (ADR 0051 §3.3): every issuer's live
+    // sandboxes count.
+    if let Some(cap) = state.account_live_cap() {
+        let all = store
+            .sandboxes
+            .iter()
+            .filter(|s| s.expires_at > now)
+            .count()
+            + store.starting.len();
+        if all >= cap {
+            return Err(IssuerError::Busy);
+        }
+    }
     let ttl_ms = i64::try_from(ttl.saturating_mul(1000)).unwrap_or(i64::MAX);
     let issue = SandboxIssue {
         sandbox_id: SandboxId::generate(),
