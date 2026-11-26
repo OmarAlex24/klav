@@ -61,6 +61,13 @@ pub enum Kind {
     /// account identity so the server never sees titles, fields, URLs or
     /// proxy upstreams (spec §13.14, ADR 0046 §1).
     SecretRequestProposal = 0x25,
+    // `0x26` belongs to the agent origin report of ADR 0047 and `0x27` to
+    // spec §13.15 (ADR 0049), neither implemented yet.
+    /// Klav Cloud's hosted proxy: the master seed and the enclave's state,
+    /// sealed with HPKE by the enclave that holds them to a peer enclave's
+    /// attested X25519 key (spec §15.6, ADR 0051 §4.2). Only enclaves ever
+    /// open it.
+    EnclaveHandoff = 0x28,
     /// Attachment encrypted with STREAM.
     Attachment = 0x30,
     /// Device-local copy of the identity private keys, sealed with the

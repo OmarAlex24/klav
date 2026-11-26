@@ -15,15 +15,18 @@
 //! account A's request path holds only A's keys.
 
 use hkdf::Hkdf;
+use hpke::rand_core::CryptoRng;
 use secrecy::{ExposeSecret, SecretBox};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::attestation::Pcr;
 use crate::crypto::CryptoError;
-use crate::crypto::encoding::Tuple;
+use crate::crypto::encoding::{Kind, Tuple, strip_header};
+use crate::crypto::hosted::{HostedRegistration, HostedServicePublic};
 use crate::crypto::identity::{IdentityKeyPair, PublicIdentity};
 use crate::crypto::random;
+use crate::crypto::share::{hpke_open, hpke_seal};
 use crate::crypto::sign::{self, Signature};
 use crate::ids::{AccountId, AgentId};
 
@@ -35,8 +38,22 @@ pub const LABEL_ENCLAVE_BINDING: &str = "klav/v1/proxy/enclave-binding";
 pub const LABEL_ENCLAVE_HANDOFF: &str = "klav/v1/proxy/enclave-handoff";
 /// Signature label of an account's request to enroll in the hosted proxy.
 pub const LABEL_HOSTED_PROXY_ENROLL: &str = "klav/v1/sig/hosted-proxy-enroll";
+/// HKDF `info` label that mixes the NSM's entropy into a new seed.
+pub const LABEL_HOSTED_SEED: &str = "klav/v1/proxy/hosted-seed";
+/// HKDF `info` label of the hosted proxy's service key (ADR 0051 §8).
+pub const LABEL_HOSTED_SERVICE: &str = "klav/v1/proxy/hosted-service";
+/// Signature label of the enclave's mark on a hosted agent's registration
+/// (ADR 0051 §8), with the service key; defined once, in
+/// [`crate::crypto::hosted`], where the server checks it.
+pub use crate::crypto::hosted::LABEL_HOSTED_PROXY_REGISTRATION;
 /// Length of the master seed.
 pub const SEED_LEN: usize = 32;
+/// Largest state a hand-off carries with the seed (the enrollments and the
+/// in-memory stores, ADR 0051 §4.3).
+pub const MAX_HANDOFF_STATE: usize = 8 * 1024 * 1024;
+/// A sealed hand-off's bytes besides its state:
+/// `header(2) ‖ enc(32) ‖ seed(32) ‖ … ‖ tag(16)`.
+pub const HANDOFF_OVERHEAD: usize = 2 + 32 + SEED_LEN + 16;
 
 /// The hosted proxy's master seed. Not `Debug`, not `Display`, not `Clone`;
 /// zeroized on drop. Only an enclave ever holds one.
@@ -51,6 +68,30 @@ impl HostedSeed {
         }))
     }
 
+    /// A fresh seed from the OS CSPRNG mixed with `entropy` from the
+    /// enclave's NSM (ADR 0051 §13): neither source alone decides it.
+    ///
+    /// `seed = HKDF-SHA-256(ikm = os_random(32) ‖ entropy, salt = none,
+    /// info = tuple("klav/v1/proxy/hosted-seed"), L = 32)`
+    pub fn generate_with_entropy(entropy: &[u8]) -> Self {
+        let mut os = Zeroizing::new([0u8; SEED_LEN]);
+        random::fill(os.as_mut());
+        Self::mix(&os, entropy)
+    }
+
+    /// [`HostedSeed::generate_with_entropy`] with the OS bytes given (the
+    /// vectors).
+    pub(crate) fn mix(os: &[u8; SEED_LEN], entropy: &[u8]) -> Self {
+        let mut ikm = Zeroizing::new(Vec::with_capacity(SEED_LEN + entropy.len()));
+        ikm.extend_from_slice(os);
+        ikm.extend_from_slice(entropy);
+        Self(SecretBox::init_with_mut(|s: &mut [u8; SEED_LEN]| {
+            Hkdf::<Sha256>::new(None, &ikm)
+                .expand(Tuple::new(LABEL_HOSTED_SEED).as_bytes(), s)
+                .expect("32 bytes is a valid HKDF-SHA256 output length");
+        }))
+    }
+
     /// A seed received from a peer enclave through the attested hand-off.
     pub fn from_bytes(bytes: &[u8; SEED_LEN]) -> Self {
         Self(SecretBox::new(Box::new(*bytes)))
@@ -61,6 +102,20 @@ impl HostedSeed {
     pub(crate) fn expose(&self) -> &[u8; SEED_LEN] {
         self.0.expose_secret()
     }
+}
+
+/// 64 bytes of HKDF-SHA-256 from the seed, split into an identity key
+/// pair: X25519 secret first, Ed25519 seed second (the order of `kag1_`).
+fn expand_identity(seed: &HostedSeed, info: &[u8]) -> IdentityKeyPair {
+    let mut okm = Zeroizing::new([0u8; 64]);
+    Hkdf::<Sha256>::new(None, seed.expose())
+        .expand(info, okm.as_mut())
+        .expect("64 bytes is a valid HKDF-SHA256 output length");
+    let mut x25519 = Zeroizing::new([0u8; 32]);
+    let mut ed25519 = Zeroizing::new([0u8; 32]);
+    x25519.copy_from_slice(&okm[..32]);
+    ed25519.copy_from_slice(&okm[32..]);
+    IdentityKeyPair::from_secret_bytes(&x25519, &ed25519)
 }
 
 /// The HKDF `info` of an account's keys.
@@ -77,15 +132,150 @@ pub fn derive_account_keys(
     account: AccountId,
     generation: u32,
 ) -> IdentityKeyPair {
-    let mut okm = Zeroizing::new([0u8; 64]);
-    Hkdf::<Sha256>::new(None, seed.expose())
-        .expand(&hosted_account_info(account, generation), okm.as_mut())
-        .expect("64 bytes is a valid HKDF-SHA256 output length");
-    let mut x25519 = Zeroizing::new([0u8; 32]);
-    let mut ed25519 = Zeroizing::new([0u8; 32]);
-    x25519.copy_from_slice(&okm[..32]);
-    ed25519.copy_from_slice(&okm[32..]);
-    IdentityKeyPair::from_secret_bytes(&x25519, &ed25519)
+    expand_identity(seed, &hosted_account_info(account, generation))
+}
+
+/// The hosted proxy's service key (ADR 0051 §8): the same for every
+/// account, so `klav-server`, configured with its public half, can tell a
+/// hosted agent's registration from any other. Not a security boundary.
+///
+/// `okm = HKDF-SHA-256(seed, info = tuple("klav/v1/proxy/hosted-service"), L = 64)`,
+/// split like the account keys.
+pub fn hosted_service_keys(seed: &HostedSeed) -> IdentityKeyPair {
+    expand_identity(seed, Tuple::new(LABEL_HOSTED_SERVICE).as_bytes())
+}
+
+/// The enclave marks the registration of `account`'s hosted agent with its
+/// service key (spec §15.8). The bytes are [`crate::crypto::hosted`]'s,
+/// the module `klav-server` checks them with: one definition of the mark.
+pub fn sign_hosted_registration(
+    service: &IdentityKeyPair,
+    account: AccountId,
+    agent: AgentId,
+    agent_keys: &PublicIdentity,
+    generation: u32,
+) -> Signature {
+    crate::crypto::hosted::sign_registration(
+        service,
+        &HostedRegistration {
+            account,
+            agent,
+            agent_keys,
+            generation,
+        },
+    )
+}
+
+/// Checks a registration mark against the service key's public identity:
+/// [`HostedServicePublic::verify_registration`], the check `klav-server`
+/// runs (ADR 0051, layer 4), with its Ed25519 half.
+pub fn verify_hosted_registration(
+    service_public: &PublicIdentity,
+    account: AccountId,
+    agent: AgentId,
+    agent_keys: &PublicIdentity,
+    generation: u32,
+    signature: &Signature,
+) -> Result<(), CryptoError> {
+    HostedServicePublic::of(service_public)?.verify_registration(
+        &HostedRegistration {
+            account,
+            agent,
+            agent_keys,
+            generation,
+        },
+        signature,
+    )
+}
+
+/// The joining enclave's one-time X25519 key for a hand-off (ADR 0051 §4.2
+/// step 1): its public half goes in the attestation's `public_key`. Not
+/// `Debug`, `Display` or `Clone`; zeroized on drop.
+pub struct HandoffKey(IdentityKeyPair);
+
+impl HandoffKey {
+    /// A fresh key.
+    pub fn generate() -> Self {
+        Self(IdentityKeyPair::generate())
+    }
+
+    /// A key from fixed bytes (the vectors).
+    #[cfg(test)]
+    pub(crate) fn from_secret(x25519: &[u8; 32]) -> Self {
+        Self(IdentityKeyPair::from_secret_bytes(x25519, &[0x5a; 32]))
+    }
+
+    /// The X25519 public key the joiner attests.
+    pub fn public(&self) -> [u8; 32] {
+        *self.0.public().x25519()
+    }
+}
+
+/// The holder seals the seed and its state to the joiner's attested key
+/// (ADR 0051 §4.2 step 4), kind `0x28`:
+/// `header(2) ‖ enc(32) ‖ HPKE(seed(32) ‖ state) ‖ tag(16)`, with
+/// `info` = [`handoff_info`] and `aad = header`. Only call it after
+/// [`super::verify_handoff_peer`] accepted the joiner.
+pub fn seal_handoff(
+    seed: &HostedSeed,
+    state: &[u8],
+    joiner_x25519: &[u8; 32],
+    info: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    seal_handoff_with_rng(
+        seed,
+        state,
+        joiner_x25519,
+        info,
+        &mut hpke::rand_core::UnwrapErr(getrandom::SysRng),
+    )
+}
+
+pub(crate) fn seal_handoff_with_rng(
+    seed: &HostedSeed,
+    state: &[u8],
+    joiner_x25519: &[u8; 32],
+    info: &[u8],
+    rng: &mut impl CryptoRng,
+) -> Result<Vec<u8>, CryptoError> {
+    if state.len() > MAX_HANDOFF_STATE {
+        return Err(CryptoError::Malformed("hand-off state too large"));
+    }
+    let mut plaintext = Zeroizing::new(Vec::with_capacity(SEED_LEN + state.len()));
+    plaintext.extend_from_slice(seed.expose());
+    plaintext.extend_from_slice(state);
+    let header = Kind::EnclaveHandoff.header();
+    let (enc, ciphertext) = hpke_seal(joiner_x25519, info, &header, &plaintext, rng)?;
+    let mut blob = Vec::with_capacity(2 + enc.len() + ciphertext.len());
+    blob.extend_from_slice(&header);
+    blob.extend_from_slice(&enc);
+    blob.extend_from_slice(&ciphertext);
+    Ok(blob)
+}
+
+/// The joiner opens what [`seal_handoff`] sealed to its key: the seed and
+/// the state.
+pub fn open_handoff(
+    key: &HandoffKey,
+    blob: &[u8],
+    info: &[u8],
+) -> Result<(HostedSeed, Zeroizing<Vec<u8>>), CryptoError> {
+    if blob.len() < HANDOFF_OVERHEAD || blob.len() > HANDOFF_OVERHEAD + MAX_HANDOFF_STATE {
+        return Err(CryptoError::Malformed("hand-off length"));
+    }
+    let body = strip_header(blob, Kind::EnclaveHandoff)?;
+    let (enc, ciphertext) = body.split_at(32);
+    let plaintext = hpke_open(
+        &key.0.hpke_private_key(),
+        enc,
+        info,
+        &Kind::EnclaveHandoff.header(),
+        ciphertext,
+    )?;
+    let (seed, state) = plaintext
+        .split_first_chunk::<SEED_LEN>()
+        .ok_or(CryptoError::Malformed("hand-off without a seed"))?;
+    Ok((HostedSeed::from_bytes(seed), Zeroizing::new(state.to_vec())))
 }
 
 /// What an attestation's `user_data` must equal for `account`'s hosted
@@ -177,6 +367,109 @@ mod tests {
     use super::*;
 
     static_assertions::assert_not_impl_any!(HostedSeed: std::fmt::Debug, std::fmt::Display, Clone);
+    static_assertions::assert_not_impl_any!(HandoffKey: std::fmt::Debug, std::fmt::Display, Clone);
+
+    #[test]
+    fn a_new_seed_depends_on_both_sources() {
+        let base = HostedSeed::mix(&[1; 32], &[2; 32]);
+        assert_eq!(HostedSeed::mix(&[1; 32], &[2; 32]).expose(), base.expose());
+        assert_ne!(HostedSeed::mix(&[3; 32], &[2; 32]).expose(), base.expose());
+        assert_ne!(HostedSeed::mix(&[1; 32], &[4; 32]).expose(), base.expose());
+        assert_ne!(
+            HostedSeed::generate_with_entropy(&[2; 32]).expose(),
+            HostedSeed::generate_with_entropy(&[2; 32]).expose()
+        );
+    }
+
+    #[test]
+    fn the_service_key_is_apart_from_every_account_key() {
+        let service = hosted_service_keys(&seed(7));
+        assert_eq!(hosted_service_keys(&seed(7)).public(), service.public());
+        assert_ne!(hosted_service_keys(&seed(8)).public(), service.public());
+        let account = AccountId::from_bytes([1; 16]);
+        assert_ne!(
+            derive_account_keys(&seed(7), account, 0).public(),
+            service.public()
+        );
+    }
+
+    #[test]
+    fn the_registration_mark_covers_every_field() {
+        let service = hosted_service_keys(&seed(7));
+        let account = AccountId::from_bytes([1; 16]);
+        let agent = AgentId::from_bytes([2; 16]);
+        let keys = derive_account_keys(&seed(7), account, 0);
+        let other = derive_account_keys(&seed(7), account, 1);
+        let sig = sign_hosted_registration(&service, account, agent, keys.public(), 0);
+        assert_eq!(
+            verify_hosted_registration(service.public(), account, agent, keys.public(), 0, &sig),
+            Ok(())
+        );
+        let wrong = [
+            (AccountId::from_bytes([3; 16]), agent, keys.public(), 0),
+            (account, AgentId::from_bytes([3; 16]), keys.public(), 0),
+            (account, agent, other.public(), 0),
+            (account, agent, keys.public(), 1),
+        ];
+        for (acc, ag, k, generation) in wrong {
+            assert_eq!(
+                verify_hosted_registration(service.public(), acc, ag, k, generation, &sig),
+                Err(CryptoError::Signature)
+            );
+        }
+        let impostor = hosted_service_keys(&seed(8));
+        assert_eq!(
+            verify_hosted_registration(impostor.public(), account, agent, keys.public(), 0, &sig),
+            Err(CryptoError::Signature)
+        );
+    }
+
+    #[test]
+    fn a_handoff_opens_only_with_its_key_and_info() {
+        let joiner = HandoffKey::generate();
+        let info = handoff_info(&[1; 48], &[2; 48], b"nonce h", b"nonce j");
+        let blob = seal_handoff(&seed(9), b"state", &joiner.public(), &info).expect("seal");
+        assert_eq!(blob.len(), HANDOFF_OVERHEAD + 5);
+        assert_eq!(&blob[..2], &[0x01, 0x28]);
+        let (opened, state) = open_handoff(&joiner, &blob, &info).expect("open");
+        assert_eq!(opened.expose(), seed(9).expose());
+        assert_eq!(state.as_slice(), b"state");
+
+        let other = HandoffKey::generate();
+        assert_eq!(
+            open_handoff(&other, &blob, &info).err(),
+            Some(CryptoError::Decryption)
+        );
+        let other_info = handoff_info(&[1; 48], &[3; 48], b"nonce h", b"nonce j");
+        assert_eq!(
+            open_handoff(&joiner, &blob, &other_info).err(),
+            Some(CryptoError::Decryption)
+        );
+        let mut flipped = blob.clone();
+        flipped[1] = 0x23;
+        assert!(open_handoff(&joiner, &flipped, &info).is_err());
+        let mut tampered = blob.clone();
+        *tampered.last_mut().expect("tag") ^= 1;
+        assert_eq!(
+            open_handoff(&joiner, &tampered, &info).err(),
+            Some(CryptoError::Decryption)
+        );
+        assert!(open_handoff(&joiner, &blob[..HANDOFF_OVERHEAD - 1], &info).is_err());
+        let empty = seal_handoff(&seed(9), b"", &joiner.public(), &info).expect("seal");
+        assert_eq!(
+            open_handoff(&joiner, &empty, &info).expect("open").1.len(),
+            0
+        );
+        assert!(
+            seal_handoff(
+                &seed(9),
+                &vec![0; MAX_HANDOFF_STATE + 1],
+                &joiner.public(),
+                &info
+            )
+            .is_err()
+        );
+    }
 
     fn seed(b: u8) -> HostedSeed {
         HostedSeed::from_bytes(&[b; SEED_LEN])

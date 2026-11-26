@@ -88,7 +88,7 @@ fn item_ctx(case: &Value) -> ItemContext {
 
 /// An RNG that replays fixed bytes, used to make HPKE encapsulation
 /// deterministic (the ephemeral key is `DeriveKeyPair(ikmE)`).
-struct FixedRng(Vec<u8>);
+pub(crate) struct FixedRng(pub(crate) Vec<u8>);
 
 impl TryRng for FixedRng {
     type Error = Infallible;

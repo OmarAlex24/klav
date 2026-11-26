@@ -96,10 +96,12 @@ Etiquetas usadas en v1 (todas empiezan con `klav/v1/`):
 | `klav/v1/proxy/enclave-binding` | vínculo que lleva el `user_data` de la atestación del proxy alojado, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
 | `klav/v1/proxy/enclave-handoff` | `info` de HPKE de la semilla que un enclave pasa a otro, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
 | `klav/v1/sig/hosted-proxy-enroll` | la cuenta pide al proxy alojado su agente, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
-| `klav/v1/sig/hosted-proxy-registration` | el enclave marca con su llave de servicio el registro del agente alojado de una cuenta, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) §8 (§15.8) |
+| `klav/v1/proxy/hosted-seed` | `info` de HKDF (dentro de `tuple`) que mezcla la entropía del NSM en una semilla nueva del proxy alojado, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.6) |
+| `klav/v1/proxy/hosted-service` | `info` de HKDF (dentro de `tuple`) de la llave de servicio del proxy alojado, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) §8 (§15.6) |
+| `klav/v1/sig/hosted-proxy-registration` | el enclave marca con su llave de servicio el registro del agente alojado de una cuenta, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) §8 (§15.6, §15.8) |
 | `klav/v1/sig/enclave-manifest` | la autoridad de publicación firma el manifiesto de los enclaves, ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md) (§15.5) |
 
-Las etiquetas de HKDF (`kdf/…`) y el contexto de OPAQUE se usan como bytes ASCII tal cual, sin `lp`, salvo `kdf/local-key` y `kdf/keystore-wrap`, que llevan contexto y van dentro de `tuple` como `server/decoy-kdf-salt`; `proxy/hosted-account` también va dentro de `tuple`. El resto siempre va dentro de `tuple`.
+Las etiquetas de HKDF (`kdf/…`) y el contexto de OPAQUE se usan como bytes ASCII tal cual, sin `lp`, salvo `kdf/local-key` y `kdf/keystore-wrap`, que llevan contexto y van dentro de `tuple` como `server/decoy-kdf-salt`; `proxy/hosted-account`, `proxy/hosted-seed` y `proxy/hosted-service` también van dentro de `tuple`. El resto siempre va dentro de `tuple`.
 
 ### 2.4 Encabezado y AAD
 Todo dato binario persistido o transmitido empieza con un encabezado de dos bytes:
@@ -141,13 +143,14 @@ Cuentas, bóvedas, proyectos, elementos, adjuntos y campos se identifican con **
 | `0x21` | shared-project-key | 82 | llave de proyecto cifrada con HPKE para un miembro | §8 |
 | `0x23` | shared-item-key | 82 | llave de un elemento cifrada con HPKE para un agente con un grant por elemento (ADR 0036 §2 y E10) | §8, §13.4 |
 | `0x25` | secret-request-proposal | 50 + n | propuesta JSON de una solicitud de secreto cifrada con HPKE para la cuenta (ADR 0046 §1) | §13.14 |
+| `0x28` | enclave-handoff | 82 + n | semilla del proxy alojado y estado del enclave, cifrados con HPKE para la llave X25519 atestiguada de otro enclave (ADR 0051 §4.2) | §15.6 |
 | `0x30` | attachment | 25 + n + 16·k | adjunto cifrado con STREAM | §10 |
 | `0x40` | local-identity | 106 | llaves privadas de identidad selladas con la llave local (nunca salen del dispositivo) | §12.2 |
 | `0x41` | local-data | 42 + n | datos locales sellados con la llave local (caché, tokens) | §12.2 |
 | `0x42` | keystore-wrap | 74 | llave local envuelta con un secreto del almacén de la plataforma (Secure Enclave) | §12.3 |
 | `0x43` | local-outbox | 42 + n | cola de salida local, sellada con la llave local (nunca sale del dispositivo): la del historial del generador en `klavd` (ADR 0022) y la de la extensión de iOS (ADR 0020) | §14.7 |
 
-Los valores `0x08–0x0F`, `0x17–0x1F`, `0x22`, `0x24`, `0x26–0x2F`, `0x31–0x3F` y `0x44–0xFF` están reservados. El `0x22` es del paquete del enlace del ADR 0029 y el `0x24` del comando de `inject` del ADR 0041, todavía sin implementar. El rango `0x40–0x4F` es para blobs que solo existen en el dispositivo: un servidor nunca debe recibirlos.
+Los valores `0x08–0x0F`, `0x17–0x1F`, `0x22`, `0x24`, `0x26`, `0x27`, `0x29–0x2F`, `0x31–0x3F` y `0x44–0xFF` están reservados. El `0x22` es del paquete del enlace del ADR 0029, el `0x24` del comando de `inject` del ADR 0041, el `0x26` del reporte de origen del ADR 0047 y el `0x27` de §13.15 (ADR 0049), todavía sin implementar. El rango `0x40–0x4F` es para blobs que solo existen en el dispositivo: un servidor nunca debe recibirlos.
 
 ### 3.1 Sobre XChaCha20-Poly1305
 Los tipos `0x01–0x04`, `0x10–0x14` y `0x40–0x42` usan el mismo sobre (y también `0x15`, `0x16` y `0x43`):
@@ -1290,6 +1293,8 @@ Los documentos reales de 2022 y 2023 (§15.7) traen tres intermedios (`pathLenCo
 
 `nitro::verify_handoff_peer` (ADR 0051 §4.2, paso 2), lo que el enclave que tiene la semilla comprueba del que la pide: los pasos 1–3, 5 y 6 (con el `nonce` del que la tiene), y además que PCR3 esté en `parent_roles`, que la imagen del otro no sea más vieja que la propia (por `version`) y que `public_key` sea una llave X25519 de 32 bytes. Que el manifiesto sea el publicado en el repositorio lo comprueba quien llama.
 
+`nitro::verify_handoff_holder` (ADR 0051 §4.2, paso 3), lo que el enclave que se une comprueba del que tiene la semilla antes de aceptarla: los pasos 1–3, 5 y 6 (con su propio `nonce`) y que PCR3 esté en `parent_roles`. No pide `public_key` ni rechaza una imagen más vieja: en una actualización escalonada el que tiene la semilla corre la imagen anterior, y es él quien rechaza un *downgrade*.
+
 Cada rechazo tiene su variante de `NitroError` y un código estable (`NitroError::code`), el que usan los vectores.
 
 ### 15.5 Manifiesto de transparencia de los enclaves
@@ -1349,7 +1354,28 @@ tuple("klav/v1/sig/hosted-proxy-enroll", account_id(16), u32_be(generation), u64
 info = tuple("klav/v1/proxy/enclave-handoff", pcr0_H(48), pcr0_J(48), nonce_del_documento_de_H, nonce_del_documento_de_J)
 ```
 
-Aquí solo queda fijado el `info`. El blob sellado, con su versión y su tipo, llega con el enclave (capa 3 del ADR 0051).
+**Traspaso sellado** (tipo `0x28`, capa 3 del ADR 0051). El que se une genera una llave X25519 de un solo uso (`HandoffKey`) y la atestigua en `public_key`; el que tiene la semilla, tras `verify_handoff_peer`, sella:
+
+```
+blob = 0x01 ‖ 0x28 ‖ enc(32) ‖ HPKE(semilla(32) ‖ estado(n)) ‖ tag(16)      aad = 0x01 ‖ 0x28
+```
+
+con la suite de §8 en modo base, el `info` de arriba, y `n ≤ 8 MiB`. El estado son las inscripciones y los almacenes en memoria del enclave, en JSON; su forma la fija `klav-proxy`, no este formato. Un blob más corto que 82 bytes, de otro tipo o que no abre se rechaza.
+
+**Semilla nueva** (el primer enclave, o tras una pérdida total). Ninguna de las dos fuentes decide sola:
+
+```
+semilla = HKDF-SHA256(ikm = aleatorio_del_SO(32) ‖ entropía_del_NSM, sal = vacía,
+                      info = tuple("klav/v1/proxy/hosted-seed"), L = 32)
+```
+
+**Llave de servicio** (ADR 0051 §8). Igual para todas las cuentas; `klav-server`, configurado con su mitad pública, distingue así el registro de un agente alojado. No es una frontera de seguridad:
+
+```
+okm = HKDF-SHA256(semilla, info = tuple("klav/v1/proxy/hosted-service"), L = 64)      // se parte como las llaves por cuenta
+```
+
+Con ella el enclave marca el registro del agente de cada cuenta; la marca, dónde va y cómo la comprueba el servidor están en §15.8, y su definición vive solo en `klav_core::crypto::hosted` (`nitro::sign_hosted_registration` y `nitro::verify_hosted_registration` llaman a ese módulo).
 
 ### 15.7 Vectores
 
@@ -1357,14 +1383,14 @@ Aquí solo queda fijado el `info`. El blob sellado, con su versión y su tipo, l
 
 - **Un documento real**, de un enclave en modo *debug* en `us-east-1` del 2023-09-18, tomado de las pruebas de `evervault/attestation-doc-validation` (Apache-2.0, `crates/klav-core/src/nitro/testdata/README.md`): su cadena llega a la raíz fijada, su firma verifica, y sus PCR0–2 en cero lo hacen rechazar como `debug_enclave`.
 - **Una cadena sintética** con la forma de la de AWS (raíz, dos intermedios y hoja, ECDSA P-384 con SHA-384 y llaves deterministas), **que no es de AWS**: un documento que verifica, también con la etiqueta 18, y documentos mutados, cada uno vuelto a firmar para que llegue a la comprobación que nombra (un bit en el *payload* o en la firma, un PCR cambiado, la cadena fuera de orden, una clave de más, una clave repetida, una longitud indefinida, un certificado vencido, otra raíz, PCR en cero, un `timestamp` viejo, otro `nonce`, otro `user_data` y una imagen revocada).
-- Las llaves por cuenta en dos generaciones, sus vínculos, la firma de inscripción y el `info` del traspaso.
+- Las llaves por cuenta en dos generaciones, sus vínculos, la firma de inscripción y el `info` del traspaso; un traspaso sellado (`0x28`) con la llave del que se une, su `ikm_e` y el estado; la mezcla de una semilla nueva; la llave de servicio y la marca de un registro.
 - Manifiestos firmados con llaves de prueba (la activa y la de respaldo) que se aceptan, y otros que se rechazan: otra llave, *rollback*, vencido, emitido en el futuro, un campo desconocido o repetido, más de 30 días y un PCR en cero.
 
 El documento del enclave propio de Klav se captura en la capa 6 del ADR 0051.
 
 ### 15.8 La marca del registro del agente alojado, en el servidor
 
-El enclave registra el agente proxy de cada cuenta en el servidor con el `POST /v1/agents/register` de siempre ([api.md](api.md) §8.15) y lo marca con su **llave de servicio**, una identidad derivada de su semilla e igual para todas las cuentas. La derivación y la firma son del enclave (capa 3 del ADR 0051, en `nitro`):
+El enclave registra el agente proxy de cada cuenta en el servidor con el `POST /v1/agents/register` de siempre ([api.md](api.md) §8.15), con la marca en el campo `hosted: { account_id, generation, signature }` del cuerpo (`RegisterHostedAgent`), firmada con su **llave de servicio**, una identidad derivada de su semilla e igual para todas las cuentas. La derivación y la firma son del enclave (capa 3 del ADR 0051, en `nitro`):
 
 ```
 okm   = HKDF-SHA256(semilla, info = tuple("klav/v1/proxy/hosted-service"), L = 64)      // se parte como las llaves por cuenta (§15.6)
@@ -1442,3 +1468,4 @@ firma = Ed25519(tuple("klav/v1/sig/hosted-proxy-registration", account_id(16), a
 | 2026-11-25 | **ADR 0032 en código, capa 3** (CLI y `klavd`): §12.2: el propósito `protection` de los datos locales (`0x41`), para `protection.bin`. Ningún formato firmado, del servidor ni binario cambia; los vectores no cambian. |
 | 2026-11-26 | **ADR 0051 aceptado y en código, capas 1–2** (el proxy alojado de Klav Cloud): §1: `p384`, `x509-cert`, `der` y `spki`, detrás de la feature `nitro-attestation`; §2.3: etiquetas `klav/v1/proxy/hosted-account`, `klav/v1/proxy/enclave-binding`, `klav/v1/proxy/enclave-handoff`, `klav/v1/sig/hosted-proxy-enroll` y `klav/v1/sig/enclave-manifest`; §15 nueva: el documento de atestación con su lector CBOR estricto, la cadena hasta AWS Nitro Enclaves Root-G1, lo que comprueban el dispositivo y el enclave en un traspaso, el manifiesto, las llaves por cuenta, el vínculo, la inscripción y el `info` del traspaso, en `klav_core::nitro`. El registro de cambios pasa a §16 (la cita «§15» del ADR 0020 se refiere a él). Vectores nuevos `nitro-attestation.json` y `enclave-manifest.json`; los demás no cambian. |
 | 2026-11-26 | **ADR 0051 en código, capa 4** (el servidor): §2.3: etiqueta `klav/v1/sig/hosted-proxy-registration`, la misma de la capa 3; §15.8 nueva: cómo comprueba el servidor la marca de la llave de servicio en el registro del agente alojado, en `klav_core::crypto::hosted` (sin feature). Vector nuevo `hosted-proxy-registration.json`; los demás no cambian. |
+| 2026-11-26 | **ADR 0051 en código, capa 3** (el enclave): §2.3: etiquetas `klav/v1/proxy/hosted-seed`, `klav/v1/proxy/hosted-service` y `klav/v1/sig/hosted-proxy-registration`; §3: tipo `0x28` (`enclave-handoff`), y la nota de reservados nombra el `0x26` del ADR 0047 y el `0x27` de §13.15; §15.4: `verify_handoff_holder`; §15.6: el traspaso sellado, la mezcla de la semilla y la llave de servicio; §15.8: la marca va en el campo `hosted` del registro, y su único verificador es el de `klav_core::crypto::hosted`. `nitro-attestation.json` gana `handoff.sealed` y sus entradas, `seed_mix` y `service`; los demás valores no cambian. |

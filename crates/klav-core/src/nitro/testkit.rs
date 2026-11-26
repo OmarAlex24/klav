@@ -2,6 +2,10 @@
 //! the AWS Nitro format, signed with deterministic P-384 keys. They make the
 //! synthetic chains of the vectors (spec §15.7) and the mutations of the
 //! negative tests, each re-signed so it reaches the check it names.
+//!
+//! With the feature `nitro-testkit` (and no test) only [`super::fake`]
+//! uses it, so some builders are unused there.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use p384::ecdsa::signature::Signer;
 use p384::ecdsa::{Signature, SigningKey};

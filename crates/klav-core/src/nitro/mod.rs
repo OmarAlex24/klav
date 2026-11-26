@@ -14,8 +14,19 @@
 //! * [`verify_manifest`]: the signed Klav Enclave Transparency Manifest
 //!   (§2.4), against [`RELEASE_AUTHORITY_KEYS`], which this build leaves
 //!   empty: every manifest is refused until a later layer pins the keys.
+//! * [`verify_handoff_holder`]: what a joining enclave checks of the holder
+//!   (§4.2 step 3).
 //! * [`derive_account_keys`], [`enclave_binding`], [`handoff_info`],
 //!   [`sign_enroll`]: the per-account keys and the labels (§3.1, §4.2, §6.1).
+//! * [`seal_handoff`] and [`open_handoff`] (kind `0x28`): the seed and the
+//!   enclave's state, sealed to a verified peer (§4.2 step 4).
+//! * [`hosted_service_keys`] and [`sign_hosted_registration`]: the mark on a
+//!   hosted agent's registration (§8).
+//! * [`fake`], only with the feature `nitro-testkit`: a fake NSM with a test
+//!   P-384 chain, for tests of other crates. Never in a release build.
+
+#[cfg(all(feature = "nitro-testkit", not(debug_assertions)))]
+compile_error!("`nitro-testkit` is for tests only: it must never be in a release build");
 
 mod attestation;
 mod cbor;
@@ -24,7 +35,9 @@ mod error;
 mod hosted;
 mod manifest;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "nitro-testkit"))]
+pub mod fake;
+#[cfg(any(test, feature = "nitro-testkit"))]
 mod testkit;
 #[cfg(test)]
 mod tests;
@@ -32,16 +45,19 @@ mod tests;
 mod vectors;
 
 pub use attestation::{
-    COSE_SIGN1_TAG, FRESHNESS_MS, HandoffPeer, HostedProxyExpectation, MAX_DOCUMENT_LEN,
-    MAX_OPTIONAL_FIELD_LEN, Measurement, PCR_COUNT, PCR_LEN, PROTECTED_ES384, Pcr, SIGNATURE_LEN,
-    VerifiedDocument, verify_document, verify_handoff_peer, verify_hosted_proxy,
+    COSE_SIGN1_TAG, FRESHNESS_MS, HandoffHolder, HandoffPeer, HostedProxyExpectation,
+    MAX_DOCUMENT_LEN, MAX_OPTIONAL_FIELD_LEN, Measurement, PCR_COUNT, PCR_LEN, PROTECTED_ES384,
+    Pcr, SIGNATURE_LEN, VerifiedDocument, verify_document, verify_handoff_holder,
+    verify_handoff_peer, verify_hosted_proxy,
 };
 pub use chain::{AWS_NITRO_ROOT_G1, AWS_NITRO_ROOT_G1_SHA256, MAX_CERTIFICATE_LEN, MAX_CHAIN};
 pub use error::{CborError, NitroError};
 pub use hosted::{
-    HostedSeed, LABEL_ENCLAVE_BINDING, LABEL_ENCLAVE_HANDOFF, LABEL_HOSTED_ACCOUNT,
-    LABEL_HOSTED_PROXY_ENROLL, SEED_LEN, derive_account_keys, enclave_binding, handoff_info,
-    hosted_account_info, sign_enroll, verify_enroll,
+    HANDOFF_OVERHEAD, HandoffKey, HostedSeed, LABEL_ENCLAVE_BINDING, LABEL_ENCLAVE_HANDOFF,
+    LABEL_HOSTED_ACCOUNT, LABEL_HOSTED_PROXY_ENROLL, LABEL_HOSTED_PROXY_REGISTRATION,
+    LABEL_HOSTED_SEED, LABEL_HOSTED_SERVICE, MAX_HANDOFF_STATE, SEED_LEN, derive_account_keys,
+    enclave_binding, handoff_info, hosted_account_info, hosted_service_keys, open_handoff,
+    seal_handoff, sign_enroll, sign_hosted_registration, verify_enroll, verify_hosted_registration,
 };
 pub use manifest::{
     ImageStatus, LABEL_ENCLAVE_MANIFEST, MANIFEST_CLOCK_SKEW_MS, MANIFEST_VERSION, MAX_EGRESS,

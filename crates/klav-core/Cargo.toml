@@ -25,6 +25,10 @@ rp-id = ["dep:psl"]
 # hosted proxy (ADR 0051 §2.2, §5.1). `klav-wasm` never turns it on: the
 # extension never wraps for a proxy.
 nitro-attestation = ["dep:p384", "dep:x509-cert", "dep:der", "dep:spki"]
+# A fake NSM with a test P-384 chain and test release keys, and verifiers
+# that accept them (`nitro::fake`), for the enclave tests of `klav-proxy`
+# (ADR 0051 layer 3). Tests only: it refuses to compile in a release build.
+nitro-testkit = ["nitro-attestation"]
 
 [dependencies]
 aead-stream = { version = "0.6", default-features = false, features = ["alloc"] }
