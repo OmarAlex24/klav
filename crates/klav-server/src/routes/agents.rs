@@ -4,6 +4,9 @@
 //! * `POST /v1/agents/register`: the agent registers (no authentication).
 //!   The answer is the same for every e-mail, so it does not reveal which
 //!   accounts exist; requests for unknown e-mails are simply not stored.
+//!   Klav Cloud's hosted proxy adds `hosted`, its service key's signature
+//!   (ADR 0051 §8): the server marks that agent `hosted`, or refuses with
+//!   one `403` for every reason.
 //! * `GET /v1/agents`, `GET /v1/agents/{id}`, `POST /v1/agents/{id}/grant`,
 //!   `POST /v1/agents/{id}/deny`, `POST /v1/agents/{id}/revoke`: the person
 //!   (bearer session).
@@ -18,14 +21,15 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use klav_core::crypto::agent::{self as agent_crypto, GrantToSign, PauseScope, PauseToSign};
 use klav_core::crypto::encoding::Kind;
+use klav_core::crypto::hosted::HostedRegistration;
 use klav_core::crypto::identity::PublicIdentity;
 use klav_core::crypto::share::SHARED_KEY_LEN;
 use klav_core::crypto::sign::{SIGNATURE_LEN, Signature};
 use klav_core::ids::{AccountId, AgentId};
 use klav_proto::Blob;
 use klav_proto::agent::{
-    AgentInfo, AgentList, AgentMe, AgentPauses, AgentStatus, GrantPayload, PauseAgents, PauseState,
-    RegisterAgent, RegisterAgentResponse, RevokeAgent, SignedGrant,
+    AgentInfo, AgentList, AgentMe, AgentPauses, AgentStatus, GrantPayload, HostedProxyStatus,
+    PauseAgents, PauseState, RegisterAgentResponse, RegisterHostedAgent, RevokeAgent, SignedGrant,
 };
 use klav_proto::audit::{ActorKind, AuditEvent};
 use sqlx::Row;
@@ -124,7 +128,7 @@ pub(crate) async fn fetch_agent(
 async fn register(
     State(state): State<AppState>,
     Extension(ip): Extension<ClientIp>,
-    ApiJson(req): ApiJson<RegisterAgent>,
+    ApiJson(req): ApiJson<RegisterHostedAgent>,
 ) -> ApiResult<(StatusCode, Json<RegisterAgentResponse>)> {
     let rl = &state.config().rate_limit;
     state.limiter().enforce(
@@ -156,8 +160,36 @@ async fn register(
         klav_core::crypto::identity::PUBLIC_IDENTITY_LEN,
         "public_identity",
     )?;
-    PublicIdentity::decode(req.public_identity.as_bytes())
+    let public = PublicIdentity::decode(req.public_identity.as_bytes())
         .map_err(|_| ApiError::bad_request("public_identity: invalid public keys"))?;
+    // A hosted registration is checked before anything is read, so a
+    // request without the service key's signature learns nothing.
+    let hosted = match &req.hosted {
+        None => None,
+        Some(proof) => {
+            let key = state
+                .config()
+                .hosted_proxy
+                .key()
+                .ok_or_else(ApiError::hosted_registration_refused)?;
+            let signature: [u8; SIGNATURE_LEN] = proof
+                .signature
+                .as_bytes()
+                .try_into()
+                .map_err(|_| ApiError::hosted_registration_refused())?;
+            key.verify_registration(
+                &HostedRegistration {
+                    account: proof.account_id,
+                    agent: req.id,
+                    agent_keys: &public,
+                    generation: proof.generation,
+                },
+                &Signature::from_bytes(signature),
+            )
+            .map_err(|_| ApiError::hosted_registration_refused())?;
+            Some((proof.account_id, proof.generation))
+        }
+    };
 
     let now = now_ms();
     let response = RegisterAgentResponse {
@@ -180,9 +212,19 @@ async fn register(
         .fetch_optional(pool)
         .await?;
     let Some(account) = account else {
+        if hosted.is_some() {
+            return Err(ApiError::hosted_registration_refused());
+        }
         // Unknown e-mail: same answer, nothing stored.
         return Ok((StatusCode::ACCEPTED, Json(response)));
     };
+    // The enclave derived the agent's keys for the account it signed; they
+    // belong to no other.
+    if let Some((signed_account, _)) = hosted
+        && signed_account.to_string() != account
+    {
+        return Err(ApiError::hosted_registration_refused());
+    }
     // Count and insert as one step, under the account row's lock (layer 07
     // of the 2026-11 round): concurrent registrations cannot all pass the
     // cap. The lock is an `UPDATE`, which also makes the SQLite
@@ -199,7 +241,17 @@ async fn register(
         .await?
         .is_some()
     {
+        if hosted.is_some() {
+            return Err(ApiError::hosted_registration_refused());
+        }
         return Ok((StatusCode::ACCEPTED, Json(response)));
+    }
+    // Read under the account row's lock, so a `hosted-proxy disable` that
+    // commits first is seen.
+    if hosted.is_some()
+        && !crate::routes::account::hosted_proxy_entitled(&mut *tx, parse_id(&account)?).await?
+    {
+        return Err(ApiError::hosted_registration_refused());
     }
     let pending: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM agents WHERE account_id = $1 AND status = $2 AND expires_at > $3",
@@ -211,11 +263,15 @@ async fn register(
     .await?;
     if pending >= MAX_PENDING {
         tracing::warn!("too many pending agent registrations; request dropped");
+        if hosted.is_some() {
+            return Err(ApiError::hosted_registration_refused());
+        }
         return Ok((StatusCode::ACCEPTED, Json(response)));
     }
     let inserted = sqlx::query(
         "INSERT INTO agents (id, account_id, name, note, public_identity, status, created_at, \
-         expires_at, grant_version) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         expires_at, grant_version, hosted, hosted_generation) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          ON CONFLICT DO NOTHING",
     )
     .bind(req.id.to_string())
@@ -227,6 +283,8 @@ async fn register(
     .bind(now)
     .bind(response.expires_at)
     .bind(0_i64)
+    .bind(i64::from(hosted.is_some()))
+    .bind(hosted.map(|(_, generation)| i64::from(generation)))
     .execute(&mut *tx)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -711,6 +769,23 @@ async fn me(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Json<Ag
     let mcp_gateway = crate::routes::account::mcp_gateway_since(&state.db().pool, auth.account_id)
         .await?
         .map(|_| true);
+    // Klav Cloud's hosted proxy (ADR 0051 §3.5): said only to the agents it
+    // registered, so every other agent's answer stays byte for byte.
+    let hosted: i64 = sqlx::query_scalar("SELECT hosted FROM agents WHERE id = $1")
+        .bind(auth.agent_id.to_string())
+        .fetch_one(&state.db().pool)
+        .await?;
+    let hosted_proxy = if hosted == 0 {
+        None
+    } else {
+        Some(HostedProxyStatus {
+            entitled: crate::routes::account::hosted_proxy_entitled(
+                &state.db().pool,
+                auth.account_id,
+            )
+            .await?,
+        })
+    };
     Ok(Json(AgentMe {
         id: auth.agent_id,
         name: auth.name,
@@ -723,6 +798,7 @@ async fn me(State(state): State<AppState>, auth: AgentAuth) -> ApiResult<Json<Ag
         account_delete_at,
         gone_issuers,
         mcp_gateway,
+        hosted_proxy,
     }))
 }
 

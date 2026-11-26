@@ -86,6 +86,19 @@ impl ApiError {
         )
     }
 
+    /// `403 forbidden` to a hosted registration (ADR 0051 §8): one answer
+    /// for every reason (no service key configured, a signature that
+    /// doesn't verify, an unknown e-mail, another account, a deletion
+    /// asked for, an account not entitled, too many pending requests), so
+    /// it says nothing more about the account than that it isn't served.
+    pub(crate) fn hosted_registration_refused() -> Self {
+        Self::Coded(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Forbidden,
+            "this server doesn't take this hosted proxy registration".into(),
+        )
+    }
+
     /// `403 quota_exceeded` with a message naming the limit, the use and the
     /// maximum (ADR 0048 §3.2).
     pub(crate) fn quota_exceeded(message: String) -> Self {

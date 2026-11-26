@@ -19,7 +19,7 @@ use axum::{Extension, Json, Router};
 use klav_core::crypto::opaque;
 use klav_core::ids::AccountId;
 use klav_proto::Blob;
-use klav_proto::agent::McpGatewaySwitch;
+use klav_proto::agent::{HostedProxyStatus, McpGatewaySwitch};
 use klav_proto::auth::{
     AccountDeleteFinishRequest, AccountDeleteStartRequest, AccountDeleteStartResponse,
     AccountDeletion, AccountInfo,
@@ -46,6 +46,32 @@ pub(super) fn router() -> Router<AppState> {
             "/v1/account/mcp-gateway",
             get(mcp_gateway).post(mcp_gateway_on),
         )
+        .route("/v1/account/hosted-proxy", get(hosted_proxy))
+}
+
+/// Whether the account is entitled to Klav Cloud's hosted proxy (ADR 0051
+/// §3.5). Only `klav-server hosted-proxy enable|disable` changes it.
+pub(crate) async fn hosted_proxy_entitled<'e, E>(db: E, account: AccountId) -> ApiResult<bool>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    let on: Option<i64> = sqlx::query_scalar("SELECT hosted_proxy FROM accounts WHERE id = $1")
+        .bind(account.to_string())
+        .fetch_optional(db)
+        .await?;
+    Ok(on.is_some_and(|on| on != 0))
+}
+
+/// `GET /v1/account/hosted-proxy`: whether the person's account can use
+/// Klav Cloud's hosted proxy, for the sheet that turns it on (ADR 0051
+/// §6.1). Read-only: the operator sets it. An older server answers `404`.
+async fn hosted_proxy(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> ApiResult<Json<HostedProxyStatus>> {
+    Ok(Json(HostedProxyStatus {
+        entitled: hosted_proxy_entitled(&state.db().pool, auth.account_id).await?,
+    }))
 }
 
 /// When the account's `mcp_gateway` switch was turned on (Unix ms), or

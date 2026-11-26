@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use klav_core::crypto::hosted::HostedServicePublic;
 use klav_proto::RegistrationMode;
 use secrecy::SecretString;
 use serde::{Deserialize, Deserializer};
@@ -248,6 +249,27 @@ impl std::fmt::Debug for InvitesConfig {
     }
 }
 
+/// Klav Cloud's hosted proxy (ADR 0051 §8). Unset, the default and what
+/// every self-hosted server keeps, refuses every hosted registration and
+/// changes nothing else.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HostedProxyConfig {
+    /// The Ed25519 public key of the enclave's service key, as 64 hex
+    /// digits (`KLAV_HOSTED_PROXY_SERVICE_KEY`). Not a secret.
+    pub service_key: Option<String>,
+}
+
+impl HostedProxyConfig {
+    /// The service key, if one is configured and valid ([`Config::load`]
+    /// refuses an invalid one).
+    pub fn key(&self) -> Option<HostedServicePublic> {
+        self.service_key
+            .as_deref()
+            .and_then(|k| HostedServicePublic::from_hex(k).ok())
+    }
+}
+
 /// Push notifications for approvals (ADR 0018 §5). Without `apns`, the
 /// server sends nothing and everything else works as before.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -329,6 +351,8 @@ pub struct Config {
     pub push: PushConfig,
     /// Auto-issued beta invites (ADR 0050).
     pub invites: InvitesConfig,
+    /// Klav Cloud's hosted proxy (ADR 0051 §8).
+    pub hosted_proxy: HostedProxyConfig,
     /// Accept Argon2id parameters below the production floor at sign-up.
     ///
     /// **Only for in-process test suites**, which use reduced parameters to
@@ -356,6 +380,7 @@ impl Default for Config {
             rate_limit: RateLimitConfig::default(),
             push: PushConfig::default(),
             invites: InvitesConfig::default(),
+            hosted_proxy: HostedProxyConfig::default(),
             insecure_accept_weak_kdf: false,
         }
     }
@@ -453,6 +478,11 @@ impl Config {
                     } else {
                         parse(value.trim(), "KLAV_AUTO_INVITE_MAX")?
                     }
+                }
+                "KLAV_HOSTED_PROXY_SERVICE_KEY" => {
+                    // Empty means "unset", so a template can leave it blank.
+                    self.hosted_proxy.service_key =
+                        Some(value.trim().to_owned()).filter(|v| !v.is_empty());
                 }
                 "KLAV_LOG_FORMAT" => {
                     self.log.format = match value.as_str() {
@@ -556,6 +586,14 @@ impl Config {
                 ));
             }
             self.trusted_ip_header = Some(name);
+        }
+        if let Some(key) = &self.hosted_proxy.service_key
+            && HostedServicePublic::from_hex(key).is_err()
+        {
+            return Err(ConfigError::Invalid(
+                "hosted_proxy.service_key (KLAV_HOSTED_PROXY_SERVICE_KEY) must be an Ed25519 \
+                 public key as 64 hex digits",
+            ));
         }
         let l = &self.limits;
         if l.max_json_body_bytes < 1024 {
@@ -709,6 +747,41 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn hosted_proxy_service_key_is_optional_and_checked() {
+        use klav_core::crypto::identity::IdentityKeyPair;
+
+        // Unset by default and when blank: every hosted registration is
+        // refused, nothing else changes.
+        assert!(
+            Config::load(None, env(&[]))
+                .unwrap()
+                .hosted_proxy
+                .key()
+                .is_none()
+        );
+        let c = Config::load(None, env(&[("KLAV_HOSTED_PROXY_SERVICE_KEY", " ")])).unwrap();
+        assert!(c.hosted_proxy.key().is_none());
+        let public = HostedServicePublic::of(IdentityKeyPair::generate().public()).unwrap();
+        let text = data_encoding::HEXLOWER.encode(&public.to_bytes());
+        let c = Config::load(None, env(&[("KLAV_HOSTED_PROXY_SERVICE_KEY", &text)])).unwrap();
+        assert_eq!(c.hosted_proxy.key(), Some(public));
+        // A malformed key is refused at start-up, never taken as unset.
+        for bad in [&text[..62], "zz", &format!("{text}00")] {
+            assert!(
+                Config::load(None, env(&[("KLAV_HOSTED_PROXY_SERVICE_KEY", bad)])).is_err(),
+                "{bad}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(&path, format!("[hosted_proxy]\nservice_key = \"{text}\"\n")).unwrap();
+        let c = Config::load(Some(&path), env(&[])).unwrap();
+        assert_eq!(c.hosted_proxy.key(), Some(public));
+        std::fs::write(&path, "[hosted_proxy]\nservice_key = \"00\"\n").unwrap();
+        assert!(Config::load(Some(&path), env(&[])).is_err());
     }
 
     #[test]

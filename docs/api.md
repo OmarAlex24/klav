@@ -776,7 +776,7 @@ Los formatos firmados están en la especificación §13.
 
 | Método y ruta | Quién | Cuerpo | Respuesta |
 |---|---|---|---|
-| `POST /v1/agents/register` | el agente, sin sesión | `{ id, email, name, public_identity, note? }` | `202 { id, status: "pending", expires_at }` |
+| `POST /v1/agents/register` | el agente, sin sesión | `{ id, email, name, public_identity, note?, hosted? }` (`hosted`: solo el proxy alojado, §8.15) | `202 { id, status: "pending", expires_at }` |
 | `GET /v1/agents` | la persona | — | `{ agents: [AgentInfo] }` |
 | `GET /v1/agents/{id}` | la persona | — | `AgentInfo` |
 | `POST /v1/agents/{id}/grant` | la persona | `SignedGrant { payload, signature }` | `AgentInfo` (estado `active`) |
@@ -901,7 +901,7 @@ y no se puede repetir más tarde.
 
 | Método y ruta | Respuesta |
 |---|---|
-| `GET /v1/agent/me` | `{ id, name, status, lapsed?, account_id, account_public_identity, grant?, paused?, account_delete_at?, gone_issuers?, mcp_gateway? }` |
+| `GET /v1/agent/me` | `{ id, name, status, lapsed?, account_id, account_public_identity, grant?, paused?, account_delete_at?, gone_issuers?, mcp_gateway?, hosted_proxy? }` (`hosted_proxy`: §8.15) |
 
 Un agente pendiente, denegado o revocado solo puede consultar `me`, para
 saber en qué estado está. Una solicitud pendiente que caducó sale como
@@ -1597,6 +1597,30 @@ del proxy, en `crates/klav-proxy/src/local.rs`.
 - **Un servidor anterior a la capa 11** contesta `400` a `person_local`:
   el fin se queda en la cola del proxy hasta que el servidor se actualice,
   y el proxy no sirve ese sandbox mientras tanto.
+
+### 8.15 El proxy alojado de Klav Cloud (ADR 0051, capa 4)
+
+El [ADR 0051](decisiones/0051-hosted-nitro-enclave-proxy.md) corre `klav-proxy` en un enclave de AWS Nitro. Para el servidor, cada cuenta que lo usa tiene un agente proxy normal; lo nuevo es un derecho por cuenta y una marca en los agentes que registró el enclave (§8 del ADR). Nada de esto cambia la respuesta de ningún otro agente ni cliente.
+
+**El derecho de la cuenta.** `hosted_proxy`, apagado por defecto. Solo lo cambia quien opera el servidor, con `klav-server hosted-proxy enable|disable|ls` ([`self-hosting.md`](self-hosting.md) §2.7); ninguna ruta lo escribe y no deja evento en la bitácora.
+
+| Método y ruta | Quién | Respuesta |
+|---|---|---|
+| `GET /v1/account/hosted-proxy` | la persona (sesión) | `{ entitled }`; un servidor anterior responde `404` |
+
+**El registro del enclave.** El enclave registra el agente de cada cuenta con `POST /v1/agents/register` y añade `hosted: { account_id, generation, signature }`. `signature` es la marca Ed25519 de su llave de servicio, derivada de su semilla (especificación §15.8):
+
+```
+tuple("klav/v1/sig/hosted-proxy-registration", account_id(16), agent_id(16),
+      agent_ed25519_pub(32), agent_x25519_pub(32), u32_be(generation))
+```
+
+- El servidor la comprueba con `KLAV_HOSTED_PROXY_SERVICE_KEY` (la llave pública Ed25519 de la llave de servicio) antes de leer nada de la base. El correo no va firmado. Después exige que el correo sea de una cuenta, que esa cuenta sea `account_id`, que no se esté borrando y que tenga el derecho (leído con el cerrojo de la cuenta). Si todo se cumple, guarda el agente pendiente como cualquier otro y lo marca `hosted` con su `generation`; la persona lo aprueba como siempre.
+- Cualquier otro caso responde `403 forbidden`, con un solo mensaje para todas las razones: sin llave configurada (todo servidor propio), firma que no verifica, correo desconocido, otra cuenta, borrado pedido, cuenta sin derecho o demasiadas solicitudes pendientes. No se guarda nada.
+- Un registro sin `hosted` funciona como antes: `202` para todo correo. Un servidor anterior rechaza `hosted` como campo desconocido (`400`), en vez de guardar el agente sin marca.
+- La marca es contabilidad del servidor, no una frontera de seguridad: lo que hace confiable al proxy alojado es la atestación que cada dispositivo verifica antes de envolverle nada (ADR 0051 §2.2). `AgentInfo` no la muestra.
+
+**En `GET /v1/agent/me`.** Solo un agente marcado `hosted` recibe `hosted_proxy: { entitled }`, con el derecho actual de la cuenta; el enclave deja de servir la cuenta cuando ve `entitled: false` (ADR 0051 §3.5). Cualquier otro agente, también un proxy propio de una cuenta con el derecho, recibe la respuesta de antes byte a byte.
 
 ## 9. Bitácora
 

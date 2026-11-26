@@ -351,7 +351,7 @@ async fn revoke(db: &Db, id: &str) -> Result<String, String> {
     }
 }
 
-fn db_error(e: sqlx::Error) -> String {
+pub(crate) fn db_error(e: sqlx::Error) -> String {
     format!("database error: {e}")
 }
 
@@ -372,7 +372,7 @@ pub(crate) fn random_uuid() -> String {
 }
 
 /// Unix ms as `2026-11-25 18:04Z`.
-fn timestamp(ms: i64) -> String {
+pub(crate) fn timestamp(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let days = secs.div_euclid(86_400);
     let rest = secs.rem_euclid(86_400);
@@ -400,9 +400,9 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 /// Refuses to run as root on a SQLite database another user owns (ADR 0048
-/// §1.4): SQLite could create its `-wal` and `-shm` files owned by root,
+/// §1.4; also `klav-server hosted-proxy`): SQLite could create its `-wal` and `-shm` files owned by root,
 /// and the server, which runs as that user, could no longer write them.
-fn check_sqlite_owner(url: &str) -> Result<(), String> {
+pub(crate) fn check_sqlite_owner(url: &str) -> Result<(), String> {
     let Some(path) = db::sqlite_path(url) else {
         return Ok(());
     };
@@ -415,7 +415,7 @@ fn owner_rule(running: Option<u32>, owner: Option<u32>) -> Result<(), String> {
         (Some(0), Some(owner)) if owner != 0 => Err(format!(
             "refusing to run as root on a SQLite database owned by UID {owner}: SQLite could leave \
              files the server can't write. Run it as that user instead, for example \
-             `setpriv --reuid={owner} --regid={owner} --clear-groups klav-server invite …`"
+             `setpriv --reuid={owner} --regid={owner} --clear-groups klav-server …`"
         )),
         _ => Ok(()),
     }
