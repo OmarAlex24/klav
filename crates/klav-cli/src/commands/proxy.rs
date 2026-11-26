@@ -46,6 +46,7 @@ pub(crate) async fn proxy_cmd(ctx: &mut Ctx, cmd: ProxyCommand) -> CliResult<()>
         ProxyCommand::Issuer(ProxyIssuerCommand::Add(args)) => issuer_add(ctx, *args).await,
         ProxyCommand::Issuer(ProxyIssuerCommand::Remove(args)) => issuer_remove(ctx, args).await,
         ProxyCommand::Sandboxes(args) => super::proxy_sandboxes::sandboxes_cmd(ctx, args).await,
+        ProxyCommand::Local(cmd) => super::proxy_local::local_cmd(ctx, cmd).await,
     }
 }
 

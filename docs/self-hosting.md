@@ -802,7 +802,8 @@ docker run -d --name klav-proxy -v klav-proxy-data:/data \
     --ulimit memlock=-1:-1 --ulimit core=0 klav-proxy
 # With rootless Docker or Podman, remove `--ulimit memlock=-1:-1` (below).
 # equivalent to: klav-proxy serve [--port 8790] [--max-body BYTES] [--timeout SECONDS] \
-#     [--channel HOST:PORT] [--no-local-calls] [--require-memory-lock]
+#     [--channel HOST:PORT] [--no-local-calls] [--require-memory-lock] \
+#     [--control-socket PATH | --no-control-socket]
 ```
 
 With Docker Compose, [`deploy/proxy/compose.yaml`](../deploy/proxy/compose.yaml)
@@ -1279,6 +1280,13 @@ In all of them:
   format, `"local_calls":false` in JSON, the Docker image's format). It limits
   what another process on the host can use, but does not make a shared host
   safe.
+- **The local socket** (ADR 0036 E3.5, layer 11): `serve` also opens
+  `<home>/agents/<name>.sock` (0600, same uid only; `/data/agents/klav-proxy.sock`
+  in the Docker image), where the person on that machine lists its live
+  sandboxes and revokes them with no signature (`klav proxy local status|revoke`,
+  [api.md](api.md) §8.14). It shows metadata only and only takes access away.
+  `--control-socket PATH` moves it and `--no-control-socket` turns it off; a
+  failure to open it at the default path is a warning, not a failed start.
 - **Creating Boat machines from this host** (ADR 0042 §5): `klav sandbox start
   … -- deploy/sandbox/new-sandbox`, as the issuer's OS user, creates the
   sandbox's Tailscale key and the machine via the Boat API, with no secret in

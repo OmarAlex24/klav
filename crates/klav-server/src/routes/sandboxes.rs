@@ -476,36 +476,23 @@ async fn claimed(
 /// answers a revocation by the person that covers this sandbox, named by
 /// its `at` ([`answers_person`]).
 ///
-/// `person_local` (the proxy's own socket, E3.5) is still refused with the
-/// `400` of `main`, in any shape of body, though `klav log verify` checks
-/// it from this layer on: it needs only the proxy's key, so released
-/// verifiers, which reject it, could be handed one with no act of the
-/// person. The layer that sends it (the Mac proxy's local socket) lifts the
-/// refusal, once every device has this verifier.
+/// `person_local` (the person through the proxy's local socket on their
+/// Mac, ADR 0036 E3.5, layer 11) answers no revocation and takes no `at`:
+/// only the proxy's key signs it (risk 64). Accepted from layer 11 on;
+/// every released verifier already checks it (the layer 5a verifier).
 async fn revoked(
     State(state): State<AppState>,
     Path(sandbox): Path<String>,
     auth: AgentAuth,
 ) -> ApiResult<StatusCode> {
     let sandbox: SandboxId = path_id(&sandbox)?;
-    // `person_local`, before the body is read as an end: the plain shapes
-    // get one message; every shape, the typed one below included, is a 400
-    // with nothing logged.
-    let raw: serde_json::Value = auth.logged_json()?;
-    let reason = match &raw {
-        serde_json::Value::Object(fields) => fields.get("reason"),
-        serde_json::Value::Array(items) => items.first(),
-        _ => None,
-    };
-    if reason.and_then(serde_json::Value::as_str) == Some(SandboxEnd::PersonLocal.as_str()) {
-        return Err(ApiError::bad_request("unknown reason person_local"));
-    }
     let req: SandboxRevoked = auth.logged_json()?;
-    // The typed value too: serde also reads a unit variant from a one-key
-    // map (`{"reason":{"person_local":null}}`), which the check on the raw
-    // string above does not see.
-    if req.reason == SandboxEnd::PersonLocal {
-        return Err(ApiError::bad_request("unknown reason person_local"));
+    // The person's reasons only as a plain string in an object: serde also
+    // reads a unit variant from a one-key map
+    // (`{"reason":{"person_local":null}}`), a shape no proxy sends and the
+    // verifier does not take.
+    if req.reason == SandboxEnd::PersonLocal && !reason_is_plain(&auth.body) {
+        return Err(ApiError::bad_request("an end's reason is a string"));
     }
     if !is_json_object(&auth.body) {
         return Err(ApiError::bad_request("an end is a JSON object"));
@@ -545,6 +532,12 @@ async fn revoked(
     audit::append_in(&mut tx, auth.account_id, &mut event, now).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Whether `body`'s `reason` is a plain string (the body is an object).
+fn reason_is_plain(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .is_ok_and(|v| v.get("reason").is_some_and(serde_json::Value::is_string))
 }
 
 /// Whether a revocation by the person of `sandbox`, signed with `at`, is

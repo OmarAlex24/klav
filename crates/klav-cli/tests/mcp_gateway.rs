@@ -313,6 +313,7 @@ fn the_mcp_gateway_from_the_persons_cli() {
             max_body: klav_proxy::proxy::DEFAULT_MAX_BODY,
             request_timeout: Duration::from_secs(30),
             no_local_calls: false,
+            control_socket: klav_proxy::app::ControlSocket::Off,
             env: klav_proxy::app::StartEnv::default(),
         }))
         .expect("proxy");

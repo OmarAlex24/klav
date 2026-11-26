@@ -1377,12 +1377,12 @@ async fn the_person_revokes_one_sandbox_and_its_proxy_reads_it() {
     }
     assert_eq!(w.chain().await.len(), before, "nothing logged");
 
-    // `person_local` stays refused (review of #341, 1): only the proxy's
-    // key signs it, and released verifiers reject it. Every shape of body
-    // is a `400`. The plain shapes get the same `400` and message, before
-    // it is read as an end, and nothing is logged.
+    // `person_local` (the proxy's local socket on the Mac, E3.5, layer 11)
+    // only as `{"reason":"person_local"}`: with an `at`, an extra field, in
+    // an array, as a one-key map or with a repeated key, it is a `400` and
+    // nothing is logged. The plain end is accepted below, on a sandbox of
+    // its own.
     for body in [
-        json!({ "reason": "person_local" }),
         json!({ "reason": "person_local", "at": at }),
         json!({ "reason": "person_local", "at": null }),
         json!({ "reason": "person_local", "at": 1.0 }),
@@ -1390,21 +1390,13 @@ async fn the_person_revokes_one_sandbox_and_its_proxy_reads_it() {
         json!(["person_local"]),
         json!(["person_local", at]),
         // serde reads a unit variant from a one-key map too (delta review
-        // of #341, 1): the typed value is refused, not only the string.
+        // of #341, 1).
         json!({ "reason": { "person_local": null } }),
         json!([{ "person_local": null }]),
     ] {
         let res = w.end_with(b, &body).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
-        let e: ErrorBody = res.json().await.expect("error body");
-        assert_eq!(
-            (e.error, e.message.as_str()),
-            (ErrorCode::BadRequest, "unknown reason person_local"),
-            "{body}"
-        );
     }
-    // A repeated key, as raw bytes: whichever `reason` serde would keep,
-    // nothing is logged.
     for raw in [
         r#"{"reason":"expired","reason":"person_local"}"#,
         r#"{"reason":"person_local","reason":"expired"}"#,
@@ -1467,6 +1459,39 @@ async fn the_person_revokes_one_sandbox_and_its_proxy_reads_it() {
         code(w.claim_as(&w.proxy, c).await).await,
         (StatusCode::FORBIDDEN, ErrorCode::SandboxRevoked)
     );
+
+    // The person through the proxy's local socket (`person_local`, layer
+    // 11): no revocation of the person needed, logged once, and from that
+    // end on the sandbox gets no access.
+    let d = SandboxId::generate();
+    assert_eq!(w.issue(d).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        w.claim_as(&w.proxy, d).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(w.access("proxy", Some(d)).await.status(), StatusCode::OK);
+    assert_eq!(
+        w.end_with(d, &json!({ "reason": "person_local" }))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        code(w.access("proxy", Some(d)).await).await,
+        (StatusCode::FORBIDDEN, ErrorCode::SandboxRevoked)
+    );
+    assert_eq!(
+        code(w.end_with(d, &json!({ "reason": "person_local" })).await).await,
+        (StatusCode::FORBIDDEN, ErrorCode::SandboxRevoked),
+        "once"
+    );
+    let local = w
+        .chain()
+        .await
+        .into_iter()
+        .filter(|e| e.outcome.as_deref() == Some("person_local"))
+        .count();
+    assert_eq!(local, 1);
 }
 
 /// An `all` covers by the signed time, over-inclusive by the clock window

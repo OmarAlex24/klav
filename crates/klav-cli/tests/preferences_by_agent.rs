@@ -421,6 +421,7 @@ fn a_flagged_setting_cannot_redirect_or_suppress_a_revocation_by_a_verified_row(
             max_body: klav_proxy::proxy::DEFAULT_MAX_BODY,
             request_timeout: std::time::Duration::from_secs(30),
             no_local_calls: false,
+            control_socket: klav_proxy::app::ControlSocket::Off,
             env: klav_proxy::app::StartEnv::default(),
         }))
         .expect("proxy");

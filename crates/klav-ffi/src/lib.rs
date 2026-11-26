@@ -50,6 +50,8 @@ mod error;
 mod grants;
 mod health;
 mod import;
+#[cfg(feature = "daemon")]
+mod local_proxy;
 mod mcp;
 mod pause;
 #[cfg(feature = "daemon")]
@@ -69,6 +71,8 @@ pub use error::{KlavError, KlavResult};
 pub use grants::*;
 pub use health::*;
 pub use import::ImportSession;
+#[cfg(feature = "daemon")]
+pub use local_proxy::{LocalProxyInfo, LocalProxyState, LocalRevokeInfo, LocalSandboxInfo};
 pub use mcp::{McpLocalClientInfo, McpServerInfo, McpServersInfo};
 pub use pause::{AgentPauseInfo, AgentRole, DevAgentInfo, PauseInfo};
 #[cfg(feature = "daemon")]

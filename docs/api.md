@@ -1281,7 +1281,7 @@ ADR [0036](decisiones/0036-sandboxes-de-agentes.md) §4, §9 y E3.3. El proxy de
   - el emisor tiene menos sandboxes vivos (sin fin registrado, sin vencer y sin revocar por la persona) que su `max_live` en este proxy (`409 too_many_sandboxes`);
   - el `sandbox_id` no se usó antes (`409`).
 - **Reclamar** (antes de que el proxy dé el secreto por gastado; el reenviador que lo llama llega con la capa 6): `channel_key_sha256` es el SHA-256 del SPKI de la llave Ed25519 del canal (especificación §13.10). Solo un sandbox que emitió este proxy (`404` para cualquier otro, también para el de otro proxy), sin fin registrado, sin vencer y sin revocar por la persona, con su emisor todavía emisor (`403 sandbox_revoked`) y sin pausa (`403 agents_paused`), y una sola vez (`409 sandbox_claimed`).
-- **Terminar:** `reason` es `stop` (lo paró el emisor), `ttl`, `inactivity`, `theft`, `released` o `issuer_removed`; otro valor es un `400`. Los motivos de la persona: `person` (responde a una revocación de la persona y lleva su `at`) se acepta desde la capa 5a, y necesita una revocación de la persona registrada para ese proxy, con ese `at`, que cubra el sandbox (otra, `409`; sin `at`, `400`). `person_local` (la persona por el socket local del proxy, E3.5) sigue siendo un `400`, con cualquier forma de cuerpo y el mismo mensaje, sin registrar nada: solo lo firma la llave del proxy, y los `klav log verify` publicados lo rechazan. Lo acepta la capa que lo manda (el socket local del proxy en el Mac), cuando todos los dispositivos tengan el verificador que ya lo comprueba (especificación §13.7). `at` va solo con `person` y es un número (`null` o `1.0` son un `400`), así que los cuerpos de los demás motivos no cambian. El cuerpo es un objeto JSON: la forma de arreglo (`["stop"]`), que el lector de JSON también acepta, es un `400` con cualquier motivo. `theft` y `released` solo tras un reclamo (`409`). Una sola vez: el segundo recibe `403 sandbox_revoked`, para que el proxy deje de reintentarlo. Terminar solo quita acceso, así que vale con el sandbox vencido y con el emisor quitado o en pausa.
+- **Terminar:** `reason` es `stop` (lo paró el emisor), `ttl`, `inactivity`, `theft`, `released` o `issuer_removed`; otro valor es un `400`. Los motivos de la persona: `person` (responde a una revocación de la persona y lleva su `at`) se acepta desde la capa 5a, y necesita una revocación de la persona registrada para ese proxy, con ese `at`, que cubra el sandbox (otra, `409`; sin `at`, `400`). `person_local` (la persona por el socket local del proxy, E3.5) se acepta desde la capa 11 (el socket local del proxy en el Mac, §8.14): no responde a ninguna revocación, así que no lleva `at`, y solo vale como `{"reason":"person_local"}`; con `at`, otro campo, en forma de arreglo, como mapa de una clave (`{"reason":{"person_local":null}}`) o con la clave repetida es un `400`, sin registrar nada. Solo lo firma la llave del proxy (riesgo residual 64). Hasta la capa 11 era un `400`; todo `klav log verify` publicado ya lo comprueba (el verificador de la capa 5a, especificación §13.7). `at` va solo con `person` y es un número (`null` o `1.0` son un `400`), así que los cuerpos de los demás motivos no cambian. El cuerpo es un objeto JSON: la forma de arreglo (`["stop"]`), que el lector de JSON también acepta, es un `400` con cualquier motivo. `theft` y `released` solo tras un reclamo (`409`). Una sola vez: el segundo recibe `403 sandbox_revoked`, para que el proxy deje de reintentarlo. Terminar solo quita acceso, así que vale con el sandbox vencido y con el emisor quitado o en pausa.
 - **Todas las comprobaciones** se hacen con el cerrojo de la cuenta, el mismo que toman la bitácora y la pausa, así que una pausa o una revocación escrita antes se ve.
 - **Un sandbox desconocido** en `claimed` o `revoked` (que este proxy no emitió, también el de otro proxy) recibe `404 sandbox_not_found`, no el `not_found` genérico.
 - **La segunda barrera** (E3.3, capa 5a): un `POST /v1/agent/access` con `permission: proxy` puede nombrar el sandbox para el que es la llamada (`sandbox`, fuera de `claims`, así que la solicitud que firma la persona no cambia, aunque el sandbox sí cuenta en el mismo destino, §8.3; con otro permiso, `400`). Antes de evaluar nada ni registrar nada, y con el cerrojo de la cuenta, el servidor lo rechaza con `403 sandbox_revoked` si este proxy no lo emitió, si su fin ya está registrado, si la persona lo revocó, si venció, o si su emisor ya no está en el grant del proxy o ya no es emisor (revocado, denegado, vencido, o su grant ya no nombra a este proxy); y con `403 agents_paused` si su emisor está en pausa, que al reanudarse vuelve a dejarlo pasar. Una llamada permitida lo comprueba **otra vez** en la transacción que la registra, con el cerrojo de la cuenta tomado antes (capa 5a): un fin o una revocación de la persona confirmados antes de ese cerrojo se ven, así que la bitácora nunca muestra una llamada permitida de un sandbox después de su revocación, y el proxy no recibe el valor (`403 sandbox_revoked`, sin evento). Sin `sandbox`, el acceso es el de siempre.
@@ -1543,6 +1543,40 @@ ADR [0046](decisiones/0046-agent-secret-requests.md). Un agente activo que no se
 - **`decide`:** comprueba que la solicitud siga `pending` y sin vencer (`409`), que el agente siga activo (`409`), que `decided_at` esté a ±5 min (`400`), que `decision` sea un `SecretRequestDecision` válido para esa solicitud y ese agente (`400`), y que `signature` verifique con la identidad de la cuenta (especificación §13.14, `400`). Al guardar la decisión borra `proposal_blob` (`NULL`) en la misma transacción.
 - **Limpieza y revocación:** al revocar el agente o al vencer el plazo de una hora (en consultas o en el barrido periódico), las solicitudes pendientes pasan a `expired` y pierden `proposal_blob`.
 - **En la bitácora (§9):** `secret_request.created` (actor `agent`, con `secret_request_id`, `proposal_digest`, `item_id?`, `reason` y la petición firmada **sin cuerpo**, para no conservar `proposal_blob`) y `secret_request.decided` (actor `person`, con `device_id`, `agent_id`, `secret_request_id`, `proposal_digest`, `vault_id?`, `project_id?`, `item_id?`, `outcome` = `fulfilled` o `denied`, `decided_at`, `signed` = `decision` y `account_signature`).
+
+### 8.14 El *socket* local del proxy (ADR 0036 E3.5, capa 11)
+
+No es una ruta HTTP: `klav-proxy serve` escucha en un *socket* Unix,
+`<KLAV_HOME>/agents/<nombre>.sock` (o `--control-socket`), modo 0600, y
+solo atiende a un proceso de su mismo uid (`root` tampoco). Lo usan la app
+de Mac (`DaemonEngine::local_proxy`, `local_proxy_revoke`) y `klav proxy
+local`. Los tipos y el cliente están en `klav_client::local_proxy`; el lado
+del proxy, en `crates/klav-proxy/src/local.rs`.
+
+- **Una línea JSON por conexión**, de 1 KiB como mucho, en 5 s; una línea
+  de respuesta, y el proxy cierra. Como mucho 16 conexiones a la vez; una
+  más se cierra sin respuesta.
+- **`{"v":1,"op":"sandboxes"}`** → `{"v":1,"proxy_id","port","local_calls",
+  "channel","mcp_gateway","mcp_profiles":[…],"sandboxes":[{"sandbox_id",
+  "issuer_id","label","profiles","issued_at","expires_at","claimed",
+  "connected","last_seen_at"}],"unsent_ends"}`: los sandboxes vivos (sin
+  vencer), del más nuevo al más viejo, con su conexión real (`connected`:
+  su reenviador tiene el canal abierto ahora). `label` la escribió el
+  emisor: las apps la muestran como tal. Nunca el resumen del secreto ni
+  la llave del canal.
+- **`{"v":1,"op":"revoke","scope":"<sandbox_id>"|"all"}`** → `{"v":1,
+  "revoked":[…],"logged":bool}`: termina ese sandbox, o todos los vivos,
+  de cualquier emisor, al momento y sin firma, como `stop` para un emisor
+  (lo saca del almacén, guarda su fin, corta sus llamadas en curso y cierra
+  su canal en la siguiente). El fin es `sandbox.revoked` con `person_local`
+  (§8.8); el proxy espera como mucho 5 s a que el servidor lo tome
+  (`logged`) y si no lo manda en sus barridos. Un arranque que todavía
+  espera al servidor no está vivo y `all` no lo cubre.
+- **Errores:** `{"v":1,"error":"bad_request"|"sandbox_not_found"|"store",
+  "message"}`. `store`: no pudo guardar su almacén y no terminó nada.
+- **Un servidor anterior a la capa 11** contesta `400` a `person_local`:
+  el fin se queda en la cola del proxy hasta que el servidor se actualice,
+  y el proxy no sirve ese sandbox mientras tanto.
 
 ## 9. Bitácora
 

@@ -172,6 +172,11 @@ pub struct DaemonEngine {
 }
 
 impl DaemonEngine {
+    /// The Klav directory this engine talks to `klavd` in.
+    pub(crate) fn home_dir(&self) -> &Home {
+        &self.home
+    }
+
     /// The long connection, waiting at most [`HELD_WAIT`] for another call
     /// on it (a Touch ID dialog that is open, say): then the app is told
     /// it is busy, rather than lining up behind it.

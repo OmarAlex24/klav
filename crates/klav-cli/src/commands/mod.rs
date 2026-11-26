@@ -16,6 +16,7 @@ pub(crate) mod item;
 pub(crate) mod log;
 pub(crate) mod presence;
 pub(crate) mod proxy;
+pub(crate) mod proxy_local;
 pub(crate) mod proxy_preset;
 pub(crate) mod proxy_sandboxes;
 pub(crate) mod run;

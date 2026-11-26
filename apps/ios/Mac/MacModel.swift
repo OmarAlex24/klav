@@ -182,6 +182,9 @@ final class MacModel: ObservableObject, RequestsModel {
     /// come from it, also while locked; signing out forgets it.
     @Published var sandboxList: SandboxListInfo?
     @Published var sandboxProblem: String?
+    /// The credential proxy on this Mac, as its local socket last answered
+    /// (ADR 0036 E3.5): nil until the first read. Read while locked too.
+    @Published var localProxy: LocalProxyState?
     /// When `sandboxList` was read, by this Mac's clock (Unix ms): the
     /// heartbeat's age grows from it, and the footer says it.
     @Published var sandboxListReadMs: Int64 = 0

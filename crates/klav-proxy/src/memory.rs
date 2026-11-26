@@ -4,7 +4,7 @@
 //!
 //! [`harden_process`] runs first in `main`, before the tokio runtime and
 //! its threads exist and before anything reads the proxy's key: called any
-//! later, the key would already be in memory. A test in `main.rs` fails if
+//! later, the key would already be in memory. A test in `cli.rs` fails if
 //! the call moves below the runtime; the binary itself never refuses for
 //! the threads that run (ADR 0044 §11, L13 withdrawn): the core limit, the
 //! dumpable flag and `mlockall` apply to the whole process. Only the binary

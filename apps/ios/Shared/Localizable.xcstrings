@@ -1193,6 +1193,16 @@
         }
       }
     },
+    "%lld sandboxes on this Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sandboxes en este Mac"
+          }
+        }
+      }
+    },
     "%lld servers": {
       "comment": "Development › MCP servers header; 2 or more",
       "localizations": {
@@ -1335,6 +1345,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "1 emisor"
+          }
+        }
+      }
+    },
+    "1 sandbox on this Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 sandbox en este Mac"
           }
         }
       }
@@ -1540,6 +1560,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Un cliente MCP quiere llamar a %@"
+          }
+        }
+      }
+    },
+    "Another credential proxy runs on this Mac (ID %@), not your account’s.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En este Mac funciona otro proxy de credenciales (ID %@), no el de tu cuenta."
           }
         }
       }
@@ -2707,6 +2737,16 @@
         }
       }
     },
+    "Checking this Mac…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revisando este Mac…"
+          }
+        }
+      }
+    },
     "CLI / agent": {
       "localizations": {
         "es": {
@@ -3794,6 +3834,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Conectada en %@"
+          }
+        }
+      }
+    },
+    "Connected now, on this Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectado ahora, en este Mac"
           }
         }
       }
@@ -7838,6 +7888,16 @@
         }
       }
     },
+    "macOS didn’t take the credential proxy off Login Items: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS no quitó el proxy de credenciales de Ítems de inicio: %@"
+          }
+        }
+      }
+    },
     "MCP servers": {
       "comment": "Development › MCP servers (ADR 0049)",
       "localizations": {
@@ -8160,6 +8220,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Más nueva que este Klav"
+          }
+        }
+      }
+    },
+    "No credential proxy is set up on this Mac.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En este Mac no hay ningún proxy de credenciales configurado."
+          }
+        }
+      }
+    },
+    "No live sandbox on this Mac to revoke.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En este Mac no hay ningún sandbox vivo que revocar."
           }
         }
       }
@@ -8667,6 +8747,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sin conectar"
+          }
+        }
+      }
+    },
+    "Not connected now, on this Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin conexión ahora, en este Mac"
           }
         }
       }
@@ -10903,6 +10993,16 @@
         }
       }
     },
+    "Revoke all on this Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revocar todos en este Mac"
+          }
+        }
+      }
+    },
     "Revoke all…": {
       "localizations": {
         "es": {
@@ -10953,6 +11053,26 @@
         }
       }
     },
+    "Revoked %lld sandboxes on this Mac: they get nothing from the proxy from now on.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se revocaron %lld sandboxes en este Mac: desde ya el proxy no les da nada."
+          }
+        }
+      }
+    },
+    "Revoked %lld sandboxes on this Mac: they get nothing from the proxy from now on. The proxy tells the Klav server as soon as it can.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se revocaron %lld sandboxes en este Mac: desde ya el proxy no les da nada. El proxy se lo avisa al servidor de Klav en cuanto puede."
+          }
+        }
+      }
+    },
     "Revoked 1 sandbox on the server: it gets no access from now on. It says “Revoking…” until the proxy confirms it stopped.": {
       "localizations": {
         "es": {
@@ -10979,6 +11099,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Revocado en el servidor; el proxy aún no lo confirma."
+          }
+        }
+      }
+    },
+    "Revoked on this Mac: it gets nothing from the proxy from now on.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revocado en este Mac: desde ya el proxy no le da nada."
+          }
+        }
+      }
+    },
+    "Revoked on this Mac: it gets nothing from the proxy from now on. The proxy tells the Klav server as soon as it can.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revocado en este Mac: desde ya el proxy no le da nada. El proxy se lo avisa al servidor de Klav en cuanto puede."
           }
         }
       }
@@ -11273,6 +11413,16 @@
         }
       }
     },
+    "Revoking here asks nothing and needs no unlocking: it only takes access away.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revocar desde aquí no pide nada ni hace falta desbloquear: solo quita acceso."
+          }
+        }
+      }
+    },
     "Revoking signs with your account, which is only open while Klav is unlocked. Nothing was revoked. After you unlock, this opens again where it was.": {
       "localizations": {
         "es": {
@@ -11313,6 +11463,16 @@
         }
       }
     },
+    "Running on this Mac, at 127.0.0.1:%lld.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Funciona en este Mac, en 127.0.0.1:%lld."
+          }
+        }
+      }
+    },
     "Running, version %@": {
       "localizations": {
         "es": {
@@ -11330,6 +11490,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "sandbox %@"
+          }
+        }
+      }
+    },
+    "Set one up in the terminal, compare its 6 words, then make it your account’s proxy with klav proxy use own klav-proxy:": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configúralo en la terminal, compara sus 6 palabras y luego hazlo el proxy de tu cuenta con klav proxy use own klav-proxy:"
+          }
+        }
+      }
+    },
+    "Set up on this Mac, and stopped.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Está configurado en este Mac y detenido."
+          }
+        }
+      }
+    },
+    "Set up on this Mac, but it isn’t answering. Klav starts it again at login, or press Start.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Está configurado en este Mac, pero no responde. Klav lo vuelve a arrancar al iniciar sesión, o pulsa Arrancar."
+          }
+        }
+      }
+    },
+    "Set up on this Mac. Allow Klav in System Settings › General › Login Items & Extensions to start it.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Está configurado en este Mac. Para que arranque, permite Klav en Ajustes del Sistema › General › Ítems de inicio y extensiones."
           }
         }
       }
@@ -12631,6 +12831,16 @@
         }
       }
     },
+    "Start": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrancar"
+          }
+        }
+      }
+    },
     "Start over": {
       "localizations": {
         "es": {
@@ -12688,6 +12898,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Estado o región"
+          }
+        }
+      }
+    },
+    "Stop": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detener"
           }
         }
       }
@@ -12912,6 +13132,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "El gateway MCP está activado."
+          }
+        }
+      }
+    },
+    "The proxy on this Mac can’t be asked: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se le puede preguntar al proxy de este Mac: %@"
           }
         }
       }

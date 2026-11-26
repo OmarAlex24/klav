@@ -65,6 +65,11 @@ protocol MacEngine: VaultEngine {
     // with Touch ID in klavd or the master password.
     func mcpServers() throws -> McpServersInfo
     func turnMcpGatewayOnWithPassword(everyDeviceUpdated: Bool, password: String?) throws -> Bool
+    // The credential proxy on this Mac (ADR 0036 E3.5, layer 11), through
+    // its local socket: never klavd, so both work while Klav is locked.
+    // Revoking asks nothing and only takes access away (E2.3).
+    func localProxy() -> LocalProxyState
+    func localProxyRevoke(sandboxId: String?) throws -> LocalRevokeInfo
 
     // Deleting the account (ADR 0037): Touch ID through klavd where it is
     // set up, the master password in this process. Canceling asks what

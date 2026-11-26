@@ -217,6 +217,36 @@ pub async fn init(opts: InitOptions) -> ClientResult<InitReport> {
     })
 }
 
+/// Whether a proxy named `name` is registered in `home` (its registration
+/// file exists; whether it reads is `serve`'s to say).
+pub fn is_registered(home: &Home, name: &str) -> bool {
+    klav_sdk::config::agents_dir(home)
+        .join(format!("{name}.json"))
+        .exists()
+}
+
+/// Whether another proxy answers on the local socket of `name` in `home`.
+pub fn answers_locally(home: &Home, name: &str) -> bool {
+    std::os::unix::net::UnixStream::connect(klav_client::local_proxy::socket_path(home, name))
+        .is_ok()
+}
+
+/// Why a registered proxy never serves until the person acts: still
+/// pending, revoked, or its account waits to be deleted. `serve
+/// --if-registered` (the Mac's LaunchAgent) then exits 0, so launchd doesn't
+/// start it again every 30 s; a pause or a network error is `None`, and
+/// fails `serve` as before, so launchd retries it.
+pub async fn never_serves(home: &Home, name: &str, env: &StartEnv) -> Option<&'static str> {
+    let mut agent = load(home, name, env).ok()?;
+    let me = agent.me().await.ok()?;
+    match me.status {
+        klav_proto::agent::AgentStatus::Pending => Some("the person has not approved it yet"),
+        klav_proto::agent::AgentStatus::Revoked => Some("it was revoked"),
+        _ if me.account_delete_at.is_some() => Some("its account waits to be deleted"),
+        _ => None,
+    }
+}
+
 /// Loads the proxy's agent after the key checks.
 pub fn load(home: &Home, name: &str, env: &StartEnv) -> ClientResult<Agent> {
     refuse_key_in_env(env)?;
@@ -573,8 +603,24 @@ pub struct ServeOptions {
     /// Refuse every profile call on the loopback listener (ADR 0042 §3):
     /// the issuer API and the channel keep working.
     pub no_local_calls: bool,
+    /// The local socket for the person's apps on this machine (ADR 0036
+    /// E3.5).
+    pub control_socket: ControlSocket,
     /// The variables it refuses to start with.
     pub env: StartEnv,
+}
+
+/// Where the local socket listens (ADR 0036 E3.5, layer 11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlSocket {
+    /// `<home>/agents/<name>.sock`; if it cannot be bound (a path too long
+    /// for a unix socket, another proxy on it), the proxy serves without it
+    /// and says why.
+    Default,
+    /// This path; not binding it stops the proxy.
+    At(PathBuf),
+    /// None.
+    Off,
 }
 
 /// Opens the session and serves mode (a) on `127.0.0.1` until a shutdown
@@ -639,6 +685,7 @@ pub struct Bound {
     listener: tokio::net::TcpListener,
     port: u16,
     channel: Option<crate::channel::ChannelListener>,
+    local: Option<crate::local::LocalSocket>,
     first_sweep_limit: Duration,
 }
 
@@ -653,6 +700,11 @@ impl Bound {
         self.channel
             .as_ref()
             .map(crate::channel::ChannelListener::local_addr)
+    }
+
+    /// Where its local socket listens, if it serves one.
+    pub fn control_socket(&self) -> Option<&Path> {
+        self.local.as_ref().map(crate::local::LocalSocket::path)
     }
 
     /// Its state (tests).
@@ -678,6 +730,7 @@ impl Bound {
             state,
             listener,
             channel,
+            local,
             first_sweep_limit,
             ..
         } = self;
@@ -752,6 +805,19 @@ impl Bound {
         };
         let counts = state.counts();
         let counter = tokio::spawn(Arc::clone(&counts).write_on_change());
+        // The local socket (E3.5): after the first sweep, so its list never
+        // shows a sandbox the person already revoked.
+        let serving = crate::local::Serving {
+            channel: channel.is_some(),
+        };
+        let local = local.map(|socket| {
+            tokio::spawn(crate::local::serve(
+                socket,
+                Arc::clone(&state),
+                serving,
+                stop.clone(),
+            ))
+        });
         let channel = channel.map(|channel| {
             tokio::spawn(crate::channel::serve(
                 channel,
@@ -768,6 +834,10 @@ impl Bound {
             Some(task) => task.await.unwrap_or_else(|e| Err(format!("channel: {e}"))),
             None => Ok(()),
         };
+        if let Some(task) = local {
+            // It ends with `stop`, and removes its socket file.
+            let _ = task.await;
+        }
         refresher.abort();
         sweeper.abort();
         heartbeat.abort();
@@ -871,6 +941,7 @@ pub async fn bind(opts: ServeOptions) -> Result<Bound, String> {
         }
         None => None,
     };
+    let local = bind_local(&opts.home, &opts.name, &opts.control_socket)?;
     let state = ProxyState::new(session, client, bound.port())
         .with_max_body(opts.max_body)
         .with_request_timeout(opts.request_timeout)
@@ -899,13 +970,49 @@ pub async fn bind(opts: ServeOptions) -> Result<Bound, String> {
             "klav-proxy channel listening (TLS 1.3, pinned keys)"
         );
     }
+    if let Some(local) = &local {
+        tracing::info!(
+            socket = %local.path().display(),
+            "klav-proxy local socket listening (this user only)"
+        );
+    }
     Ok(Bound {
         state,
         listener,
         port: bound.port(),
         channel,
+        local,
         first_sweep_limit: FIRST_SWEEP_LIMIT,
     })
+}
+
+/// Binds the local socket `choice` names (ADR 0036 E3.5). The default
+/// path is best effort: a proxy on a server, or with a home too deep for a
+/// unix socket's path, serves without it.
+fn bind_local(
+    home: &Home,
+    name: &str,
+    choice: &ControlSocket,
+) -> Result<Option<crate::local::LocalSocket>, String> {
+    match choice {
+        ControlSocket::Off => Ok(None),
+        ControlSocket::At(path) => crate::local::LocalSocket::bind(path)
+            .map(Some)
+            .map_err(|e| format!("local socket: {e}")),
+        ControlSocket::Default => {
+            let path = klav_client::local_proxy::socket_path(home, name);
+            match crate::local::LocalSocket::bind(&path) {
+                Ok(socket) => Ok(Some(socket)),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "serving without the local socket: the Klav app on this machine cannot list or revoke sandboxes through it"
+                    );
+                    Ok(None)
+                }
+            }
+        }
+    }
 }
 
 fn refresh_kind(e: &ClientError) -> &'static str {

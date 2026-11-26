@@ -45,6 +45,8 @@ pub mod import;
 pub mod issuers;
 pub mod item_grants;
 pub mod kit;
+#[cfg(unix)]
+pub mod local_proxy;
 pub mod offer;
 pub mod ops;
 pub mod passkey_outbox;

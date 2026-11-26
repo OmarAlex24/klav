@@ -7,7 +7,7 @@ import Foundation
 /// another install without asking, and can be done again from Settings.
 @MainActor
 final class Installer: ObservableObject {
-    enum Step: Hashable { case daemon, cli, hosts, account, uninstall, login, extensionDownload }
+    enum Step: Hashable { case daemon, cli, hosts, account, uninstall, login, extensionDownload, proxy }
 
     /// A browser's manifest, from `klav extension host-status`.
     struct Manifest: Decodable, Equatable, Identifiable {
@@ -71,6 +71,8 @@ final class Installer: ObservableObject {
 
     @Published private(set) var placement: Placement
     @Published private(set) var agent: AgentState = .notRegistered
+    /// The credential proxy's LaunchAgent (ADR 0036, layer 11).
+    @Published private(set) var proxyAgent: AgentState = .notRegistered
     /// «Open Klav at login»: what macOS says of the app as a login item,
     /// read again on each refresh and when the app comes to the front (the
     /// person may change it in System Settings). Off by default.
@@ -387,6 +389,7 @@ final class Installer: ObservableObject {
             return (agent, other, link, clis, manifests, trust, system.appLoginState(), extensionDir)
         }.value
         self.helpersMissing = helpersMissing
+        proxyAgent = await Task.detached { system.proxyAgentState() }.value
         installedBrowsers = installed
         (agent, otherDaemon, link, _, _, helperTrust, openAtLogin, unpackedExtensionURL) = state
         setManifests(state.4, read: hostRead)
@@ -617,8 +620,40 @@ final class Installer: ObservableObject {
             try? engine.shutdown()
             try await Task.sleep(for: .milliseconds(300))
             try system.restartAgent()
+            // The proxy runs the same bundle's klav: the update's too.
+            if system.proxyAgentState() == .enabled { try? system.restartProxyAgent() }
         }.value
         return true
+    }
+
+    // MARK: The credential proxy on this Mac (ADR 0036, layer 11)
+
+    /// Registers the proxy's LaunchAgent: `klav-proxy serve
+    /// --if-registered`, from the bundle's `klav`, at every login. With no
+    /// proxy registered in `KLAV_HOME` it exits at once and stays off.
+    func startLocalProxy() async {
+        await step(.proxy) {
+            let system = system
+            try await Task.detached {
+                if system.proxyAgentState() == .enabled {
+                    try system.restartProxyAgent()
+                } else {
+                    try system.registerProxyAgent()
+                }
+            }.value
+            proxyAgent = await Task.detached { system.proxyAgentState() }.value
+            if proxyAgent == .requiresApproval { system.openLoginItems() }
+        }
+    }
+
+    /// Takes the proxy's LaunchAgent off: the proxy stops, and its
+    /// sandboxes and local clients get nothing until it starts again.
+    func stopLocalProxy() async {
+        await step(.proxy, undoes: true) {
+            let system = system
+            try await Task.detached { try system.unregisterProxyAgent() }.value
+            proxyAgent = await Task.detached { system.proxyAgentState() }.value
+        }
     }
 
     /// 2. `klav` on the PATH: a symlink in `/usr/local/bin` to the bundle's,
@@ -997,6 +1032,14 @@ final class Installer: ObservableObject {
                 if system.agentState() != .notRegistered {
                     do { try system.unregisterAgent() } catch where system.agentState() != .notRegistered {
                         left.append(String(localized: "macOS didn’t take the background service off Login Items: \(error.localizedDescription)"))
+                    }
+                }
+                // The credential proxy's LaunchAgent (layer 11). Its
+                // registration and key stay in KLAV_HOME, which goes only
+                // with `deleteHome`.
+                if system.proxyAgentState() != .notRegistered {
+                    do { try system.unregisterProxyAgent() } catch where system.proxyAgentState() != .notRegistered {
+                        left.append(String(localized: "macOS didn’t take the credential proxy off Login Items: \(error.localizedDescription)"))
                     }
                 }
                 if system.appLoginState() != .notRegistered {

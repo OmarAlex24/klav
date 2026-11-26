@@ -79,7 +79,27 @@ async fn run(cli: Cli) -> CliResult<()> {
     }
 }
 
+/// Whether this process was started as `klav-proxy` (its `argv[0]`): the
+/// Mac app's LaunchAgent runs the credential proxy that way, from the
+/// bundle's `klav` helper (ADR 0036, layer 11), and `klav proxy local
+/// init` runs itself that way.
+fn started_as_proxy() -> bool {
+    std::env::args_os().next().is_some_and(|arg0| {
+        std::path::Path::new(&arg0)
+            .file_name()
+            .is_some_and(|name| name == PROXY_ARGV0)
+    })
+}
+
+/// The `argv[0]` that makes this binary the credential proxy.
+pub(crate) const PROXY_ARGV0: &str = "klav-proxy";
+
 fn main() -> ExitCode {
+    // First, before any thread: the proxy hardens its memory before its
+    // runtime starts (ADR 0044 §3.1).
+    if started_as_proxy() {
+        return klav_proxy::cli::main(build::version());
+    }
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

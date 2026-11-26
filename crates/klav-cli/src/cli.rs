@@ -1140,6 +1140,51 @@ pub(crate) enum ProxyCommand {
     /// The sandboxes of the account's proxy, from the verified log and the
     /// proxy's heartbeat; `revoke` takes one or all of them away.
     Sandboxes(ProxySandboxesArgs),
+    /// The credential proxy running on this machine, through its local
+    /// socket: its live sandboxes, and revoking them without unlocking.
+    #[command(subcommand)]
+    Local(ProxyLocalCommand),
+}
+
+/// `klav proxy local …` (ADR 0036 E3.5, layer 11): the proxy on this
+/// machine, as the same user, through its local socket.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProxyLocalCommand {
+    /// Whether the proxy on this machine answers, its port, its MCP
+    /// profiles and its live sandboxes with their connection. Never a value.
+    Status(JsonFlag),
+    /// Revoke one live sandbox of the proxy on this machine, or all of them,
+    /// at once: no Touch ID and no unlocking (the proxy logs it as revoked
+    /// through its socket). Run it yourself: an agent must never run it.
+    Revoke(ProxyLocalRevokeArgs),
+    /// Register a credential proxy for this machine (`klav-proxy init`):
+    /// shows its 6 words. The Klav app's LaunchAgent serves it.
+    Init(ProxyLocalInitArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ProxyLocalRevokeArgs {
+    /// The sandbox's ID, whole or its first 8 characters as `status` shows
+    /// them.
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
+    pub(crate) id: Option<String>,
+    /// Every live sandbox of the proxy on this machine.
+    #[arg(long)]
+    pub(crate) all: bool,
+    #[command(flatten)]
+    pub(crate) json: JsonFlag,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ProxyLocalInitArgs {
+    /// E-mail of the Klav account.
+    #[arg(long)]
+    pub(crate) email: String,
+    /// Klav server (default: Klav's).
+    #[arg(long)]
+    pub(crate) server: Option<String>,
+    #[command(flatten)]
+    pub(crate) json: JsonFlag,
 }
 
 /// `klav proxy sandboxes [--ended] [--json]` and its `revoke`.

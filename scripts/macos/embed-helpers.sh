@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Xcode build phase of KlavMac (ADR 0027 §4): puts klav, klavd and
-# klav-native-host in Klav.app/Contents/Helpers and klavd's LaunchAgent in
-# Contents/Library/LaunchAgents, before Xcode signs the app.
+# klav-native-host in Klav.app/Contents/Helpers, and the LaunchAgents of
+# klavd and of the credential proxy in Contents/Library/LaunchAgents,
+# before Xcode signs the app. The proxy has no helper of its own: its
+# LaunchAgent runs Helpers/klav as `klav-proxy` (ADR 0036, layer 11).
 #
 # klavd goes inside its own bundle, Helpers/klavd.app (ADR 0027, note of
 # 2026-11-05): macOS names the process asking for Touch ID after the bundle
@@ -29,6 +31,7 @@ helpers=(klav klavd klav-native-host)
 
 mkdir -p "$app/Contents/Library/LaunchAgents"
 cp -f "$SRCROOT/Mac/LaunchAgents/dev.klav.klavd.plist" "$app/Contents/Library/LaunchAgents/"
+cp -f "$SRCROOT/Mac/LaunchAgents/dev.klav.proxy.plist" "$app/Contents/Library/LaunchAgents/"
 
 missing=()
 for name in "${helpers[@]}"; do

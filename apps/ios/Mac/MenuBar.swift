@@ -121,6 +121,9 @@ struct MenuBarView: View {
                 if !model.accountDeleted {
                     Rule()
                     PauseLine(open: open)
+                    // The proxy on this Mac answers without klavd: its
+                    // sandboxes can be revoked while locked (ADR 0036 E2.3).
+                    LocalSandboxesLine()
                 }
             case .starting: Color.clear.frame(height: 80)
             case .signedOut, .noDaemon: setUpBody

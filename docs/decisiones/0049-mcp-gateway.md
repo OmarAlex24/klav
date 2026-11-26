@@ -492,6 +492,10 @@ What layer 6 (`klav-ffi`, `klavd`, the Mac and iPhone apps) fixed that the text 
 7. **Development › MCP servers is Mac only** (`DaemonEngine::mcp_servers`); `KlavCore` doesn't expose it. The local URL it shows uses `klav-proxy`'s default port (8790), because the apps don't know the port the proxy was started with.
 8. **Left over from layer 5, fixed here:** `docs/klavd.md` now lists `local_client_preview` and `local_client_change` (the idle-lock test failed without them), and `proxy_grant`'s prompt builder in `klavd` allows clippy's `too_many_arguments`.
 
+## Implementation notes (ADR 0036 layer 11, 2026-11-25)
+1. **The proxy can run on the Mac.** ADR 0036 layer 11 adds the `dev.klav.proxy` LaunchAgent, which runs the bundle's `klav` as `klav-proxy serve --if-registered`: the loopback listener (8790 by default) that local MCP clients call, and the proxy's local socket. Development › MCP servers shows the proxy on this Mac at the top, with Start or Stop, because local clients reach the servers only through it.
+2. **The app learns the real port.** The local socket's `sandboxes` answer carries the listener's port and the proxy's MCP profiles ([api.md](../api.md) §8.14). When the account's proxy runs on this Mac on another port and serves the profile, the local URL and Copy use that port. This supersedes layer 6 note 7 for a running proxy; with no proxy running here, the URL still says 8790.
+
 ## Open questions for Omar (answered above)
 **Q1. One URL per MCP server, or one aggregated endpoint?**
 - **(a) One URL per server** (`/maple/mcp`, `/cloudflare/mcp`), written by `klav client connect` in one command; no aggregator planned (Recommended).

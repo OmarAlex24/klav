@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The credential proxy on this Mac as a LaunchAgent (ADR 0036 §1, layer
+  11), next to klavd and not inside it, registered by the app with
+  SMAppService.agent(plistName:) only when the person starts it from
+  Development › Sandboxes or › MCP servers.
+
+  The program is the bundle's klav: started as "klav-proxy" (argv[0]) it is
+  klav-proxy, so the app ships no helper of its own for it and stays within
+  ADR 0027 §5's budget. Updating the app updates it.
+
+  `serve` with its defaults: 127.0.0.1:8790 for local MCP clients (ADR
+  0049 §3.1), the local socket <KLAV_HOME>/agents/klav-proxy.sock (E3.5),
+  and no channel for sandboxes (those need an address of their own:
+  `klav-proxy serve --channel`, by hand, docs/macos.md). With no proxy
+  registered in KLAV_HOME, or another klav-proxy already serving it,
+  `--if-registered` exits 0 and KeepAlive does not start it again.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.klav.proxy</string>
+	<key>BundleProgram</key>
+	<string>Contents/Helpers/klav</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>klav-proxy</string>
+		<string>serve</string>
+		<string>--if-registered</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.klav.mac</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Standard</string>
+</dict>
+</plist>

@@ -98,6 +98,8 @@ trap 'rm -rf "$work"' EXIT
 # 1. The helpers, release, optimized for size (`opt-level="s"`, keeping
 # Argon2id/BLAKE2 at 3), without symbols and with link-time optimization
 # across crates, so Klav.app and the DMG stay within ADR 0027 §5's budget.
+# klav is also the credential proxy when started as `klav-proxy` (its
+# LaunchAgent, ADR 0036 layer 11): no helper of its own.
 if [[ "${KLAV_SKIP_CARGO:-0}" != 1 ]]; then
   step "helpers (cargo build --release)"
   cargo build --release --locked -p klav-cli -p klav-daemon \
@@ -185,6 +187,9 @@ fi
 for name in klav klav-native-host klavd.app; do
   codesign --force ${timestamp[@]+"${timestamp[@]}"} --options runtime --identifier "dev.klav.${name%.app}" \
     --sign "$identity" "$app/Contents/Helpers/$name"
+done
+for plist in dev.klav.klavd.plist dev.klav.proxy.plist; do
+  [[ -f "$app/Contents/Library/LaunchAgents/$plist" ]] || { echo "missing LaunchAgents/$plist" >&2; exit 1; }
 done
 [[ "$(readlink "$app/Contents/Helpers/klavd")" == klavd.app/Contents/MacOS/klavd ]] || {
   echo "Helpers/klavd is not the link to klavd.app (scripts/macos/embed-helpers.sh)" >&2

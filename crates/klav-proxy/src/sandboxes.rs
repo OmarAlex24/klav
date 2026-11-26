@@ -1005,6 +1005,79 @@ pub async fn stop(
     run.await.unwrap_or_else(IntoResponse::into_response)
 }
 
+/// Why the person's local revocation ended nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalEndError {
+    /// No live sandbox has that ID.
+    NotFound,
+    /// The store could not be saved: nothing ended.
+    Store,
+}
+
+/// The person, through the proxy's local socket on their Mac (ADR 0036
+/// E3.5): ends `sandbox`, or every live sandbox with `None`, at once and
+/// with no signature, as `stop` does for an issuer, with `person_local`.
+/// Any issuer's. Starts still waiting for the Klav server are not live yet
+/// and are left to them (a signed `all` leaves them to the log's order
+/// too). Returns what it ended; their ends go to the outbox, sent by the
+/// caller or the next sweep.
+pub(crate) async fn end_locally(
+    state: &ProxyState,
+    sandbox: Option<SandboxId>,
+) -> Result<Vec<SandboxId>, LocalEndError> {
+    let sandboxes = state.sandboxes();
+    let mut store = sandboxes.store.lock().await;
+    let ids: Vec<SandboxId> = match sandbox {
+        Some(id) => {
+            if !store.sandboxes.iter().any(|s| s.sandbox_id == id) {
+                return Err(LocalEndError::NotFound);
+            }
+            vec![id]
+        }
+        None => store.sandboxes.iter().map(|s| s.sandbox_id).collect(),
+    };
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+    let before_live = store.sandboxes.clone();
+    let before_outbox = store.outbox.len();
+    store.sandboxes.retain(|s| !ids.contains(&s.sandbox_id));
+    store.outbox.extend(ids.iter().map(|id| Outgoing {
+        sandbox_id: *id,
+        reason: SandboxEnd::PersonLocal,
+        at: None,
+    }));
+    if let Err(e) = sandboxes.save(&store) {
+        // Back as it was: the file still has them live, and so must this
+        // process, or a restart would bring them back with no end sent.
+        tracing::error!(error = %e, "could not save the sandbox store");
+        store.outbox.truncate(before_outbox);
+        store.sandboxes = before_live;
+        return Err(LocalEndError::Store);
+    }
+    for id in &ids {
+        store.note_end(*id, SandboxEnd::PersonLocal);
+        store.last_seen.remove(id);
+        tracing::info!(sandbox = %id, reason = SandboxEnd::PersonLocal.as_str(), "sandbox ended");
+    }
+    drop(store);
+    // Ended here at once, with their calls in flight.
+    state.cuts().cut_sandboxes(&ids);
+    Ok(ids)
+}
+
+/// Whether the Klav server has the end of every one of `ids`.
+pub(crate) async fn all_logged(state: &ProxyState, ids: &[SandboxId]) -> bool {
+    !state
+        .sandboxes()
+        .store
+        .lock()
+        .await
+        .outbox
+        .iter()
+        .any(|o| ids.contains(&o.sandbox_id))
+}
+
 /// Most pages of the person's revocations one sweep reads.
 const MAX_REVOCATION_PAGES: usize = 10;
 

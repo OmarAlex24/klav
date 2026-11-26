@@ -1000,6 +1000,16 @@ Las líneas del *setup script* que da `klav sandbox start` ya lo hacen. Es la ca
 - **Con `klavd` bloqueado,** la revocación llega al proxy al momento, sin firma. El proxy la registra como `sandbox.revoked` con `person_local`, y desde ese evento el servidor también rechaza el acceso del sandbox.
 - **Cualquier proceso del mismo usuario puede usar el *socket*:** solo ve metadatos y solo quita acceso (riesgo residual 49 y riesgo 64).
 
+> Nota de implementación del 2026-11-25 (capa 11):
+>
+> - **Sin ayudante propio.** El *LaunchAgent* (`dev.klav.proxy`) corre el `klav` del paquete con `argv[0]` `klav-proxy`: con ese nombre, `klav` es `klav-proxy` (`klav_proxy::cli::main`). Un `klav-proxy` aparte ponía el DMG por encima de los 25 MB del ADR 0027 §5; dentro de `klav` suma 1,54 MB sin comprimir y unos 0,72 MB comprimido ([macos.md](../macos.md) §11).
+> - **El *socket*** es `<KLAV_HOME>/agents/<nombre>.sock` (0600, el directorio del usuario; `--control-socket RUTA` o `--no-control-socket`). Una línea de JSON por conexión, de 1 KiB como mucho y en 5 s, y una respuesta. El proxy comprueba el uid del par (las credenciales del par del *socket*) y el cliente, que el *socket* y su directorio son del usuario y que nadie más escribe en el directorio. Las operaciones y sus respuestas están en [api.md](../api.md) §8.14: `sandboxes` da también el puerto, los perfiles MCP y los fines sin mandar; `revoke` toma un ID o `"all"`.
+> - **`revoke` es `stop` de la persona:** el fin entra en la cola de fines y en el almacén antes de responder, y el proxy deja de servir el sandbox al momento. Espera como mucho 5 s a que el servidor lo registre; la respuesta dice si llegó (`logged`). `all` termina los sandboxes vivos del almacén, no los arranques que aún no terminan; uno que termine después vive.
+> - **El servidor acepta `person_local`** desde esta capa, solo como `{"reason":"person_local"}` (la fila «`person_local` en el servidor» de E9 lo fijaba hasta la capa que lo manda). El verificador de `klav log verify` ya lo aceptaba. Un servidor anterior responde `400`: el fin se queda en la cola y el proxy lo reintenta, sin servir el sandbox.
+> - **`serve --if-registered`** sale con `0` sin proxy registrado en `KLAV_HOME`, si otro ya responde en el *socket*, o si el proxy está pendiente, revocado o su cuenta espera el borrado: el *LaunchAgent* (`KeepAlive` solo tras un fallo) no se relanza en bucle en un Mac sin proxy.
+> - **El *plist* no lleva `--channel`:** en el Mac sirve `127.0.0.1:8790` (los clientes MCP locales, ADR 0049) y el *socket*. Que un sandbox llegue a este Mac pide una dirección que lo alcance, y Tailscale con llaves efímeras para el proxy de este Mac sigue aparte (el ADR 0042 lo resolvió para un proxy en un servidor). Hasta entonces, `klav-proxy serve --channel …` a mano.
+> - **La CLI de la persona:** `klav proxy local status|revoke ID|--all|init` ([cli.md](../cli.md) §10), sin `klavd` y con la bóveda bloqueada. `init` corre `klav-proxy init` con el mismo binario.
+
 ### E4. Dónde va en cada app
 **Mac.** Una fila nueva, «Sandboxes» (⌘7, libre), en Desarrollo, debajo de Agentes:
 

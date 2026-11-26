@@ -203,6 +203,8 @@ Terms from ADR [0036](decisiones/0036-sandboxes-de-agentes.md) and its amendment
 | reclamar / reclamo (un sandbox) | claim | ADR 0036 §5; action `sandbox.claimed` (amendment) |
 | marca de reclamo | claim marker | api.md §8.11. `klav-forward`'s non-secret file `<state>/claimed/<sandbox_id>` (`setup::Marker`), written before the first byte of a claim so a later `up` with the same package refuses locally (`klav_forward_already_claimed`) |
 | socket de control | control socket | api.md §8.11. The running forwarder's unix socket `<state>/down.sock` (0600, same uid only), through which `klav-forward down` asks it to release its sandbox and stop; never a signal to the pid in `state.json` |
+| socket local (del proxy) | (the proxy's) local socket | ADR 0036 E3.5, api.md §8.14. `<KLAV_HOME>/agents/<name>.sock` (0600, same uid only), where the person lists the proxy's live sandboxes and revokes them with no signature, also with `klavd` locked; `klav proxy local`, `klav_client::local_proxy` |
+| en este Mac | on this Mac | ADR 0036 E2.3, E4 (layer 11). UI "On this Mac", "Revoked on this Mac": the account's proxy runs on this Mac and answers on its local socket |
 | llave del canal | channel key | ADR 0036 §5. `sandbox.claimed` names it by `channel_key_sha256`, the SHA-256 of its SPKI (spec §13.10) |
 | canal fijado | pinned channel | ADR 0036 §6, spec §13.10. TLS 1.3 between the forwarder and the proxy, with raw Ed25519 keys on both ends; the forwarder accepts only the proxy pin; `klav_forward::channel` |
 | llave pública en bruto | raw public key | RFC 7250. A TLS peer's bare `SubjectPublicKeyInfo` instead of a certificate; both ends of the pinned channel use one |

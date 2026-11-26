@@ -18,6 +18,11 @@ klav-import = { workspace = true, features = ["qr-image"] }
 klav-core.workspace = true
 klav-proto.workspace = true
 klav-sdk.workspace = true
+# The credential proxy, run when this binary starts as `klav-proxy`
+# (argv[0]): the Mac app's LaunchAgent runs the proxy from the bundle's one
+# `klav` helper instead of a helper of its own, which would put the DMG
+# over ADR 0027 §5's 25 MB (ADR 0036, layer 11). No crate new to the lock.
+klav-proxy.workspace = true
 clap = { version = "4.6", features = ["derive", "env"] }
 csv = "1.4"
 nix = { version = "0.31", default-features = false, features = ["fs", "hostname", "signal", "term", "user"] }
@@ -34,9 +39,6 @@ tokio = { version = "1", features = ["io-std", "io-util", "macros", "process", "
 zeroize = "1.9"
 
 [dev-dependencies]
-# `klav sandbox` against a real proxy, in the test's own process: the
-# binary in target/ may be another build's.
-klav-proxy = { path = "../klav-proxy" }
 # The end-to-end test of preferences an agent wrote edits the test
 # server's SQLite file while it is stopped, as klav-client's tests do.
 # Same version and features as klav-client and klav-sdk (no new package
