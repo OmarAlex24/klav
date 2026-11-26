@@ -315,7 +315,7 @@ Every error from the forwarder or the proxy is HTTP with a `Klav-Error` header a
 | `klav_rate_limited` | 429 | Over the sandbox's or the profile's calls per minute (not run) | Wait `retry_after` seconds |
 | `klav_upstream_blocked` | 502 | Private address, redirect, or a body the proxy can't check (not run) | Check the profile's upstream |
 | `klav_approval_pending` / `klav_approval_denied` | 409 / 403 | A profile with `--ask` or `--ask-method` (not run) | Decide on the person's device. The sandbox has no way to wait for it yet (§12) |
-| `klav_proxy_backlog` | 503 | Only on `klav sandbox start`: too many ended sandboxes waiting for the server (not run) | Fix the proxy's connection to the server |
+| `klav_proxy_backlog` | 503 | On `klav sandbox start`: too many ended sandboxes waiting for the server (not run). On Klav Cloud's hosted proxy, also on a call: the account already has as many calls or as much request data in flight as it may (ADR 0051 §3.3) | For a start, fix the proxy's connection to the server; for a call, wait `retry_after` seconds |
 | `klav_forward_not_running` | — | `klav-forward status` with no forwarder in this state directory | A new sandbox needs a new package |
 | `klav_forward_already_claimed`, `klav_forward_port_in_use` | — | `up` with a package already spent here, or with the port taken. The second message says who holds the port: another `klav-forward`, `klav-proxy` or another program (not run) | Run the setup lines as printed: the first one stops another package's forwarder. For `klav-proxy` or another program, its `next` says this run spent nothing and which `--port` moves what |
 

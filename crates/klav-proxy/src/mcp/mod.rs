@@ -870,9 +870,7 @@ pub(crate) async fn forward(
         caller: who.clone(),
         session: session.clone(),
     };
-    let permit = state
-        .take_slots(caller.sandbox())
-        .ok_or(ProxyError::RateLimited { retry_after: 1 })?;
+    let mut permit = state.take_slots(caller.sandbox()).await?;
     let cut = state.register_cut(caller.sandbox());
     let (idle, total) = state.body_waits();
     let max = if method == Method::POST {
@@ -880,7 +878,17 @@ pub(crate) async fn forward(
     } else {
         0
     };
-    let Some(body) = crate::proxy::read_body(body, max, idle, total).await else {
+    let body = match crate::proxy::read_body(body, max, idle, total, state.body_budget()).await {
+        Ok((body, held)) => {
+            permit.hold(held);
+            Some(body)
+        }
+        Err(crate::proxy::BodyError::Budget) => {
+            return Err(state.body_refusal(crate::proxy::BodyError::Budget));
+        }
+        Err(_) => None,
+    };
+    let Some(body) = body else {
         if method == Method::POST {
             return Ok(malformed(Refused {
                 code: jsonrpc::PARSE_ERROR,

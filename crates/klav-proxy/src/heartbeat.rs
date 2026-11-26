@@ -56,9 +56,12 @@ pub const SOONEST_MS: i64 = 60 * 1000;
 /// How often the heartbeat task looks.
 pub const LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// The heartbeat file's content; also what Klav Cloud's enclave hands
+/// another of an account's heartbeat (ADR 0051 §4.3), so the receiver
+/// goes on under the same epoch and `seq` instead of logging a reset.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct HeartbeatFile {
+pub(crate) struct HeartbeatFile {
     v: u8,
     store_epoch: Blob,
     /// Whether the server took this epoch's `sandbox.store_reset`.
@@ -125,6 +128,31 @@ impl Heartbeats {
             file: tokio::sync::Mutex::new(file),
             last: Mutex::new(Last::default()),
         }
+    }
+
+    /// State in memory that goes on from `file` (a hand-off), or a new
+    /// epoch when `file` is of another version or malformed.
+    #[cfg(feature = "enclave")]
+    pub(crate) fn restored(file: HeartbeatFile) -> Self {
+        let file = if file.v == HEARTBEAT_FILE_VERSION
+            && file.store_epoch.as_bytes().len() == STORE_EPOCH_LEN
+        {
+            file
+        } else {
+            HeartbeatFile::fresh()
+        };
+        Self {
+            path: None,
+            file: tokio::sync::Mutex::new(file),
+            last: Mutex::new(Last::default()),
+        }
+    }
+
+    /// What a hand-off carries: the epoch, whether its reset is logged,
+    /// the last `seq` and a heartbeat a pause held back.
+    #[cfg(feature = "enclave")]
+    pub(crate) async fn snapshot(&self) -> HeartbeatFile {
+        self.file.lock().await.clone()
     }
 
     /// State in memory only (tests of other parts).

@@ -206,6 +206,28 @@ pub(crate) struct StoreFile {
 /// How many ended sandboxes' keys the proxy remembers the reason for.
 pub(crate) const MAX_ENDED_KEYS: usize = 1024;
 
+/// What Klav Cloud's enclave hands another of one account's store (ADR 0051
+/// §4.3): what a self-hosted proxy keeps in its store and channels files,
+/// and nothing it keeps only in memory. The digest of each secret and of
+/// each channel key, never a secret or a key.
+#[cfg(feature = "enclave")]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StoreSnapshot {
+    pub(crate) sandboxes: Vec<Stored>,
+    pub(crate) outbox: Vec<Outgoing>,
+    pub(crate) channels: Vec<crate::claims::Channel>,
+    pub(crate) unconfirmed_thefts: Vec<crate::claims::UnconfirmedTheft>,
+}
+
+#[cfg(feature = "enclave")]
+impl StoreSnapshot {
+    /// Live sandboxes in it.
+    pub(crate) fn live(&self) -> usize {
+        self.sandboxes.len()
+    }
+}
+
 impl StoreFile {
     /// Notes why `sandbox` ended, for each channel key on record for it:
     /// called where it ends, while its keys are still on record. Each such
@@ -316,6 +338,36 @@ impl Sandboxes {
             flushing: tokio::sync::Mutex::new(()),
             nonces: Mutex::new(HashMap::new()),
             starts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// A store in memory that starts as `snapshot` (Klav Cloud's enclave,
+    /// after a hand-off). What it kept only in memory starts over, as after
+    /// a restart: the time each claimed sandbox was last heard from counts
+    /// from now.
+    #[cfg(feature = "enclave")]
+    pub(crate) fn restored(clock: Arc<dyn Clock>, snapshot: StoreSnapshot) -> Self {
+        let mut me = Self::in_memory(clock);
+        let file = me.store.get_mut();
+        file.sandboxes = snapshot.sandboxes;
+        file.outbox = snapshot.outbox;
+        file.channels = snapshot.channels;
+        file.unconfirmed_thefts = snapshot.unconfirmed_thefts;
+        me
+    }
+
+    /// What a hand-off carries of this store. An end waiting for the server
+    /// goes with it, also that of a start still waiting for the server: if
+    /// the start goes through, the end only ends a sandbox the receiver
+    /// doesn't know, which is the safe side.
+    #[cfg(feature = "enclave")]
+    pub(crate) async fn snapshot(&self) -> StoreSnapshot {
+        let file = self.store.lock().await;
+        StoreSnapshot {
+            sandboxes: file.sandboxes.clone(),
+            outbox: file.outbox.clone(),
+            channels: file.channels.clone(),
+            unconfirmed_thefts: file.unconfirmed_thefts.clone(),
         }
     }
 

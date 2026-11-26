@@ -14,6 +14,9 @@
 //!   [`crate::proxy::ProxyState`]s, the channel routed by SNI (§3.4), the
 //!   public API (`/v1/manifest`, `/v1/attest`, `/v1/enroll`) and the
 //!   attested hand-off (§4.2).
+//! - [`run`]: `klav-proxy enclave`, the entry point the image starts: it
+//!   opens `/dev/nsm`, listens on vsock, bridges egress to the parent, and
+//!   starts a new seed or joins a live peer.
 //!
 //! Nothing here writes to a disk. The seed and every derived private key
 //! stay in [`klav_core`] types that zeroize and print nothing; no log line
@@ -23,6 +26,7 @@ pub mod attest;
 pub mod engine;
 pub mod quota;
 pub mod registry;
+pub mod run;
 pub mod trust;
 
 #[cfg(all(test, feature = "enclave-testkit"))]

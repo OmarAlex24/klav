@@ -6,13 +6,18 @@
 //! |---|---|---|
 //! | Live sandboxes (10) | [`crate::proxy::ProxyState::with_account_live_cap`] | `429 klav_rate_limited` on start |
 //! | Requests per minute (120) | [`enforce`] | `429 klav_rate_limited` with `retry_after` |
-//! | Request body (32 MiB) | [`enforce`] and the state's body limit | `413 klav_upstream_blocked` |
+//! | Request body (32 MiB) | [`enforce`] by `Content-Length`; the state's body limit for one sent in chunks | `413 klav_upstream_blocked` |
 //! | Egress bytes per day (2 GiB, up and down) | [`enforce`] | `429 klav_rate_limited` until the day rolls |
 //! | Concurrent SSE streams (8, each ≤ 1 h) | [`enforce`] | the oldest stream closes |
-//! | Concurrent upstream calls | the state's own in-flight cap ([`crate::proxy::MAX_IN_FLIGHT`]) | `429 klav_rate_limited` |
+//! | Concurrent upstream calls (32) | [`crate::proxy::ProxyState::with_account_budget`] | waits its turn up to `queue_wait` (5 s), then `503 klav_proxy_backlog` |
+//! | Request bodies held in memory (64 MiB) | [`crate::proxy::ProxyState::with_account_budget`] | `503 klav_proxy_backlog` |
 //!
 //! Only calls to a profile count toward the rate, the body and the egress;
-//! the channel's own routes (`/_klav/…`) do not.
+//! the channel's own routes (`/_klav/…`) do not. The last two are taken
+//! only once the call is known to come from a sandbox bound to its channel
+//! key, so a connection that only knows the account's channel name and pin
+//! (which are no secret) can't hold them; they are given back when the
+//! call's answer ends or the caller goes away.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -46,6 +51,12 @@ pub struct QuotaLimits {
     pub sse_streams: usize,
     /// Longest an SSE stream stays open.
     pub sse_max: Duration,
+    /// Calls to providers at once.
+    pub upstream_calls: usize,
+    /// How long a call over `upstream_calls` waits for its turn.
+    pub queue_wait: Duration,
+    /// Bytes of request bodies held in memory at once.
+    pub buffer_bytes: usize,
 }
 
 impl Default for QuotaLimits {
@@ -57,6 +68,9 @@ impl Default for QuotaLimits {
             egress_bytes_per_day: 2 * 1024 * 1024 * 1024,
             sse_streams: 8,
             sse_max: Duration::from_secs(60 * 60),
+            upstream_calls: 32,
+            queue_wait: Duration::from_secs(5),
+            buffer_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -191,20 +205,15 @@ impl Drop for StreamSlot {
     }
 }
 
-/// A body whose bytes count toward the day's egress; past `cap` bytes it
-/// ends with an error.
-fn counted(body: Body, quotas: Arc<Quotas>, cap: Option<usize>) -> Body {
-    let mut seen = 0usize;
+/// A body whose bytes count toward the day's egress. The size of a request
+/// body is the proxy's to refuse: its state has the account's body limit
+/// and answers `413 klav_upstream_blocked` past it, also for a body sent
+/// in chunks without `Content-Length`.
+fn counted(body: Body, quotas: Arc<Quotas>) -> Body {
     Body::from_stream(body.into_data_stream().map(move |chunk| {
         let chunk = chunk?;
-        seen = seen.saturating_add(chunk.len());
         quotas.count_egress(chunk.len());
-        if cap.is_some_and(|cap| seen > cap) {
-            return Err(axum::Error::new(
-                "the request body is over the account's limit",
-            ));
-        }
-        Ok(chunk)
+        Ok::<_, axum::Error>(chunk)
     }))
 }
 
@@ -252,10 +261,9 @@ pub async fn enforce(State(quotas): State<Arc<Quotas>>, req: Request, next: Next
             );
         }
     }
-    let cap = call.then_some(quotas.limits.max_body);
     let req = req.map(|body| {
         if call {
-            counted(body, Arc::clone(&quotas), cap)
+            counted(body, Arc::clone(&quotas))
         } else {
             body
         }
@@ -272,7 +280,7 @@ pub async fn enforce(State(quotas): State<Arc<Quotas>>, req: Request, next: Next
         .is_some_and(|t| t.trim().eq_ignore_ascii_case("text/event-stream"));
     let sse_max = quotas.limits.sse_max;
     res.map(|body| {
-        let body = counted(body, Arc::clone(&quotas), None);
+        let body = counted(body, Arc::clone(&quotas));
         if !stream {
             return body;
         }
@@ -303,6 +311,7 @@ mod tests {
             egress_bytes_per_day: 100,
             sse_streams: 2,
             sse_max: Duration::from_secs(5),
+            ..QuotaLimits::default()
         }
     }
 

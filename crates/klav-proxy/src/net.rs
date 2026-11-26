@@ -204,6 +204,22 @@ pub fn upstream_client() -> reqwest::Result<reqwest::Client> {
     .build()
 }
 
+/// The client Klav Cloud's enclave uses to reach providers (ADR 0051 §1):
+/// every connection is an HTTP `CONNECT` through `proxy`, its bridge to the
+/// parent's egress port, which resolves the name and refuses every address
+/// that is not public. The settings are [`upstream_client`]'s. The proxy's
+/// address is an IP literal, which is never looked up, so the resolver
+/// (still the guarded one) sees no name at all.
+#[cfg(feature = "enclave")]
+pub fn upstream_client_through(proxy: reqwest::Url) -> reqwest::Result<reqwest::Client> {
+    with_roots(base(GuardedResolver {
+        lookup: Arc::new(SystemLookup),
+        exempt: Vec::new(),
+    }))
+    .proxy(reqwest::Proxy::all(proxy)?)
+    .build()
+}
+
 /// Fails, with a message for the person, when the system has no root
 /// certificates: without them every provider would fail, and an empty
 /// store is never a reason to trust anything else.

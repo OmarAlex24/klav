@@ -17,8 +17,11 @@
 //! - **Hand-off** (§4.2): the holder checks the joiner's attestation
 //!   against a manifest the release authority signed **and** published in
 //!   the repository, its PCR3 against `parent_roles`, and refuses an older
-//!   image; the joiner checks the holder the same way; then the seed and
-//!   the enrollments move sealed to the joiner's attested key (kind `0x28`).
+//!   image; the joiner checks the holder the same way; then the seed, the
+//!   enrollments and each account's live sandbox state (its store, channel
+//!   keys, heartbeat epoch and `seq`) move sealed to the joiner's attested
+//!   key (kind `0x28`). A claimed sandbox goes on through the joiner with
+//!   the same channel key, without a new claim, enrollment or grant.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -51,7 +54,7 @@ use tokio_rustls::TlsAcceptor;
 
 use super::attest::{AttestRequest, AttestationProvider};
 use super::quota::{self, QuotaLimits, Quotas};
-use super::registry::{Enrollment, STATE_VERSION, SharedState};
+use super::registry::{AccountState, Enrollment, STATE_VERSION, SharedState};
 use super::trust::{Anchors, ManifestSource, SignedManifest, is_published};
 use super::{channel_name, now_ms, refuse};
 use crate::channel::{Accepted, ChannelLimits, ChannelListener, Peer};
@@ -107,8 +110,21 @@ struct Account {
     name: String,
     quotas: Arc<Quotas>,
     serving: tokio::sync::Mutex<Option<Arc<Serving>>>,
-    /// Whether its agent ever opened a session (it was approved).
+    /// Whether its agent ever opened a session (it was approved), here or,
+    /// before a hand-off, on the holder.
     served: AtomicBool,
+    /// The live sandbox state a holder handed over, until the account's
+    /// proxy starts from it; handed on as it is if it never does.
+    carried: Mutex<Option<AccountState>>,
+}
+
+impl Account {
+    fn carried(&self) -> Option<AccountState> {
+        self.carried
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// An account's running proxy.
@@ -253,23 +269,65 @@ impl Enclave {
         Ok(seq)
     }
 
-    /// The enrollments, as a hand-off carries them.
-    fn shared_state(&self) -> SharedState {
-        let mut enrollments: Vec<Enrollment> = read(&self.accounts)
-            .values()
-            .map(|a| a.enrollment.clone())
-            .collect();
-        enrollments.sort_by_key(|e| e.account_id);
-        SharedState {
+    /// What a hand-off carries besides the seed: the enrollments and each
+    /// account's live sandbox state, read under each store's lock (the
+    /// state of one account is consistent; accounts are read one by one).
+    async fn shared_state(&self) -> SharedState {
+        let mut accounts: Vec<Arc<Account>> = read(&self.accounts).values().cloned().collect();
+        accounts.sort_by_key(|a| a.enrollment.account_id);
+        let mut state = SharedState {
             v: STATE_VERSION,
-            enrollments,
+            enrollments: Vec::with_capacity(accounts.len()),
+            accounts: Vec::with_capacity(accounts.len()),
+        };
+        for account in accounts {
+            state.enrollments.push(account.enrollment.clone());
+            // A proxy being started right now has no sandbox yet: what it
+            // starts from is still `carried`.
+            let serving = account
+                .serving
+                .try_lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(Arc::clone));
+            let served = account.served.load(Ordering::SeqCst);
+            let carried = match serving {
+                Some(serving) => Some(AccountState {
+                    account_id: account.enrollment.account_id,
+                    served,
+                    store: serving.state.sandboxes().snapshot().await,
+                    heartbeat: Some(serving.state.heartbeats().snapshot().await),
+                    revocation_cursor: serving.state.revocation_cursor(),
+                }),
+                None => account.carried().map(|mut c| {
+                    c.served |= served;
+                    c
+                }),
+            };
+            if let Some(carried) = carried {
+                state.accounts.push(carried);
+            } else if served {
+                state.accounts.push(AccountState {
+                    account_id: account.enrollment.account_id,
+                    served,
+                    store: crate::sandboxes::StoreSnapshot::default(),
+                    heartbeat: None,
+                    revocation_cursor: 0,
+                });
+            }
         }
+        state
     }
 
-    /// Serves `enrollment` from now on, under keys derived from `seed`.
-    /// An earlier enrollment of the same account is dropped, its channel
-    /// name with it.
-    fn add_account(&self, seed: &HostedSeed, enrollment: Enrollment) -> Result<String, String> {
+    /// Serves `enrollment` from now on, under keys derived from `seed`,
+    /// starting from `carried` when a holder handed its live sandbox state
+    /// over. An earlier enrollment of the same account is dropped, its
+    /// channel name with it.
+    fn add_account(
+        &self,
+        seed: &HostedSeed,
+        enrollment: Enrollment,
+        carried: Option<AccountState>,
+    ) -> Result<String, String> {
         let keys = derive_account_keys(seed, enrollment.account_id, enrollment.generation);
         let name = channel_name(enrollment.agent_id, &self.config.endpoint);
         self.keys
@@ -283,7 +341,8 @@ impl Enclave {
                 name: name.clone(),
                 quotas: Arc::new(Quotas::new(self.config.limits)),
                 serving: tokio::sync::Mutex::new(None),
-                served: AtomicBool::new(false),
+                served: AtomicBool::new(carried.as_ref().is_some_and(|c| c.served)),
+                carried: Mutex::new(carried),
             }),
         );
         let mut by_name = write(&self.by_name);
@@ -330,13 +389,34 @@ impl Enclave {
             .map_err(|e| format!("loopback: {e}"))?
             .port();
         let limits = *account.quotas.limits();
+        // After a hand-off, the holder's store, channel keys and heartbeat:
+        // a claimed sandbox's forwarder goes on with the same channel key.
+        let carried = account.carried();
+        let clock: Arc<dyn crate::sandboxes::Clock> = Arc::new(crate::sandboxes::SystemClock);
+        let (sandboxes, heartbeats, cursor) = match carried {
+            Some(c) => (
+                crate::sandboxes::Sandboxes::restored(clock, c.store),
+                c.heartbeat.map(crate::heartbeat::Heartbeats::restored),
+                c.revocation_cursor,
+            ),
+            None => (crate::sandboxes::Sandboxes::in_memory(clock), None, 0),
+        };
+        let state = ProxyState::new(session, self.config.upstream.clone(), local_port);
+        let state = match heartbeats {
+            Some(heartbeats) => state.with_heartbeats(heartbeats),
+            None => state,
+        };
+        state.set_revocation_cursor(cursor);
         let state = Arc::new(
-            ProxyState::new(session, self.config.upstream.clone(), local_port)
-                .with_sandboxes(crate::sandboxes::Sandboxes::in_memory(Arc::new(
-                    crate::sandboxes::SystemClock,
-                )))
+            state
+                .with_sandboxes(sandboxes)
                 .with_max_body(limits.max_body)
-                .with_account_live_cap(limits.live_sandboxes),
+                .with_account_live_cap(limits.live_sandboxes)
+                .with_account_budget(
+                    limits.upstream_calls,
+                    limits.buffer_bytes,
+                    limits.queue_wait,
+                ),
         );
         let (tx, rx) = mpsc::channel(16);
         let listener = ChannelListener::from_receiver(
@@ -404,6 +484,10 @@ impl Enclave {
             .abort_handle(),
         );
         account.served.store(true, Ordering::SeqCst);
+        *account
+            .carried
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let serving = Arc::new(Serving {
             state,
             tx,
@@ -497,22 +581,56 @@ impl Enclave {
         }
     }
 
-    /// The public API (§6.4).
-    pub fn api_router(self: &Arc<Self>) -> Router {
-        Router::new()
+    /// The public API (§6.4), and the hand-off with `handoff`.
+    pub fn api_router(self: &Arc<Self>, handoff: bool) -> Router {
+        let router = Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .route("/v1/manifest", get(get_manifest).post(post_manifest))
             .route("/v1/attest", get(attest))
-            .route("/v1/enroll", post(enroll))
-            .route("/v1/handoff/hello", post(handoff_hello))
-            .route("/v1/handoff/seal", post(handoff_seal))
+            .route("/v1/enroll", post(enroll));
+        let router = if handoff {
+            router.merge(Self::handoff_routes())
+        } else {
+            router
+        };
+        router
             .layer(DefaultBodyLimit::max(MAX_API_BODY))
             .with_state(Arc::clone(self))
     }
 
-    /// Serves the API on `listener` until it fails.
+    /// The hand-off alone (§4.2), for a peer port of its own.
+    pub fn peer_router(self: &Arc<Self>) -> Router {
+        Self::handoff_routes()
+            .route("/healthz", get(|| async { "ok" }))
+            .layer(DefaultBodyLimit::max(MAX_API_BODY))
+            .with_state(Arc::clone(self))
+    }
+
+    fn handoff_routes() -> Router<Arc<Self>> {
+        Router::new()
+            .route("/v1/handoff/hello", post(handoff_hello))
+            .route("/v1/handoff/seal", post(handoff_seal))
+    }
+
+    /// Serves the API with the hand-off on `listener` until it fails.
     pub async fn serve_api(self: Arc<Self>, listener: Box<dyn Listener>) -> std::io::Result<()> {
-        axum::serve(ApiListener(listener), self.api_router()).await
+        self.serve_router(listener, true).await
+    }
+
+    /// Serves the API on `listener`, with the hand-off or without it.
+    pub async fn serve_router(
+        self: Arc<Self>,
+        listener: Box<dyn Listener>,
+        handoff: bool,
+    ) -> std::io::Result<()> {
+        let router = self.api_router(handoff);
+        axum::serve(ApiListener(listener), router).await
+    }
+
+    /// Serves the hand-off alone on `listener` until it fails.
+    pub async fn serve_peer(self: Arc<Self>, listener: Box<dyn Listener>) -> std::io::Result<()> {
+        let router = self.peer_router();
+        axum::serve(ApiListener(listener), router).await
     }
 
     /// Joins a live holder at `holder` (its API's base URL): ADR 0051 §4.2
@@ -573,16 +691,22 @@ impl Enclave {
         );
         let (seed, state) = open_handoff(&key, sealed.sealed.as_bytes(), &info)
             .map_err(|_| "the sealed hand-off does not open".to_owned())?;
-        let state = SharedState::decode(&state)?;
+        let mut state = SharedState::decode(&state)?;
         let holder_version = holder_check.image.version_text().to_owned();
-        for enrollment in state.enrollments {
-            self.add_account(&seed, enrollment)?;
+        let accounts = state.enrollments.len();
+        let mut sandboxes = 0;
+        for enrollment in std::mem::take(&mut state.enrollments) {
+            let carried = state.take_account(enrollment.account_id);
+            sandboxes += carried.as_ref().map_or(0, |c| c.store.live());
+            self.add_account(&seed, enrollment, carried)?;
         }
         *write(&self.manifest) = Some(Arc::new(CurrentManifest { signed, verified }));
         self.set_seed(seed)?;
         tracing::info!(
             holder = %holder_version,
             joiner = %own.version_text(),
+            accounts,
+            sandboxes,
             "hand-off received"
         );
         Ok(())
@@ -597,7 +721,22 @@ impl Enclave {
     #[cfg(all(test, feature = "enclave-testkit"))]
     pub(crate) fn enroll_for_test(&self, enrollment: Enrollment) -> Result<String, String> {
         let seed = self.seed().ok_or("no seed")?;
-        self.add_account(&seed, enrollment)
+        self.add_account(&seed, enrollment, None)
+    }
+
+    /// Stops serving every account, as an enclave that goes away does:
+    /// each account's proxy and its loops end (tests of the hand-off).
+    #[cfg(all(test, feature = "enclave-testkit"))]
+    pub(crate) async fn stop_for_test(&self) {
+        let accounts: Vec<Arc<Account>> = read(&self.accounts).values().cloned().collect();
+        for account in accounts {
+            account.serving.lock().await.take();
+        }
+        write(&self.accounts).clear();
+        let names: Vec<String> = write(&self.by_name).drain().map(|(n, _)| n).collect();
+        for name in names {
+            self.keys.remove(&name);
+        }
     }
 
     #[cfg(all(test, feature = "enclave-testkit"))]
@@ -1080,7 +1219,7 @@ async fn enroll(State(e): State<Arc<Enclave>>, Json(req): Json<EnrollRequest>) -
     };
     let agent_id = enrollment.agent_id;
     let generation = enrollment.generation;
-    let channel = match e.add_account(&seed, enrollment) {
+    let channel = match e.add_account(&seed, enrollment, None) {
         Ok(name) => name,
         Err(_) => return bad_request("The enrollment cannot be served."),
     };
@@ -1205,7 +1344,7 @@ async fn handoff_seal(State(e): State<Arc<Enclave>>, Json(req): Json<SealRequest
         &pending.joiner_nonce,
         &pending.holder_nonce,
     );
-    let state = e.shared_state().encode();
+    let state = e.shared_state().await.encode();
     let sealed = match seal_handoff(&seed, &state, &peer.x25519, &info) {
         Ok(sealed) => sealed,
         Err(_) => return handoff_refused("seal"),

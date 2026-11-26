@@ -482,7 +482,7 @@ El reenviador nunca deja una herramienta colgada sin explicación. Responde HTTP
 | `klav_approval_denied` | 403 | La persona dijo que no |
 | `klav_rate_limited` | 429 | Con `retry_after` |
 | `klav_upstream_blocked` | 502 | Dirección privada, redirección o cuerpo que no se puede revisar |
-| `klav_proxy_backlog` | 503 | El proxy tiene demasiados fines de sandbox esperando al servidor y no empieza ninguno más (solo `klav sandbox start`) |
+| `klav_proxy_backlog` | 503 | El proxy tiene demasiados fines de sandbox esperando al servidor y no empieza ninguno más (`klav sandbox start`); en el proxy alojado de Klav Cloud, también una llamada cuando la cuenta ya tiene tantas llamadas o tantos datos de petición en curso como admite (ADR 0051 §3.3, con `retry_after`) |
 
 > Nota de implementación del 2026-11-10 (capa 6, revisión de #304): `klav_proxy_backlog` se añadió a esta tabla. Antes, un proxy con la cola de fines llena respondía `klav_server_unreachable`, que no era cierto: el servidor podía responder. Una CLI anterior lo trata como cualquier rechazo del proxy: muestra su `message` y su `next` y sale con 1.
 

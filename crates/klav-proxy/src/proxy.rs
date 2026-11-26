@@ -231,6 +231,37 @@ pub struct ProxyState {
     /// Klav Cloud's hosted proxy: the account's live sandboxes, whatever
     /// their issuer (ADR 0051 §3.3). `None` for every other proxy.
     account_live_cap: Option<usize>,
+    /// Klav Cloud's hosted proxy: the account's budget for calls and
+    /// request bodies (ADR 0051 §3.3). `None` for every other proxy.
+    account_budget: Option<AccountBudget>,
+}
+
+/// Klav Cloud's per-account budget (ADR 0051 §3.3), apart from the quotas
+/// the enclave's middleware counts:
+/// - **calls to providers at once:** [`ProxyState`]'s `in_flight` is sized
+///   to it, and a call over it waits its turn for `queue_wait`, then gets
+///   `503 klav_proxy_backlog`;
+/// - **bytes of request bodies held at once:** each piece of a body takes
+///   its bytes from `buffer` as it arrives, and a body that does not fit
+///   gets `503 klav_proxy_backlog`.
+///
+/// Both are taken only once the call is known to come from a sandbox bound
+/// to its key, and are given back when the call's answer ends, or when the
+/// caller goes away first.
+struct AccountBudget {
+    buffer: Arc<tokio::sync::Semaphore>,
+    queue_wait: Duration,
+}
+
+/// Why a request body was not read whole ([`read_body`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyError {
+    /// Over the body limit, whether it said its length or not.
+    TooLarge,
+    /// The account's budget for bodies held at once is full.
+    Budget,
+    /// It stalled, broke, or took longer than the request may.
+    Broken,
 }
 
 impl ProxyState {
@@ -277,6 +308,7 @@ impl ProxyState {
             mcp: Arc::new(crate::mcp::McpState::default()),
             mcp_gateway: std::sync::atomic::AtomicBool::new(false),
             account_live_cap: None,
+            account_budget: None,
         }
     }
 
@@ -515,8 +547,9 @@ impl ProxyState {
     }
 
     /// Moves the cursor of the person's revocations to `seq` (tests: as
-    /// after a restart).
-    #[cfg(test)]
+    /// after a restart; Klav Cloud's enclave: where the holder of a
+    /// hand-off left it).
+    #[cfg_attr(not(any(test, feature = "enclave")), allow(dead_code))]
     pub(crate) fn set_revocation_cursor(&self, seq: u64) {
         *self
             .revocation_cursor
@@ -683,6 +716,52 @@ impl ProxyState {
         self.account_live_cap
     }
 
+    /// Klav Cloud's per-account budget (ADR 0051 §3.3): at most `calls`
+    /// calls to providers at once, a call over it waiting `queue_wait` for
+    /// its turn, and at most `buffer_bytes` bytes of request bodies held at
+    /// once. Over either: `503 klav_proxy_backlog`. A body over the limit
+    /// then gets `413 klav_upstream_blocked` instead of the self-hosted
+    /// proxy's `403`.
+    pub fn with_account_budget(
+        mut self,
+        calls: usize,
+        buffer_bytes: usize,
+        queue_wait: Duration,
+    ) -> Self {
+        self.in_flight = Arc::new(tokio::sync::Semaphore::new(calls.max(1)));
+        self.account_budget = Some(AccountBudget {
+            buffer: Arc::new(tokio::sync::Semaphore::new(
+                buffer_bytes.min(tokio::sync::Semaphore::MAX_PERMITS),
+            )),
+            queue_wait,
+        });
+        self
+    }
+
+    /// The account's budget for request bodies, when there is one.
+    pub(crate) fn body_budget(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
+        self.account_budget.as_ref().map(|b| &b.buffer)
+    }
+
+    /// Bytes of the account's body budget not held now (tests).
+    #[cfg(all(test, feature = "enclave-testkit"))]
+    pub(crate) fn free_buffer(&self) -> usize {
+        self.body_budget().map_or(0, |b| b.available_permits())
+    }
+
+    /// What a body that was not read whole gets: Klav Cloud's proxy says
+    /// which limit; a self-hosted one answers as it always did.
+    pub(crate) fn body_refusal(&self, e: BodyError) -> ProxyError {
+        match (e, self.account_budget.is_some()) {
+            (BodyError::TooLarge, true) => ProxyError::BodyTooLarge,
+            (BodyError::Budget, _) => ProxyError::Backlog {
+                retry_after: 1,
+                why: crate::errors::Backlog::Memory,
+            },
+            _ => ProxyError::NotAllowed(NotAllowed::Malformed),
+        }
+    }
+
     /// Sets the request body limit.
     pub fn with_max_body(mut self, max_body: usize) -> Self {
         self.max_body = max_body;
@@ -766,9 +845,46 @@ impl ProxyState {
     }
 
     /// The slots a request holds until its answer ends: one of all, and
-    /// for a sandbox one of its own. `None` when either is full.
-    pub(crate) fn take_slots(&self, sandbox: Option<klav_core::ids::SandboxId>) -> Option<Slots> {
-        let own = match sandbox {
+    /// for a sandbox one of its own. A full share of the sandbox, or a full
+    /// proxy, is `429 klav_rate_limited` at once; on Klav Cloud's proxy a
+    /// call waits its turn among the account's for a while first, then
+    /// gets `503 klav_proxy_backlog` ([`ProxyState::with_account_budget`]).
+    pub(crate) async fn take_slots(
+        &self,
+        sandbox: Option<klav_core::ids::SandboxId>,
+    ) -> Result<Slots, ProxyError> {
+        let busy = ProxyError::RateLimited { retry_after: 1 };
+        let own = self.take_own_slot(sandbox).ok_or_else(|| busy.clone())?;
+        let all = match &self.account_budget {
+            Some(budget) => tokio::time::timeout(
+                budget.queue_wait,
+                Arc::clone(&self.in_flight).acquire_owned(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .ok_or(ProxyError::Backlog {
+                retry_after: 1,
+                why: crate::errors::Backlog::Calls,
+            })?,
+            None => Arc::clone(&self.in_flight)
+                .try_acquire_owned()
+                .map_err(|_| busy)?,
+        };
+        Ok(Slots {
+            _all: all,
+            _own: own,
+            _buffer: None,
+        })
+    }
+
+    /// The sandbox's own slot: `Some(None)` for a call that is not a
+    /// sandbox's, `None` when the sandbox's share is full.
+    fn take_own_slot(
+        &self,
+        sandbox: Option<klav_core::ids::SandboxId>,
+    ) -> Option<Option<tokio::sync::OwnedSemaphorePermit>> {
+        Some(match sandbox {
             Some(id) => {
                 let mut shares = self
                     .sandbox_in_flight
@@ -783,11 +899,6 @@ impl ProxyState {
                 Some(Arc::clone(share).try_acquire_owned().ok()?)
             }
             None => None,
-        };
-        let all = Arc::clone(&self.in_flight).try_acquire_owned().ok()?;
-        Some(Slots {
-            _all: all,
-            _own: own,
         })
     }
 
@@ -1289,9 +1400,7 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
     // redactors holding the value. Taken, and the body read, before the
     // rates: a call refused for a slot, or for a body that stalls, never
     // spends a rate (review of #306, N3).
-    let permit = state
-        .take_slots(caller.sandbox())
-        .ok_or(ProxyError::RateLimited { retry_after: 1 })?;
+    let mut permit = state.take_slots(caller.sandbox()).await?;
     // Registered before the server is asked for the item: an end of the
     // sandbox or a pause from here on cuts this call, its answer included
     // (ADR 0036 §7, note of 2026-11-19). One that came before is the
@@ -1302,9 +1411,16 @@ async fn forward(state: &ProxyState, req: Request, caller: Caller) -> Result<Res
             .request_body_idle_ms
             .load(std::sync::atomic::Ordering::Relaxed),
     );
-    let body = read_body(body, state.max_body, idle, state.request_timeout)
-        .await
-        .ok_or(ProxyError::NotAllowed(NotAllowed::Malformed))?;
+    let (body, held) = read_body(
+        body,
+        state.max_body,
+        idle,
+        state.request_timeout,
+        state.body_budget(),
+    )
+    .await
+    .map_err(|e| state.body_refusal(e))?;
+    permit.hold(held);
     state.check_rates(&profile, caller.sandbox())?;
     let sent = send_upstream(
         state,
@@ -1519,9 +1635,17 @@ pub(crate) fn is_event_stream(headers: &HeaderMap) -> bool {
 pub(crate) struct Slots {
     _all: tokio::sync::OwnedSemaphorePermit,
     _own: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// The bytes of the account's body budget the request's body holds.
+    _buffer: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl Slots {
+    /// Keeps the body's share of the account's budget until the answer
+    /// ends.
+    pub(crate) fn hold(&mut self, buffer: Option<tokio::sync::OwnedSemaphorePermit>) {
+        self._buffer = buffer;
+    }
+
     /// A slot of its own (tests).
     #[cfg(test)]
     pub(crate) fn single() -> Self {
@@ -1530,37 +1654,57 @@ impl Slots {
                 .try_acquire_owned()
                 .expect("permit"),
             _own: None,
+            _buffer: None,
         }
     }
 }
 
 /// The caller's body, at most `max` bytes, each piece within `idle` and the
-/// whole within `total`; `None` otherwise. A caller that stops in the
-/// middle of a body never holds its slots for long.
+/// whole within `total`. A caller that stops in the middle of a body never
+/// holds its slots for long. With `budget` (Klav Cloud's proxy), each piece
+/// takes its bytes from it as it arrives; the permit returned holds them
+/// until it is dropped, and a body that stops on the way gives them back
+/// at once.
 pub(crate) async fn read_body(
     body: Body,
     max: usize,
     idle: Duration,
     total: Duration,
-) -> Option<Bytes> {
+    budget: Option<&Arc<tokio::sync::Semaphore>>,
+) -> Result<(Bytes, Option<tokio::sync::OwnedSemaphorePermit>), BodyError> {
     use futures_util::StreamExt;
     let read = async {
         let mut stream = body.into_data_stream();
         let mut out = Vec::new();
+        let mut held: Option<tokio::sync::OwnedSemaphorePermit> = None;
         loop {
             match tokio::time::timeout(idle, stream.next()).await {
-                Err(_) | Ok(Some(Err(_))) => return None,
-                Ok(None) => return Some(Bytes::from(out)),
+                Err(_) | Ok(Some(Err(_))) => return Err(BodyError::Broken),
+                Ok(None) => return Ok((Bytes::from(out), held)),
                 Ok(Some(Ok(piece))) => {
-                    if out.len() + piece.len() > max {
-                        return None;
+                    if out.len().saturating_add(piece.len()) > max {
+                        return Err(BodyError::TooLarge);
+                    }
+                    if let Some(budget) = budget
+                        && !piece.is_empty()
+                    {
+                        let n = u32::try_from(piece.len()).map_err(|_| BodyError::Budget)?;
+                        let taken = Arc::clone(budget)
+                            .try_acquire_many_owned(n)
+                            .map_err(|_| BodyError::Budget)?;
+                        match held.as_mut() {
+                            Some(h) => h.merge(taken),
+                            None => held = Some(taken),
+                        }
                     }
                     out.extend_from_slice(&piece);
                 }
             }
         }
     };
-    tokio::time::timeout(total, read).await.ok().flatten()
+    tokio::time::timeout(total, read)
+        .await
+        .unwrap_or(Err(BodyError::Broken))
 }
 
 /// Asks the server for the profile's item for this request and opens it,

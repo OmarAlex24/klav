@@ -60,6 +60,26 @@ pub enum ProxyError {
     /// A request to an MCP profile the proxy does not forward (ADR 0049
     /// §5.1): why, in fixed words.
     McpRefused(&'static str),
+    /// Klav Cloud's proxy (ADR 0051 §3.3): a request body over the
+    /// account's limit, also one sent in chunks without `Content-Length`.
+    BodyTooLarge,
+    /// Klav Cloud's proxy (ADR 0051 §3.3): the account holds as many calls
+    /// to providers, or as many bytes of request bodies, as it may at once.
+    Backlog {
+        /// Seconds to wait before trying again.
+        retry_after: u64,
+        /// Which of the two.
+        why: Backlog,
+    },
+}
+
+/// Which per-account budget of Klav Cloud's proxy is full (ADR 0051 §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backlog {
+    /// Calls to providers at once: the call waited its turn and none came.
+    Calls,
+    /// Bytes of request bodies held in memory at once.
+    Memory,
 }
 
 /// What the key of an ended sandbox is told: why it ended, in fixed words
@@ -183,6 +203,8 @@ impl ProxyError {
             Self::LocalClientUnknown => "klav_local_client_unknown",
             Self::McpSessionUnknown => "klav_mcp_session_unknown",
             Self::McpRefused(_) => "klav_mcp_refused",
+            Self::BodyTooLarge => "klav_upstream_blocked",
+            Self::Backlog { .. } => "klav_proxy_backlog",
         }
     }
 
@@ -203,6 +225,8 @@ impl ProxyError {
             | Self::LocalClientUnknown => StatusCode::UNAUTHORIZED,
             Self::McpSessionUnknown => StatusCode::NOT_FOUND,
             Self::McpRefused(_) => StatusCode::BAD_REQUEST,
+            Self::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::Backlog { .. } => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 
@@ -301,6 +325,21 @@ impl ProxyError {
                 "This sandbox's access to Klav's credential proxy has ended: it was stopped, revoked, or its issuer was removed or paused."
             }
             Self::SandboxExpired => "This sandbox's time with Klav's credential proxy is over.",
+            Self::BodyTooLarge => {
+                "This request's body is larger than Klav Cloud's proxy takes for this account."
+            }
+            Self::Backlog {
+                why: Backlog::Calls,
+                ..
+            } => {
+                "Klav Cloud's proxy is already making as many calls to providers for this account as it makes at once."
+            }
+            Self::Backlog {
+                why: Backlog::Memory,
+                ..
+            } => {
+                "Klav Cloud's proxy is already holding as much request data for this account as it holds at once."
+            }
             Self::PathRefused(_) | Self::SandboxEnded(_) | Self::McpRefused(_) => {
                 unreachable!("handled above")
             }
@@ -316,6 +355,10 @@ impl ProxyError {
             Self::RateLimited { .. } => {
                 "Wait retry_after seconds before the next call. Do not retry in a loop."
             }
+            Self::Backlog { .. } => {
+                "Wait retry_after seconds, then retry once. Do not retry in a loop."
+            }
+            Self::BodyTooLarge => "Send a smaller body. Do not retry the same request.",
             Self::PathRefused(_) => {
                 "Send the same request with the path written as the message says (the character itself instead of its escape). If your HTTP client escapes it on its own, tell the person this message; do not look for the token elsewhere."
             }
@@ -353,13 +396,15 @@ impl IntoResponse for ProxyError {
                 body["approval_id"] = json!(approval_id.to_string());
                 body["expires_at"] = json!(expires_at);
             }
-            Self::RateLimited { retry_after } => body["retry_after"] = json!(retry_after),
+            Self::RateLimited { retry_after } | Self::Backlog { retry_after, .. } => {
+                body["retry_after"] = json!(retry_after);
+            }
             _ => {}
         }
         let mut res = (self.status(), Json(body)).into_response();
         res.headers_mut()
             .insert(KLAV_ERROR, HeaderValue::from_static(self.code()));
-        if let Self::RateLimited { retry_after } = &self
+        if let Self::RateLimited { retry_after } | Self::Backlog { retry_after, .. } = &self
             && let Ok(v) = HeaderValue::from_str(&retry_after.to_string())
         {
             res.headers_mut().insert("retry-after", v);
@@ -388,8 +433,19 @@ mod tests {
             ProxyError::UpstreamBlocked(Blocked::Redirect),
             ProxyError::SandboxRevoked,
             ProxyError::SandboxExpired,
+            ProxyError::BodyTooLarge,
+            ProxyError::Backlog {
+                retry_after: 1,
+                why: Backlog::Calls,
+            },
+            ProxyError::Backlog {
+                retry_after: 1,
+                why: Backlog::Memory,
+            },
         ];
-        let statuses = [503, 423, 403, 403, 409, 403, 429, 502, 401, 401];
+        let statuses = [
+            503, 423, 403, 403, 409, 403, 429, 502, 401, 401, 413, 503, 503,
+        ];
         for (e, status) in all.into_iter().zip(statuses) {
             let code = e.code();
             let res = e.into_response();

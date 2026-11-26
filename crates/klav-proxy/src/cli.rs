@@ -1,5 +1,6 @@
 //! `klav-proxy`'s command line: `init`, `serve` and `status` (ADR 0036
-//! §14). The `klav-proxy` binary is only [`main`]; the `klav` binary runs
+//! §14), and, in a build with the `enclave` feature, `enclave` (Klav
+//! Cloud's hosted proxy inside an AWS Nitro Enclave, ADR 0051). The `klav-proxy` binary is only [`main`]; the `klav` binary runs
 //! the same [`main`] when it is started as `klav-proxy` (its `argv[0]`),
 //! which is how the Mac app runs the proxy from its one `klav` helper
 //! (ADR 0036, layer 11).
@@ -124,6 +125,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Klav Cloud's hosted proxy inside an AWS Nitro Enclave (ADR 0051):
+    /// opens /dev/nsm, listens on vsock, and starts a new seed or joins a
+    /// live peer through the attested hand-off. Only inside an enclave.
+    #[cfg(feature = "enclave")]
+    Enclave(crate::enclave::run::Args),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -180,6 +186,10 @@ fn lock_choice(command: &Command) -> Result<LockChoice, String> {
             ..
         } => LockChoice::for_start(*no_memory_lock, *require_memory_lock, env),
         Command::Status { .. } => LockChoice::for_status(env),
+        // An enclave has no swap and no disk; the lock is best effort and
+        // core dumps stay off, as for `serve`.
+        #[cfg(feature = "enclave")]
+        Command::Enclave(_) => LockChoice::for_start(false, false, env),
     }
 }
 
@@ -233,6 +243,16 @@ pub fn main(version: &'static str) -> ExitCode {
 }
 
 async fn run(cli: Cli, memory: MemoryReport, required: bool) -> ExitCode {
+    // The enclave has no home directory, no registration and no key file:
+    // it starts before any of them is looked for.
+    #[cfg(feature = "enclave")]
+    let cli = match cli {
+        Cli {
+            command: Command::Enclave(args),
+            ..
+        } => return run_enclave(args, &memory, required).await,
+        cli => cli,
+    };
     // The real environment, read once here: what the SDK and rustls would
     // read too.
     let env = StartEnv::from_process();
@@ -477,6 +497,35 @@ async fn run(cli: Cli, memory: MemoryReport, required: bool) -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        // Taken at the top, before the home directory is read.
+        #[cfg(feature = "enclave")]
+        Command::Enclave(_) => unreachable!("klav-proxy enclave starts before the home is read"),
+    }
+}
+
+/// `klav-proxy enclave` (ADR 0051): JSON logs on stderr for the parent's
+/// console, then the enclave until it stops.
+#[cfg(feature = "enclave")]
+async fn run_enclave(
+    args: crate::enclave::run::Args,
+    memory: &MemoryReport,
+    required: bool,
+) -> ExitCode {
+    init_logs();
+    if let Some(warning) = memory::unlocked_warning(memory) {
+        tracing::warn!("{warning}");
+    }
+    if let Err(e) = memory::enforce(memory, required) {
+        tracing::error!(error = %e, "klav-proxy enclave did not start");
+        return ExitCode::FAILURE;
+    }
+    match crate::enclave::run::run(args).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!(error = %e, "klav-proxy enclave stopped");
+            eprintln!("klav-proxy: {e}");
+            ExitCode::FAILURE
         }
     }
 }

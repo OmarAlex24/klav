@@ -45,7 +45,9 @@ klav-proto.workspace = true
 klav-sdk.workspace = true
 axum = "0.8"
 bytes = "1"
-clap = { version = "4.6", features = ["derive"] }
+# `env`: `klav-proxy enclave` reads each flag from the environment too
+# (the enclave image's entry point). No crate added.
+clap = { version = "4.6", features = ["derive", "env"] }
 # The enclave's API encodings (base64url, hex); already in the tree
 # through klav-core and klav-proto.
 data-encoding = { version = "2.11", optional = true }
