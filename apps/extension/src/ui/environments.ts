@@ -296,7 +296,7 @@ export interface NewEnvironmentHooks {
  * flag, on by itself for `production` and `prod` until the person
  * touches it.
  */
-export function newEnvironmentForm(projects: readonly ProjectSummary[], hooks: NewEnvironmentHooks): HTMLElement {
+export function newEnvironmentForm(projects: readonly ProjectSummary[], hooks: NewEnvironmentHooks): HTMLFormElement {
   const project = h(
     "select",
     { class: "input", "aria-label": t("env_project") },
