@@ -25,7 +25,9 @@ pub const PCR_COUNT: u64 = 32;
 pub const FRESHNESS_MS: u64 = 5 * 60 * 1000;
 /// Length of the ES384 signature `r ‖ s`.
 pub const SIGNATURE_LEN: usize = 96;
-/// The only protected header accepted: the CBOR map `{1: -35}` (alg ES384).
+/// The protected header the NSM writes: the CBOR map `{1: -35}` (alg ES384).
+/// Any encoding of that one-entry map is accepted, such as the indefinite
+/// `bf 01 38 22 ff` (spec §15.2); the signature covers the bytes as sent.
 pub const PROTECTED_ES384: [u8; 4] = [0xa1, 0x01, 0x38, 0x22];
 /// CBOR tag of a `COSE_Sign1` (RFC 9052). The NSM omits it; AWS's
 /// documentation shows it, so both are accepted.
@@ -147,9 +149,7 @@ pub(crate) fn verify_document_with_root(
     let Value::Bytes(protected) = protected else {
         return Err(NitroError::ProtectedHeader);
     };
-    if *protected != PROTECTED_ES384 {
-        return Err(NitroError::ProtectedHeader);
-    }
+    check_protected(protected)?;
     if !matches!(unprotected, Value::Map(m) if m.is_empty()) {
         return Err(NitroError::UnprotectedHeader);
     }
@@ -167,6 +167,18 @@ pub(crate) fn verify_document_with_root(
     let leaf_key = chain::verify(root, &fields.cabundle, fields.certificate, now_ms)?;
     verify_signature(&leaf_key, protected, payload, &signature)?;
     Ok(fields.document)
+}
+
+/// The protected header must decode, strictly, to exactly `{1: -35}` (alg
+/// ES384) and nothing else. Every refusal, including one by the CBOR reader,
+/// is [`NitroError::ProtectedHeader`]. The caller signs over the raw bytes.
+fn check_protected(protected: &[u8]) -> Result<(), NitroError> {
+    match cbor::decode(protected) {
+        Ok(Value::Map(entries)) if entries.as_slice() == [(Value::Uint(1), Value::Nint(34))] => {
+            Ok(())
+        }
+        _ => Err(NitroError::ProtectedHeader),
+    }
 }
 
 /// The COSE `Sig_structure` (RFC 9052 §4.4) for a `COSE_Sign1` with no

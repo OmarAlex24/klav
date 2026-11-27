@@ -16,7 +16,8 @@ pub enum CborError {
     /// Bytes left after the top-level item.
     #[error("trailing bytes")]
     TrailingBytes,
-    /// An indefinite length or a `break` byte.
+    /// An indefinite-length string or integer, or a `break` byte outside the
+    /// end of an indefinite-length array or map.
     #[error("indefinite length")]
     IndefiniteLength,
     /// A length or an integer not in its shortest form.

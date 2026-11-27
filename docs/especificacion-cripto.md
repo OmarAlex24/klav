@@ -1226,7 +1226,7 @@ Todo esto vive en `klav_core::nitro`, detrás de la feature `nitro-attestation`,
 | Manifiesto | Ed25519, verificación estricta (§9) | `ed25519-dalek` 3 |
 | Llaves por cuenta | HKDF-SHA256 | `hkdf` 0.13, `sha2` 0.11 |
 
-`ciborium` sigue siendo solo dependencia de desarrollo: su `Value` acepta longitudes indefinidas y enteros en forma larga sin dejar rastro, así que no se puede hacer estricto. Ninguna llave privada toca `p384`.
+`ciborium` sigue siendo solo dependencia de desarrollo: su `Value` acepta cadenas de longitud indefinida y enteros en forma larga sin dejar rastro, así que no se puede hacer estricto. Ninguna llave privada toca `p384`.
 
 ### 15.2 El documento de atestación
 
@@ -1234,15 +1234,17 @@ Un `COSE_Sign1` (RFC 9052) que firma el Nitro Secure Module. El NSM lo emite **s
 
 ```
 COSE_Sign1 = [ protected: bstr, unprotected: {}, payload: bstr, signature: bstr(96) ]
-protected  = a1 01 38 22                    ({1: -35}, ES384, exactamente estos 4 bytes)
+protected  = bstr que decodifica, con el lector estricto, a {1: -35} (ES384) y nada más
 signature  = r(48) ‖ s(48)
 ```
 
-**Lector CBOR estricto** (`nitro::cbor`), para el `COSE_Sign1` y para el `payload`. Rechaza:
+El NSM escribe `protected` como `a1 01 38 22`; también se acepta otra codificación del mismo mapa de una entrada, como la indefinida `bf 01 38 22 ff`. Cualquier otra clave, una clave repetida, otro algoritmo o algo que el lector rechace es `protected_header`. La firma (`Sig_structure`, abajo) cubre los bytes de `protected` tal como llegan, no su valor decodificado.
 
-- longitudes indefinidas y el byte `break`;
+**Lector CBOR estricto** (`nitro::cbor`), para el `COSE_Sign1`, para `protected` y para el `payload`. Acepta arreglos y mapas de longitud indefinida (`9f` o `bf`, … `ff`): el NSM real de un enclave en `c7g.large` los emite (ADR 0051 §18). Se leen igual que su forma definida y pasan por las mismas comprobaciones (claves repetidas, tipo de clave, profundidad). Si la entrada termina antes de su `ff` final, se rechazan con `cbor_truncated`. Rechaza:
+
+- cadenas de bytes o de texto de longitud indefinida (`5f`, `7f`), y el byte `break` fuera del final de un arreglo o mapa indefinido;
 - una longitud o un entero que no está en su forma más corta;
-- claves repetidas en un mapa (se comparan los bytes de la clave, que son únicos porque todo va en forma corta) y claves que no son enteros ni texto;
+- claves repetidas en un mapa, definido o indefinido (se comparan los bytes de la clave, que son únicos porque todo va en forma corta y el texto nunca es indefinido), y claves que no son enteros ni texto;
 - *floats*, `undefined` y valores simples que no sean `false`, `true` o `null`;
 - texto que no es UTF-8, anidamiento de más de 8 niveles y bytes después del objeto.
 
@@ -1384,7 +1386,7 @@ Con ella el enclave marca el registro del agente de cada cuenta; la marca, dónd
 `nitro-attestation.json` y `enclave-manifest.json` (§11). Se comprueban con `cargo test -p klav-core --features nitro-attestation nitro_vectors`; `cargo test --workspace` no los compila.
 
 - **Un documento real**, de un enclave en modo *debug* en `us-east-1` del 2023-09-18, tomado de las pruebas de `evervault/attestation-doc-validation` (Apache-2.0, `crates/klav-core/src/nitro/testdata/README.md`): su cadena llega a la raíz fijada, su firma verifica, y sus PCR0–2 en cero lo hacen rechazar como `debug_enclave`.
-- **Una cadena sintética** con la forma de la de AWS (raíz, dos intermedios y hoja, ECDSA P-384 con SHA-384 y llaves deterministas), **que no es de AWS**: un documento que verifica, también con la etiqueta 18, y documentos mutados, cada uno vuelto a firmar para que llegue a la comprobación que nombra (un bit en el *payload* o en la firma, un PCR cambiado, la cadena fuera de orden, una clave de más, una clave repetida, una longitud indefinida, un certificado vencido, otra raíz, PCR en cero, un `timestamp` viejo, otro `nonce`, otro `user_data` y una imagen revocada).
+- **Una cadena sintética** con la forma de la de AWS (raíz, dos intermedios y hoja, ECDSA P-384 con SHA-384 y llaves deterministas), **que no es de AWS**: un documento que verifica, también con la etiqueta 18, y documentos mutados, cada uno vuelto a firmar para que llegue a la comprobación que nombra (un bit en el *payload* o en la firma, un PCR cambiado, la cadena fuera de orden, una clave de más, una clave repetida, una cadena de longitud indefinida, un certificado vencido, otra raíz, PCR en cero, un `timestamp` viejo, otro `nonce`, otro `user_data` y una imagen revocada), más dos documentos que verifican con arreglos y mapas indefinidos: uno con solo el mapa del `payload` indefinido y otro con todos, `protected` incluido.
 - Las llaves por cuenta en dos generaciones, sus vínculos, la firma de inscripción y el `info` del traspaso; un traspaso sellado (`0x28`) con la llave del que se une, su `ikm_e` y el estado; la mezcla de una semilla nueva; la llave de servicio y la marca de un registro.
 - Manifiestos firmados con llaves de prueba (la activa y la de respaldo) que se aceptan, y otros que se rechazan: otra llave, *rollback*, vencido, emitido en el futuro, un campo desconocido o repetido, más de 30 días y un PCR en cero.
 
@@ -1473,3 +1475,4 @@ firma = Ed25519(tuple("klav/v1/sig/hosted-proxy-registration", account_id(16), a
 | 2026-11-26 | **ADR 0051 en código, capa 3** (el enclave): §2.3: etiquetas `klav/v1/proxy/hosted-seed`, `klav/v1/proxy/hosted-service` y `klav/v1/sig/hosted-proxy-registration`; §3: tipo `0x28` (`enclave-handoff`), y la nota de reservados nombra el `0x26` del ADR 0047 y el `0x27` de §13.15; §15.4: `verify_handoff_holder`; §15.6: el traspaso sellado, la mezcla de la semilla y la llave de servicio; §15.8: la marca va en el campo `hosted` del registro, y su único verificador es el de `klav_core::crypto::hosted`. `nitro-attestation.json` gana `handoff.sealed` y sus entradas, `seed_mix` y `service`; los demás valores no cambian. |
 | 2026-11-26 | **ADR 0051 en código, capa 3b** (el traspaso con los sandboxes vivos): §15.6: el estado sellado pasa a la versión 2, con el almacén, las llaves de canal, el latido y el cursor de cada cuenta; el que se une lee también la 1. El blob `0x28`, su `info` y los vectores no cambian. |
 | 2026-11-26 | **ADR 0051 en código, capa 5** (los clientes): §12.2: el propósito `hosted-proxy` de los datos locales (`0x41`), para `hosted-proxy.bin`. Ningún formato firmado, del servidor ni binario cambia: los clientes verifican con §15 (atestación, manifiesto y enlace) y firman la inscripción con la etiqueta `klav/v1/sig/hosted-proxy-enroll` que ya estaba; el ajuste `proxy` de §7.3 acepta `mode: "klav"` con `agent_id`. |
+| 2026-11-26 | **ADR 0051 §18: lo que encontró el hardware real.** §15.2: el lector CBOR acepta arreglos y mapas de longitud indefinida, que el NSM de un enclave en `c7g.large` emite; sigue rechazando cadenas indefinidas, el `break` suelto, longitudes y enteros que no están en forma corta y claves repetidas. `protected` se decodifica y debe ser exactamente `{1: -35}`; la firma sigue cubriendo sus bytes. En `nitro-attestation.json`, el caso `indefinite-length` pasa de `cbor_indefinite_length` a `ok` (su documento no cambia) y se añaden `indefinite-arrays-and-maps` (`ok`) e `indefinite-length-string` (`cbor_indefinite_length`); los demás valores no cambian. |

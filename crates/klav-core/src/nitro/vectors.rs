@@ -156,7 +156,7 @@ fn document_cases(f: &Fixture) -> Vec<(&'static str, Vec<u8>, u64, &'static str,
             with(&|s| s.indefinite = true),
             NOW_MS,
             "current",
-            "cbor_indefinite_length",
+            "ok",
         ),
         // Three hours later the leaf has expired (the timestamp is checked after).
         (
@@ -206,6 +206,29 @@ fn document_cases(f: &Fixture) -> Vec<(&'static str, Vec<u8>, u64, &'static str,
             "binding",
         ),
         ("revoked-image", good, NOW_MS, "revoked", "image_revoked"),
+        // What a real NSM writes (ADR 0051 §18): every array and map
+        // indefinite, the protected header too.
+        (
+            "indefinite-arrays-and-maps",
+            with(&|s| {
+                s.indefinite_containers = true;
+                s.protected = vec![0xbf, 0x01, 0x38, 0x22, 0xff];
+            }),
+            NOW_MS,
+            "current",
+            "ok",
+        ),
+        // An indefinite-length string stays refused.
+        (
+            "indefinite-length-string",
+            with(&|s| {
+                s.indefinite_containers = true;
+                s.extra = vec![(Cbor::text("debug"), Cbor(vec![0x5f, 0x41, 0x00, 0xff]))];
+            }),
+            NOW_MS,
+            "current",
+            "cbor_indefinite_length",
+        ),
     ]
 }
 
