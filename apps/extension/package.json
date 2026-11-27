@@ -1,6 +1,6 @@
 {
   "name": "@klav/extension",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Klav browser extension (Chromium and Firefox, Manifest V3)",
   "license": "Apache-2.0",
   "private": true,

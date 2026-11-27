@@ -9,7 +9,7 @@
 # proxy with TLS in front (§3), and never publish it in plain HTTP.
 services:
   klav:
-    image: ghcr.io/omaralex24/klav-server:0.10.0
+    image: ghcr.io/omaralex24/klav-server:0.11.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"

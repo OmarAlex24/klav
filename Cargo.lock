@@ -1899,7 +1899,7 @@ checksum = "0ecded084f9b9a718d39668a42657c32253663d1f6afb3fbb9134f0305f73f48"
 
 [[package]]
 name = "klav-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clap",
  "csv",
@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "klav-client"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "axum",
  "data-encoding",
@@ -1947,7 +1947,7 @@ dependencies = [
 
 [[package]]
 name = "klav-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aead-stream",
  "argon2",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "klav-daemon"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clap",
  "klav-client",
@@ -2007,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "klav-ffi"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "klav-client",
  "klav-core",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "klav-forward"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "clap",
  "klav-core",
@@ -2043,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "klav-import"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "csv",
  "data-encoding",
@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "klav-proto"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "data-encoding",
  "klav-core",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "klav-proxy"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aws-nitro-enclaves-nsm-api",
  "axum",
@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "klav-sdk"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "data-encoding",
  "futures-util",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "klav-server"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -2166,14 +2166,14 @@ dependencies = [
 
 [[package]]
 name = "klav-touchid"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "zeroize",
 ]
 
 [[package]]
 name = "klav-wasm"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "getrandom 0.4.3",
  "klav-core",
