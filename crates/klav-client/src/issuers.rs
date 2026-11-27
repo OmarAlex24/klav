@@ -9,6 +9,8 @@
 //! is about to sign, then it is committed. Nothing here touches an item key
 //! or a value.
 
+use std::collections::HashSet;
+
 use klav_core::crypto::agent::pairing_code;
 use klav_core::crypto::identity::PublicIdentity;
 use klav_core::ids::AgentId;
@@ -577,8 +579,37 @@ impl Unlocked {
     /// proxy issuer add`. Idempotent, so `klav proxy use` again finishes
     /// what failed.
     pub async fn resign_issuers(&mut self, now: Option<AgentId>) -> ClientResult<IssuerResign> {
+        self.resign_issuers_where(|names, _| Some(names) != now)
+            .await
+    }
+
+    /// Re-signs with `proxy: null` only the active issuers whose grant
+    /// names one of `retired` (the hosted agents being revoked or
+    /// replaced) or a proxy that is no longer a live agent (revoked,
+    /// denied, gone, or revoked from this device). Issuers of another live
+    /// proxy, such as the person's own `klav-proxy` kept beside Klav
+    /// Cloud's (ADR 0051 Q5 (a)), are left as they are. Idempotent: running
+    /// it again finishes what failed.
+    pub async fn resign_issuers_of(&mut self, retired: &[AgentId]) -> ClientResult<IssuerResign> {
+        self.resign_issuers_where(|names, live| names_retired_proxy(names, retired, live))
+            .await
+    }
+
+    /// Re-signs with `proxy: null` every active issuer whose proxy
+    /// `clear` picks, given the agents that are still live proxies.
+    async fn resign_issuers_where(
+        &mut self,
+        clear: impl Fn(AgentId, &HashSet<AgentId>) -> bool,
+    ) -> ClientResult<IssuerResign> {
         let mut out = IssuerResign::default();
-        for agent in self.agents().await? {
+        let agents = self.agents().await?;
+        let live: HashSet<AgentId> = agents
+            .iter()
+            .filter(|a| matches!(a.status, AgentStatus::Active | AgentStatus::Pending))
+            .filter(|a| !self.cache.revocations.contains_key(&a.id))
+            .map(|a| a.id)
+            .collect();
+        for agent in agents {
             let names = agent
                 .grant
                 .as_ref()
@@ -586,7 +617,7 @@ impl Unlocked {
                 .and_then(|s| s.proxy.as_ref())
                 .map(|p| p.agent_id);
             let Some(names) = names else { continue };
-            if Some(names) == now || agent.status != AgentStatus::Active {
+            if agent.status != AgentStatus::Active || !clear(names, &live) {
                 continue;
             }
             let result = async {
@@ -721,9 +752,41 @@ impl Unlocked {
     }
 }
 
+/// Whether an issuer that names the proxy `names` must be re-signed with
+/// no proxy when the hosted agents `retired` go: it names one of them, or
+/// a proxy that is not among the `live` agents. An issuer of another live
+/// proxy keeps it (ADR 0051 Q5 (a)).
+fn names_retired_proxy(names: AgentId, retired: &[AgentId], live: &HashSet<AgentId>) -> bool {
+    retired.contains(&names) || !live.contains(&names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live bug: `klav proxy cloud stop` cleared Boat's issuer, which
+    /// named the person's own proxy. Only issuers of the hosted agent that
+    /// goes, or of a proxy no longer live, are cleared.
+    #[test]
+    fn only_issuers_of_the_retired_or_dead_proxy_are_cleared() {
+        let own = AgentId::generate();
+        let cloud = AgentId::generate();
+        let dead = AgentId::generate();
+        let live: HashSet<AgentId> = [own, cloud].into_iter().collect();
+        // Stop: the hosted agent is retired; the own proxy's issuer stays.
+        assert!(names_retired_proxy(cloud, &[cloud], &live));
+        assert!(!names_retired_proxy(own, &[cloud], &live));
+        // Stop after the revocation: the hosted agent is no longer live.
+        let after: HashSet<AgentId> = [own].into_iter().collect();
+        assert!(names_retired_proxy(cloud, &[cloud], &after));
+        assert!(names_retired_proxy(cloud, &[], &after));
+        assert!(!names_retired_proxy(own, &[cloud], &after));
+        // A proxy that is gone (revoked earlier, or a 404) is always cleared.
+        assert!(names_retired_proxy(dead, &[], &live));
+        // `use klav` retires nothing: issuers of live proxies stay.
+        assert!(!names_retired_proxy(own, &[], &live));
+        assert!(!names_retired_proxy(cloud, &[], &live));
+    }
 
     #[test]
     fn inject_counts_as_allowed_by_default_or_by_an_allow_rule() {

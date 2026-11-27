@@ -3226,3 +3226,239 @@ async fn an_accounts_proxy_is_started_at_most_so_often() {
     let refused = enclave.issuer_port(account).await.expect_err("limited");
     assert!(refused.contains("too many starts"), "{refused}");
 }
+
+/// The proxy an issuer's grant names, as the server lists it.
+async fn issuer_names(person: &mut Unlocked, issuer: AgentId) -> Option<AgentId> {
+    person
+        .agents()
+        .await
+        .expect("agents")
+        .into_iter()
+        .find(|a| a.id == issuer)
+        .expect("issuer listed")
+        .grant
+        .and_then(|g| g.sandbox)
+        .and_then(|s| s.proxy)
+        .map(|p| p.agent_id)
+}
+
+/// Registers `name` and makes it an issuer of the account's current proxy,
+/// reached at `url`, for `profile`.
+async fn add_issuer(
+    person: &mut Unlocked,
+    server: &ServerProcess,
+    dir: &tempfile::TempDir,
+    email: &str,
+    name: &str,
+    url: String,
+    profile: &str,
+) -> AgentId {
+    let (issuer, _) = Agent::register(
+        &Home::at(dir.path().join(format!("issuer-{name}"))),
+        Registration {
+            name: name.into(),
+            server: server.url.clone(),
+            email: email.into(),
+            note: None,
+            key_store: KeyStore::File {
+                path: dir.path().join(format!("issuer-{name}.key")),
+            },
+        },
+    )
+    .await
+    .expect("register issuer");
+    let prepared = person
+        .prepare_issuer_add(
+            name,
+            &IssuerSpec {
+                profiles: vec![profile.into()],
+                url,
+                max_live: Some(2),
+                ..IssuerSpec::default()
+            },
+            PairingCheck::InPrompt,
+        )
+        .await
+        .expect("issuer add");
+    prepared.require_updated_devices(true).expect("ack");
+    assert!(
+        person
+            .commit_issuer_change(prepared)
+            .await
+            .expect("issuer add")
+            .complete()
+    );
+    issuer.id()
+}
+
+/// Q5 (a), the live bug: `klav proxy cloud stop` cleared every issuer on
+/// the account, Boat's `sandbox-issuer` of the person's own proxy too.
+/// `use klav`, `reset` and `stop` re-sign only the issuers of the hosted
+/// agent they replace or revoke; an issuer of the own proxy keeps it.
+#[tokio::test(flavor = "multi_thread")]
+async fn cloud_stop_keeps_the_issuers_of_the_own_proxy() {
+    use klav_core::model::preferences::ProxyMode;
+
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let enclave = world.enclave_with(&img, &server.url, QuotaLimits::default());
+    enclave.start_fresh().expect("seed");
+    key_server_for(&mut server, &enclave);
+    let host = reqwest::Url::parse(&server.url)
+        .expect("url")
+        .host_str()
+        .expect("host")
+        .to_owned();
+    let release = FakeReleaseKey::new(RELEASE);
+    let seq1 = manifest_for(1, &[(&img, "current")], &release, &host, now() - 60_000, 20);
+    enclave.load_manifest(seq1).expect("manifest");
+    let parent =
+        tampering_parent(api(&enclave).await, Arc::new(Mutex::new(Tamper::default()))).await;
+    let upstream = Upstream::start().await;
+
+    let email = "eve@example.com";
+    let mut person = account(&server, &dir, email, "tok_live_eve_0123456789abcdef").await;
+    add_item(&mut person, "Second", "tok_live_eve_second_0123456789").await;
+    person
+        .set_hosted_proxy_endpoint(Some(&parent))
+        .expect("endpoint");
+    person.set_hosted_proxy_test_anchors(world.nitro.root(), &[release.public()]);
+
+    // P_own, holding Northflank, with Boat's issuer I_boat.
+    let own = Agent::register(
+        &Home::at(dir.path().join("agent-own")),
+        Registration {
+            name: "own-proxy".into(),
+            server: server.url.clone(),
+            email: email.into(),
+            note: None,
+            key_store: KeyStore::File {
+                path: dir.path().join("own.key"),
+            },
+        },
+    )
+    .await
+    .expect("register")
+    .0;
+    let prepared = person
+        .prepare_proxy_use(Some("own-proxy"))
+        .await
+        .expect("use own");
+    person.commit_proxy_use(prepared).await.expect("use own");
+    let mut credential = crate::sandbox_e2e_tests::credential_at(
+        "northflank",
+        &format!("https://upstream.test:{}", upstream.port),
+    );
+    credential.methods = vec!["GET".into()];
+    let prepared = person
+        .prepare_proxy_grant("Northflank", &credential, PairingCheck::InPrompt)
+        .await
+        .expect("grant own");
+    prepared.require_updated_devices(true).expect("ack");
+    assert!(
+        person
+            .commit_proxy_change(prepared)
+            .await
+            .expect("grant own")
+            .complete()
+    );
+    let boat = add_issuer(
+        &mut person,
+        &server,
+        &dir,
+        email,
+        "sandbox-issuer",
+        "tls://own-proxy.example.com:8443".into(),
+        "northflank",
+    )
+    .await;
+    assert_eq!(issuer_names(&mut person, boat).await, Some(own.id()));
+
+    // `use klav` (P_cloud): I_boat keeps P_own.
+    hosted_proxy_switch(&server, "enable", email);
+    let prepared = person.prepare_hosted_proxy_use().await.expect("prepare");
+    let cloud = prepared.agent_id;
+    let channel = prepared.view.channel.clone().expect("channel");
+    let resigned = person
+        .commit_hosted_proxy_use(prepared)
+        .await
+        .expect("commit");
+    assert!(resigned.done.is_empty(), "{resigned:?}");
+    assert!(resigned.failed.is_empty(), "{resigned:?}");
+    assert_eq!(issuer_names(&mut person, boat).await, Some(own.id()));
+
+    // I_cloud, an issuer of P_cloud.
+    assert!(
+        grant(&mut person, "Second", &upstream)
+            .await
+            .expect("grant")
+            .complete()
+    );
+    let t3 = add_issuer(
+        &mut person,
+        &server,
+        &dir,
+        email,
+        "t3-code",
+        format!("tls://{channel}:443"),
+        "second",
+    )
+    .await;
+    assert_eq!(issuer_names(&mut person, t3).await, Some(cloud));
+
+    // `reset`: the old hosted agent's issuer is cleared, I_boat is not.
+    let reset = person.prepare_hosted_proxy_reset().await.expect("reset");
+    let cloud = reset.new.agent_id;
+    let channel = reset.new.view.channel.clone().expect("channel");
+    let done = person
+        .commit_hosted_proxy_reset(reset)
+        .await
+        .expect("reset commit");
+    assert_eq!(done.share_failed, None);
+    assert_eq!(done.issuers.done, vec!["t3-code".to_owned()]);
+    assert_eq!(issuer_names(&mut person, t3).await, None);
+    assert_eq!(issuer_names(&mut person, boat).await, Some(own.id()));
+    // The person makes it an issuer of the new hosted agent.
+    let prepared = person
+        .prepare_issuer_add(
+            "t3-code",
+            &IssuerSpec {
+                profiles: vec!["second".into()],
+                url: format!("tls://{channel}:443"),
+                max_live: Some(2),
+                ..IssuerSpec::default()
+            },
+            PairingCheck::InPrompt,
+        )
+        .await
+        .expect("issuer add again");
+    prepared.require_updated_devices(true).expect("ack");
+    assert!(
+        person
+            .commit_issuer_change(prepared)
+            .await
+            .expect("issuer add again")
+            .complete()
+    );
+    assert_eq!(issuer_names(&mut person, t3).await, Some(cloud));
+
+    // `klav proxy cloud stop`: P_cloud revoked, I_cloud cleared, I_boat
+    // untouched.
+    let stopped = person.stop_hosted_proxy().await.expect("stop");
+    assert!(stopped.revoked.is_some());
+    assert_eq!(stopped.issuers.done, vec!["t3-code".to_owned()]);
+    assert!(stopped.issuers.failed.is_empty(), "{:?}", stopped.issuers);
+    assert_eq!(
+        person.preferences().expect("prefs").proxy().mode,
+        ProxyMode::None
+    );
+    let agents = person.agents().await.expect("agents");
+    let status = |id: AgentId| agents.iter().find(|a| a.id == id).expect("listed").status;
+    assert_eq!(status(cloud), AgentStatus::Revoked);
+    assert_eq!(status(own.id()), AgentStatus::Active);
+    assert_eq!(status(boat), AgentStatus::Active);
+    assert_eq!(issuer_names(&mut person, t3).await, None);
+    assert_eq!(issuer_names(&mut person, boat).await, Some(own.id()));
+}
