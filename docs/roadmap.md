@@ -541,11 +541,19 @@ Omar lo pidió y lo aceptó el 2026-11-26, con la opción (a) en Q1–Q7: Klav C
   - [x] `verify-release.sh` (firma con OpenSSL contra los vectores de `klav-core`, luego recompila cada *commit* listado y compara), `draft-manifest.sh` y `sign-manifest.sh` (firma fuera de la CI, con la llave servida por `klav inject --fifo`)
   - [x] Terraform (`deploy/nitro/terraform/`): dos `c7g.large` en dos zonas con enclaves, IMDSv2, volúmenes cifrados, rol solo con SSM y sin KMS, sin puerto 22; dos NLB (canal TCP 443 de paso, API TLS 443 con ACM) que conservan la IP del cliente; una sola zona en servicio y la otra en espera (una validación rechaza dos, por la réplica continua de arriba); alarmas y recuperación automática; `terraform validate` y `terraform test` con un proveedor simulado
   - [x] El *runbook* (`deploy/nitro/runbook.md`): las llaves de la autoridad, el repositorio de manifiestos, génesis, la zona en espera, la actualización escalonada, el relevo, revocar una imagen, la pérdida total y la prueba a mano. Lo que encontró, en el §18 del ADR
-  - [ ] Que `eif.yml` corra en dos *runners* y den los mismos PCR (la regla de parada de la capa; corre solo cuando esté en la rama por defecto)
+  - [x] Que `eif.yml` corra en dos *runners* y den los mismos PCR (la regla de parada de la capa): coincidieron en `a86a4057` y en `23f82370` (corridas 45919445062 y 45929900240; ADR §18)
   - [x] Que el enclave publique la llave pública de servicio (`KLAV_HOSTED_PROXY_SERVICE_KEY`): con la semilla (génesis o traspaso), `GET /v1/status` sirve `service_key` (64 hexadecimales en minúscula; `null` antes) y el enclave la registra una vez; nunca la mitad privada ni la semilla. Probado contra un `klav-server` real configurado con la cadena servida, antes y después de un traspaso, y sin nada secreto en el registro en TRACE. El *runbook* (§4 paso 4) da el `curl` y el comando de Railway (ADR §18)
   - [x] Generar las llaves de la autoridad en la bóveda de Omar y fijarlas en `klav-core` y en `KLAV_ENCLAVE_RELEASE_KEYS` (con la capa 5)
-  - [ ] Prueba a mano en AWS (*runbook* §10): los PCR reales, `klav proxy use klav`, un sandbox de Boat con `northflank` y el MCP de Maple, perder una zona, una actualización sin llamadas fallidas, una pérdida total con su reenvoltura y la carga de un enclave de 1 vCPU
-  - [ ] Un documento real del enclave de Klav en `docs/vectores/nitro-attestation.json`
+  - [ ] Prueba a mano en AWS (*runbook* §10). Lo que ya corrió en `us-east-2` (anotado el 2026-11-27) y lo que falta (ADR §18):
+    - [x] Las dos zonas desplegadas detrás de `proxy.klav.dev` y `*.proxy.klav.dev`, con los PCR del hardware idénticos byte a byte a los del manifiesto 2
+    - [x] El traspaso atestado en hardware real: la zona `a` con `genesis` y la `b` con `join`, al primer intento y con la misma `service_key`
+    - [x] `klav proxy use klav` y `klav proxy cloud status` contra `proxy.klav.dev` y `api.klav.dev`
+    - [ ] Un sandbox de Boat con `northflank` y el MCP de Maple a través del proxy alojado
+    - [ ] Perder una zona (el relevo a mano)
+    - [ ] Una actualización escalonada sin llamadas fallidas
+    - [ ] Una pérdida total con su reenvoltura
+    - [ ] La carga de un enclave de 1 vCPU
+  - [x] Un documento real del enclave de Klav en `docs/vectores/nitro-attestation.json`: el de la zona `a` del 2026-11-27, también en `crates/klav-core/src/nitro/testdata/`, que verifica contra la raíz fijada y el manifiesto 2 publicado. Muestra que el NSM real solo escribe con longitud indefinida el mapa de primer nivel del *payload*
 
 ### Agentes personales en la nube (idea de Omar, sin ADR)
 Omar lo pidió el 2026-11-06: que los agentes personales como Muse (Meta), Grok Bot (xAI) y Dots (OpenAI) usen las contraseñas de la persona sin ver los valores. Los tres corren en una computadora en la nube de su proveedor (Muse en la «Muse Secure VM» de Meta, cada Dot en la suya y los Grok Bots en una compartida), y hoy Klav solo habla con los agentes por la CLI y `klav mcp` locales. Falta diseñar la pieza que los conecte. La página de `klav.dev` los lista en «También en camino», sin fecha. No cambia la fase en curso.

@@ -216,13 +216,13 @@ What happens to people is in ADR 0051 §4.4: sandboxes fail with `klav_proxy_unr
 - **Logs:** the parent's journal (`journalctl -u klav-nitro-parent -u klav-enclave`). The enclave's own logs stay inside it (§1).
 
 ## 10. Hand test on AWS before going live
-Each item needs evidence in the PR (commands and output; never a secret). None is done yet.
+Each item needs evidence in the PR (commands and output; never a secret). What ran is in ADR 0051 §18 (2026-11-27).
 
-- [ ] `eif.yml` on GitHub's `ubuntu-24.04-arm`: two runners agree on PCR0, PCR1 and PCR2 for both images (ADR 0051's layer 6 stop rule). Then `verify-release.sh` on another machine agrees too.
-- [ ] Real PCRs match: `nitro-cli describe-enclaves` on a parent shows the same PCR0/1/2 as `images.json`, and a real attestation document from `GET /v1/attest` verifies in `klav-core` against the published manifest.
+- [ ] `eif.yml` on GitHub's `ubuntu-24.04-arm`: two runners agree on PCR0, PCR1 and PCR2 for both images (ADR 0051's layer 6 stop rule; done at `a86a4057` and `23f82370`). Then `verify-release.sh` on another machine agrees too (not recorded yet).
+- [x] Real PCRs match: `nitro-cli describe-enclaves` on a parent shows the same PCR0/1/2 as `images.json`, and a real attestation document from `GET /v1/attest` verifies in `klav-core` against the published manifest.
 - [ ] The enclave starts on real hardware: `lo` comes up (busybox `ip`), `/dev/nsm` opens, vsock 5000/5001/5002 work, and egress reaches `api.klav.dev` and `raw.githubusercontent.com`.
-- [ ] A real attestation document from Klav's enclave added to `docs/vectores/nitro-attestation.json` (ADR 0051's layer 6 deliverable).
-- [ ] `klav proxy use klav` from a device enrolls, verifies the attestation and turns the hosted proxy on (needs layer 5, and the service key set on `api.klav.dev`, §4 step 4).
+- [x] A real attestation document from Klav's enclave added to `docs/vectores/nitro-attestation.json` (ADR 0051's layer 6 deliverable): `klav-proxy-2026-11-27-us-east-2a`.
+- [x] `klav proxy use klav` from a device enrolls, verifies the attestation and turns the hosted proxy on (needs layer 5, and the service key set on `api.klav.dev`, §4 step 4).
 - [ ] A Boat sandbox calls `northflank` and Maple's MCP through the hosted proxy (`klav sandbox start`, then a wrapped credential works).
 - [ ] The standby joins (§5), and `/v1/manifest` answers 200 on it.
 - [ ] Losing a zone: stop the zone in service (`nitro-cli terminate-enclave`), fail over (§7), and a running sandbox goes on working, or claims again without `theft` if it started before the standby's last join. Record how long sandboxes were down.

@@ -305,7 +305,7 @@ fn render_attestation() -> Value {
     .expect("seals");
 
     json!({
-        "description": "AWS Nitro Enclaves attestation (ADR 0051): the pinned Root-G1, a real document of a debug-mode enclave, a synthetic AWS-format P-384 chain with a document that verifies and mutated documents (each re-signed) that must be refused, the per-account keys, the binding, the hand-off info, a sealed hand-off (kind 0x28), the seed mix, the service key with its registration mark and the enroll signature",
+        "description": "AWS Nitro Enclaves attestation (ADR 0051): the pinned Root-G1, a real document of a debug-mode enclave and one of Klav's own enclave, a synthetic AWS-format P-384 chain with a document that verifies and mutated documents (each re-signed) that must be refused, the per-account keys, the binding, the hand-off info, a sealed hand-off (kind 0x28), the seed mix, the service key with its registration mark and the enroll signature",
         "spec": "docs/especificacion-cripto.md §15",
         "format_version": 1,
         "encoding": ENCODING,
@@ -322,9 +322,17 @@ fn render_attestation() -> Value {
             "expect_document": "ok",
             "module_id": "i-0918f6c55e3b61d89-enc018aa8b8e2285d13",
             "expect_measurement": "debug_enclave",
+        }, {
+            "name": "klav-proxy-2026-11-27-us-east-2a",
+            "source": "GET https://proxy.klav.dev/v1/attest on 2026-11-27, Klav's own enclave on a c7g.large in us-east-2a, an image of deploy/nitro/manifests/2.json at commit 23f82370520574eb91e78dd0d70c7031263d5866",
+            "document": hx(REAL_KLAV_DOCUMENT),
+            "now_ms": REAL_KLAV_TIMESTAMP_MS,
+            "expect_document": "ok",
+            "module_id": "i-067f86b09762550c5-enc01a21af794a29886",
+            "expect_measurement": "ok",
         }],
         "synthetic_chain": {
-            "note": "Synthetic, not AWS: a test root, two intermediates and a leaf in AWS's shape (ECDSA P-384 with SHA-384, basicConstraints and keyUsage critical), with deterministic keys. A real document of Klav's own enclave comes with ADR 0051's layer 6.",
+            "note": "Synthetic, not AWS: a test root, two intermediates and a leaf in AWS's shape (ECDSA P-384 with SHA-384, basicConstraints and keyUsage critical), with deterministic keys.",
             "root": hx(&f.chain.root),
             "intermediates": f.chain.intermediates.iter().map(|c| hx(c)).collect::<Vec<_>>(),
             "leaf": hx(&f.chain.leaf),

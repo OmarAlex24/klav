@@ -19,6 +19,20 @@ pub(crate) const REAL_DEBUG_DOCUMENT: &[u8] =
 /// Its `timestamp`: 2023-09-18T15:03:30.860Z.
 pub(crate) const REAL_DEBUG_TIMESTAMP_MS: u64 = 1_695_049_410_860;
 
+/// The captured document of Klav's own enclave on real hardware
+/// (testdata/README.md): `GET https://proxy.klav.dev/v1/attest` on a
+/// `c7g.large` in `us-east-2a`, running an image of manifest 2 at
+/// commit `23f82370`.
+pub(crate) const REAL_KLAV_DOCUMENT: &[u8] =
+    include_bytes!("testdata/klav-proxy-2026-11-27-us-east-2a.cbor");
+/// Its `timestamp`: 2026-11-27T13:43:56.356Z.
+pub(crate) const REAL_KLAV_TIMESTAMP_MS: u64 = 1_795_787_036_356;
+/// The `nonce` query parameter of that capture. It was sent as these 64
+/// characters, which the API reads as base64url: the document carries their
+/// 48 decoded bytes, not the 32 bytes the hex spells.
+pub(crate) const REAL_KLAV_NONCE_PARAM: &[u8] =
+    b"000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f";
+
 pub(crate) fn release_key(label: &str) -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&det(&format!("release key {label}")))
 }
@@ -140,9 +154,11 @@ fn a_tagged_document_verifies_too() {
     assert!(f.check(&spec.build(&f.chain)).is_ok());
 }
 
-/// A real NSM writes indefinite-length arrays and maps (ADR 0051 §18). A
-/// document with every array and map indefinite, the protected header too,
-/// verifies and reads as its definite twin.
+/// A real NSM writes the payload's top-level map with an indefinite length
+/// (ADR 0051 §18, `a_real_document_of_klavs_enclave_matches_manifest_2`).
+/// The reader accepts any array or map in that form: a document with every
+/// array and map indefinite, the protected header too, verifies and reads as
+/// its definite twin.
 #[test]
 fn a_document_with_indefinite_arrays_and_maps_verifies() {
     let f = Fixture::new();
@@ -225,6 +241,120 @@ fn a_real_document_verifies_and_its_debug_enclave_is_refused() {
     flipped[at + 5] ^= 0x01;
     assert_eq!(
         verify_document(&flipped, REAL_DEBUG_TIMESTAMP_MS),
+        Err(NitroError::Signature)
+    );
+}
+
+/// ADR 0051 §18: the first document of Klav's own enclave, captured live in
+/// `us-east-2`. It chains to the pinned root, its PCR0–3 are the ones
+/// published in manifest 2 and `deploy/nitro/manifests/2.json` accepts it.
+/// Real NSM output writes only the payload's top-level map with an
+/// indefinite length; the COSE array, the protected header, `pcrs` and
+/// `cabundle` are definite.
+#[test]
+fn a_real_document_of_klavs_enclave_matches_manifest_2() {
+    let doc = verify_document(REAL_KLAV_DOCUMENT, REAL_KLAV_TIMESTAMP_MS).expect("real chain");
+    assert_eq!(doc.module_id(), "i-067f86b09762550c5-enc01a21af794a29886");
+    assert_eq!(doc.timestamp_ms(), REAL_KLAV_TIMESTAMP_MS);
+    assert_eq!(doc.public_key(), None);
+    let pcr = |i: u8| hex::encode(doc.pcr(i).expect("pcr"));
+    assert_eq!(
+        pcr(0),
+        "5fb787478bec5ce5177cd53fda493abbd540fd231ea4f8c521b4b3b82aa85a1319c0025cdb3e36ffac8d0a223a7faa23"
+    );
+    assert_eq!(
+        pcr(1),
+        "3b4a7e1b5f13c5a1000b3ed32ef8995ee13e9876329f9bc72650b918329ef9cf4e2e4d1e1e37375dab0ba56ba0974d03"
+    );
+    assert_eq!(
+        pcr(2),
+        "53c8a3bc595b73dcf8acd799649b39afc6c2468730306c05aa524427b39cf941fa0a4d9f169bb5b8fa34f2b78f73e00a"
+    );
+    assert_eq!(
+        pcr(3),
+        "c736eec14c71000823cc5b011f61cad2ef5e45605bdef47aed8494021b21d5f28011c2f7ebfc1723eb8d929504400eca"
+    );
+
+    // Where the indefinite length is: `84` (array of 4), the protected
+    // header `44 a1 01 38 22`, `a0`, then a 4432-byte payload (`59 11 50`)
+    // that opens with `bf` and closes with `ff`.
+    assert_eq!(
+        REAL_KLAV_DOCUMENT[..7],
+        [0x84, 0x44, 0xa1, 0x01, 0x38, 0x22, 0xa0]
+    );
+    assert_eq!(REAL_KLAV_DOCUMENT[7..10], [0x59, 0x11, 0x50]);
+    let payload = &REAL_KLAV_DOCUMENT[10..10 + 0x1150];
+    assert_eq!((payload[0], payload[payload.len() - 1]), (0xbf, 0xff));
+    let after = |key: &[u8]| {
+        let at = payload
+            .windows(key.len())
+            .position(|w| w == key)
+            .expect("key");
+        payload[at + key.len()]
+    };
+    assert_eq!(after(b"\x64pcrs"), 0xb0, "pcrs: a definite map of 16");
+    assert_eq!(
+        after(b"\x68cabundle"),
+        0x84,
+        "cabundle: a definite array of 4"
+    );
+
+    // The published manifest 2 and its signature, as devices fetch them.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/nitro/manifests");
+    let manifest_bytes = std::fs::read(dir.join("2.json")).expect("manifest 2");
+    let sig = std::fs::read_to_string(dir.join("2.json.sig")).expect("its signature");
+    let sig: [u8; 64] = hex::decode(sig.trim_end())
+        .expect("hex")
+        .try_into()
+        .expect("64 bytes");
+    let manifest =
+        verify_manifest(&manifest_bytes, &sig, None, REAL_KLAV_TIMESTAMP_MS).expect("manifest 2");
+    assert_eq!(manifest.seq(), 2);
+    assert_eq!(
+        manifest.parent_roles(),
+        [*doc.pcr(3).expect("pcr3")].as_slice(),
+        "PCR3 is the parent role manifest 2 lists"
+    );
+
+    // The device's whole check. The capture recorded only the account and
+    // agent IDs, not the agent's public keys, so the binding is taken from
+    // the document's `user_data` rather than recomputed with
+    // `enclave_binding`: this checks the chain, the nonce, freshness and the
+    // manifest, not who the agent is.
+    let nonce = data_encoding::BASE64URL_NOPAD
+        .decode(REAL_KLAV_NONCE_PARAM)
+        .expect("base64url");
+    assert_eq!(nonce.len(), 48);
+    assert_eq!(doc.nonce(), Some(nonce.as_slice()));
+    let binding: [u8; 32] = doc.user_data().expect("user_data").try_into().expect("32");
+    let image = verify_hosted_proxy(
+        REAL_KLAV_DOCUMENT,
+        &manifest,
+        &HostedProxyExpectation {
+            nonce: &nonce,
+            binding: &binding,
+            now_ms: REAL_KLAV_TIMESTAMP_MS,
+        },
+    )
+    .expect("the live enclave passes the device's check");
+    assert_eq!(image.commit(), "23f82370520574eb91e78dd0d70c7031263d5866");
+    assert_eq!(image.status(), ImageStatus::Current);
+    assert_eq!(hex::encode(image.measurement().pcr0), pcr(0));
+
+    // A day later a certificate of the chain (index 3, the last
+    // intermediate) has expired; one bit of module_id breaks the signature.
+    assert_eq!(
+        verify_document(REAL_KLAV_DOCUMENT, REAL_KLAV_TIMESTAMP_MS + DAY_MS),
+        Err(NitroError::Validity { index: 3 })
+    );
+    let mut flipped = REAL_KLAV_DOCUMENT.to_vec();
+    let at = flipped
+        .windows(12)
+        .position(|w| w == b"i-067f86b097")
+        .expect("module id");
+    flipped[at + 5] ^= 0x01;
+    assert_eq!(
+        verify_document(&flipped, REAL_KLAV_TIMESTAMP_MS),
         Err(NitroError::Signature)
     );
 }
