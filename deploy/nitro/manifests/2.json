@@ -1,0 +1,54 @@
+{
+  "v": 1,
+  "seq": 2,
+  "seed_epoch": 0,
+  "issued_at_ms": 1795747972000,
+  "expires_at_ms": 1798339972000,
+  "endpoint": "proxy.klav.dev",
+  "server": "api.klav.dev",
+  "images": [
+    {
+      "version": "0.10.0",
+      "commit": "a86a4057033549ee7c6d7783fd3f69b4f761d6f0",
+      "arch": "aarch64",
+      "pcr0": "e4acdfec73f3b60942c54acf5f1d0fc9e7e5d405f34cc46a6b03a2dc561ad18b1d2872a8735c16af659178b86a8b56ee",
+      "pcr1": "3b4a7e1b5f13c5a1000b3ed32ef8995ee13e9876329f9bc72650b918329ef9cf4e2e4d1e1e37375dab0ba56ba0974d03",
+      "pcr2": "0aeb7a40dafd48002b1202e976c7d6a927755ee0ffa01aba5d1f671dc15411b81633ffc4edff6194af6e2db645696eb3",
+      "status": "draining"
+    },
+    {
+      "version": "0.10.0",
+      "commit": "a86a4057033549ee7c6d7783fd3f69b4f761d6f0",
+      "arch": "aarch64",
+      "pcr0": "2c15082b335c315101a01fd0199967c40e907983ffc5a52808be7d34d752c21ac277da03782d669092326c37ddba4cc7",
+      "pcr1": "3b4a7e1b5f13c5a1000b3ed32ef8995ee13e9876329f9bc72650b918329ef9cf4e2e4d1e1e37375dab0ba56ba0974d03",
+      "pcr2": "98e1894150419602fa6aa55458bf2f52ea6d203ecaf998010feed88a5f040019b069f26172ca1df0e946b1693332a299",
+      "status": "draining"
+    },
+    {
+      "version": "0.10.0",
+      "commit": "23f82370520574eb91e78dd0d70c7031263d5866",
+      "arch": "aarch64",
+      "pcr0": "d59486ebd20a13a9b7eea4f6f7a5a70717a5912a60df80e61a4bc1f9a7280bac54e8ace3a2a3034e032f408a11cae9c7",
+      "pcr1": "3b4a7e1b5f13c5a1000b3ed32ef8995ee13e9876329f9bc72650b918329ef9cf4e2e4d1e1e37375dab0ba56ba0974d03",
+      "pcr2": "c82bf5f568ead76b2cbeca2cee3be91d68d439a157eab884d5dff95f6ca71562ff7456d709a62678d3c1b65d8c8857be",
+      "status": "current"
+    },
+    {
+      "version": "0.10.0",
+      "commit": "23f82370520574eb91e78dd0d70c7031263d5866",
+      "arch": "aarch64",
+      "pcr0": "5fb787478bec5ce5177cd53fda493abbd540fd231ea4f8c521b4b3b82aa85a1319c0025cdb3e36ffac8d0a223a7faa23",
+      "pcr1": "3b4a7e1b5f13c5a1000b3ed32ef8995ee13e9876329f9bc72650b918329ef9cf4e2e4d1e1e37375dab0ba56ba0974d03",
+      "pcr2": "53c8a3bc595b73dcf8acd799649b39afc6c2468730306c05aa524427b39cf941fa0a4d9f169bb5b8fa34f2b78f73e00a",
+      "status": "current"
+    }
+  ],
+  "parent_roles": [
+    "c736eec14c71000823cc5b011f61cad2ef5e45605bdef47aed8494021b21d5f28011c2f7ebfc1723eb8d929504400eca"
+  ],
+  "egress": [
+    "3.131.48.170/32",
+    "52.14.86.103/32"
+  ]
+}
