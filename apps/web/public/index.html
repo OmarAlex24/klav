@@ -1002,12 +1002,15 @@ env:
             <div class="wrapline"><span class="p">$</span> klav proxy cloud status</div>
             <div class="wrapline">Klav Cloud's proxy: attested, version 0.10.0 (aarch64), commit a41b8e941bf0…, checked just now</div>
             <div class="wrapline">PCR0: 125d20da15aa7266…9e769df23a</div>
-            <div class="wrapline">PCR1: 3b4a7e1b5f13c5a1…ba0974d03</div>
+            <div class="wrapline">PCR1: 3b4a7e1b5f13c5a1…6ba0974d03</div>
             <div class="wrapline">PCR2: a82b0b078ccdb85c…87b9ce7418</div>
             <div class="wrapline">Manifest: seq 3 (deploy/nitro/manifests/3.json in Klav's repository)</div>
-            <div class="wrapline enc-gap"><span class="p">$</span> deploy/nitro/verify-release.sh --seq 3 --release-key a8aa68a5… --no-rebuild</div>
+            <div class="wrapline enc-gap"><span class="p">$</span> deploy/nitro/verify-release.sh --seq 3 \</div>
+            <div class="wrapline">    --release-key a8aa68a5… --no-rebuild</div>
             <div class="wrapline">signature: OK (release key a8aa68a51a5d6cee…)</div>
             <div class="wrapline">seq 3, seed_epoch 0, endpoint proxy.klav.dev, server api.klav.dev</div>
+            <div class="wrapline dim">…</div>
+            <div class="wrapline">image 0.10.0 a41b8e941bf0 aarch64 current</div>
             <div class="wrapline">image 0.10.0 a41b8e941bf0 aarch64 current</div>
             <div class="wrapline dim" data-i18n="enc.termNote"># without --no-rebuild, it rebuilds each image and compares its PCRs</div>
           </div>
@@ -1059,7 +1062,7 @@ env:
         <p data-i18n="nx.lede">Not released yet.</p>
       </div>
       <ul>
-        <li><strong data-i18n="nx.sandboxes">More for sandboxes</strong><span data-i18n-html="nx.sandboxesText">A transparent <code>HTTPS_PROXY</code> mode, so tools work unchanged, and an Active sandboxes panel on the iPhone.</span></li>
+        <li><strong data-i18n="nx.sandboxes">More for sandboxes</strong><span data-i18n-html="nx.sandboxesText">A transparent <code>HTTPS_PROXY</code> mode, so tools work unchanged, and on the iPhone, an Active sandboxes panel and a card for each sandbox’s approvals.</span></li>
         <li><strong data-i18n="nx.envs">Environments per repository</strong><span data-i18n-html="nx.envsText">Import a <code>.env</code> once, then run with <code>--env production</code>.</span></li>
         <li><strong data-i18n="nx.deployed">Deployed services</strong><span data-i18n="nx.deployedText">Your app on a hosting platform keeps a service ID instead of its secrets, and Klav notices a copied instance.</span></li>
         <li><strong data-i18n="nx.stores">In the stores</strong><span data-i18n="nx.storesText">The extension in the Chrome Web Store and on addons.mozilla.org, and the iPhone app in the App Store.</span></li>
@@ -1484,7 +1487,7 @@ env:
     "nx.title": "También en camino",
     "nx.lede": "Todavía sin publicar.",
     "nx.sandboxes": "Más para los sandboxes",
-    "nx.sandboxesText": "Un modo <code>HTTPS_PROXY</code> transparente, para que las herramientas funcionen sin cambios, y un panel de sandboxes activos en el iPhone.",
+    "nx.sandboxesText": "Un modo <code>HTTPS_PROXY</code> transparente, para que las herramientas funcionen sin cambios, y, en el iPhone, un panel de sandboxes activos y una tarjeta para las aprobaciones de cada sandbox.",
     "nx.envs": "Entornos por repositorio",
     "nx.envsText": "Importas un <code>.env</code> una vez y después corres con <code>--env production</code>.",
     "nx.deployed": "Servicios desplegados",

@@ -24,7 +24,7 @@ An agent that works in a disposable sandbox, such as a cloud virtual machine sta
 - **One credential per sandbox.** The sandbox gets a credential of its own. It isn't a Klav key: it decrypts nothing, works only through the proxy and dies with the sandbox.
 - **Only what you allowed.** The real token goes only to the hosts, paths and methods you listed, and the dangerous calls, such as a `DELETE`, wait for your approval on your iPhone or Mac.
 - **Every call in your log,** with the name of the sandbox that made it.
-- **Revoke from the apps or the terminal.** "Active sandboxes" in the Mac and iPhone apps lists them and lets you revoke one, and so does `klav proxy sandboxes` in the CLI.
+- **Revoke from the Mac app or the terminal.** "Active sandboxes" in the Mac app lists them and lets you revoke one, and so does `klav proxy sandboxes` in the CLI. The same panel on the iPhone is still on the way.
 
 You can run the proxy yourself today, or use Klav Cloud's.
 
@@ -52,7 +52,7 @@ klav proxy cloud status
 ```text
 Klav Cloud's proxy: attested, version 0.10.0 (aarch64), commit a41b8e94…, checked just now
 PCR0: 125d20da…769df23a
-PCR1: 3b4a7e1b…a0974d03
+PCR1: 3b4a7e1b…ba0974d03
 PCR2: a82b0b07…b9ce7418
 Manifest: seq 3 (deploy/nitro/manifests/3.json in Klav's repository)
 ```
@@ -70,13 +70,25 @@ deploy/nitro/verify-release.sh --seq 3 \
   --release-key a8aa68a51a5d6cee7b2c2789cea049ac1c6a2f80d98d1416ddc49fcf074abc45
 ```
 
-`--no-rebuild` checks only the signature and lists the images:
+With `--no-rebuild` it checks only the signature and lists what the manifest holds. For manifest 3, on 2026-11-27:
 
 ```text
 signature: OK (release key a8aa68a51a5d6cee…)
 seq 3, seed_epoch 0, endpoint proxy.klav.dev, server api.klav.dev
+issued  2026-11-27T17:18:26Z
+expires 2026-12-27T17:18:26Z
+egress  3.131.48.170/32, 52.14.86.103/32
+parent_roles (PCR3) c736eec14c71000823cc5b011f61cad2ef5e45605bdef47aed8494021b21d5f28011c2f7ebfc1723eb8d929504400eca
+image 0.10.0 a86a40570335 aarch64 draining
+image 0.10.0 a86a40570335 aarch64 draining
+image 0.10.0 23f823705205 aarch64 draining
+image 0.10.0 23f823705205 aarch64 draining
 image 0.10.0 a41b8e941bf0 aarch64 current
+image 0.10.0 a41b8e941bf0 aarch64 current
+verify-release.sh: signature verified; images not rebuilt (--no-rebuild)
 ```
+
+Each commit appears twice, once for each of its two images (`join`, which the enclaves run, and `genesis`, started by hand only to create the first keys).
 
 ### Still on the way
 
