@@ -23,6 +23,9 @@ pub enum Kind {
     Note,
     /// API key / token.
     ApiKey,
+    /// A project's environment (ADR 0032 §1): its own screens, never the
+    /// item editor.
+    Environment,
 }
 
 impl From<ItemKind> for Kind {
@@ -37,14 +40,11 @@ impl From<ItemKind> for Kind {
             // System items (the generator history, the preferences) are
             // never listed: they live in the system project. A note is the
             // closest shape if one ever shows up.
-            // An environment (ADR 0032 §1) has no iOS screen yet: shown
-            // as a note with no fields. Edits keep its kind (the client
-            // rebuilds the decoded item), and it refuses fields.
             ItemKind::Note
             | ItemKind::GeneratorHistory
             | ItemKind::Preferences
-            | ItemKind::AgentLabels
-            | ItemKind::Environment => Self::Note,
+            | ItemKind::AgentLabels => Self::Note,
+            ItemKind::Environment => Self::Environment,
             ItemKind::ApiKey => Self::ApiKey,
         }
     }
@@ -61,6 +61,7 @@ impl From<Kind> for ItemKind {
             Kind::Totp => Self::Totp,
             Kind::Note => Self::Note,
             Kind::ApiKey => Self::ApiKey,
+            Kind::Environment => Self::Environment,
         }
     }
 }
@@ -264,6 +265,11 @@ pub struct ItemInfo {
     /// The agent that wrote the current version, if one did.
     #[uniffi(default = None)]
     pub author_agent_id: Option<String>,
+    /// The protected environments that protect this item, or that it is,
+    /// by name (ADR 0032 §3.1): showing or copying a value asks every
+    /// time. Empty: not protected.
+    #[uniffi(default = [])]
+    pub protected_by: Vec<String>,
 }
 
 impl From<ItemSummary> for ItemInfo {
@@ -286,6 +292,7 @@ impl From<ItemSummary> for ItemInfo {
             confirmed_urls: s.confirmed_urls,
             pending_urls: s.pending_urls,
             author_agent_id: s.author_agent_id.map(|a| a.to_string()),
+            protected_by: s.protected_by,
         }
     }
 }

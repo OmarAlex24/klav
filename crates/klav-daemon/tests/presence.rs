@@ -172,6 +172,7 @@ fn window_ops(created_at: i64, reference: &str) -> Vec<Request> {
         },
         Request::Resolve {
             references: vec![reference.to_owned()],
+            variables_only: false,
             password: None,
         },
         Request::Autofill {

@@ -3540,10 +3540,21 @@ async fn protected_reason(
             Ok(loc) => vec![loc],
             Err(_) => return Ok(None),
         },
-        Request::Resolve { references, .. } => match u.reference_targets(references) {
-            Ok(items) => items,
-            Err(_) => return Ok(None),
-        },
+        Request::Resolve {
+            references,
+            variables_only,
+            ..
+        } => {
+            // The apps' «Show» of a variable: nothing else is asked about.
+            if *variables_only {
+                u.variable_environments(references)
+                    .map_err(|e| error_body(&e))?;
+            }
+            match u.reference_targets(references) {
+                Ok(items) => items,
+                Err(_) => return Ok(None),
+            }
+        }
         _ => return Ok(None),
     };
     let reason = u.protection_reason(&items);
@@ -4154,6 +4165,12 @@ async fn value_text(
         Request::Totp { query, .. } => (AskValueKind::Code, Some(query)),
         Request::Autofill { item, .. } => (AskValueKind::Fill, Some(item)),
         Request::GeneratedValue { .. } => (AskValueKind::Generated, None),
+        // «Show» or «Copy» of a variable (ADR 0032 §6): the prompt names its
+        // environment, below.
+        Request::Resolve {
+            variables_only: true,
+            ..
+        } => (AskValueKind::Show, None),
         Request::Resolve { .. } | Request::EnvironmentImportReview { .. } => {
             (AskValueKind::Resolve, None)
         }
@@ -4177,8 +4194,8 @@ async fn value_text(
     // a reference or an instant that names nothing is refused here (Omar's
     // decision K of 2026-11-19 for `resolve` and `generated_value`).
     let asked = asked_now(u, request).map_err(|e| error_body(&e))?;
-    let title = match query {
-        Some(query) => {
+    let title = match (query, request) {
+        (Some(query), _) => {
             let loc = u.find_item(query).map_err(|e| error_body(&e))?;
             let summary = u.item_summary(loc).map_err(|e| error_body(&e))?;
             Some(crate::prompt::clean(
@@ -4186,9 +4203,35 @@ async fn value_text(
                 crate::prompt::MAX_NAME,
             ))
         }
-        None => None,
+        (
+            None,
+            Request::Resolve {
+                references,
+                variables_only: true,
+                ..
+            },
+        ) => {
+            let environments = u
+                .variable_environments(references)
+                .map_err(|e| error_body(&e))?;
+            match environments.first() {
+                Some(loc) => {
+                    let summary = u.item_summary(*loc).map_err(|e| error_body(&e))?;
+                    Some(crate::prompt::clean(
+                        &summary.title,
+                        crate::prompt::MAX_NAME,
+                    ))
+                }
+                None => None,
+            }
+        }
+        (None, _) => None,
     };
     let count = match request {
+        Request::Resolve {
+            variables_only: true,
+            ..
+        } => None,
         Request::Resolve { references, .. } => {
             Some(u32::try_from(references.len()).unwrap_or(u32::MAX))
         }
@@ -4490,7 +4533,14 @@ async fn dispatch(
             passkey_presence(state, slot, password, &reason, caller, behind)?;
             ok(u.passkey_create(&request, true).await.map_err(e)?, warnings)
         }
-        Request::Resolve { references, .. } => {
+        Request::Resolve {
+            references,
+            variables_only,
+            ..
+        } => {
+            if variables_only {
+                u.variable_environments(&references).map_err(e)?;
+            }
             ok(u.resolve_all(&references).await.map_err(e)?, warnings)
         }
         Request::Attach {

@@ -631,6 +631,7 @@ impl Backend {
             Backend::Daemon(d) => {
                 presence::value_call(d, |password| Request::Resolve {
                     references: references.to_vec(),
+                    variables_only: false,
                     password,
                 })
                 .await

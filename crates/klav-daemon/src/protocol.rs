@@ -228,6 +228,11 @@ pub enum Request {
     Resolve {
         /// References.
         references: Vec<String>,
+        /// Every reference must name a variable of an environment (ADR
+        /// 0032 §6: «Show» and «Copy» in the apps); `klavd` refuses any
+        /// other. The only `resolve` the browser extension may send.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        variables_only: bool,
         /// The master password, sent again after `presence_required` (ADR
         /// 0041 §3.2): a real verification for the presence gate. Ignored
         /// while the gate is off.
