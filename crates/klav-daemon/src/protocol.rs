@@ -560,10 +560,18 @@ pub enum Request {
     /// The account's MCP gateway switch (ADR 0049 §9): `true` or `false`,
     /// or `null` from a server older than the gateway.
     McpGateway,
+    /// Whether turning the MCP gateway on needs the person's word that
+    /// every device and the proxy are updated (ADR 0049, amendment of
+    /// 2026-11-27): `true` when the account has another device that is not
+    /// revoked, or a proxy of the person's own, or when that can't be
+    /// read. A `klavd` older than this answers that the request is
+    /// malformed, which the apps read as `true`.
+    McpGatewayOlder,
     /// Turns the account's MCP gateway switch on (ADR 0049 §9). Refused
     /// unless `every_device_updated` acknowledges what devices and proxies
-    /// older than the gateway lose; asks for presence unless it is already
-    /// on. Nothing turns it off. Answer: `true`.
+    /// older than the gateway lose, when the account may hold one
+    /// (`mcp_gateway_older`); asks for presence unless it is already on.
+    /// Nothing turns it off. Answer: `true`.
     McpGatewayOn {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         every_device_updated: bool,

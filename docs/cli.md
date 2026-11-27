@@ -148,6 +148,11 @@ klav logout [--yes] [--discard-unsent]       # cerrar sesión y borrar la copia 
     escribir, no se crea nada. Si el registro falla después, `klav` avisa
     que borres el archivo del kit, que no sirve.
   - Imprímelo o guárdalo fuera de línea y borra el archivo.
+  - Con un servidor que conoce el gateway MCP, `signup` enciende el
+    interruptor `mcp_gateway` de la cuenta nueva justo después de crearla:
+    no tiene otro dispositivo ni proxy que puedan ser anteriores al gateway
+    ([ADR 0049](decisiones/0049-mcp-gateway.md), enmienda del 2026-11-27).
+    Un servidor anterior (`404`) o un fallo lo dejan apagado sin avisar.
 - **`account kit`** pide la contraseña maestra y vuelve a generar el kit
   desde la Secret Key de este dispositivo (en la terminal o en un archivo
   nuevo con `--emergency-kit`).
@@ -2740,12 +2745,17 @@ klav proxy local init --email CORREO [--server URL] [--json]
     de cada tipo y cuenta el resto.
   - **El primer perfil MCP** (con el interruptor `mcp_gateway` de la cuenta
     apagado, o un grant del proxy anterior a `v: 4`) pide
-    `--every-device-is-updated`: los dispositivos y el `klav-proxy` sin el
-    gateway fallan al cargar sus aprobaciones, `klav log verify` informa de
-    una alteración y el proxy viejo rechaza el grant (ADR 0049 §9). Con la
-    confirmación y tras Touch ID, `klav` enciende el interruptor
-    (`POST /v1/account/mcp-gateway`) y después firma el grant. Un servidor
-    anterior al gateway lo rechaza antes de pedir nada.
+    `--every-device-is-updated` cuando la cuenta puede tener algo anterior
+    al gateway: otro dispositivo sin revocar o un proxy propio (`own`), que
+    puede ser un `klav-proxy` viejo. Esos dispositivos y ese proxy fallan al
+    cargar sus aprobaciones, `klav log verify` informa de una alteración y
+    el proxy viejo rechaza el grant (ADR 0049 §9). Con este dispositivo solo
+    y el proxy de Klav Cloud no hay nada anterior que romper: no se pide, y
+    la hoja dice que el gateway se enciende y no se apaga (enmienda del
+    2026-11-27). Lo que no se puede leer cuenta como «puede haber algo
+    anterior». Tras Touch ID, `klav` enciende el interruptor
+    (`POST /v1/account/mcp-gateway`) si estaba apagado y después firma el
+    grant. Un servidor anterior al gateway lo rechaza antes de pedir nada.
   - Volver a conceder el mismo perfil conserva sus clientes locales; si un
     cambio les quita un perfil, la hoja dice cuáles.
   - **Los *presets* del gateway** (`maple` con reglas de herramientas,

@@ -170,6 +170,11 @@ pub struct McpSpec {
 /// §9), said before presence.
 pub const OLDER_CLIENTS_MCP: &str = "This is the account's first MCP profile or turns the account's MCP gateway on. Devices with a Klav older than the MCP gateway then fail to load their approvals list and report tampering in `klav log verify` as soon as an MCP tool call is approved or logged, and a klav-proxy older than it refuses the new grant and stops serving every profile until it is updated. Devices do not report their Klav version, so nothing can check this for you: update Klav on every device (apps, CLI and klavd) and klav-proxy first";
 
+/// Said when an MCP grant turns the account's gateway on and nothing on
+/// the account can be older than it (ADR 0049, amendment of 2026-11-27):
+/// the switch still can't be turned off.
+pub const MCP_GATEWAY_TURNS_ON: &str = "This also turns the account's MCP gateway on, which can't be turned off. This device is the account's only one and its proxy is Klav Cloud's, so nothing older than the gateway can break; a device you add later needs a Klav that knows it";
+
 /// A rule of the proxy's grant, as the person reads it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyRuleView {
@@ -500,6 +505,65 @@ impl Unlocked {
         .await
     }
 
+    /// Turns a new account's MCP gateway switch on, right after signing up
+    /// (ADR 0049, amendment of 2026-11-27): the account has no other
+    /// device and no proxy yet, so nothing older than the gateway can
+    /// break. Best effort and silent: a server older than the gateway
+    /// answers `404`, and an account left off is one whose only device
+    /// turns it on later without the older-devices warning. Only the
+    /// person's apps and CLI call this, never [`crate::signup`] itself, so
+    /// a client older than the gateway never gets an account with it on.
+    pub async fn start_with_mcp_gateway(&mut self) {
+        // Ignored: see above.
+        let _ = self.turn_mcp_gateway_on().await;
+    }
+
+    /// Whether the account may hold a Klav or a klav-proxy older than the
+    /// MCP gateway, which turning it on would break (ADR 0049 §9,
+    /// amendment of 2026-11-27): another device that is not revoked, or a
+    /// proxy of the person's own. Klav Cloud's proxy is never older than
+    /// the gateway. Fails closed: whatever can't be read counts as `true`.
+    pub async fn may_hold_older_than_mcp_gateway(&mut self) -> bool {
+        if self.sync().await.is_err() {
+            return true;
+        }
+        let own_proxy = match self.read_preferences() {
+            Ok(PreferencesRead::Read(p)) => match p.proxy() {
+                ProxySetting {
+                    mode: ProxyMode::Own,
+                    agent_id: Some(id),
+                } => Some(id),
+                ProxySetting {
+                    mode: ProxyMode::Own,
+                    agent_id: None,
+                } => return true,
+                _ => None,
+            },
+            Ok(PreferencesRead::ByAgent(_)) | Err(_) => return true,
+        };
+        // A proxy revoked from this device, or by the server's word, can't
+        // fetch a grant any more.
+        if let Some(id) = own_proxy.filter(|id| !self.cache.revocations.contains_key(id)) {
+            match self.agent_info(id).await {
+                Ok(info) if matches!(info.status, AgentStatus::Pending | AgentStatus::Active) => {
+                    return true;
+                }
+                Ok(_) => {}
+                Err(_) => return true,
+            }
+        }
+        match self
+            .get::<klav_proto::auth::DeviceList>("/v1/devices")
+            .await
+        {
+            Ok(list) => list
+                .devices
+                .iter()
+                .any(|d| !d.current && d.revoked_at.is_none()),
+            Err(_) => true,
+        }
+    }
+
     /// Whether the account's MCP gateway switch is on (ADR 0049 §9). An
     /// older server, which answers `404`, has no gateway: refused with a
     /// message that says so.
@@ -826,20 +890,25 @@ impl Unlocked {
             local_client_loss_warnings(&clients_before, &request.local_clients, &mut warnings);
         // The MCP gateway (ADR 0049 §9): an MCP profile needs the server's
         // switch, which this turns on, and a `v: 4` grant, which an older
-        // proxy refuses. Either is the person's word that every device and
-        // the proxy are updated.
+        // proxy refuses. Either needs the person's word that every device
+        // and the proxy are updated, when the account may hold something
+        // older: with this device alone and Klav Cloud's proxy, nothing can
+        // break (amendment of 2026-11-27).
         let (turns_mcp_gateway_on, mcp_first) = if profile.mcp.is_some() {
             let on = self.mcp_gateway_switch().await?;
             let proxy_v4 = grant
                 .payload
                 .as_ref()
                 .is_some_and(|p| p.v >= GRANT_PAYLOAD_VERSION_MCP);
-            (!on, !on || !proxy_v4)
+            let mcp_first = (!on || !proxy_v4) && self.may_hold_older_than_mcp_gateway().await;
+            (!on, mcp_first)
         } else {
             (false, false)
         };
         if mcp_first {
             warnings.push(OLDER_CLIENTS_MCP.to_owned());
+        } else if turns_mcp_gateway_on {
+            warnings.push(MCP_GATEWAY_TURNS_ON.to_owned());
         }
         if let Some(mcp) = &spec.mcp {
             warnings.extend(tool_warnings(mcp));

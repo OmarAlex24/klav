@@ -128,11 +128,11 @@ final class McpGatewayTests: XCTestCase {
         XCTAssertEqual(McpServersWords.client("claude-code"), "Claude Code")
         XCTAssertEqual(McpServersWords.client("my-agent"), "my-agent")
         XCTAssertNotNil(McpServersWords.clients(maple))
-        let on = McpServersInfo(gatewayOn: true, proxy: "klav-proxy", servers: [maple], localClients: [], problems: [])
+        let on = McpServersInfo(gatewayOn: true, needsUpdateWarning: false, proxy: "klav-proxy", servers: [maple], localClients: [], problems: [])
         XCTAssertEqual(McpServersWords.headerDetail(on), "1 server")
-        let off = McpServersInfo(gatewayOn: false, proxy: nil, servers: [], localClients: [], problems: [])
+        let off = McpServersInfo(gatewayOn: false, needsUpdateWarning: true, proxy: nil, servers: [], localClients: [], problems: [])
         XCTAssertEqual(McpServersWords.headerDetail(off), "Gateway off")
-        let older = McpServersInfo(gatewayOn: nil, proxy: nil, servers: [], localClients: [], problems: [])
+        let older = McpServersInfo(gatewayOn: nil, needsUpdateWarning: false, proxy: nil, servers: [], localClients: [], problems: [])
         XCTAssertNil(McpServersWords.headerDetail(older))
     }
 
@@ -140,8 +140,54 @@ final class McpGatewayTests: XCTestCase {
     /// asks for presence (the master password on a Mac without Touch ID).
     func testTheSwitchNeedsTheWordThenPresence() throws {
         let engine = SampleEngine(locked: false, touchID: false)
+        engine.mcpGatewayOn = false
         XCTAssertThrowsError(try engine.turnMcpGatewayOnWithPassword(everyDeviceUpdated: false, password: "sample"))
         XCTAssertTrue(try engine.turnMcpGatewayOnWithPassword(everyDeviceUpdated: true, password: "sample"))
+        XCTAssertEqual(try engine.mcpServers().gatewayOn, true)
+    }
+
+    /// With this Mac alone on the account and no proxy of its own (ADR
+    /// 0049, amendment of 2026-11-27), the sample turns the switch on
+    /// without the person's word, still only with presence.
+    func testALoneMacTurnsTheSwitchOnWithoutTheWord() throws {
+        let engine = SampleEngine(locked: false, touchID: false)
+        engine.mcpGatewayOn = false
+        engine.mcpNeedsUpdateWarning = false
+        let off = try engine.mcpServers()
+        XCTAssertEqual(off.gatewayOn, false)
+        XCTAssertFalse(off.needsUpdateWarning)
+        XCTAssertThrowsError(try engine.turnMcpGatewayOnWithPassword(everyDeviceUpdated: false, password: "wrong"))
+        XCTAssertEqual(try engine.mcpServers().gatewayOn, false)
+        XCTAssertTrue(try engine.turnMcpGatewayOnWithPassword(everyDeviceUpdated: false, password: "sample"))
+        XCTAssertEqual(try engine.mcpServers().gatewayOn, true)
+    }
+
+    /// The word is still asked when something older may be on the account.
+    func testAnOwnProxyStillNeedsTheWord() throws {
+        let engine = SampleEngine(locked: false, touchID: false)
+        engine.mcpGatewayOn = false
+        XCTAssertTrue(try engine.mcpServers().needsUpdateWarning)
+        XCTAssertThrowsError(try engine.turnMcpGatewayOnWithPassword(everyDeviceUpdated: false, password: "sample"))
+        XCTAssertEqual(try engine.mcpServers().gatewayOn, false)
+    }
+
+    /// Alone, on a Mac without Touch ID, the master password comes over
+    /// the window: there is no sheet.
+    @MainActor
+    func testALoneMacWithoutTouchIDAsksForThePasswordOverTheWindow() async throws {
+        let engine = SampleEngine(locked: false, touchID: false)
+        engine.mcpGatewayOn = false
+        engine.mcpNeedsUpdateWarning = false
+        let model = MacModel.sample(engine)
+        var done = false
+        try await model.withPresenceResult("Turn on") { engine, password in
+            try engine.turnMcpGatewayOnWithPassword(everyDeviceUpdated: false, password: password)
+        } done: { _ in done = true }
+        let prompt = try XCTUnwrap(model.passwordPrompt)
+        XCTAssertNil(prompt.host)
+        XCTAssertFalse(done)
+        try await prompt.retry("sample")
+        XCTAssertTrue(done)
         XCTAssertEqual(try engine.mcpServers().gatewayOn, true)
     }
 

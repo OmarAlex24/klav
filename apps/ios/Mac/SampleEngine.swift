@@ -15,8 +15,10 @@ import Foundation
 /// change (ADR 0033, amendment of 2026-11-10); `-KlavSamplePresence YES`
 /// has the presence gate on (ADR 0041): with `-KlavSampleNoTouchID YES`,
 /// values ask for the master password (`sample`) until its window opens.
-/// `-KlavSampleMcp card|security|off` adds an MCP tool call's card, a
-/// security card, or has the account's MCP gateway off (ADR 0049).
+/// `-KlavSampleMcp card|security|off|off-alone` adds an MCP tool call's
+/// card, a security card, or has the account's MCP gateway off with an own
+/// proxy (the warning first) or with this Mac alone (no warning, ADR 0049
+/// amendment of 2026-11-27).
 /// `-KlavSampleCloud on|unverified|lost`: Klav Cloud's proxy (ADR 0051).
 final class SampleEngine: MacEngine, @unchecked Sendable {
     private let mutex = NSLock()
@@ -26,7 +28,11 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     private var taskList: [TaskItem]
     private var secretRequestList: [SecretRequestItem] = []
     /// The account's MCP gateway switch (ADR 0049 §9).
-    private var mcpGatewayOn = UserDefaults.standard.string(forKey: "KlavSampleMcp") != "off"
+    var mcpGatewayOn = !["off", "off-alone"].contains(UserDefaults.standard.string(forKey: "KlavSampleMcp"))
+    /// The account has another device or its own proxy, so turning the
+    /// gateway on needs «update every device first» (ADR 0049, amendment
+    /// of 2026-11-27).
+    var mcpNeedsUpdateWarning = UserDefaults.standard.string(forKey: "KlavSampleMcp") != "off-alone"
     /// Klav Cloud's proxy (ADR 0051): `-KlavSampleCloud on|unverified|lost`
     /// has the account use it, verified, failing its check, or after it lost
     /// its keys; without it the account is entitled and doesn't use it.
@@ -2171,7 +2177,8 @@ extension SampleEngine {
                 toolsAllow: ["list_*", "get_*"], toolsAsk: ["purge_*"], toolsDeny: [], clients: [])
             return McpServersInfo(
                 gatewayOn: mcpGatewayOn,
-                proxy: "klav-proxy",
+                needsUpdateWarning: !mcpGatewayOn && mcpNeedsUpdateWarning,
+                proxy: mcpNeedsUpdateWarning ? "klav-proxy" : nil,
                 servers: mcpGatewayOn ? [maple, cloudflare] : [],
                 localClients: mcpGatewayOn
                     ? [McpLocalClientInfo(name: "claude-code", profiles: ["maple"]),
@@ -2182,7 +2189,10 @@ extension SampleEngine {
     }
 
     func turnMcpGatewayOnWithPassword(everyDeviceUpdated: Bool, password: String?) throws -> Bool {
-        guard everyDeviceUpdated else {
+        // As klavd: the word is asked only when something older may be on
+        // the account.
+        let nothingOlder = try locked { mcpGatewayOn || !mcpNeedsUpdateWarning }
+        guard everyDeviceUpdated || nothingOlder else {
             throw KlavError.Invalid(message: "Update Klav on every device first, then confirm it.")
         }
         try presence(true, password)

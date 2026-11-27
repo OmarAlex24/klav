@@ -104,6 +104,21 @@ fn the_mcp_gateway_from_the_persons_cli() {
     let root = tempfile::tempdir().expect("tempdir");
     let person = Device::new(root.path(), "person");
     person.signup(&server, "ana@example.com");
+    // `klav signup` starts the account with the gateway on (ADR 0049,
+    // amendment of 2026-11-27).
+    let on = tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(async {
+            klav_client::unlock_with_password(
+                &Home::at(person.home.clone()),
+                &klav_core::crypto::kdf::MasterPassword::new(PASSWORD),
+            )
+            .expect("unlock")
+            .mcp_gateway_state()
+            .await
+            .expect("switch")
+        });
+    assert_eq!(on, Some(true));
     let _stop = StopDaemon(Device::new(root.path(), "person"));
     person.unlocked(&["unlock", "--idle-lock", "10m"], "").ok();
     person
@@ -156,7 +171,9 @@ fn the_mcp_gateway_from_the_persons_cli() {
         &words,
     ];
     // 2. Without the word that every device is updated: the sheet shows
-    // every pattern and the warning, and nothing is signed.
+    // every pattern and the warning, and nothing is signed. The switch is
+    // on, but the proxy is the person's own, which may be older than the
+    // gateway and has no `v: 4` grant yet.
     let out = person.unlocked(&grant, "").err();
     for shown in [
         "mcp       https://mcp.acme.invalid/v1/mcp",
