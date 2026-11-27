@@ -135,8 +135,9 @@ test("a menu in a window too short for all of it fills, its list scrolling insid
   // this change).
   await choice.focus();
   await page.keyboard.press("Enter");
-  await expect(menu.getByText(COVERED)).toHaveCount(0);
-  await expect(page.locator("#password")).toHaveValue(SECRET);
+  // A fill closes the menu right away, so check the field, not the detached
+  // frame: had the menu said the page covers it, nothing would be filled.
+  await expect(page.locator("#password"), "the menu refused to fill (covered?)").toHaveValue(SECRET);
 });
 
 test("an open popover far from the menu still fills nothing (the top layer counts as covering)", async () => {
