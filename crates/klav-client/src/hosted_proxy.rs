@@ -573,7 +573,8 @@ mod verify {
         /// The revocation, when the server still had the agent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub revoked: Option<RevokeReport>,
-        /// The issuers re-signed with no proxy.
+        /// The issuers of the revoked agent, re-signed with no proxy.
+        /// Issuers of another live proxy are not touched.
         pub issuers: IssuerResign,
         /// The provider tokens it held: the person rotates them at each
         /// provider (ADR 0036 §18).
@@ -606,8 +607,8 @@ mod verify {
         /// The old agent's revocation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub revoked: Option<RevokeReport>,
-        /// The issuers re-signed with no proxy: the person adds them again
-        /// for the new one, whose address changed.
+        /// The old agent's issuers, re-signed with no proxy: the person adds
+        /// them again for the new one, whose address changed.
         pub issuers: IssuerResign,
     }
 
@@ -1142,8 +1143,9 @@ mod verify {
         /// Writes `proxy: {mode: "klav", agent_id}` after presence (ADR
         /// 0051 §6.1 step 5), once a fresh attestation of the same agent
         /// verified again (the dialog may outlast the 5 minutes of the
-        /// first). Then issuers that name another proxy are re-signed with
-        /// none, as for `klav proxy use`.
+        /// first). Then issuers that name a proxy that is no longer live are
+        /// re-signed with none; issuers of the person's own proxy, which
+        /// stays beside Klav Cloud's (Q5 (a)), keep it.
         pub async fn commit_hosted_proxy_use(
             &mut self,
             prepared: PreparedHostedUse,
@@ -1159,12 +1161,14 @@ mod verify {
                 .wrappable()?;
             self.set_proxy_setting_replacing(ProxySetting::klav(id), &prepared.replaces)
                 .await?;
-            self.resign_issuers(Some(id)).await
+            self.resign_issuers_of(&[]).await
         }
 
         /// «Stop using it» (ADR 0051 §6.3, ADR 0036 §3): revokes the
         /// account's hosted agent, which changes the key of every item it
-        /// held, and sets the proxy to none. Works whatever the
+        /// held, and sets the proxy to none. Only issuers of that agent (or
+        /// of a proxy no longer live) are re-signed with no proxy: issuers
+        /// of the person's own proxy keep it (Q5 (a)). Works whatever the
         /// verification says, and when the server no longer has the agent.
         pub async fn stop_hosted_proxy(&mut self) -> ClientResult<HostedStopReport> {
             self.sync().await?;
@@ -1198,7 +1202,8 @@ mod verify {
             };
             self.set_proxy_setting_replacing(ProxySetting::NONE, &[])
                 .await?;
-            let issuers = self.resign_issuers(None).await?;
+            let retired: Vec<AgentId> = setting.agent_id.into_iter().collect();
+            let issuers = self.resign_issuers_of(&retired).await?;
             Ok(HostedStopReport {
                 revoked,
                 issuers,
@@ -1270,8 +1275,9 @@ mod verify {
         /// profiles and rules as signed) with the new one, verified again
         /// before the grant; names the new one in the preferences; revokes
         /// the old one, which changes the keys of what it held; and
-        /// re-signs issuers with no proxy (the new one has another address,
-        /// so the person adds them again).
+        /// re-signs the old one's issuers with no proxy (the new one has
+        /// another address, so the person adds them again). Issuers of the
+        /// person's own proxy keep it (Q5 (a)).
         pub async fn commit_hosted_proxy_reset(
             &mut self,
             prepared: PreparedHostedReset,
@@ -1335,7 +1341,8 @@ mod verify {
                     }
                 };
             }
-            report.issuers = self.resign_issuers(Some(new_id)).await?;
+            let retired: Vec<AgentId> = prepared.old_agent_id.into_iter().collect();
+            report.issuers = self.resign_issuers_of(&retired).await?;
             report.agent = self
                 .agents()
                 .await
