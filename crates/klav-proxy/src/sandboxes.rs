@@ -42,6 +42,8 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::body::{Body, Bytes};
+#[cfg(feature = "enclave")]
+use axum::extract::ConnectInfo;
 use axum::extract::{Path as UrlPath, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, request::Parts};
 use axum::response::{IntoResponse, Response};
@@ -530,6 +532,16 @@ pub enum IssuerError {
     /// Signed for a proxy on another port (`?port=`): a request relayed
     /// by whatever listened on the port the issuer meant.
     OtherPort,
+    /// Klav Cloud's channel (ADR 0051 §6.4): signed for another account's
+    /// channel (`?channel=`), or addressed to another name, or sent by a
+    /// web page.
+    #[cfg_attr(not(feature = "enclave"), allow(dead_code))]
+    OtherChannel,
+    /// Klav Cloud's channel: the connection's key is a sandbox's (bound to
+    /// one now or since the proxy started), and a sandbox never starts,
+    /// lists or stops sandboxes.
+    #[cfg_attr(not(feature = "enclave"), allow(dead_code))]
+    SandboxConnection,
     /// A `stop` the proxy could not save: the sandbox is still live.
     StopNotSaved,
     /// [`MAX_OUTBOX`] ends wait for the server: no sandbox starts until it
@@ -541,7 +553,11 @@ impl IssuerError {
     /// The `error` code (ADR 0036 E1.3).
     pub fn code(&self) -> &'static str {
         match self {
-            Self::BadSignature | Self::NotLocal | Self::OtherPort => "klav_not_allowed",
+            Self::BadSignature
+            | Self::NotLocal
+            | Self::OtherPort
+            | Self::OtherChannel
+            | Self::SandboxConnection => "klav_not_allowed",
             Self::NotIssuer => "klav_not_issuer",
             Self::ProfileNotAllowed => "klav_profile_not_allowed",
             Self::TooMany => "klav_too_many_sandboxes",
@@ -564,7 +580,9 @@ impl IssuerError {
             | Self::ProfileNotAllowed
             | Self::ServerDenied
             | Self::NotLocal
-            | Self::OtherPort => StatusCode::FORBIDDEN,
+            | Self::OtherPort
+            | Self::OtherChannel
+            | Self::SandboxConnection => StatusCode::FORBIDDEN,
             Self::TooMany => StatusCode::CONFLICT,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::AgentsPaused | Self::AccountDeleting => StatusCode::LOCKED,
@@ -579,6 +597,8 @@ impl IssuerError {
         match self {
             Self::BadSignature => "Klav's credential proxy did not accept this request: a missing or wrong signature, an agent that is not one of its sandbox issuers, a repeated request, or a clock off by more than 5 minutes.".into(),
             Self::OtherPort => "This request was signed for a Klav credential proxy on another port, so this one does not take it.".into(),
+            Self::OtherChannel => "This request was not signed for this account's channel at Klav Cloud's credential proxy, or not addressed to it, so the proxy does not take it.".into(),
+            Self::SandboxConnection => "A sandbox's connection cannot start, list or stop sandboxes.".into(),
             Self::StopNotSaved => "Klav's credential proxy could not save the end of this sandbox, so the sandbox is still live.".into(),
             Self::NotLocal => "Klav's credential proxy only takes sandbox requests from programs on its own machine, addressed to 127.0.0.1 or localhost.".into(),
             Self::NotIssuer => "This agent may not start sandboxes at this credential proxy.".into(),
@@ -609,6 +629,9 @@ impl IssuerError {
             }
             Self::OtherPort => {
                 "Something else answered on the proxy's port. Tell the person this exact message and stop."
+            }
+            Self::OtherChannel => {
+                "Something relayed this request to another account's channel. Tell the person this exact message and stop."
             }
             Self::BadRequest(_) => "Fix the request as the message says.",
             _ => {
@@ -646,12 +669,29 @@ fn fixed<const N: usize>(text: &str) -> Result<[u8; N], IssuerError> {
         .ok_or(IssuerError::BadSignature)
 }
 
+/// Where a signed issuer request came in.
+#[derive(Clone, Copy)]
+pub(crate) enum Entry<'a> {
+    /// Ties the lifetime when the channel is not built.
+    #[cfg(not(feature = "enclave"))]
+    #[allow(dead_code)]
+    Never(std::marker::PhantomData<&'a ()>),
+    /// The proxy's loopback listener: the signed query names its port
+    /// (`?port=`).
+    Loopback,
+    /// Klav Cloud's pinned channel of this account (ADR 0051 §6.4): the
+    /// signed query names the channel, `?channel=a<agent_id>.<endpoint>`.
+    #[cfg(feature = "enclave")]
+    Channel(&'a str),
+}
+
 /// Checks a signed request and returns its issuer, as the proxy's current
 /// grant lists it.
 async fn authenticate(
     state: &ProxyState,
     parts: &Parts,
     body: &[u8],
+    entry: Entry<'_>,
 ) -> Result<SandboxIssuer, IssuerError> {
     let sandboxes = state.sandboxes();
     let agent: AgentId = header(&parts.headers, HEADER_AGENT)?
@@ -694,10 +734,25 @@ async fn authenticate(
         &signature,
     )
     .map_err(|_| IssuerError::BadSignature)?;
-    // The signed query names the port the issuer meant: a process that
-    // listened there cannot relay the request to a proxy on another one.
-    if parts.uri.query() != Some(format!("port={}", state.local_port()).as_str()) {
-        return Err(IssuerError::OtherPort);
+    match entry {
+        #[cfg(not(feature = "enclave"))]
+        Entry::Never(_) => return Err(IssuerError::OtherPort),
+        Entry::Loopback => {
+            // The signed query names the port the issuer meant: a process that
+            // listened there cannot relay the request to a proxy on another one.
+            if parts.uri.query() != Some(format!("port={}", state.local_port()).as_str()) {
+                return Err(IssuerError::OtherPort);
+            }
+        }
+        #[cfg(feature = "enclave")]
+        Entry::Channel(name) => {
+            // The same for Klav Cloud: the signed query names the account's
+            // channel, so a request signed for one account's channel is
+            // never taken on another's, whatever relays it.
+            if parts.uri.query() != Some(format!("channel={name}").as_str()) {
+                return Err(IssuerError::OtherChannel);
+            }
+        }
     }
     sandboxes.take_nonce(agent, nonce)?;
     Ok(issuer)
@@ -714,6 +769,128 @@ async fn local_request(state: &ProxyState, req: Request) -> Result<(Parts, Bytes
         .await
         .map_err(|_| IssuerError::BadRequest(format!("a body over {MAX_API_BODY} bytes")))?;
     Ok((parts, body))
+}
+
+/// The parts and the body (up to [`MAX_API_BODY`]) of an issuer request on
+/// Klav Cloud's pinned channel (ADR 0051 §6.4), and the channel's name.
+/// Refused: a proxy that serves no channel name, a connection whose key is
+/// a sandbox's, a browser's headers, and a `Host` other than the channel's
+/// name (with or without a port).
+#[cfg(feature = "enclave")]
+async fn channel_request(
+    state: &ProxyState,
+    key: &[u8; 32],
+    req: Request,
+) -> Result<(Parts, Bytes, String), IssuerError> {
+    let name = state
+        .channel_name()
+        .ok_or(IssuerError::OtherChannel)?
+        .to_owned();
+    if crate::claims::key_state(state, key).await != crate::claims::KeyState::Never {
+        return Err(IssuerError::SandboxConnection);
+    }
+    let (parts, body) = req.into_parts();
+    if !addressed_to(&parts.headers, &name) {
+        return Err(IssuerError::OtherChannel);
+    }
+    let body = axum::body::to_bytes(body, MAX_API_BODY)
+        .await
+        .map_err(|_| IssuerError::BadRequest(format!("a body over {MAX_API_BODY} bytes")))?;
+    Ok((parts, body, name))
+}
+
+/// Whether a request names exactly `name` in its one `Host` (a port after
+/// it is allowed) and carries no browser's headers.
+#[cfg(feature = "enclave")]
+fn addressed_to(headers: &HeaderMap, name: &str) -> bool {
+    if headers.contains_key(axum::http::header::ORIGIN) || headers.contains_key("sec-fetch-site") {
+        return false;
+    }
+    let mut hosts = headers.get_all(axum::http::header::HOST).iter();
+    let (Some(host), None) = (hosts.next(), hosts.next()) else {
+        return false;
+    };
+    let host = host.as_bytes();
+    let (host_name, port) = match host.iter().rposition(|b| *b == b':') {
+        Some(colon) => (&host[..colon], Some(&host[colon + 1..])),
+        None => (host, None),
+    };
+    host_name.eq_ignore_ascii_case(name.as_bytes())
+        && port.is_none_or(|p| (1..=5).contains(&p.len()) && p.iter().all(u8::is_ascii_digit))
+}
+
+/// The issuer API on Klav Cloud's pinned channel (ADR 0051 §6.4): `start`,
+/// `list` and `stop`, and nothing else. No fallback: the account's channel
+/// keeps its own routes (claim, status, release, and calls from bound
+/// sandboxes), and [`crate::proxy::router`], whose fallback serves this
+/// machine's calls, is never served there.
+#[cfg(feature = "enclave")]
+pub(crate) fn channel_router(state: Arc<ProxyState>) -> axum::Router {
+    use axum::routing::post;
+    axum::Router::new()
+        .route(API, post(channel_start).get(channel_list))
+        .route(&format!("{API}/{{id}}/stop"), post(channel_stop))
+        .with_state(state)
+}
+
+#[cfg(feature = "enclave")]
+async fn channel_start(
+    State(state): State<Arc<ProxyState>>,
+    ConnectInfo(peer): ConnectInfo<crate::channel::Peer>,
+    req: Request,
+) -> Response {
+    let (parts, body, name) = match channel_request(&state, &peer.key, req).await {
+        Ok(request) => request,
+        Err(e) => {
+            tracing::info!(error = e.code(), "sandbox start refused on the channel");
+            return e.into_response();
+        }
+    };
+    // Run to its end apart from the connection: an issuer's connection is
+    // bound to no sandbox, so the channel may close it for a newer one
+    // (`ChannelLimits::max_unbound`), and a start dropped while it waits
+    // for the server would keep its place among the starting ones, and its
+    // end unsent, until the proxy stops. Its answer is then lost; a
+    // sandbox that started anyway is never claimed and ends with
+    // `inactivity`.
+    let run = tokio::spawn(async move {
+        match start_inner(&state, parts, body, Entry::Channel(&name)).await {
+            Ok(res) => res,
+            Err(e) => {
+                tracing::info!(error = e.code(), "sandbox start refused on the channel");
+                e.into_response()
+            }
+        }
+    });
+    run.await
+        .unwrap_or_else(|_| IssuerError::Store.into_response())
+}
+
+#[cfg(feature = "enclave")]
+async fn channel_list(
+    State(state): State<Arc<ProxyState>>,
+    ConnectInfo(peer): ConnectInfo<crate::channel::Peer>,
+    req: Request,
+) -> Response {
+    let run = async {
+        let (parts, body, name) = channel_request(&state, &peer.key, req).await?;
+        list_inner(&state, parts, body, Entry::Channel(&name)).await
+    };
+    run.await.unwrap_or_else(IntoResponse::into_response)
+}
+
+#[cfg(feature = "enclave")]
+async fn channel_stop(
+    State(state): State<Arc<ProxyState>>,
+    ConnectInfo(peer): ConnectInfo<crate::channel::Peer>,
+    UrlPath(id): UrlPath<String>,
+    req: Request,
+) -> Response {
+    let run = async {
+        let (parts, body, name) = channel_request(&state, &peer.key, req).await?;
+        stop_inner(&state, &id, parts, body, Entry::Channel(&name)).await
+    };
+    run.await.unwrap_or_else(IntoResponse::into_response)
 }
 
 /// What an issuer asks for.
@@ -808,7 +985,11 @@ fn map_server_error(e: &ClientError) -> IssuerError {
 
 /// `POST /_klav/sandboxes`.
 pub async fn start(State(state): State<Arc<ProxyState>>, req: Request) -> Response {
-    match start_inner(&state, req).await {
+    let run = async {
+        let (parts, body) = local_request(&state, req).await?;
+        start_inner(&state, parts, body, Entry::Loopback).await
+    };
+    match run.await {
         Ok(res) => res,
         Err(e) => {
             tracing::info!(error = e.code(), "sandbox start refused");
@@ -817,9 +998,13 @@ pub async fn start(State(state): State<Arc<ProxyState>>, req: Request) -> Respon
     }
 }
 
-async fn start_inner(state: &ProxyState, req: Request) -> Result<Response, IssuerError> {
-    let (parts, body) = local_request(state, req).await?;
-    let issuer = authenticate(state, &parts, &body).await?;
+async fn start_inner(
+    state: &ProxyState,
+    parts: Parts,
+    body: Bytes,
+    entry: Entry<'_>,
+) -> Result<Response, IssuerError> {
+    let issuer = authenticate(state, &parts, &body, entry).await?;
     let asked: StartBody = serde_json::from_slice(&body)
         .map_err(|_| IssuerError::BadRequest("the body is not a sandbox request".into()))?;
     let held = state.profile_names();
@@ -980,40 +1165,49 @@ async fn start_inner(state: &ProxyState, req: Request) -> Result<Response, Issue
 pub async fn list(State(state): State<Arc<ProxyState>>, req: Request) -> Response {
     let run = async {
         let (parts, body) = local_request(&state, req).await?;
-        let issuer = authenticate(&state, &parts, &body).await?;
-        let sandboxes = state.sandboxes();
-        let store = sandboxes.store.lock().await;
-        let now = sandboxes.now();
-        let mine: Vec<Listed<'_>> = store
-            .sandboxes
-            .iter()
-            .filter(|s| s.issuer_id == issuer.agent_id && s.expires_at > now)
-            .map(|s| Listed {
-                sandbox_id: s.sandbox_id,
-                label: &s.label,
-                profiles: &s.profiles,
-                issued_at: s.issued_at,
-                expires_at: s.expires_at,
-                claimed: s.claimed_at.is_some(),
-            })
-            .collect();
-        // The MCP profiles this issuer's sandboxes may use, with their
-        // endpoints (ADR 0049, layer 5): `klav sandbox start` writes their
-        // client setup lines from it. A field an older `klav` ignores.
-        let mcp: Vec<serde_json::Value> = state
-            .profiles()
-            .all()
-            .into_iter()
-            .filter(|p| issuer.profiles.contains(&p.name))
-            .filter_map(|p| {
-                p.mcp
-                    .as_ref()
-                    .map(|m| json!({ "profile": p.name, "endpoint": m.endpoint }))
-            })
-            .collect();
-        Ok::<_, IssuerError>(Json(json!({ "sandboxes": mine, "mcp": mcp })).into_response())
+        list_inner(&state, parts, body, Entry::Loopback).await
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
+}
+
+async fn list_inner(
+    state: &ProxyState,
+    parts: Parts,
+    body: Bytes,
+    entry: Entry<'_>,
+) -> Result<Response, IssuerError> {
+    let issuer = authenticate(state, &parts, &body, entry).await?;
+    let sandboxes = state.sandboxes();
+    let store = sandboxes.store.lock().await;
+    let now = sandboxes.now();
+    let mine: Vec<Listed<'_>> = store
+        .sandboxes
+        .iter()
+        .filter(|s| s.issuer_id == issuer.agent_id && s.expires_at > now)
+        .map(|s| Listed {
+            sandbox_id: s.sandbox_id,
+            label: &s.label,
+            profiles: &s.profiles,
+            issued_at: s.issued_at,
+            expires_at: s.expires_at,
+            claimed: s.claimed_at.is_some(),
+        })
+        .collect();
+    // The MCP profiles this issuer's sandboxes may use, with their
+    // endpoints (ADR 0049, layer 5): `klav sandbox start` writes their
+    // client setup lines from it. A field an older `klav` ignores.
+    let mcp: Vec<serde_json::Value> = state
+        .profiles()
+        .all()
+        .into_iter()
+        .filter(|p| issuer.profiles.contains(&p.name))
+        .filter_map(|p| {
+            p.mcp
+                .as_ref()
+                .map(|m| json!({ "profile": p.name, "endpoint": m.endpoint }))
+        })
+        .collect();
+    Ok(Json(json!({ "sandboxes": mine, "mcp": mcp })).into_response())
 }
 
 /// `POST /_klav/sandboxes/{id}/stop`: ends one of the caller's sandboxes
@@ -1026,48 +1220,58 @@ pub async fn stop(
 ) -> Response {
     let run = async {
         let (parts, body) = local_request(&state, req).await?;
-        let issuer = authenticate(&state, &parts, &body).await?;
-        let id: SandboxId = id.parse().map_err(|_| IssuerError::NotFound)?;
-        let sandboxes = state.sandboxes();
-        let mut store = sandboxes.store.lock().await;
-        let Some(at) = store
-            .sandboxes
-            .iter()
-            .position(|s| s.sandbox_id == id && s.issuer_id == issuer.agent_id)
-        else {
-            return Err(IssuerError::NotFound);
-        };
-        let stopped = store.sandboxes.remove(at);
-        store.outbox.push(Outgoing {
-            sandbox_id: id,
-            reason: SandboxEnd::Stop,
-            at: None,
-        });
-        if let Err(e) = sandboxes.save(&store) {
-            // Back as it was: the file still has it live, and so must this
-            // process, or a restart would bring it back with no end sent.
-            tracing::error!(error = %e, "could not save the sandbox store");
-            store.outbox.pop();
-            store.sandboxes.insert(at, stopped);
-            return Err(IssuerError::StopNotSaved);
-        }
-        store.note_end(id, SandboxEnd::Stop);
-        // Ended here at once, with its calls in flight; the server hears
-        // of it now or later.
-        drop(store);
-        state.cuts().cut_sandboxes(&[id]);
-        flush(&state).await;
-        let logged = !sandboxes
-            .store
-            .lock()
-            .await
-            .outbox
-            .iter()
-            .any(|o| o.sandbox_id == id);
-        tracing::info!(sandbox = %id, logged, "sandbox stopped");
-        Ok::<_, IssuerError>(Json(json!({ "logged": logged })).into_response())
+        stop_inner(&state, &id, parts, body, Entry::Loopback).await
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
+}
+
+async fn stop_inner(
+    state: &ProxyState,
+    id: &str,
+    parts: Parts,
+    body: Bytes,
+    entry: Entry<'_>,
+) -> Result<Response, IssuerError> {
+    let issuer = authenticate(state, &parts, &body, entry).await?;
+    let id: SandboxId = id.parse().map_err(|_| IssuerError::NotFound)?;
+    let sandboxes = state.sandboxes();
+    let mut store = sandboxes.store.lock().await;
+    let Some(at) = store
+        .sandboxes
+        .iter()
+        .position(|s| s.sandbox_id == id && s.issuer_id == issuer.agent_id)
+    else {
+        return Err(IssuerError::NotFound);
+    };
+    let stopped = store.sandboxes.remove(at);
+    store.outbox.push(Outgoing {
+        sandbox_id: id,
+        reason: SandboxEnd::Stop,
+        at: None,
+    });
+    if let Err(e) = sandboxes.save(&store) {
+        // Back as it was: the file still has it live, and so must this
+        // process, or a restart would bring it back with no end sent.
+        tracing::error!(error = %e, "could not save the sandbox store");
+        store.outbox.pop();
+        store.sandboxes.insert(at, stopped);
+        return Err(IssuerError::StopNotSaved);
+    }
+    store.note_end(id, SandboxEnd::Stop);
+    // Ended here at once, with its calls in flight; the server hears
+    // of it now or later.
+    drop(store);
+    state.cuts().cut_sandboxes(&[id]);
+    flush(state).await;
+    let logged = !sandboxes
+        .store
+        .lock()
+        .await
+        .outbox
+        .iter()
+        .any(|o| o.sandbox_id == id);
+    tracing::info!(sandbox = %id, logged, "sandbox stopped");
+    Ok(Json(json!({ "logged": logged })).into_response())
 }
 
 /// Why the person's local revocation ended nothing.

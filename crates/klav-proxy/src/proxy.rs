@@ -234,6 +234,12 @@ pub struct ProxyState {
     /// Klav Cloud's hosted proxy: the account's budget for calls and
     /// request bodies (ADR 0051 §3.3). `None` for every other proxy.
     account_budget: Option<AccountBudget>,
+    /// Klav Cloud's hosted proxy: the account's channel name,
+    /// `a<agent_id hex>.<endpoint>` (ADR 0051 §3.4), which the issuer API
+    /// on the channel checks in the signed query and in `Host` (§6.4).
+    /// `None` for every other proxy, whose channel serves no issuer API.
+    #[cfg(feature = "enclave")]
+    channel_name: Option<String>,
 }
 
 /// Klav Cloud's per-account budget (ADR 0051 §3.3), apart from the quotas
@@ -309,6 +315,8 @@ impl ProxyState {
             mcp_gateway: std::sync::atomic::AtomicBool::new(false),
             account_live_cap: None,
             account_budget: None,
+            #[cfg(feature = "enclave")]
+            channel_name: None,
         }
     }
 
@@ -709,6 +717,20 @@ impl ProxyState {
     pub fn with_account_live_cap(mut self, cap: usize) -> Self {
         self.account_live_cap = Some(cap);
         self
+    }
+
+    /// Klav Cloud's hosted proxy: the account's channel name (ADR 0051
+    /// §3.4), so its channel serves the issuer API (§6.4).
+    #[cfg(feature = "enclave")]
+    pub(crate) fn with_channel_name(mut self, name: String) -> Self {
+        self.channel_name = Some(name);
+        self
+    }
+
+    /// [`ProxyState::with_channel_name`], if set.
+    #[cfg(feature = "enclave")]
+    pub(crate) fn channel_name(&self) -> Option<&str> {
+        self.channel_name.as_deref()
     }
 
     /// [`ProxyState::with_account_live_cap`], if set.

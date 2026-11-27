@@ -3036,6 +3036,24 @@ E6.1). Habla solo con el proxy en `127.0.0.1`, con peticiones firmadas con
 su llave ([api.md](api.md) §8.9); nunca con un `HTTP_PROXY` ni siguiendo una
 redirección.
 
+**Con el proxy de Klav Cloud** (ADR [0051](decisiones/0051-hosted-nitro-enclave-proxy.md)
+§6.4) no hay proxy en esta máquina: si la URL del proxy en el grant del
+emisor es el canal de la cuenta, `tls://a<agent_id en hex>.<dominio>:<puerto>`,
+con el `agent_id` del mismo proxy que nombra el grant, `start`, `ls` y
+`stop` van por ese canal fijado: TLS 1.3 que termina dentro del enclave,
+con el nombre del canal como SNI, el pin del grant y una llave de canal
+nueva en cada petición, y el nombre del canal firmado en la consulta
+(`?channel=`, [api.md](api.md) §8.9). Así el anfitrión de AWS que pasa los
+bytes nunca ve el secreto de un solo uso del sandbox. Nunca van por la API
+pública del enclave (`proxy.klav.dev`), cuyo TLS termina en el balanceador.
+`--proxy-port` no se usa entonces, y cualquier otra URL (otro agente, un
+proxy propio, una IP) sigue yendo a `127.0.0.1` como siempre. Para `ls` y
+`stop`, la CLI lee el grant con `GET /v1/agent/me` también en pausa; si no
+puede leerlo (el servidor no contesta), pregunta en `127.0.0.1`.
+`KLAV_HOSTED_PROXY_CHANNEL_ADDR=HOST:PUERTO` marca el canal en otra
+dirección (un *relay*, una prueba) con el mismo nombre y el mismo pin: el
+pin, no la dirección, decide en qué proxy se confía.
+
 ```
 klav sandbox start --label ETIQUETA --profile PERFIL… [--ttl 8h] \
   [--proxy-port 8790] [--agent NOMBRE] [--json] -- COMANDO…
@@ -3207,7 +3225,7 @@ Códigos de salida, además de los de §9:
 
 | Código | Cuándo |
 |---|---|
-| 1 | El proxy no contesta en ese puerto (`klav_proxy_unreachable`), el sandbox no existe, u otro error |
+| 1 | El proxy no contesta en ese puerto, o el canal de Klav Cloud no contesta o presenta otra llave que la que fija el grant (`klav_proxy_unreachable`), el sandbox no existe, u otro error |
 | 5 | El grant del emisor no nombra proxy (`klav_no_proxy`: la persona apagó o cambió el proxy de la cuenta, o le quitó a este agente, sin proyectos, el permiso de empezar sandboxes; el grant firmado es el mismo en los tres casos), el agente no es emisor (`klav_not_issuer`), un perfil que no tiene (`klav_profile_not_allowed`) o ya tiene todos los sandboxes que puede (`klav_too_many_sandboxes`) |
 | 7 | La persona pausó los agentes o a este (`klav_agents_paused`) |
 | 8 | La persona pidió borrar la cuenta (`klav_account_deleting`) |

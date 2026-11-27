@@ -74,6 +74,12 @@ pub const AGENT_NAME: &str = "klav-cloud-proxy";
 pub const ENROLLS_PER_MINUTE: u32 = 6;
 /// Attestations per account per minute.
 pub const ATTESTS_PER_MINUTE: u32 = 60;
+/// Times per minute an account's proxy may be started (ADR 0051 §6.4):
+/// each start opens a session with the Klav server and its heartbeat, and
+/// any connection that names the account's channel asks for one, so a
+/// stopped or refused proxy (an agent not approved yet, a pause) is not
+/// asked again on every connection.
+pub const SERVES_PER_MINUTE: u32 = 12;
 /// Largest nonce an asker may send.
 pub const MAX_NONCE: usize = 64;
 /// Largest API body.
@@ -400,8 +406,22 @@ impl Enclave {
         if let Some(serving) = slot.as_ref() {
             return Ok(Arc::clone(serving));
         }
-        let seed = self.seed().ok_or("no seed")?;
         let e = &account.enrollment;
+        // Counted under the account's lock, before anything reaches the
+        // server: connections that wait here find the proxy started, or
+        // count one start each.
+        if self
+            .rates
+            .check(
+                &format!("serve:{}", e.account_id),
+                SERVES_PER_MINUTE,
+                Instant::now(),
+            )
+            .is_err()
+        {
+            return Err("too many starts of this account's proxy this minute".into());
+        }
+        let seed = self.seed().ok_or("no seed")?;
         let keys = derive_account_keys(&seed, e.account_id, e.generation);
         let agent = Agent::in_memory(self.memory_agent(e), keys).map_err(|e| e.to_string())?;
         let session = Session::open(agent).await.map_err(|e| e.to_string())?;
@@ -434,6 +454,7 @@ impl Enclave {
         state.set_revocation_cursor(cursor);
         let state = Arc::new(
             state
+                .with_channel_name(account.name.clone())
                 .with_sandboxes(sandboxes)
                 .with_max_body(limits.max_body)
                 .with_account_live_cap(limits.live_sandboxes)
@@ -449,9 +470,17 @@ impl Enclave {
             SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
             self.config.channel_limits,
         );
-        let routes = crate::channel::router(Arc::clone(&state)).layer(
-            axum::middleware::from_fn_with_state(Arc::clone(&account.quotas), quota::enforce),
-        );
+        // The channel's own routes, and the issuer API (ADR 0051 §6.4):
+        // `start`, `list` and `stop` only, on the same state as the
+        // loopback listener, so a nonce taken on one is refused on the
+        // other. Never `crate::proxy::router`, whose fallback serves
+        // calls with no signature.
+        let routes = crate::channel::router(Arc::clone(&state))
+            .merge(crate::sandboxes::channel_router(Arc::clone(&state)))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&account.quotas),
+                quota::enforce,
+            ));
         let mut tasks = Vec::new();
         tasks.push(
             tokio::spawn(crate::channel::serve_routes(

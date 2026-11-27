@@ -744,6 +744,44 @@ async fn enroll_and_start(
     token: &str,
     upstream: &Upstream,
 ) -> Hosted {
+    let mut h = enroll_issuer(server, dir, api_base, email, token, upstream).await;
+    let port = enclave.issuer_port(h.account_id).await.expect("serving");
+    let started = issuer_api::start(&mut h.issuer, port, &start("chat-1"))
+        .await
+        .expect("start");
+    Hosted {
+        person: h.person,
+        account_id: h.account_id,
+        channel: h.channel,
+        package: decode_package(&started.package).expect("package"),
+        issuer: h.issuer,
+        email: h.email,
+        token: h.token,
+    }
+}
+
+/// One account set up on the hosted proxy with an issuer, before any
+/// sandbox (and before the enclave started the account's proxy).
+struct Enrolled {
+    person: Unlocked,
+    account_id: AccountId,
+    agent_id: AgentId,
+    channel: String,
+    issuer: Agent,
+    email: String,
+    token: String,
+}
+
+/// [`enroll_and_start`] without the start: nothing has asked the enclave
+/// for the account's proxy yet.
+async fn enroll_issuer(
+    server: &ServerProcess,
+    dir: &tempfile::TempDir,
+    api_base: &str,
+    email: &str,
+    token: &str,
+    upstream: &Upstream,
+) -> Enrolled {
     let mut person = account(server, dir, email, token).await;
     hosted_proxy_switch(server, "enable", email);
     let signed = person.sign_hosted_proxy_enroll(0, now());
@@ -776,7 +814,7 @@ async fn enroll_and_start(
             .expect("grant")
             .complete()
     );
-    let (mut issuer, _) = Agent::register(
+    let (issuer, _) = Agent::register(
         &Home::at(dir.path().join(format!("issuer-{email}"))),
         Registration {
             name: "t3-code".into(),
@@ -811,16 +849,11 @@ async fn enroll_and_start(
             .expect("add")
             .complete()
     );
-    let account_id = signed.account_id;
-    let port = enclave.issuer_port(account_id).await.expect("serving");
-    let started = issuer_api::start(&mut issuer, port, &start("chat-1"))
-        .await
-        .expect("start");
-    Hosted {
+    Enrolled {
         person,
-        account_id,
+        account_id: signed.account_id,
+        agent_id: answer.agent_id,
         channel: answer.channel,
-        package: decode_package(&started.package).expect("package"),
         issuer,
         email: email.into(),
         token: token.into(),
@@ -2578,4 +2611,618 @@ async fn the_own_proxy_keeps_its_credentials_beside_klav_cloud() {
         1,
         "only Second, on the hosted proxy"
     );
+}
+
+// ------------------------------------------- the issuer API on the channel --
+
+/// The bytes that cross the parent: what the enclave's channel receives
+/// (`up`) and sends (`down`), as `klav-nitro-parent` relays them.
+#[derive(Clone, Default)]
+struct Tap {
+    up: Arc<Mutex<Vec<u8>>>,
+    down: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Tap {
+    fn bytes(&self) -> Vec<u8> {
+        let mut all = self.up.lock().expect("lock").clone();
+        all.extend_from_slice(&self.down.lock().expect("lock"));
+        all
+    }
+}
+
+/// The parent's connection to the enclave, recording every byte.
+struct Tapped {
+    io: tokio::net::TcpStream,
+    tap: Tap,
+}
+
+impl tokio::io::AsyncRead for Tapped {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.io).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &polled {
+            self.tap
+                .down
+                .lock()
+                .expect("lock")
+                .extend_from_slice(&buf.filled()[before..]);
+        }
+        polled
+    }
+}
+
+impl tokio::io::AsyncWrite for Tapped {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let polled = std::pin::Pin::new(&mut self.io).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(n)) = &polled {
+            self.tap
+                .up
+                .lock()
+                .expect("lock")
+                .extend_from_slice(&buf[..*n]);
+        }
+        polled
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
+/// The parent's way to the enclave's channel, through [`Tapped`].
+struct TapTo {
+    target: SocketAddr,
+    tap: Tap,
+}
+
+impl crate::transport::Connector for TapTo {
+    fn connect(
+        &self,
+    ) -> futures_util::future::BoxFuture<'_, std::io::Result<crate::transport::BoxIo>> {
+        Box::pin(async move {
+            let io = tokio::net::TcpStream::connect(self.target).await?;
+            io.set_nodelay(true)?;
+            Ok(Box::new(Tapped {
+                io,
+                tap: self.tap.clone(),
+            }) as crate::transport::BoxIo)
+        })
+    }
+}
+
+/// The real `klav-nitro-parent` inbound relay in front of the enclave's
+/// channel at `channel`, recording what crosses it in `tap`.
+#[cfg(feature = "nitro-parent")]
+async fn parent_in_front(channel: SocketAddr, tap: Tap) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(crate::parent::serve_inbound(
+        listener,
+        Arc::new(TapTo {
+            target: channel,
+            tap,
+        }),
+        Arc::new(crate::parent::PerIpLimiter::new(100_000)),
+    ));
+    addr
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Fails when `secret`, raw or in any usual encoding, is in `wire`.
+#[track_caller]
+fn never_on_wire(wire: &[u8], secret: &[u8], what: &str) {
+    for encoded in [
+        secret.to_vec(),
+        data_encoding::HEXLOWER.encode(secret).into_bytes(),
+        data_encoding::HEXUPPER.encode(secret).into_bytes(),
+        data_encoding::BASE64.encode(secret).into_bytes(),
+        data_encoding::BASE64URL_NOPAD.encode(secret).into_bytes(),
+    ] {
+        assert!(!contains(wire, &encoded), "{what} crossed the parent");
+    }
+}
+
+/// The signature headers of `agent` for `method path` with no body.
+fn signed(agent: &Agent, method: &reqwest::Method, path: &str) -> Vec<(&'static str, String)> {
+    let proof = agent.sign_request(method, path, b"");
+    vec![
+        (klav_proto::agent::HEADER_AGENT, agent.id().to_string()),
+        (
+            klav_proto::agent::HEADER_TIMESTAMP,
+            proof.timestamp_ms.to_string(),
+        ),
+        (klav_proto::agent::HEADER_NONCE, proof.nonce.to_text()),
+        (
+            klav_proto::agent::HEADER_SIGNATURE,
+            proof.signature.to_text(),
+        ),
+    ]
+}
+
+/// One request on an account's channel at `address`, with `name` as SNI
+/// and `Host`, pinned to `pin`: the status and the `error` code.
+async fn on_channel(
+    address: &str,
+    name: &str,
+    pin: [u8; 32],
+    method: &str,
+    path: &str,
+    headers: &[(&str, String)],
+) -> (u16, String) {
+    let answer = klav_forward::issuer::send(&klav_forward::issuer::IssuerRequest {
+        address,
+        name,
+        pin,
+        method,
+        path,
+        headers,
+        body: b"",
+        wait: 10 * SECOND,
+    })
+    .await
+    .unwrap_or_else(|e| panic!("{path}: {e:?}"));
+    let code = serde_json::from_slice::<serde_json::Value>(&answer.body)
+        .ok()
+        .and_then(|v| v["error"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    (answer.status, code)
+}
+
+/// A raw request on a new channel connection with a fresh key: the status.
+async fn raw_on_channel(addr: SocketAddr, name: &str, pin: [u8; 32], request: &[u8]) -> u16 {
+    let mut raw = Raw::named(&key(pin), addr, sni(name))
+        .await
+        .expect("handshake");
+    raw.send(request).await.expect("send");
+    raw.answer(5 * SECOND).await.expect("answer").0
+}
+
+fn head_with(
+    method: &str,
+    path: &str,
+    host: &str,
+    headers: &[(&str, String)],
+    extra: &str,
+) -> Vec<u8> {
+    let mut head =
+        format!("{method} {path} HTTP/1.1\r\nhost: {host}\r\ncontent-length: 0\r\n{extra}");
+    for (n, v) in headers {
+        head.push_str(&format!("{n}: {v}\r\n"));
+    }
+    head.push_str("\r\n");
+    head.into_bytes()
+}
+
+/// ADR 0051 §6.4 and threat T276, end to end with a real server, the real
+/// parent relay, a real `klav-forward` and an upstream:
+/// - an issuer starts a sandbox of an account the enclave was not serving
+///   yet over the account's pinned TLS 1.3 channel, through
+///   `klav-nitro-parent`'s inbound relay, and the bytes that cross the
+///   parent carry the account's channel name (SNI) and never the one-time
+///   secret, the package, the provider token, the issuer API's path or a
+///   signature header;
+/// - the forwarder claims it by SNI and its call carries the credential;
+/// - it is listed on the channel and on the loopback listener alike: one
+///   proxy state behind both;
+/// - a signed request taken twice is refused the second time; the channel
+///   name is in the signed query, so the same issuer's valid signature for
+///   another channel, for a port, or for none is refused, and so is a
+///   request signed for the channel on the loopback listener;
+/// - another `Host`, or a browser's header, is refused;
+/// - an issuer's connection never reaches a provider through the
+///   channel's fallback, signed or not, and a sandbox's own connection
+///   cannot use the issuer API;
+/// - a stopped sandbox's forwarder gets nothing more;
+/// - in a pause, `ls` and `stop` keep working on the channel and `start`
+///   is refused;
+/// - nothing secret is logged.
+#[cfg(feature = "nitro-parent")]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_issuer_api_runs_on_the_pinned_channel_and_the_parent_sees_no_secret() {
+    use klav_sdk::sandbox::ProxyRoute;
+    let log = global_log();
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let enclave = world.enclave_with(&img, &server.url, QuotaLimits::default());
+    enclave.start_fresh().expect("seed");
+    key_server_for(&mut server, &enclave);
+    enclave
+        .load_manifest(manifest(1, &[(&img, "current")]))
+        .expect("manifest");
+    let api_base = api(&enclave).await;
+    let channel_addr = channel(&enclave).await;
+    let tap = Tap::default();
+    let parent = parent_in_front(channel_addr, tap.clone()).await;
+    let parent_text = parent.to_string();
+    let upstream = Upstream::start().await;
+    let mut a = enroll_issuer(
+        &server,
+        &dir,
+        &api_base,
+        "ana@example.com",
+        "tok_live_issuer_channel_0123456789abcdef",
+        &upstream,
+    )
+    .await;
+    assert_eq!(a.channel, super::channel_name(a.agent_id, ENDPOINT));
+
+    // A cold account: nothing asked for its proxy yet. The issuer starts
+    // over the channel, through the parent; `--proxy-port` is ignored.
+    let started = issuer_api::start_routed(&mut a.issuer, 9, Some(&parent_text), &start("chat-1"))
+        .await
+        .unwrap_or_else(|e| panic!("start on the channel: {} {e}", e.code()));
+    let route = started.route.clone();
+    let ProxyRoute::Hosted(hosted) = &route else {
+        panic!("the grant names Klav Cloud's channel");
+    };
+    assert_eq!(hosted.name, a.channel);
+    assert_eq!(hosted.address, parent_text);
+    let package_text = started.package.clone();
+    let package = decode_package(&started.package).expect("package");
+    assert_eq!(package.url, format!("tls://{}:443", a.channel));
+    assert_eq!(hosted.pin, package.proxy_pin);
+    drop(started);
+
+    // The forwarder claims it by SNI through the parent too.
+    let (fwd, fwd_port) = forwarder(&package, parent, sni(&a.channel)).await;
+    fwd.claim(&package).await.expect("claim");
+    let (status, body) = call(fwd_port, "/northflank/v1/projects").await;
+    assert_eq!(status, 200, "{body}");
+    let seen = upstream.requests();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].header("authorization"),
+        Some(format!("Bearer {}", a.token).as_str())
+    );
+
+    // One state behind the channel and the loopback listener.
+    let listed = issuer_api::list_at(&a.issuer, &route).await.expect("list");
+    assert_eq!(
+        listed.iter().map(|s| s.sandbox_id).collect::<Vec<_>>(),
+        [package.sandbox_id]
+    );
+    assert!(listed[0].claimed);
+    let port = enclave.issuer_port(a.account_id).await.expect("serving");
+    let local = issuer_api::list(&a.issuer, port)
+        .await
+        .expect("loopback list");
+    assert_eq!(
+        local.iter().map(|s| s.sandbox_id).collect::<Vec<_>>(),
+        [package.sandbox_id]
+    );
+
+    // What crossed the parent: the account's name, and nothing readable.
+    let wire = tap.bytes();
+    assert!(wire.len() > 1024, "the tap saw the traffic");
+    assert!(
+        contains(&wire, a.channel.as_bytes()),
+        "the SNI names the account (§1.1): the tap reads the ClientHello"
+    );
+    assert!(
+        !contains(&wire, b"/_klav/sandboxes"),
+        "the request is in TLS"
+    );
+    assert!(!contains(&wire, b"/_klav/claim"), "the claim is in TLS");
+    assert!(
+        !contains(&wire, klav_proto::agent::HEADER_SIGNATURE.as_bytes()),
+        "the signature headers are in TLS"
+    );
+    never_on_wire(&wire, package.secret.expose(), "the one-time secret");
+    never_on_wire(&wire, package_text.as_bytes(), "the package");
+    never_on_wire(&wire, a.token.as_bytes(), "the provider token");
+
+    // A signed request taken twice: the second is a replay.
+    let path = format!("/_klav/sandboxes?channel={}", a.channel);
+    let headers = signed(&a.issuer, &reqwest::Method::GET, &path);
+    let pin = package.proxy_pin;
+    assert_eq!(
+        on_channel(&parent_text, &a.channel, pin, "GET", &path, &headers).await,
+        (200, String::new())
+    );
+    assert_eq!(
+        on_channel(&parent_text, &a.channel, pin, "GET", &path, &headers).await,
+        (401, "klav_not_allowed".into())
+    );
+
+    // The channel's name is signed: the same issuer's valid signature for
+    // another channel, for a port, or with no query is refused.
+    let other = format!("a{}.{ENDPOINT}", "00".repeat(16));
+    for query in [
+        format!("?channel={other}"),
+        format!("?port={port}"),
+        format!("?channel={}&port={port}", a.channel),
+        format!("?channel={}", a.channel.to_ascii_uppercase()),
+        String::new(),
+    ] {
+        let path = format!("/_klav/sandboxes{query}");
+        let headers = signed(&a.issuer, &reqwest::Method::GET, &path);
+        assert_eq!(
+            on_channel(&parent_text, &a.channel, pin, "GET", &path, &headers).await,
+            (403, "klav_not_allowed".into()),
+            "{query}"
+        );
+    }
+    // A request signed for the channel, on the loopback listener.
+    let headers = signed(&a.issuer, &reqwest::Method::GET, &path);
+    let mut req = reqwest::Client::new().get(format!("http://127.0.0.1:{port}{path}"));
+    for (n, v) in &headers {
+        req = req.header(*n, v);
+    }
+    assert_eq!(req.send().await.expect("loopback").status().as_u16(), 403);
+
+    // Another `Host`, or a browser's header: refused.
+    for (host, extra) in [
+        ("evil.example", ""),
+        (other.as_str(), ""),
+        (a.channel.as_str(), "origin: https://evil.example\r\n"),
+        (a.channel.as_str(), "sec-fetch-site: cross-site\r\n"),
+    ] {
+        let headers = signed(&a.issuer, &reqwest::Method::GET, &path);
+        let request = head_with("GET", &path, host, &headers, extra);
+        assert_eq!(
+            raw_on_channel(parent, &a.channel, pin, &request).await,
+            403,
+            "{host} {extra}"
+        );
+    }
+
+    // The fallback: an issuer's connection never reaches a provider.
+    let before = upstream.requests().len();
+    for (path, signed_too) in [
+        ("/northflank/v1/projects".to_owned(), false),
+        (
+            format!("/northflank/v1/projects?channel={}", a.channel),
+            true,
+        ),
+        ("/_klav/sandboxes/x/y".to_owned(), true),
+    ] {
+        let headers = if signed_too {
+            signed(&a.issuer, &reqwest::Method::GET, &path)
+        } else {
+            Vec::new()
+        };
+        let request = head_with("GET", &path, &a.channel, &headers, "");
+        let status = raw_on_channel(parent, &a.channel, pin, &request).await;
+        assert!(status == 401 || status == 404, "{path}: {status}");
+    }
+    assert_eq!(upstream.requests().len(), before, "no provider was called");
+
+    // A sandbox's own connection cannot use the issuer API.
+    let second = issuer_api::start_routed(&mut a.issuer, 9, Some(&parent_text), &start("chat-2"))
+        .await
+        .expect("second start");
+    let second = decode_package(&second.package).expect("package");
+    let mut bound = Raw::named(&key(pin), parent, sni(&a.channel))
+        .await
+        .expect("handshake");
+    bound.send(&claim_request(&second)).await.expect("claim");
+    let (status, body) = bound.answer(10 * SECOND).await.expect("claim answer");
+    assert_eq!(status, 200, "{body}");
+    let headers = signed(&a.issuer, &reqwest::Method::GET, &path);
+    bound
+        .send(&head_with("GET", &path, &a.channel, &headers, ""))
+        .await
+        .expect("send");
+    let (status, body) = bound.answer(5 * SECOND).await.expect("answer");
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("klav_not_allowed"), "{body}");
+
+    // Stopped on the channel: its forwarder gets nothing more.
+    assert!(
+        issuer_api::stop_at(&a.issuer, &route, package.sandbox_id)
+            .await
+            .expect("stop")
+    );
+    let before = upstream.requests().len();
+    let (status, _) = call(fwd_port, "/northflank/v1/projects").await;
+    assert_ne!(status, 200);
+    assert_eq!(upstream.requests().len(), before);
+
+    // A pause: start is refused, ls and stop keep working on the channel.
+    let until = i64::try_from(now() + 60 * 60 * 1000).expect("time");
+    a.person.pause_agents(None, until).await.expect("pause");
+    let refused = issuer_api::start_routed(&mut a.issuer, 9, Some(&parent_text), &start("chat-3"))
+        .await
+        .err()
+        .expect("start in a pause");
+    assert_eq!(refused.code(), "klav_agents_paused");
+    assert_eq!(
+        issuer_api::route(&mut a.issuer, 9, Some(&parent_text)).await,
+        route,
+        "the route is read in a pause"
+    );
+    let listed = issuer_api::list_at(&a.issuer, &route)
+        .await
+        .expect("list in a pause");
+    assert_eq!(
+        listed.iter().map(|s| s.sandbox_id).collect::<Vec<_>>(),
+        [second.sandbox_id]
+    );
+    issuer_api::stop_at(&a.issuer, &route, second.sandbox_id)
+        .await
+        .expect("stop in a pause");
+    assert!(
+        issuer_api::list_at(&a.issuer, &route)
+            .await
+            .expect("list")
+            .is_empty()
+    );
+    a.person.resume_agents(None).await.expect("resume");
+
+    // Still nothing readable on the wire, the second sandbox included.
+    let wire = tap.bytes();
+    never_on_wire(&wire, second.secret.expose(), "the second one-time secret");
+    never_on_wire(&wire, package.secret.expose(), "the one-time secret");
+    never_on_wire(&wire, a.token.as_bytes(), "the provider token");
+
+    // Nothing secret reached the log.
+    let text = log.text();
+    for secret in [
+        package.secret.expose().to_vec(),
+        second.secret.expose().to_vec(),
+        package_text.as_bytes().to_vec(),
+        a.token.as_bytes().to_vec(),
+    ] {
+        never_on_wire(text.as_bytes(), &secret, "a secret (in the log)");
+    }
+    drop((a.person, a.issuer, fwd));
+}
+
+/// ADR 0051 §3.1 and §6.4: account A's issuer never reaches account B's
+/// sandboxes, whatever name, pin or signed channel it tries.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_accounts_issuer_never_reaches_another_accounts_channel() {
+    use klav_sdk::sandbox::{HostedChannel, ProxyRoute, SandboxError};
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let enclave = world.enclave_with(&img, &server.url, QuotaLimits::default());
+    enclave.start_fresh().expect("seed");
+    key_server_for(&mut server, &enclave);
+    enclave
+        .load_manifest(manifest(1, &[(&img, "current")]))
+        .expect("manifest");
+    let api_base = api(&enclave).await;
+    let addr = channel(&enclave).await.to_string();
+    let upstream = Upstream::start().await;
+    let mut a = enroll_issuer(
+        &server,
+        &dir,
+        &api_base,
+        "ana@example.com",
+        "tok_a_0123456789",
+        &upstream,
+    )
+    .await;
+    let mut b = enroll_issuer(
+        &server,
+        &dir,
+        &api_base,
+        "bo@example.com",
+        "tok_b_0123456789",
+        &upstream,
+    )
+    .await;
+    let started_a = issuer_api::start_routed(&mut a.issuer, 9, Some(&addr), &start("a-1"))
+        .await
+        .expect("A starts");
+    let started_b = issuer_api::start_routed(&mut b.issuer, 9, Some(&addr), &start("b-1"))
+        .await
+        .expect("B starts");
+    let (ProxyRoute::Hosted(ha), ProxyRoute::Hosted(hb)) = (&started_a.route, &started_b.route)
+    else {
+        panic!("both hosted");
+    };
+    assert_ne!(ha.name, hb.name);
+    assert_ne!(ha.pin, hb.pin);
+    let route = |name: &str, pin: [u8; 32]| {
+        ProxyRoute::Hosted(HostedChannel {
+            name: name.to_owned(),
+            address: addr.clone(),
+            pin,
+        })
+    };
+
+    // A's issuer on B's channel with B's pin: not an issuer of B's proxy.
+    match issuer_api::list_at(&a.issuer, &route(&hb.name, hb.pin)).await {
+        Err(SandboxError::Refused { code, .. }) => assert_eq!(code, "klav_not_allowed"),
+        other => panic!(
+            "{:?}",
+            other.map(|l| l.len()).map_err(|e| e.code().to_owned())
+        ),
+    }
+    // B's name with A's pin, or A's name with B's pin: the handshake fails
+    // before a byte of the request leaves.
+    for wrong in [route(&hb.name, ha.pin), route(&ha.name, hb.pin)] {
+        match issuer_api::list_at(&a.issuer, &wrong).await {
+            Err(SandboxError::ChannelUnreachable) => {}
+            other => panic!(
+                "{:?}",
+                other.map(|l| l.len()).map_err(|e| e.code().to_owned())
+            ),
+        }
+    }
+    // A request A signed for B's channel, sent on A's own channel.
+    let path = format!("/_klav/sandboxes?channel={}", hb.name);
+    let headers = signed(&a.issuer, &reqwest::Method::GET, &path);
+    assert_eq!(
+        on_channel(&addr, &ha.name, ha.pin, "GET", &path, &headers).await,
+        (403, "klav_not_allowed".into())
+    );
+    // Each lists only its own; A cannot stop B's sandbox.
+    let own = |l: Vec<klav_sdk::sandbox::LiveSandbox>| {
+        l.into_iter().map(|s| s.sandbox_id).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        own(issuer_api::list_at(&a.issuer, &started_a.route)
+            .await
+            .expect("A")),
+        [started_a.sandbox_id]
+    );
+    assert_eq!(
+        own(issuer_api::list_at(&b.issuer, &started_b.route)
+            .await
+            .expect("B")),
+        [started_b.sandbox_id]
+    );
+    match issuer_api::stop_at(&a.issuer, &started_a.route, started_b.sandbox_id).await {
+        Err(SandboxError::Refused { code, .. }) => assert_eq!(code, "klav_sandbox_not_found"),
+        other => panic!("{:?}", other.map_err(|e| e.code().to_owned())),
+    }
+    assert_eq!(
+        own(issuer_api::list_at(&b.issuer, &started_b.route)
+            .await
+            .expect("B")),
+        [started_b.sandbox_id]
+    );
+    drop((a.person, a.issuer, b.person, b.issuer, started_a, started_b));
+}
+
+/// ADR 0051 §6.4: a connection that names an account asks the enclave to
+/// start that account's proxy (a session and a heartbeat on the server);
+/// a proxy that cannot start is asked again at most
+/// [`super::engine::SERVES_PER_MINUTE`] times a minute.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_accounts_proxy_is_started_at_most_so_often() {
+    let world = World::new().await;
+    let img = image("0.12.0");
+    // A server that never answers: every start fails at the session.
+    let enclave = world.enclave(&img);
+    enclave.start_fresh().expect("seed");
+    let e = enrollment(7);
+    let account = e.account_id;
+    enclave.enroll_for_test(e).expect("enroll");
+    for _ in 0..super::engine::SERVES_PER_MINUTE {
+        let refused = enclave.issuer_port(account).await.expect_err("no server");
+        assert!(!refused.contains("too many"), "{refused}");
+    }
+    let refused = enclave.issuer_port(account).await.expect_err("limited");
+    assert!(refused.contains("too many starts"), "{refused}");
 }

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use klav_core::ids::SandboxId;
 use klav_sdk::Agent;
-use klav_sdk::sandbox::{self, LiveSandbox, McpEndpoint, SandboxError, StartRequest};
+use klav_sdk::sandbox::{self, LiveSandbox, McpEndpoint, ProxyRoute, SandboxError, StartRequest};
 use klav_sdk::secret_file::SecretFile;
 use klav_sdk::{Redactor, StreamRedactor};
 use nix::sys::signal::{Signal, kill};
@@ -315,6 +315,23 @@ fn load(ctx: &Ctx, target: &SandboxAgentArgs) -> CliResult<Agent> {
     Ok(Agent::load(&ctx.home, &name)?)
 }
 
+/// Where Klav Cloud's channel is dialed when the grant names it (ADR 0051
+/// §6.4): its own name by default, or `KLAV_HOSTED_PROXY_CHANNEL_ADDR`
+/// (`HOST:PORT`, a relay or a test). The grant's pin, not the address,
+/// decides which proxy is trusted.
+fn channel_addr() -> Option<String> {
+    std::env::var(sandbox::HOSTED_CHANNEL_ADDR_ENV)
+        .ok()
+        .filter(|a| !a.trim().is_empty())
+}
+
+/// The way to this agent's proxy for `ls` and `stop`: Klav Cloud's
+/// channel when the grant names it, otherwise `--proxy-port` on this
+/// machine, as before.
+async fn route(agent: &mut Agent, target: &SandboxAgentArgs) -> ProxyRoute {
+    sandbox::route(agent, target.proxy_port, channel_addr().as_deref()).await
+}
+
 /// The exit code and the `next` of an error from the proxy or the SDK.
 /// Errors of this agent's own state (pause, account deletion, rollback)
 /// keep the codes every agent command uses.
@@ -323,6 +340,14 @@ fn sandbox_error(e: SandboxError) -> CliError {
         SandboxError::Client(_) | SandboxError::AnswerLost(_) => None,
         SandboxError::NoProxy => Some(
             "Tell the person this message, and that they can let this agent start sandboxes again with `klav proxy issuer add <agent>` (after `klav proxy use` if the account has no proxy), or in the Klav app (Development › Sandboxes). Do not run it yourself and do not copy keys into the sandbox. If the code can run on this machine, offer to run it here with `run_with_secrets` or `klav agent run`."
+                .to_owned(),
+        ),
+        SandboxError::ChannelUnreachable => Some(
+            "Klav Cloud's proxy did not answer on this account's channel, or answered with another key than this agent's grant pins. Wait a minute and try once more; if it fails again, tell the person this exact message. Do not retry in a loop and do not copy keys into the sandbox."
+                .to_owned(),
+        ),
+        SandboxError::ChannelWithoutIssuerApi => Some(
+            "Tell the person this exact message: Klav Cloud's proxy may need its update, or the sandbox issuer's proxy address points at another proxy. Do not retry in a loop and do not copy keys into the sandbox."
                 .to_owned(),
         ),
         SandboxError::ProxyUnreachable => Some(
@@ -424,8 +449,9 @@ async fn start_cmd(ctx: &Ctx, args: SandboxStartArgs) -> CliResult<()> {
         profiles: args.profiles.clone(),
         ttl_secs: args.ttl.map(|t| t.as_secs()),
     };
+    let channel = channel_addr();
     let result = tokio::select! {
-        result = sandbox::start(&mut agent, args.target.proxy_port, &request) => result,
+        result = sandbox::start_routed(&mut agent, args.target.proxy_port, channel.as_deref(), &request) => result,
         signal = signals.recv() => {
             return Err(interrupted(signal, "while the sandbox was being started; `klav sandbox ls` shows whether one started, and `klav sandbox stop <id>` ends it".into()));
         }
@@ -445,10 +471,12 @@ async fn start_cmd(ctx: &Ctx, args: SandboxStartArgs) -> CliResult<()> {
         }
     };
     let id = started.sandbox_id;
+    // The proxy that started it lists it and stops it.
+    let route = started.route.clone();
     // A signal that came with the answer: nothing is handed out.
     if let Ok(signal) = tokio::time::timeout(Duration::ZERO, signals.recv()).await {
         drop(started);
-        let ended = stop_unheld(&agent, args.target.proxy_port, id).await;
+        let ended = stop_unheld(&agent, &route, id).await;
         return Err(interrupted(
             signal,
             format!("before the package was handed out; {ended}"),
@@ -456,7 +484,7 @@ async fn start_cmd(ctx: &Ctx, args: SandboxStartArgs) -> CliResult<()> {
     }
     // Which of its profiles are MCP profiles: best effort, so an older
     // proxy or a failed list still hands the package out.
-    let mcp = sandbox::mcp_endpoints(&agent, args.target.proxy_port)
+    let mcp = sandbox::mcp_endpoints_at(&agent, &route)
         .await
         .unwrap_or_default();
     let next = start_next(id, &args.profiles, &mcp);
@@ -481,7 +509,7 @@ async fn start_cmd(ctx: &Ctx, args: SandboxStartArgs) -> CliResult<()> {
         );
         if let Err(e) = written {
             // Nobody can have the package: end the sandbox now.
-            let ended = stop_unheld(&agent, args.target.proxy_port, id).await;
+            let ended = stop_unheld(&agent, &route, id).await;
             let why = match e.io_error() {
                 Some(cause) => format!("cannot write {}: {cause}", path.display()),
                 None => format!(
@@ -523,7 +551,7 @@ async fn start_cmd(ctx: &Ctx, args: SandboxStartArgs) -> CliResult<()> {
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
-            let ended = stop_unheld(&agent, args.target.proxy_port, id).await;
+            let ended = stop_unheld(&agent, &route, id).await;
             return Err(CliError::Other(format!(
                 "cannot run {}: {e}; {ended}",
                 program.to_string_lossy()
@@ -620,8 +648,8 @@ async fn start_cmd(ctx: &Ctx, args: SandboxStartArgs) -> CliResult<()> {
 }
 
 /// Ends a sandbox whose package nobody got, and says whether it did.
-async fn stop_unheld(agent: &Agent, port: u16, id: SandboxId) -> String {
-    match sandbox::stop(agent, port, id).await {
+async fn stop_unheld(agent: &Agent, route: &ProxyRoute, id: SandboxId) -> String {
+    match sandbox::stop_at(agent, route, id).await {
         Ok(_) => format!("sandbox {id} was stopped"),
         Err(_) => format!("sandbox {id} could not be stopped: run `klav sandbox stop {id}`"),
     }
@@ -721,10 +749,11 @@ struct LsView<'a> {
 }
 
 async fn ls_cmd(ctx: &Ctx, args: SandboxLsArgs) -> CliResult<()> {
-    let agent = load(ctx, &args.target)?;
+    let mut agent = load(ctx, &args.target)?;
+    let route = route(&mut agent, &args.target).await;
     // Labels and profiles come from whatever answers on the port: shown
     // without control or hidden characters, in the table and the JSON.
-    let live: Vec<LiveSandbox> = sandbox::list(&agent, args.target.proxy_port)
+    let live: Vec<LiveSandbox> = sandbox::list_at(&agent, &route)
         .await
         .map_err(sandbox_error)?
         .into_iter()
@@ -779,15 +808,15 @@ async fn stop_cmd(
     args: SandboxStopArgs,
     partial: &mut Option<StoppedView>,
 ) -> CliResult<()> {
-    let agent = load(ctx, &args.target)?;
-    let port = args.target.proxy_port;
+    let mut agent = load(ctx, &args.target)?;
+    let route = route(&mut agent, &args.target).await;
     let ids: Vec<SandboxId> = match &args.id {
         Some(text) => vec![
             text.trim()
                 .parse()
                 .map_err(|_| usage(format!("{text:?} is not a sandbox ID")))?,
         ],
-        None => sandbox::list(&agent, port)
+        None => sandbox::list_at(&agent, &route)
             .await
             .map_err(sandbox_error)?
             .into_iter()
@@ -800,7 +829,7 @@ async fn stop_cmd(
     };
     let all = args.id.is_none();
     for id in ids {
-        match sandbox::stop(&agent, port, id).await {
+        match sandbox::stop_at(&agent, &route, id).await {
             Ok(logged) => {
                 view.logged &= logged;
                 view.stopped.push(id);
