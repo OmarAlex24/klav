@@ -179,6 +179,7 @@ final class MacModel: ObservableObject, RequestsModel {
     @Published var activityAgent: String?
     /// The newest thing an agent did, for the menu bar's line.
     @Published var lastAgentUse: LogEntryInfo?
+    var lastAgentUseReadAt = Date.distantPast
     /// Development › Sandboxes (ADR 0036 E2, E4): the last list `klavd`
     /// gave, and why the last read failed. The menu bar's theft signals
     /// come from it, also while locked; signing out forgets it.
@@ -236,6 +237,22 @@ final class MacModel: ObservableObject, RequestsModel {
     /// printed. Only in memory, so a restart forgets them and the person
     /// compares by eye.
     @Published var launchedRegistrations: [String: LaunchedRegistration] = [:]
+    /// The menu bar's quick search (QuickSearch.swift): the vault's list
+    /// with no values (titles, user names, sites, tags), searched in memory
+    /// as the person types. `nil` until the first read after unlocking
+    /// lands; locking, signing out and another account forget it.
+    @Published var quickItems: [ItemInfo]?
+    /// Which of them have a one-time code, read after the list.
+    @Published var quickCodes: Set<String> = []
+    /// Why the first read failed, while there is no list to show.
+    @Published var quickProblem: String?
+    /// Moves each time something outside the window (the menu bar) opens
+    /// an item in it: the vault list drops its own search so it shows.
+    @Published var itemOpenRequests = 0
+    var quickReadGeneration: Int?
+    var quickReadsStarted = 0
+    var quickReadsLanded = 0
+    var quickEpoch = 0
 
     let engine: MacEngine
     /// Signs in or creates the account in this process (ADR 0027 §3).
@@ -361,10 +378,12 @@ final class MacModel: ObservableObject, RequestsModel {
 
     // MARK: Engine calls
 
-    /// Runs `body` on a background thread.
-    func run<T: Sendable>(_ body: @escaping @Sendable (MacEngine) throws -> T) async throws -> T {
+    /// Runs `body` on a background thread; reads nobody waits on go at
+    /// `.utility`.
+    func run<T: Sendable>(priority: TaskPriority = .userInitiated,
+                          _ body: @escaping @Sendable (MacEngine) throws -> T) async throws -> T {
         let engine = engine
-        return try await Task.detached(priority: .userInitiated) { try body(engine) }.value
+        return try await Task.detached(priority: priority) { try body(engine) }.value
     }
 
     // MARK: State
@@ -415,7 +434,10 @@ final class MacModel: ObservableObject, RequestsModel {
             phase = next
             // «Unlock Klav to revoke…» and the like stop being true.
             sandboxNotice = nil
-            if next != .unlocked { clearRequests() }
+            if next != .unlocked {
+                clearRequests()
+                forgetQuickItems()
+            }
             if next == .signedOut { forgetSandboxes() }
             if next == .unlocked { resumeRevoking() }
         }
@@ -423,6 +445,8 @@ final class MacModel: ObservableObject, RequestsModel {
             lastRevision = info.revision
             generation += 1
         }
+        // Once per generation: a no-op while it is read or already read.
+        loadQuickItems()
         if phase == .unlocked, !info.accountDeleted, Date().timeIntervalSince(lastRequests) >= 10 {
             loadRequests()
         }
@@ -448,6 +472,7 @@ final class MacModel: ObservableObject, RequestsModel {
         secretRequests = []
         selectedItem = nil
         lastAgentUse = nil
+        lastAgentUseReadAt = .distantPast
         closeSheets()
     }
 
@@ -477,6 +502,7 @@ final class MacModel: ObservableObject, RequestsModel {
     func changed() {
         generation += 1
         loadRequests()
+        loadQuickItems()
     }
 
     func loadRequests() {
@@ -560,6 +586,7 @@ final class MacModel: ObservableObject, RequestsModel {
         Task {
             _ = try? await run { try $0.lock() }
             clearRequests()
+            forgetQuickItems()
             refresh()
         }
     }

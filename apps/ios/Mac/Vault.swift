@@ -13,6 +13,8 @@ struct VaultPane: View {
     @State private var problem: String?
     /// How many variables each environment in the list has (ADR 0032 §6).
     @State private var environmentCounts: [String: Int] = [:]
+    /// An item opened from the menu bar, to scroll to once it is listed.
+    @State private var scrollPending: String?
     @FocusState private var searching: Bool
     @FocusState private var listFocused: Bool
 
@@ -62,6 +64,15 @@ struct VaultPane: View {
         }
         .task(id: "\(filter)|\(query)|\(model.generation)") { await load() }
         .onChange(of: filter) { _, _ in repoProjectFilter = nil }
+        // A new pane (the window just opened, or another section) shows the
+        // open item, however far down the list it is.
+        .onAppear { scrollPending = model.selectedItem }
+        // The menu bar opened an item: nothing of this list's own may hide it.
+        .onChange(of: model.itemOpenRequests) { _, _ in
+            query = ""
+            repoProjectFilter = nil
+            scrollPending = model.selectedItem
+        }
         .sheet(isPresented: $linkingRepo) {
             LinkRepoSheet(projects: projects, initialProjectId: initialLinkProjectId)
                 .environmentObject(model)
@@ -171,7 +182,15 @@ struct VaultPane: View {
             .focusEffectDisabled()
             .onKeyPress(.downArrow) { move(1, proxy); return .handled }
             .onKeyPress(.upArrow) { move(-1, proxy); return .handled }
+            .onChange(of: items) { _, _ in scrollToPending(proxy) }
+            .onChange(of: scrollPending) { _, _ in scrollToPending(proxy) }
         }
+    }
+
+    private func scrollToPending(_ proxy: ScrollViewProxy) {
+        guard let id = scrollPending, visibleItems.contains(where: { $0.id == id }) else { return }
+        scrollPending = nil
+        proxy.scrollTo(id, anchor: .center)
     }
 
     private func rowBadge(for item: ItemInfo) -> String? {
@@ -220,11 +239,17 @@ struct VaultPane: View {
         do {
             async let loadedItems = model.run { try $0.items(query: query) }
             async let loadedProjects = model.run { try $0.projects(vaultId: nil) }
-            items = try await loadedItems
-            projects = (try? await loadedProjects) ?? []
+            let loaded = try await loadedItems
+            let loadedProjectList = (try? await loadedProjects) ?? []
+            // Overtaken (another filter or search, an item opened from the
+            // menu bar): the newer load decides what is listed and selected.
+            guard !Task.isCancelled else { return }
+            items = loaded
+            projects = loadedProjectList
             if items.contains(where: { $0.kind == .environment }) {
                 let listed = (try? await model.run { try $0.environments(projectId: nil) }) ?? []
                 environmentCounts = Dictionary(listed.map { ($0.id, Int($0.variables)) }, uniquingKeysWith: { a, _ in a })
+                guard !Task.isCancelled else { return }
             }
             problem = nil
             if let selected = model.selectedItem, !visibleItems.contains(where: { $0.id == selected }) {

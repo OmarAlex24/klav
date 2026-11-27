@@ -47,8 +47,12 @@ extension MacModel {
     // MARK: Activity (§8)
 
     /// The newest thing an agent did with an item, for the menu bar.
-    func loadLastAgentUse() async {
+    /// `maxAge`: a read newer than that is kept (the menu bar asks at each
+    /// showing, and `klavd` answers one unlocked request at a time).
+    func loadLastAgentUse(maxAge: TimeInterval = 0) async {
         guard phase == .unlocked, !accountDeleted else { lastAgentUse = nil; return }
+        guard maxAge == 0 || Date().timeIntervalSince(lastAgentUseReadAt) >= maxAge else { return }
+        lastAgentUseReadAt = Date()
         let recent = try? await run { try $0.auditLog(filter: .all(limit: 40)) }
         lastAgentUse = recent?.first { $0.agentId != nil && $0.action == "agent.access" && $0.itemId != nil }
     }

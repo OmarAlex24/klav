@@ -45,7 +45,7 @@ Item kinds: login, card, identity, SSH key, file, one-time code, secure note and
 
 - **Extension:** fills logins on the page, with a menu in the field, a sign-in card and a central search. It handles multi-step sign-ins (email first, then password, then code). It saves or updates a login when you submit a form. It checks the site before it fills, and a login saved for a subdomain is offered on the parent site only if you choose it. [extension.md §5](extension.md#5-autofill)
 - **iOS app:** AutoFill for passwords in Safari and other apps. [ios.md §3](ios.md#3-autofill)
-- **Mac app:** copy the username or password from the menu bar search. The clipboard stays on this Mac and clears after 30 seconds.
+- **Mac app:** copy the username, password or API key from the menu bar search, or click a result to open it in the window. The clipboard stays on this Mac and clears after 30 seconds.
 - **CLI:** `klav item get <item> --reveal`, or `--field` for one value.
 
 ### One-time codes

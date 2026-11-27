@@ -500,13 +500,15 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
 
     func items(query: ItemQuery) throws -> [ItemInfo] {
         try locked {
-            samples.map(\.info).filter { info in
+            // Like klavd: `codes` keeps the items with a one-time code.
+            samples.filter { !query.codes || $0.totp }.map(\.info).filter { info in
                 (query.kind == nil || info.kind == query.kind)
                     && (query.vaultId == nil || info.vaultId == query.vaultId)
                     && (query.text.map { t in
                         info.title.localizedCaseInsensitiveContains(t)
                             || (info.username ?? "").localizedCaseInsensitiveContains(t)
                             || info.urls.contains { $0.localizedCaseInsensitiveContains(t) }
+                            || info.tags.contains { $0.localizedCaseInsensitiveContains(t) }
                     } ?? true)
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }

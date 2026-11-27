@@ -1544,6 +1544,67 @@
         }
       }
     },
+    "Copy the API key": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copiar la llave de API"
+          }
+        }
+      }
+    },
+    "Key": {
+      "comment": "Menu bar button that copies an API key",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Llave"
+          }
+        }
+      }
+    },
+    "Loading your vault…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargando tu bóveda…"
+          }
+        }
+      }
+    },
+    "Open %@ in Klav": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir %@ en Klav"
+          }
+        }
+      }
+    },
+    "Open in Klav": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir en Klav"
+          }
+        }
+      }
+    },
+    "This API key has no value to copy yet.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta llave de API todavía no tiene un valor que copiar."
+          }
+        }
+      }
+    },
     "a program with no terminal": {
       "localizations": {
         "es": {

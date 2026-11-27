@@ -82,8 +82,8 @@ enum KeyIcon {
 }
 
 /// The panel under the menu bar icon: the state, a quick search that
-/// copies a user name, password or code, the requests waiting, and the
-/// way to the window.
+/// copies a user name, password, code or key, or opens the item in the
+/// window, the requests waiting, and the way to the window.
 struct MenuBarView: View {
     @EnvironmentObject private var model: MacModel
     @EnvironmentObject private var installer: Installer
@@ -92,7 +92,10 @@ struct MenuBarView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var query = ""
-    @State private var results: [ItemInfo] = []
+    /// The result Return acts on, moved with ↑ and ↓ or the pointer.
+    @State private var selection = 0
+    /// The panel's other lines, read a moment after each showing.
+    @State private var panelLoad: Task<Void, Never>?
     @State private var password = ""
     @State private var problem: String?
     @FocusState private var searching: Bool
@@ -146,7 +149,11 @@ struct MenuBarView: View {
         .overlay(alignment: .bottom) {
             if let toast = model.toast { ToastView(toast: toast) }
         }
-        .task(id: "\(query)|\(model.generation)|\(model.phase == .unlocked)") { await search() }
+        // The panel is a window macOS shows and hides, and SwiftUI may keep
+        // this view between showings: each showing focuses the search and
+        // reads what may have changed, and hiding it starts the next one
+        // empty (KeyWindowWatcher).
+        .background(KeyWindowWatcher { key in key ? shown() : hidden() })
     }
 
     // MARK: Parts
@@ -204,28 +211,9 @@ struct MenuBarView: View {
                 DeletedLine()
                 Rule()
             }
-            HStack(spacing: 8) {
-                IconView(icon: .search, size: 14).foregroundStyle(Palette.gris)
-                TextField("Search your vault", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.ui(14))
-                    .focused($searching)
-                    .onSubmit { copyFirst() }
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 40)
+            searchField
             Rule()
-            if results.isEmpty {
-                Text(query.isEmpty ? "Your vault is empty." : "Nothing matches “\(query)”.")
-                    .font(.ui(13))
-                    .foregroundStyle(Palette.gris)
-                    .padding(14)
-            } else {
-                ForEach(results.prefix(6)) { item in
-                    QuickRow(item: item)
-                    if item.id != results.prefix(6).last?.id { Rule().padding(.leading, 52) }
-                }
-            }
+            resultsList
             if model.pendingCount > 0 {
                 Rule()
                 requests
@@ -239,12 +227,92 @@ struct MenuBarView: View {
                 PauseLine(open: open)
             }
         }
-        .onAppear { searching = true }
-        .task(id: model.generation) {
-            await model.loadLastAgentUse()
-            // Each read syncs and verifies the log: at most every 5 min.
-            await model.loadSandboxes(maxAge: 300)
+        .task(id: model.generation) { await loadPanel(after: .seconds(1)) }
+    }
+
+    /// The search: typed in memory over the model's copy of the list, so
+    /// nothing waits on `klavd` (QuickSearch.swift).
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            IconView(icon: .search, size: 14).foregroundStyle(Palette.gris)
+            TextField("Search your vault", text: $query)
+                .textFieldStyle(.plain)
+                .font(.ui(14))
+                .focused($searching)
+                .onSubmit { primary() }
+                .onKeyPress(.downArrow) { move(1) }
+                .onKeyPress(.upArrow) { move(-1) }
+                // ⌘↩ opens the selected result in the window.
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.command), let item = selected else { return .ignored }
+                    openInWindow(item)
+                    return .handled
+                }
+                // Esc clears the search first; with nothing typed it closes the panel.
+                .onKeyPress(.escape) {
+                    guard !query.isEmpty else { return .ignored }
+                    query = ""
+                    return .handled
+                }
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                    searching = true
+                } label: {
+                    IconView(icon: .close, size: 10)
+                        .foregroundStyle(Palette.gris)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Clear the search")
+                .accessibilityLabel("Clear the search")
+            }
         }
+        .padding(.horizontal, 14)
+        .frame(height: 40)
+        .onChange(of: query) { _, _ in selection = 0 }
+    }
+
+    /// The first results, or why there are none.
+    @ViewBuilder private var resultsList: some View {
+        let shown = results
+        if shown.isEmpty {
+            Group {
+                if model.quickItems == nil {
+                    if let problem = model.quickProblem {
+                        Text(verbatim: problem)
+                    } else {
+                        Text("Loading your vault…")
+                    }
+                } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Your vault is empty.")
+                } else {
+                    Text("Nothing matches “\(query)”.")
+                }
+            }
+            .font(.ui(13))
+            .foregroundStyle(Palette.gris)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(14)
+        } else {
+            ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                QuickRow(item: item, hasCode: model.quickCodes.contains(item.id), selected: index == selection,
+                         hover: { if $0 { selection = index } },
+                         open: { openInWindow(item) },
+                         copy: { copy($0, of: item) })
+                if index < shown.count - 1 { Rule().padding(.leading, 52) }
+            }
+        }
+    }
+
+    private var results: [ItemInfo] {
+        Array(QuickSearch.filter(model.quickItems ?? [], query: query).prefix(QuickSearch.limit))
+    }
+
+    private var selected: ItemInfo? {
+        let shown = results
+        return shown.indices.contains(selection) ? shown[selection] : shown.first
     }
 
     /// «cursor filled it in on github.com · GitHub · 2 min ago», which
@@ -387,28 +455,73 @@ struct MenuBarView: View {
     /// The master password's sheet shows over the window (ADR 0041).
     private func showWindow() { open() }
 
-    private func search() async {
-        guard model.phase == .unlocked else { results = []; return }
-        let text = query.trimmingCharacters(in: .whitespaces)
-        if !text.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
-        guard !Task.isCancelled else { return }
-        let found = try? await model.run { engine in
-            try engine.items(query: ItemQuery(vaultId: nil, projectId: nil, text: text.isEmpty ? nil : text,
-                                              kind: nil, trash: false))
-        }
-        results = Array((found ?? []).prefix(6))
+    private func move(_ step: Int) -> KeyPress.Result {
+        let count = results.count
+        guard count > 0 else { return .ignored }
+        selection = min(max(selection + step, 0), count - 1)
+        return .handled
     }
 
-    /// Return copies the first result's password.
-    private func copyFirst() {
-        guard let first = results.first else { return }
+    /// Return: the selected result's password, code or key (its user name
+    /// for other kinds); an item with nothing to copy opens in the window.
+    private func primary() {
+        guard let item = selected else { return }
+        if let action = QuickSearch.primary(item, hasCode: model.quickCodes.contains(item.id)) {
+            copy(action, of: item)
+        } else {
+            openInWindow(item)
+        }
+    }
+
+    /// The window, on this item.
+    private func openInWindow(_ item: ItemInfo) {
+        model.openItem(item.id)
+        open()
+    }
+
+    private func copy(_ action: QuickSearch.Action, of item: ItemInfo) {
         Task {
-            let id = first.id
-            if let value = try? await model.value(onAsk: showWindow, { try $0.fieldValue(id: id, field: "password") },
-                                                  withPassword: { try $0.fieldValueWithPassword(id: id, field: "password", password: $1) }) {
+            do {
+                let value = try await model.quickValue(action, of: item, onAsk: showWindow)
                 model.copy(value)
+            } catch is CancellationError {
+            } catch let error as QuickSearchError {
+                model.show(Toast(text: error.errorDescription ?? ""))
+            } catch {
+                model.show(Toast(text: describe(error)))
             }
         }
+    }
+
+    /// The panel showed: the search takes the keyboard, and what it shows
+    /// is read again if it may have changed.
+    private func shown() {
+        searching = true
+        model.loadQuickItems()
+        panelLoad?.cancel()
+        panelLoad = Task { await loadPanel(after: .seconds(1)) }
+    }
+
+    /// The panel hid: the next showing starts with an empty search.
+    private func hidden() {
+        query = ""
+        selection = 0
+        panelLoad?.cancel()
+        panelLoad = nil
+    }
+
+    /// The panel's other lines. `klavd` holds the session for the whole of
+    /// each unlocked request, and both of these sync with the server, so a
+    /// copy asked while they run waits for them: they start a moment after
+    /// the panel shows (a copy right away goes first), not again while a
+    /// recent read stands, and not at all once the panel hid.
+    private func loadPanel(after delay: Duration) async {
+        try? await Task.sleep(for: delay)
+        guard !Task.isCancelled, model.phase == .unlocked else { return }
+        await model.loadLastAgentUse(maxAge: 30)
+        guard !Task.isCancelled else { return }
+        // Each read syncs and verifies the log: at most every 5 min.
+        await model.loadSandboxes(maxAge: 300)
     }
 
     private func touchID() async {
@@ -428,7 +541,6 @@ struct MenuBarView: View {
     }
 }
 
-/// One search result: copy the user name, the password or the code.
 /// The menu bar's line after the deletion (§7.6): the vault is read-only.
 private struct DeletedLine: View {
     var body: some View {
@@ -448,85 +560,56 @@ private struct DeletedLine: View {
     }
 }
 
+/// One search result. Clicking it opens the item in the window; its
+/// buttons copy the user name, the password, the code or the key, and
+/// only that.
 private struct QuickRow: View {
-    @EnvironmentObject private var model: MacModel
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismiss) private var dismiss
     let item: ItemInfo
-    @State private var hovering = false
-    /// A login shows «Code» once klavd says it has one.
-    @State private var hasCode = false
+    let hasCode: Bool
+    /// Return acts on it.
+    let selected: Bool
+    let hover: (Bool) -> Void
+    let open: () -> Void
+    let copy: (QuickSearch.Action) -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            Tile(title: item.title, site: item.urls.first, size: 26)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: item.title).font(.ui(13, .medium)).foregroundStyle(Palette.tinta).lineLimit(1)
-                if let user = item.username {
-                    Text(verbatim: user).font(.ui(12)).foregroundStyle(Palette.gris).lineLimit(1)
+            Button(action: open) {
+                HStack(spacing: 12) {
+                    Tile(title: item.title, site: item.urls.first, size: 26)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: item.title).font(.ui(13, .medium)).foregroundStyle(Palette.tinta).lineLimit(1)
+                        if let user = item.username {
+                            Text(verbatim: user).font(.ui(12)).foregroundStyle(Palette.gris).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 8)
                 }
+                // The whole row up to the buttons opens it, padding included.
+                .padding(.leading, 14)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 8)
+            .buttonStyle(.plain)
+            .help("Open in Klav")
+            .accessibilityLabel(Text("Open \(item.title) in Klav"))
             HStack(spacing: 4) {
-                if item.username != nil {
-                    SmallAction(title: "User") { copy("username") }
-                }
-                if item.kind == .login {
-                    SmallAction(title: "Password") { copy("password") }
-                }
-                if item.kind == .totp || hasCode {
-                    SmallAction(title: "Code") { code() }
+                ForEach(QuickSearch.actions(item, hasCode: hasCode), id: \.self) { action in
+                    switch action {
+                    case .username: SmallAction(title: "User") { copy(.username) }
+                    case .password: SmallAction(title: "Password") { copy(.password) }
+                    case .code: SmallAction(title: "Code") { copy(.code) }
+                    case .key: SmallAction(title: "Key", label: String(localized: "Copy the API key")) { copy(.key) }
+                    }
                 }
             }
             .fixedSize()
-            .opacity(hovering ? 1 : 0.55)
+            .opacity(selected ? 1 : 0.55)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(hovering ? Palette.niebla : Color.clear)
-        .onHover { hovering = $0 }
-        .task(id: item.id) {
-            guard item.kind == .login else { return }
-            let id = item.id
-            // From the item, not by fetching a code: with the presence gate
-            // on a fetch may ask for Touch ID (ADR 0041).
-            hasCode = (try? await model.run { try $0.item(id: id) })?.hasTotp ?? false
-        }
-    }
-
-    /// The master password's sheet shows over the window (ADR 0041).
-    private func showWindow() {
-        openWindow(id: WindowID.main)
-        NSApp.activate()
-        dismiss()
-    }
-
-    private func copy(_ field: String) {
-        let id = item.id
-        Task {
-            do {
-                let value = try await model.value(onAsk: showWindow, { try $0.fieldValue(id: id, field: field) },
-                                                  withPassword: { try $0.fieldValueWithPassword(id: id, field: field, password: $1) })
-                model.copy(value)
-            } catch is CancellationError {
-            } catch {
-                model.show(Toast(text: describe(error)))
-            }
-        }
-    }
-
-    private func code() {
-        let id = item.id
-        Task {
-            do {
-                let info = try await model.value(onAsk: showWindow, { try $0.totp(id: id) },
-                                                 withPassword: { try $0.totpWithPassword(id: id, password: $1) })
-                model.copy(info.code)
-            } catch is CancellationError {
-            } catch {
-                model.show(Toast(text: describe(error)))
-            }
-        }
+        .padding(.trailing, 14)
+        // One highlight: the pointer moves the selection, like ↑ and ↓.
+        .background(selected ? Palette.niebla : Color.clear)
+        .onHover(perform: hover)
     }
 }
 
@@ -616,5 +699,48 @@ private struct FooterButton: View {
         .buttonStyle(.plain)
         .keyboardShortcut(KeyEquivalent(shortcut.lowercased().first ?? shortcut), modifiers: [.command])
         .onHover { hovering = $0 }
+    }
+}
+
+/// Tells the panel when its window becomes key (macOS showed it) and
+/// stops being key (it hid). `onAppear` can't: SwiftUI may keep the
+/// panel's view between showings, and it may run before the window can
+/// take the keyboard. A window that is not key never asks for it, so a
+/// screenshot run's preview window takes no focus from anyone.
+private struct KeyWindowWatcher: NSViewRepresentable {
+    let changed: (Bool) -> Void
+
+    func makeNSView(context: Context) -> WatcherView {
+        let view = WatcherView()
+        view.changed = changed
+        return view
+    }
+
+    func updateNSView(_ view: WatcherView, context: Context) {
+        view.changed = changed
+    }
+
+    final class WatcherView: NSView {
+        var changed: ((Bool) -> Void)?
+        private var observers: [NSObjectProtocol] = []
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+            observers = []
+            guard let window else { return }
+            let center = NotificationCenter.default
+            observers.append(center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window,
+                                                queue: .main) { [weak self] _ in self?.changed?(true) })
+            observers.append(center.addObserver(forName: NSWindow.didResignKeyNotification, object: window,
+                                                queue: .main) { [weak self] _ in self?.changed?(false) })
+            if window.isKeyWindow {
+                DispatchQueue.main.async { [weak self] in self?.changed?(true) }
+            }
+        }
+
+        deinit {
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+        }
     }
 }
