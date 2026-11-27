@@ -12,8 +12,8 @@
 //! * [`verify_handoff_peer`]: what an enclave checks of a peer before it
 //!   hands over the seed (§4.2).
 //! * [`verify_manifest`]: the signed Klav Enclave Transparency Manifest
-//!   (§2.4), against [`RELEASE_AUTHORITY_KEYS`], which this build leaves
-//!   empty: every manifest is refused until a later layer pins the keys.
+//!   (§2.4), against [`RELEASE_AUTHORITY_KEYS`]: the release authority's
+//!   active and backup keys.
 //! * [`verify_handoff_holder`]: what a joining enclave checks of the holder
 //!   (§4.2 step 3).
 //! * [`derive_account_keys`], [`enclave_binding`], [`handoff_info`],

@@ -9,10 +9,10 @@
 #   deploy/nitro/sign-manifest.sh --manifest N.json --key PATH --release-key HEX
 #
 # --key is a PEM private key file read once. Pass the named pipe that
-# `klav inject --pipe` serves, so the key never touches the disk (runbook §2):
+# `klav inject --fifo` serves, so the key never touches the disk (runbook §2):
 #
 #   klav inject -r 'klav://Personal/General/klav-release-authority-active/key' \
-#     --pipe -o "$TMPDIR/klav-release.pem" --ttl 2m &
+#     --fifo -o "$TMPDIR/klav-release.pem" --ttl 2m &
 #   deploy/nitro/sign-manifest.sh --manifest deploy/nitro/manifests/drafts/1.json \
 #     --key "$TMPDIR/klav-release.pem" --release-key <active public key hex>
 #

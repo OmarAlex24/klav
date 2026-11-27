@@ -125,6 +125,8 @@ impl Device {
             // No test may reach the real server by forgetting --server
             // (ADR 0028 §2).
             .env("KLAV_NO_DEFAULT_SERVER", "1")
+            // Nor Klav Cloud's proxy: nothing listens on port 9.
+            .env("KLAV_HOSTED_PROXY_URL", "http://127.0.0.1:9")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -237,6 +239,7 @@ impl Klavd {
             .env("KLAV_HOME", &device.home)
             .env("PATH", path_without_installed_klav())
             .env("KLAV_NO_DEFAULT_SERVER", "1")
+            .env("KLAV_HOSTED_PROXY_URL", "http://127.0.0.1:9")
             .args(["--no-touch-id", "--idle-lock", "10m"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())

@@ -119,7 +119,7 @@
     "sha256": "9bc3e01bd72f2db9cd4b11d08c4c732789c6bfcc3ddec1d7aead0d377e5ae7e3",
     "signed_message": "0000001c6b6c61762f76312f7369672f656e636c6176652d6d616e6966657374000000209bc3e01bd72f2db9cd4b11d08c4c732789c6bfcc3ddec1d7aead0d377e5ae7e3"
   },
-  "note": "Test release keys only. Klav's release-authority keys are not pinned yet (RELEASE_AUTHORITY_KEYS is empty).",
+  "note": "Test release keys only, not Klav's release-authority keys (RELEASE_AUTHORITY_KEYS).",
   "release_keys": {
     "active": "c9111966f8949ac1e1d42eefdd766f9b40e3c727ffbf085179e9ec206907ecdc",
     "backup": "7031586611139e89f69c6ca3c7bbf97bf8bf48950633584787f597b6509391c6",

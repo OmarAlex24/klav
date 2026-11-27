@@ -759,13 +759,14 @@ fn the_northflank_preset_shows_and_grants_its_profile() {
     );
 }
 
-/// Klav Cloud's proxy (ADR 0051 §9, §14): no build pins the release
-/// authority's keys yet, so `klav proxy use klav` refuses before it sends
-/// anything to Klav Cloud (the endpoint here answers nothing), through
-/// klavd and directly, with the security exit code, and the setting stays.
-/// The other `cloud` commands need an account that uses it.
+/// Klav Cloud's proxy (ADR 0051 §9, §14): this build pins the release
+/// authority's keys, so `klav proxy use klav` asks the server whether the
+/// account is entitled, and refuses one that isn't before it sends anything
+/// to Klav Cloud (the endpoint here answers nothing), through klavd and
+/// directly, and the setting stays. The other `cloud` commands need an
+/// account that uses it.
 #[test]
-fn use_klav_fails_closed_until_the_release_keys_are_pinned() {
+fn use_klav_refuses_an_account_without_the_entitlement() {
     let server = ServerProcess::start(900);
     let root = tempfile::tempdir().expect("tempdir");
     let person = Device::new(root.path(), "person");
@@ -774,9 +775,11 @@ fn use_klav_fails_closed_until_the_release_keys_are_pinned() {
     // Through klavd.
     person.unlocked(&["unlock", "--idle-lock", "10m"], "").ok();
     let refused = person.unlocked(&["proxy", "use", "klav"], "").err();
-    assert_eq!(refused.code, 3, "{}", refused.stderr);
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(
-        refused.stderr.contains("no release-authority key pinned"),
+        refused
+            .stderr
+            .contains("isn't entitled to Klav Cloud's proxy"),
         "{}",
         refused.stderr
     );
@@ -788,8 +791,8 @@ fn use_klav_fails_closed_until_the_release_keys_are_pinned() {
             password: None,
         },
     )
-    .expect_err("no release key");
-    assert!(refused.message.contains("release-authority"), "{refused:?}");
+    .expect_err("not entitled");
+    assert!(refused.message.contains("isn't entitled"), "{refused:?}");
     // Without klavd.
     person.run(&["lock", "--stop"], "").ok();
     let mut direct = person.command();
@@ -809,9 +812,14 @@ fn use_klav_fails_closed_until_the_release_keys_are_pinned() {
             .expect("password");
     }
     let out = out.wait_with_output().expect("wait");
-    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("no release-authority key pinned"),
+        String::from_utf8_lossy(&out.stderr).contains("isn't entitled to Klav Cloud's proxy"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

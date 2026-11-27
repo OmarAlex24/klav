@@ -616,7 +616,7 @@ fn render_manifest() -> Value {
         "format_version": 1,
         "encoding": ENCODING,
         "feature": "cargo test -p klav-core --features nitro-attestation nitro_vectors",
-        "note": "Test release keys only. Klav's release-authority keys are not pinned yet (RELEASE_AUTHORITY_KEYS is empty).",
+        "note": "Test release keys only, not Klav's release-authority keys (RELEASE_AUTHORITY_KEYS).",
         "release_keys": {
             "active": hx(&release_key("active").verifying_key().to_bytes()),
             "backup": hx(&release_key("backup").verifying_key().to_bytes()),

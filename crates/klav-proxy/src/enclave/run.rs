@@ -490,7 +490,18 @@ mod tests {
         assert!(check_release_keys(&["cd".repeat(32)], &pinned).is_err());
         assert!(check_release_keys(&["abc".into()], &pinned).is_err());
         assert!(check_release_keys(&[], &pinned).is_err());
-        // Today's build pins none (ADR 0051 §14): it never starts.
+        // A build that pins none never starts (ADR 0051 §14).
+        assert!(check_release_keys(&["ab".repeat(32)], &[]).is_err());
+        // This build pins the release authority's keys: the image's
+        // KLAV_ENCLAVE_RELEASE_KEYS passes, a stranger's key doesn't.
+        let image_keys = [
+            "a8aa68a51a5d6cee7b2c2789cea049ac1c6a2f80d98d1416ddc49fcf074abc45".to_owned(),
+            "b25c2385c2179b8fd404e12b513ab512aa2048ec14b4b03bfb62d08c0e189e88".to_owned(),
+        ];
+        assert_eq!(
+            check_release_keys(&image_keys, klav_core::nitro::RELEASE_AUTHORITY_KEYS),
+            Ok(())
+        );
         assert!(
             check_release_keys(&["ab".repeat(32)], klav_core::nitro::RELEASE_AUTHORITY_KEYS)
                 .is_err()

@@ -13,4 +13,4 @@ Format:
 
 `drafts/` is where `draft-manifest.sh` writes unsigned drafts. It is git-ignored, and nothing there is ever served. How to draft, sign and publish is in the [runbook](../runbook.md) §2.
 
-No manifest is published yet. The release-authority keys don't exist yet (ADR 0051 §14), and until layer 5 pins them, every manifest is refused.
+No manifest is published yet. The release-authority keys are pinned (ADR 0051 §14); the first manifest comes with the first deployment (runbook §4).
