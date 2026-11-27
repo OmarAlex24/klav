@@ -179,6 +179,11 @@ struct KlavCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command])
             .disabled(!model.canChangeItems || model.sheetOpen)
+            Button("New Environment") {
+                openWindow(id: WindowID.main)
+                model.newEnvironment()
+            }
+            .disabled(!model.canChangeItems || model.sheetOpen)
             Button("Edit Item") {
                 openWindow(id: WindowID.main)
                 model.editSelected()

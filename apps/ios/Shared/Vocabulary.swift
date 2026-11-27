@@ -15,6 +15,7 @@ extension Kind {
         case .totp: return String(localized: "One-time code", comment: "Kind of item")
         case .note: return String(localized: "Secure note", comment: "Kind of item")
         case .apiKey: return String(localized: "API key", comment: "Kind of item")
+        case .environment: return String(localized: "Environment", comment: "Kind of item: a project's set of variables")
         }
     }
 }
@@ -32,6 +33,7 @@ extension Kind {
         case .totp: return String(localized: "Code", comment: "Kind of item, short, before the vault")
         case .note: return String(localized: "Note", comment: "Kind of item, short, before the vault")
         case .apiKey: return String(localized: "API key", comment: "Kind of item, short, before the vault")
+        case .environment: return String(localized: "Environment", comment: "Kind of item, short, before the vault")
         }
     }
 
@@ -46,6 +48,7 @@ extension Kind {
         case .totp: return String(localized: "code", comment: "Kind of item, small tag at the end of a row")
         case .note: return String(localized: "note", comment: "Kind of item, small tag at the end of a row")
         case .apiKey: return String(localized: "api key", comment: "Kind of item, small tag at the end of a row")
+        case .environment: return String(localized: "environment", comment: "Kind of item, small tag at the end of a row")
         }
     }
 
@@ -64,6 +67,7 @@ extension Kind {
         case .sshKey: return .prompt
         case .identity: return .house
         case .file: return .file
+        case .environment: return .layers
         }
     }
 }

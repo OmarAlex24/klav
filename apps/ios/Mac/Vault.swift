@@ -11,6 +11,8 @@ struct VaultPane: View {
     @State private var repoProjectFilter: String?
     @State private var linkingRepo = false
     @State private var problem: String?
+    /// How many variables each environment in the list has (ADR 0032 §6).
+    @State private var environmentCounts: [String: Int] = [:]
     @FocusState private var searching: Bool
     @FocusState private var listFocused: Bool
 
@@ -47,7 +49,10 @@ struct VaultPane: View {
             .frame(width: 320)
             Rectangle().fill(Palette.linea).frame(width: 1)
             Group {
-                if let id = model.selectedItem {
+                if let id = model.selectedItem, let env = items.first(where: { $0.id == id && $0.kind == .environment }) {
+                    // An environment has its own page (ADR 0032 §6).
+                    EnvironmentDetailView(projectId: env.projectId, name: env.title).id(id)
+                } else if let id = model.selectedItem {
                     ItemDetailView(id: id).id(id)
                 } else {
                     empty
@@ -153,6 +158,7 @@ struct VaultPane: View {
                     ForEach(visibleItems) { item in
                         ItemRow(item: item,
                                 repoBadge: rowBadge(for: item),
+                                variables: environmentCounts[item.id],
                                 selected: model.selectedItem == item.id)
                             .id(item.id)
                             .onTapGesture { model.selectedItem = item.id }
@@ -216,6 +222,10 @@ struct VaultPane: View {
             async let loadedProjects = model.run { try $0.projects(vaultId: nil) }
             items = try await loadedItems
             projects = (try? await loadedProjects) ?? []
+            if items.contains(where: { $0.kind == .environment }) {
+                let listed = (try? await model.run { try $0.environments(projectId: nil) }) ?? []
+                environmentCounts = Dictionary(listed.map { ($0.id, Int($0.variables)) }, uniquingKeysWith: { a, _ in a })
+            }
             problem = nil
             if let selected = model.selectedItem, !visibleItems.contains(where: { $0.id == selected }) {
                 model.selectedItem = visibleItems.first?.id
@@ -367,6 +377,7 @@ private struct ItemRow: View {
     @EnvironmentObject private var model: MacModel
     let item: ItemInfo
     let repoBadge: String?
+    var variables: Int?
     let selected: Bool
     @State private var noCode = false
 
@@ -380,6 +391,11 @@ private struct ItemRow: View {
                     .font(.ui(12)).foregroundStyle(Palette.gris).lineLimit(1)
             }
             Spacer(minLength: 6)
+            if !item.protectedBy.isEmpty {
+                IconView(icon: .lock, size: 13).foregroundStyle(Palette.tinta)
+                    .help(EnvironmentWords.protectedBy(item.protectedBy))
+                    .accessibilityLabel(Text("Protected"))
+            }
             // With the presence gate on, a code may ask for Touch ID: rows
             // fetch none on their own (ADR 0041), the item shows it on demand.
             if (item.kind == .totp || item.kind == .login) && !noCode && model.info?.presenceGate != true {
@@ -398,6 +414,9 @@ private struct ItemRow: View {
     }
 
     private var subtitle: String {
+        if item.kind == .environment {
+            return EnvironmentWords.row(vault: item.vault, project: item.project, variables: variables)
+        }
         if let username = item.username, !username.isEmpty {
             return username
         }
@@ -467,6 +486,11 @@ struct ItemDetailView: View {
                 }
             }
             if let problem { Notice(text: problem).padding(.top, 14) }
+            // Protected by a reference from a protected environment (ADR
+            // 0032 §3.1): klavd asks for Touch ID on every Show and Copy.
+            if !info.protectedBy.isEmpty {
+                ProtectedNotice(text: EnvironmentWords.protectedBy(info.protectedBy)).padding(.top, 14)
+            }
 
             // Sites get their own rows below, with «Open».
             let shown = detail.fields.filter { $0.filled && $0.kind != .totp && $0.kind != .file && $0.kind != .url }

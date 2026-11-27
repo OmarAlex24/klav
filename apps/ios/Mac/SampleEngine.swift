@@ -113,6 +113,28 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
     /// The items; creating, editing and trashing change them.
     private var samples: [Sample]
 
+    /// A variable of a sample environment: its own value, or a reference
+    /// to another sample item's field (ADR 0032 §1).
+    private struct SampleVariable {
+        var name: String
+        var value: String?
+        var reference: String?
+        var target: String?
+    }
+
+    /// The variables of each sample environment, by its item's ID, and
+    /// which are protected. Its item, kind `.environment`, is in `samples`.
+    private var environmentVariables: [String: [SampleVariable]] = [
+        "e-dev": [SampleVariable(name: "DATABASE_URL", value: "postgres://localhost:5432/acme_dev"),
+                  SampleVariable(name: "STRIPE_KEY", value: "sk_test_sample_4eC39HqLyjWDarjtT1zdp7dc")],
+        "e-prod": [SampleVariable(name: "DATABASE_URL", value: "postgres://db.acme.internal:5432/acme"),
+                   SampleVariable(name: "STRIPE_KEY", reference: "klav://Trabajo/Backend/Stripe/secret",
+                                  target: "Stripe › secret")],
+    ]
+    private var environmentProtected: [String: Bool] = ["e-dev": false, "e-prod": true]
+    /// Tests: every value of an environment handed out, by reference.
+    private(set) var variableReads: [String] = []
+
     /// Without arguments, from the launch arguments.
     init(locked: Bool? = nil, touchID: Bool? = nil, signedOut: Bool? = nil, deletion: String? = nil,
          keysLeft: Bool? = nil) {
@@ -617,6 +639,147 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
             if deleted { throw KlavError.AccountDeleted(deleteAt: deletion?.deleteAt, message: "deleted") }
             guard samples.contains(where: { $0.info.id == id }) else { throw KlavError.NotFound(message: id) }
             samples.removeAll { $0.info.id == id }
+        }
+    }
+
+    // MARK: Environments (ADR 0032 §6)
+
+    private func environmentInfo(_ s: Sample) -> EnvironmentInfo {
+        EnvironmentInfo(id: s.info.id, vaultId: s.info.vaultId, vault: s.info.vault, projectId: s.info.projectId,
+                        project: s.info.project, name: s.info.title,
+                        variables: UInt32(environmentVariables[s.info.id]?.count ?? 0),
+                        protected: environmentProtected[s.info.id] ?? false, updatedAt: s.info.updatedAt,
+                        authorAgentId: nil)
+    }
+
+    private func environmentSample(_ projectId: String, _ name: String) -> Sample? {
+        samples.first { $0.info.kind == .environment && $0.info.projectId == projectId && $0.info.title == name }
+    }
+
+    func environments(projectId: String?) throws -> [EnvironmentInfo] {
+        try locked {
+            samples.filter { $0.info.kind == .environment && (projectId == nil || $0.info.projectId == projectId) }
+                .map(environmentInfo)
+                .sorted { ($0.project, $0.name) < ($1.project, $1.name) }
+        }
+    }
+
+    func environment(projectId: String, name: String) throws -> EnvironmentDetailInfo? {
+        try locked {
+            guard let s = environmentSample(projectId, name) else { return nil }
+            let variables = (environmentVariables[s.info.id] ?? []).map { v in
+                VariableInfo(name: v.name, reference: v.reference, target: v.target,
+                             targetProtected: v.reference != nil && environmentProtected[s.info.id] == true,
+                             resolve: "klav://\(s.info.vault)/\(s.info.project)/\(s.info.title)/\(v.name)")
+            }
+            return EnvironmentDetailInfo(info: environmentInfo(s), variables: variables, agentChanges: nil)
+        }
+    }
+
+    func variableValue(reference: String) throws -> String { try variableValue(reference, password: nil) }
+    func variableValueWithPassword(reference: String, password: String) throws -> String {
+        try variableValue(reference, password: password)
+    }
+
+    /// A protected environment's value asks for Touch ID every time (the
+    /// sample's, or its password without Touch ID); the others go through
+    /// the presence gate like any value.
+    private func variableValue(_ reference: String, password: String?) throws -> String {
+        try locked {
+            let parts = reference.dropFirst("klav://".count).split(separator: "/").map(String.init)
+            guard parts.count == 4,
+                  let env = samples.first(where: { $0.info.kind == .environment && $0.info.vault == parts[0]
+                      && $0.info.project == parts[1] && $0.info.title == parts[2] }),
+                  let variable = environmentVariables[env.info.id]?.first(where: { $0.name == parts[3] })
+            else { throw KlavError.Denied(message: "only an environment's variables can be read here") }
+            if environmentProtected[env.info.id] == true {
+                // Every time, whatever the window: Touch ID, or without it
+                // the master password klavd asks for (ADR 0032 §3).
+                if touchID && password == nil {
+                    Thread.sleep(forTimeInterval: 0.3)
+                } else if let password {
+                    guard password == "sample" else { throw KlavError.WrongCredentials }
+                } else {
+                    throw KlavError.PresenceRequired(ask: PresenceAskInfo(
+                        key: .connection, window: presenceSetting, terminal: nil, declared: true, lasts: nil,
+                        value: PresenceValueInfo(kind: .show, title: env.info.title, count: nil)))
+                }
+            } else {
+                try present(.show, env.info.title, password: password)
+            }
+            variableReads.append(reference)
+            return variable.value ?? "sample-\(variable.name.lowercased())-Vx7q-29Lm"
+        }
+    }
+
+    func saveEnvironment(projectId: String, name: String, edit: EnvironmentEditInput) throws -> EnvironmentSavedInfo {
+        try saveEnvironmentWithPassword(projectId: projectId, name: name, edit: edit, password: nil)
+    }
+
+    func saveEnvironmentWithPassword(projectId: String, name: String, edit: EnvironmentEditInput,
+                                     password: String?) throws -> EnvironmentSavedInfo {
+        try locked {
+            if deleted { throw KlavError.AccountDeleted(deleteAt: deletion?.deleteAt, message: "deleted") }
+            var created = false
+            var id = environmentSample(projectId, name)?.info.id
+            if id == nil {
+                guard edit.create else { throw KlavError.NotFound(message: name) }
+                guard let project = sampleProjects.first(where: { $0.id == projectId }) else {
+                    throw KlavError.NotFound(message: projectId)
+                }
+                let newId = "e-new-\(samples.count)"
+                let info = ItemInfo(id: newId, reference: "klav://\(project.vault)/\(project.name)/\(name)",
+                                    vaultId: project.vaultId, vault: project.vault, projectId: project.id,
+                                    project: project.name, kind: .environment, title: name, username: nil, urls: [],
+                                    tags: [], version: 1, updatedAt: Self.now, trashed: false)
+                samples.append(Sample(info: info, fields: [], notes: nil, totp: false))
+                environmentVariables[newId] = []
+                environmentProtected[newId] = edit.protected ?? EnvironmentRules.protectedByDefault(name)
+                id = newId
+                created = true
+            } else if edit.mustBeNew {
+                throw KlavError.Invalid(message: "\(name) already exists")
+            }
+            guard let id, let index = samples.firstIndex(where: { $0.info.id == id }) else {
+                throw KlavError.NotFound(message: name)
+            }
+            let wasProtected = environmentProtected[id] ?? false
+            if !created, let on = edit.protected {
+                // Lowering asks first (ADR 0032 §3); raising asks nothing.
+                if wasProtected && !on { try presence(true, password) }
+                environmentProtected[id] = on
+            }
+            var variables = environmentVariables[id] ?? []
+            variables.removeAll { edit.remove.contains($0.name) }
+            for v in edit.set {
+                let target = v.reference.map { $0.split(separator: "/").suffix(2).joined(separator: " › ") }
+                let new = SampleVariable(name: v.name, value: v.value, reference: v.reference, target: target)
+                if let at = variables.firstIndex(where: { $0.name == v.name }) { variables[at] = new } else { variables.append(new) }
+            }
+            environmentVariables[id] = variables
+            let isProtected = environmentProtected[id] ?? false
+            samples[index].info.protectedBy = isProtected ? [name] : []
+            samples[index].info.updatedAt = Self.now
+            let newlyProtected = isProtected ? edit.set.compactMap { $0.reference == nil ? nil : $0.name } : []
+            return EnvironmentSavedInfo(name: name, id: id, created: created, protected: isProtected,
+                                        newlyProtected: newlyProtected, unprotected: [], agents: [], warnings: [])
+        }
+    }
+
+    func trashEnvironment(projectId: String, name: String) throws -> EnvironmentSavedInfo {
+        try trashEnvironmentWithPassword(projectId: projectId, name: name, password: nil)
+    }
+
+    func trashEnvironmentWithPassword(projectId: String, name: String, password: String?) throws -> EnvironmentSavedInfo {
+        try locked {
+            if deleted { throw KlavError.AccountDeleted(deleteAt: deletion?.deleteAt, message: "deleted") }
+            guard let s = environmentSample(projectId, name) else { throw KlavError.NotFound(message: name) }
+            if environmentProtected[s.info.id] == true { try presence(true, password) }
+            samples.removeAll { $0.info.id == s.info.id }
+            environmentVariables[s.info.id] = nil
+            environmentProtected[s.info.id] = nil
+            return EnvironmentSavedInfo(name: name, id: s.info.id, created: false, protected: false,
+                                        newlyProtected: [], unprotected: [], agents: [], warnings: [])
         }
     }
 
@@ -1435,9 +1598,23 @@ final class SampleEngine: MacEngine, @unchecked Sendable {
             login("i-cfe", personal, general, "CFE", "ana.lopez", "https://www.cfe.mx", age: 200),
             login("i-forum", personal, general, "Photography forum", "analopez", "https://forum.example.org", age: 700),
             login("i-mail", personal, general, "Fastmail", "ana@example.com", "https://app.fastmail.com", age: 12, totp: true),
-            Sample(info: info("i-stripe", work, backend, .apiKey, "Stripe", nil, ["https://dashboard.stripe.com"], 4),
-                   fields: [field("secret", "Secret key", .concealed, secret: true)],
-                   notes: nil, totp: false),
+            {
+                // production points to it: protected (ADR 0032 §3.1).
+                var stripe = Sample(info: info("i-stripe", work, backend, .apiKey, "Stripe", nil,
+                                               ["https://dashboard.stripe.com"], 4),
+                                    fields: [field("secret", "Secret key", .concealed, secret: true)],
+                                    notes: nil, totp: false)
+                stripe.info.protectedBy = ["production"]
+                return stripe
+            }(),
+            Sample(info: info("e-dev", work, backend, .environment, "development", nil, [], 2),
+                   fields: [], notes: nil, totp: false),
+            {
+                var prod = Sample(info: info("e-prod", work, backend, .environment, "production", nil, [], 6),
+                                  fields: [], notes: nil, totp: false)
+                prod.info.protectedBy = ["production"]
+                return prod
+            }(),
             Sample(info: info("i-visa", personal, general, .card, "Visa", "Ana López", [], 60),
                    fields: [field("cardholder", "Cardholder name", .text, "Ana López"),
                             field("number", "Number", .concealed, secret: true),

@@ -22,6 +22,9 @@ use klav_proto::auth::DeviceKind;
 use secrecy::ExposeSecret;
 
 const PASSWORD: &str = "correct horse battery staple";
+/// The prompts' words, which the app gives in its language.
+const SHOW: &str = "Show a value of “production”";
+const LOWER: &str = "Lower the protection of “production”";
 const OK: u8 = 0;
 const CANCEL: u8 = 1;
 const NO_PASSCODE: u8 = 2;
@@ -174,6 +177,7 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
         project.clone(),
         "development".into(),
         edit(true, None, vec![value("DATABASE_URL", "postgres://dev")]),
+        LOWER.into(),
         keystore.clone(),
     )
     .expect("development");
@@ -194,6 +198,7 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
                     },
                 ],
             ),
+            LOWER.into(),
             keystore.clone(),
         )
         .expect("production");
@@ -237,7 +242,11 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
     assert_eq!(dev.variables.len(), 1);
     assert!(dev.variables[0].reference.is_none());
     let shown = core
-        .variable_value(dev.variables[0].resolve.clone(), keystore.clone())
+        .variable_value(
+            dev.variables[0].resolve.clone(),
+            SHOW.into(),
+            keystore.clone(),
+        )
         .expect("dev value");
     assert!(shown == "postgres://dev");
     assert_eq!(owner.asked(), 0, "development asks nothing");
@@ -259,13 +268,17 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
     );
     assert!(github_var.target_protected);
     let token = core
-        .variable_value(prod.variables[0].resolve.clone(), keystore.clone())
+        .variable_value(
+            prod.variables[0].resolve.clone(),
+            SHOW.into(),
+            keystore.clone(),
+        )
         .expect("prod value");
     assert!(token == "prod-token");
     assert_eq!(owner.asked(), 1, "a protected value asks");
-    assert!(owner.last().contains("production"), "{}", owner.last());
+    assert_eq!(owner.last(), SHOW);
     let through = core
-        .variable_value(github_var.resolve.clone(), keystore.clone())
+        .variable_value(github_var.resolve.clone(), SHOW.into(), keystore.clone())
         .expect("through the reference");
     assert!(through == "gh-secret");
     assert_eq!(owner.asked(), 2, "and asks every time");
@@ -279,16 +292,28 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
 
     // Cancelling hands nothing out.
     owner.answer.store(CANCEL, Ordering::SeqCst);
-    let cancelled = core.variable_value(prod.variables[0].resolve.clone(), keystore.clone());
+    let cancelled = core.variable_value(
+        prod.variables[0].resolve.clone(),
+        SHOW.into(),
+        keystore.clone(),
+    );
     assert!(matches!(cancelled, Err(KlavError::BiometryFailed { .. })));
     // A device that cannot ask for its owner fails closed.
     owner.answer.store(NO_PASSCODE, Ordering::SeqCst);
-    let closed = core.variable_value(prod.variables[0].resolve.clone(), keystore.clone());
+    let closed = core.variable_value(
+        prod.variables[0].resolve.clone(),
+        SHOW.into(),
+        keystore.clone(),
+    );
     assert!(matches!(closed, Err(KlavError::BiometryUnavailable { .. })));
     // Only an environment's variable: a login's field is refused.
     owner.answer.store(OK, Ordering::SeqCst);
     let before = owner.asked();
-    let refused = core.variable_value(format!("{}/password", github.reference), keystore.clone());
+    let refused = core.variable_value(
+        format!("{}/password", github.reference),
+        SHOW.into(),
+        keystore.clone(),
+    );
     assert!(matches!(refused, Err(KlavError::Denied { .. })));
     assert_eq!(
         owner.asked(),
@@ -302,6 +327,7 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
         project.clone(),
         "production".into(),
         edit(false, Some(false), Vec::new()),
+        LOWER.into(),
         keystore.clone(),
     );
     assert!(lowered.is_err());
@@ -314,10 +340,15 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
     // Trashing a protected environment asks too.
     owner.answer.store(OK, Ordering::SeqCst);
     let before = owner.asked();
-    core.trash_environment(project.clone(), "production".into(), keystore.clone())
-        .expect("trash");
+    core.trash_environment(
+        project.clone(),
+        "production".into(),
+        LOWER.into(),
+        keystore.clone(),
+    )
+    .expect("trash");
     assert_eq!(owner.asked(), before + 1);
-    assert!(owner.last().contains("production"), "{}", owner.last());
+    assert_eq!(owner.last(), LOWER);
     assert_eq!(core.environments(Some(project)).expect("list").len(), 1);
     assert_eq!(core.value_protection(github.id).expect("ask"), None);
 }

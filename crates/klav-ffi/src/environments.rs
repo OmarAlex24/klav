@@ -257,11 +257,6 @@ fn project_arg(project_id: Option<String>) -> Option<String> {
         .filter(|p| !p.is_empty())
 }
 
-/// What lowering the protection of `name` says in the prompt.
-fn lower_reason(name: &str) -> String {
-    format!("Lower the protection of “{name}”")
-}
-
 #[uniffi::export]
 impl KlavCore {
     /// The environments of a project, or of every project (ADR 0032 §6).
@@ -294,16 +289,18 @@ impl KlavCore {
     /// The value of one variable (`VariableInfo::resolve`), which the
     /// person asked to show or copy. In a protected environment, or through
     /// a reference to a protected item, it asks for Face ID first, every
-    /// time (ADR 0032 §3.1).
+    /// time (ADR 0032 §3.1), showing `reason` (the app's words, in its
+    /// language).
     pub fn variable_value(
         &self,
         reference: String,
+        reason: String,
         keystore: std::sync::Arc<dyn PlatformKeystore>,
     ) -> KlavResult<String> {
         let references = vec![reference];
         self.with(|u| {
             u.variable_environments(&references)?;
-            if let Some(reason) = protection(u, &references)? {
+            if protection(u, &references)?.is_some() {
                 confirm(keystore.as_ref(), reason)?;
             }
             single_text(self.runtime.block_on(u.resolve_all(&references))?)
@@ -322,12 +319,13 @@ impl KlavCore {
 
     /// Saves a change to an environment: one that makes the protection
     /// grow reissues the agents' grants first; one that lowers it asks for
-    /// Face ID first (ADR 0032 §3, §3.1).
+    /// Face ID first, showing `reason` (ADR 0032 §3, §3.1).
     pub fn save_environment(
         &self,
         project_id: String,
         name: String,
         edit: EnvironmentEditInput,
+        reason: String,
         keystore: std::sync::Arc<dyn PlatformKeystore>,
     ) -> KlavResult<EnvironmentSavedInfo> {
         let project = project_arg(Some(project_id));
@@ -337,7 +335,7 @@ impl KlavCore {
                 self.runtime
                     .block_on(u.prepare_environment(project.as_deref(), &name, &edit))?;
             if prepared.plan.shrinks {
-                confirm(keystore.as_ref(), lower_reason(&name))?;
+                confirm(keystore.as_ref(), reason.clone())?;
             }
             Ok(self
                 .runtime
@@ -347,11 +345,13 @@ impl KlavCore {
     }
 
     /// Moves an environment to the trash; a protected one asks for Face ID
-    /// first, since it stops protecting what it pointed to.
+    /// first, showing `reason`, since it stops protecting what it pointed
+    /// to.
     pub fn trash_environment(
         &self,
         project_id: String,
         name: String,
+        reason: String,
         keystore: std::sync::Arc<dyn PlatformKeystore>,
     ) -> KlavResult<EnvironmentSavedInfo> {
         let project = project_arg(Some(project_id));
@@ -361,7 +361,7 @@ impl KlavCore {
                 .into_iter()
                 .any(|l| l.name == name && l.protected);
             if protected {
-                confirm(keystore.as_ref(), lower_reason(&name))?;
+                confirm(keystore.as_ref(), reason.clone())?;
             }
             Ok(self
                 .runtime

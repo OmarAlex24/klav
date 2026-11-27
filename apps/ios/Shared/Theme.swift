@@ -246,6 +246,10 @@ enum Icon {
     case pause
     /// The Mac's Sandboxes: a box seen from a corner.
     case cube
+    /// A project's environment (ADR 0032): three stacked layers.
+    case layers
+    /// A protected environment, or an item one protects: a padlock.
+    case lock
 
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
@@ -316,6 +320,16 @@ enum Icon {
             shape(p(8, 2.5), p(13, 5.25), p(13, 10.75), p(8, 13.5), p(3, 10.75), p(3, 5.25))
             line(p(3, 5.25), p(8, 8), p(13, 5.25))
             line(p(8, 8), p(8, 13.5))
+        case .layers:
+            shape(p(8, 3), p(13.5, 5.75), p(8, 8.5), p(2.5, 5.75))
+            line(p(2.5, 8.5), p(8, 11.25), p(13.5, 8.5))
+            line(p(2.5, 11), p(8, 13.75), p(13.5, 11))
+        case .lock:
+            box(4.5, 7.5, 7, 6)
+            path.move(to: p(6, 7.5))
+            path.addLine(to: p(6, 5.5))
+            path.addArc(center: p(8, 5.5), radius: 2 * s, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+            path.addLine(to: p(10, 7.5))
         case .copy:
             path.addRect(CGRect(origin: p(5.5, 5.5), size: CGSize(width: 7 * s, height: 7 * s)))
             line(p(3.5, 10.5), p(3.5, 3.5), p(10.5, 3.5))
