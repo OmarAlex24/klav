@@ -4,7 +4,7 @@ import SwiftUI
 /// per item type and «Codes», the items with a one-time code of any type.
 /// A standalone code item has no tab of its own: it is what «Codes» is for.
 enum VaultFilter: Hashable, CaseIterable {
-    case all, login, codes, card, note, sshKey, apiKey, identity, file
+    case all, login, codes, card, note, sshKey, apiKey, environment, identity, file
 
     /// The item type a type tab keeps; nil for «All» and «Codes».
     var kind: Kind? {
@@ -14,6 +14,7 @@ enum VaultFilter: Hashable, CaseIterable {
         case .note: return .note
         case .sshKey: return .sshKey
         case .apiKey: return .apiKey
+        case .environment: return .environment
         case .identity: return .identity
         case .file: return .file
         case .all, .codes: return nil
@@ -29,6 +30,7 @@ enum VaultFilter: Hashable, CaseIterable {
         case .note: return String(localized: "filter.note", defaultValue: "Notes", comment: "Type tab in the vault")
         case .sshKey: return String(localized: "filter.sshKey", defaultValue: "SSH keys", comment: "Type tab in the vault")
         case .apiKey: return String(localized: "filter.apiKey", defaultValue: "API keys", comment: "Type tab in the vault")
+        case .environment: return String(localized: "filter.environment", defaultValue: "Environments", comment: "Type tab in the vault: a project's sets of variables")
         case .identity: return String(localized: "filter.identity", defaultValue: "Addresses", comment: "Type tab in the vault")
         case .file: return String(localized: "filter.file", defaultValue: "Files", comment: "Type tab in the vault")
         }

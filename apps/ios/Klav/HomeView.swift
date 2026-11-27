@@ -123,7 +123,14 @@ struct HomeView: View {
             }
             .background(Palette.papel)
             .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: String.self) { id in ItemView(id: id) }
+            .navigationDestination(for: String.self) { id in
+                // An environment has its own screen (ADR 0032 §6).
+                if let env = listed.first(where: { $0.id == id && $0.kind == .environment }) {
+                    EnvironmentScreen(projectId: env.projectId, name: env.title)
+                } else {
+                    ItemView(id: id)
+                }
+            }
         }
         .task(id: "\(model.generation)|\(search)") { await load() }
         .task(id: model.generation) { await loadCodes() }

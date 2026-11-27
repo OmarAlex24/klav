@@ -231,6 +231,7 @@ fn every_operation_of_the_table_has_its_row() {
         },
         Request::Resolve {
             references: vec!["klav://a/b/c/password".into()],
+            variables_only: false,
             password: pw(),
         },
         Request::Autofill {
@@ -1257,6 +1258,7 @@ fn the_remembered_request_is_a_fixed_size_digest() {
         references.push(last.to_owned());
         Request::Resolve {
             references,
+            variables_only: false,
             password: None,
         }
     };

@@ -46,6 +46,7 @@ mod biometric;
 mod codes;
 #[cfg(feature = "daemon")]
 mod daemon;
+mod environments;
 mod error;
 mod grants;
 mod health;
@@ -68,6 +69,10 @@ pub use biometric::{KeystoreError, KeystoreKey, KeystoreWrap, PlatformKeystore};
 pub use codes::{CodeLink, CodeLinkInfo, CodeSaveOutcome, CodeState, CodeTarget, NewCodeLogin};
 #[cfg(feature = "daemon")]
 pub use daemon::{BrowserLink, DaemonEngine, DaemonInfo};
+pub use environments::{
+    AgentChangesInfo, EnvironmentDetailInfo, EnvironmentEditInput, EnvironmentInfo,
+    EnvironmentSavedInfo, VariableInfo, VariableInput,
+};
 pub use error::{KlavError, KlavResult};
 pub use grants::*;
 pub use health::*;

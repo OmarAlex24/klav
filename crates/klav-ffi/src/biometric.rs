@@ -186,6 +186,28 @@ pub(crate) fn turn_off(
     Ok(())
 }
 
+/// Asks for the device owner before a protected value, or before lowering
+/// an environment's protection (ADR 0032 §3, §3.1: Face ID every time).
+/// It fails closed: a device that cannot ask (no passcode) hands nothing
+/// out, unlike [`turn_off`], which has nothing left to protect then.
+pub(crate) fn confirm_protected(
+    keystore: &dyn PlatformKeystore,
+    reason: String,
+) -> Result<(), KlavError> {
+    match keystore.confirm_owner(reason) {
+        Ok(()) => Ok(()),
+        Err(KeystoreError::Unavailable) => Err(KlavError::BiometryUnavailable {
+            message: "the iPhone could not ask for its owner: set a passcode to use \
+                      protected values"
+                .into(),
+        }),
+        Err(e @ (KeystoreError::Cancelled | KeystoreError::AuthFailed)) => Err(keystore_error(e)),
+        Err(e) => Err(KlavError::BiometryFailed {
+            message: format!("the iPhone could not confirm its owner ({e})"),
+        }),
+    }
+}
+
 fn password_required(e: &Enrolment, now_ms: u64, boot: u64) -> Option<String> {
     let every = u64::try_from(PASSWORD_EVERY.as_millis()).unwrap_or(u64::MAX);
     // A password time in the future (the clock went back, or the file was

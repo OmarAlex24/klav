@@ -37,7 +37,7 @@ export function presence(actions: HTMLElement, touchId: boolean, go: (password?:
 }
 
 /** Requests that hand out a value and may get `presence_required` (ADR 0041). */
-type GatedRequest = Extract<Request, { op: "view" | "totp" | "previous_password" | "generated_value" }>;
+type GatedRequest = Extract<Request, { op: "view" | "totp" | "previous_password" | "generated_value" | "resolve" }>;
 
 /** How many new questions in a row before giving up (the CLI stops at a third too). */
 const MAX_ASKS = 3;
@@ -47,6 +47,15 @@ const MAX_ASKS = 3;
  * for. `undefined`: the person said «Not now».
  */
 export function askPassword(asked: PresenceAsk, problem?: DaemonError): Promise<string | undefined> {
+  return passwordDialog(presenceQuestion(asked), problem);
+}
+
+/**
+ * The master password for `question` (lowering an environment's
+ * protection on a Mac without Touch ID, ADR 0032 §3), over this page.
+ * `undefined`: the person said «Not now».
+ */
+export function passwordDialog(question: string, problem?: DaemonError): Promise<string | undefined> {
   return new Promise((resolve) => {
     const slot = h("div", { class: "notice-slot" });
     if (problem) slot.append(h("p", { class: "notice", role: "alert" }, errorText(problem.code, problem.message)));
@@ -59,7 +68,7 @@ export function askPassword(asked: PresenceAsk, problem?: DaemonError): Promise<
         "div",
         { class: "presence-box" },
         h("p", { class: "section-title" }, t("presence_title")),
-        h("p", { class: "presence-question" }, presenceQuestion(asked)),
+        h("p", { class: "presence-question" }, question),
         actions,
         slot,
       ),

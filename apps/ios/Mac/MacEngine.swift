@@ -99,6 +99,21 @@ protocol MacEngine: VaultEngine {
     func totpWithPassword(id: String, password: String) throws -> TotpInfo
     func previousPasswordWithPassword(id: String, index: UInt32, password: String) throws -> String
     func generatedValueWithPassword(createdAt: Int64, password: String) throws -> String
+
+    // Environments (ADR 0032 §6): the list, one environment's variables
+    // with no value, a value the person asked for (Touch ID in klavd for a
+    // protected one, or the presence gate's master password), and the
+    // edits; lowering the protection and trashing a protected environment
+    // ask for Touch ID, or the master password where there is none.
+    func environments(projectId: String?) throws -> [EnvironmentInfo]
+    func environment(projectId: String, name: String) throws -> EnvironmentDetailInfo?
+    func variableValue(reference: String) throws -> String
+    func variableValueWithPassword(reference: String, password: String) throws -> String
+    func saveEnvironment(projectId: String, name: String, edit: EnvironmentEditInput) throws -> EnvironmentSavedInfo
+    func saveEnvironmentWithPassword(projectId: String, name: String, edit: EnvironmentEditInput,
+                                     password: String?) throws -> EnvironmentSavedInfo
+    func trashEnvironment(projectId: String, name: String) throws -> EnvironmentSavedInfo
+    func trashEnvironmentWithPassword(projectId: String, name: String, password: String?) throws -> EnvironmentSavedInfo
 }
 
 extension DaemonEngine: MacEngine {}

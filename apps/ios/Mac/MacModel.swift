@@ -160,6 +160,8 @@ final class MacModel: ObservableObject, RequestsModel {
     @Published var editor: EditorRequest?
     /// The item waiting for «Move to the trash» to be confirmed.
     @Published var trashing: ItemInfo?
+    /// «New environment» (ADR 0032 §6): its sheet is open.
+    @Published var creatingEnvironment = false
     @Published var passwordPrompt: PasswordPrompt? {
         didSet {
             // Replaced or closed without an answer: its caller stops
@@ -960,16 +962,28 @@ final class MacModel: ObservableObject, RequestsModel {
     /// it), the trash's confirmation, the master password or «Uninstall».
     /// ⌘N and ⌘E wait for it to close: a new editor would replace the
     /// sheet and throw away what the person typed in it.
-    var sheetOpen: Bool { editor != nil || trashing != nil || passwordPrompt != nil || uninstalling }
+    var sheetOpen: Bool { editor != nil || trashing != nil || passwordPrompt != nil || uninstalling || creatingEnvironment }
 
     /// «New item» (⌘N): of the kind the list shows, if the editor makes
     /// that kind, else a login. Nothing while a sheet is open.
     func newItem() {
         guard canChangeItems, !sheetOpen else { return }
+        // In Environments, «New item» makes an environment (ADR 0032 §6).
+        if section == .vault(.kind(.environment)) {
+            creatingEnvironment = true
+            return
+        }
         var kind: Kind = .login
         if case .vault(.kind(let shown)) = section, ItemDraft.creatable.contains(shown) { kind = shown }
         if case .vault = section {} else { section = .vault(.all) }
         editor = .create(kind)
+    }
+
+    /// «New environment»: its sheet, over the vault's Environments.
+    func newEnvironment() {
+        guard canChangeItems, !sheetOpen else { return }
+        section = .vault(.kind(.environment))
+        creatingEnvironment = true
     }
 
     /// «Edit» (⌘E): the item open in the vault. Nothing while a sheet is

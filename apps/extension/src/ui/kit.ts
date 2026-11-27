@@ -35,6 +35,10 @@ const ICONS = {
   braces: "M5.5 3h-1v3.75L3 8l1.5 1.25V13h1M10.5 3h1v3.75L13 8l-1.5 1.25V13h-1",
   prompt: "M3.5 4.5 7 8l-3.5 3.5M8.5 12h4",
   house: "M3 7.5 8 3l5 4.5v6H3z",
+  // A project's environment: three stacked layers. A protected one: a padlock.
+  layers: "M8 3l5.5 2.75L8 8.5 2.5 5.75zM2.5 8.5 8 11.25l5.5-2.75M2.5 11 8 13.75 13.5 11",
+  lock: "M4.5 7.5h7v6h-7zM6 7.5V5.5a2 2 0 0 1 4 0v2",
+  trash: "M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.75 9h5.5l.75-9",
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -48,6 +52,7 @@ const KIND_ICONS: Record<VaultFilter, IconName> = {
   note: "page",
   ssh_key: "prompt",
   api_key: "braces",
+  environment: "layers",
   identity: "house",
   file: "file",
 };

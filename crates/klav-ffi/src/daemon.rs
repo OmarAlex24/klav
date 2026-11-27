@@ -214,7 +214,7 @@ impl DaemonEngine {
 
     /// A request of the window (ADR 0041 §3) on the long connection: with
     /// `password`, only as the answer to `klavd`'s ask on it.
-    fn held_value<R: DeserializeOwned>(
+    pub(crate) fn held_value<R: DeserializeOwned>(
         &self,
         make: impl Fn(Option<SecretText>) -> Request + Sync,
         password: Option<String>,
@@ -229,7 +229,7 @@ impl DaemonEngine {
     /// One request on a new connection. A connection is cheap (a Unix
     /// socket) and keeps a long call, such as an unlock waiting for Touch
     /// ID, from holding up the menu bar's status.
-    fn call<R: DeserializeOwned>(&self, request: Request) -> KlavResult<R> {
+    pub(crate) fn call<R: DeserializeOwned>(&self, request: Request) -> KlavResult<R> {
         self.runtime.block_on(async {
             let mut client = DaemonClient::connect(&self.home)
                 .await

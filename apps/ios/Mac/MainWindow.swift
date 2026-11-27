@@ -70,6 +70,9 @@ struct MainWindow: View {
         .sheet(item: $model.trashing) { item in
             TrashSheet(item: item)
         }
+        .sheet(isPresented: $model.creatingEnvironment) {
+            NewEnvironmentSheet()
+        }
         .modifier(DockWhileOpen())
         // Signed in from «Set up this Mac»: its «Agents» step comes next,
         // once (ADR 0033 E2.3). The account sheet sets it when it succeeds
@@ -155,7 +158,7 @@ private struct Sidebar: View {
         projects.filter { !$0.repos.isEmpty }
     }
 
-    private static let kinds: [Kind] = [.login, .totp, .card, .note, .apiKey, .sshKey, .identity, .file]
+    private static let kinds: [Kind] = [.login, .totp, .card, .note, .apiKey, .environment, .sshKey, .identity, .file]
 
     /// The kinds with something in them, as the iPhone's and the
     /// extension's type tabs, plus the chosen one even if it emptied.
@@ -382,6 +385,7 @@ extension Kind {
         case .sshKey: return String(localized: "SSH keys")
         case .identity: return String(localized: "Addresses")
         case .file: return String(localized: "Files")
+        case .environment: return String(localized: "Environments")
         }
     }
 }

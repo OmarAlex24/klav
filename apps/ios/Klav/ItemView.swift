@@ -102,6 +102,12 @@ struct ItemView: View {
                 .foregroundStyle(Palette.gris)
                 .padding(.top, 6)
 
+            // Protected by a reference from a protected environment (ADR
+            // 0032 §3.1): every Show and Copy asks for Face ID.
+            if !info.protectedBy.isEmpty {
+                ProtectedNotice(text: EnvironmentWords.protectedBy(info.protectedBy)).padding(.top, 14)
+            }
+
             if let problem {
                 Notice(text: problem).padding(.top, 14)
             }
@@ -196,10 +202,13 @@ struct ItemView: View {
             VStack(alignment: .leading, spacing: 8) {
                 // The code's own label starts with these words: read once.
                 RowLabel("One-time code").accessibilityHidden(true)
+                // A protected item's code shows on demand, after Face ID
+                // (ADR 0032 §3.1), never on its own every 30 s.
                 LiveCode(id: info.id, title: info.title, style: .detail, fetch: fetchCode,
                          onError: { error in
                              if case KlavError.Locked = error { model.lock() } else { problem = describe(error) }
-                         })
+                         },
+                         onDemand: !info.protectedBy.isEmpty)
             }
         } actions: {
             IconButton(icon: .copy, label: "Copy the code") { copyCode() }
@@ -296,7 +305,10 @@ struct ItemView: View {
         guard let service = model.service else { return nil }
         let index = entry.index
         do {
-            return try await service.run { core, _ in try core.previousPassword(id: id, index: index) }
+            return try await service.run { core, keystore in
+                try core.confirmProtection(id: id, keystore: keystore)
+                return try core.previousPassword(id: id, index: index)
+            }
         } catch {
             problem = describe(error)
             return nil
@@ -325,7 +337,10 @@ struct ItemView: View {
         let service = model.service
         return { id in
             guard let service else { throw CancellationError() }
-            return try await service.run { core, _ in try core.totp(id: id) }
+            return try await service.run { core, keystore in
+                try core.confirmProtection(id: id, keystore: keystore)
+                return try core.totp(id: id)
+            }
         }
     }
 
@@ -350,7 +365,10 @@ struct ItemView: View {
         guard let service = model.service else { return nil }
         do {
             let name = field.name
-            return try await service.run { core, _ in try core.fieldValue(id: id, field: name) }
+            return try await service.run { core, keystore in
+                try core.confirmProtection(id: id, keystore: keystore)
+                return try core.fieldValue(id: id, field: name)
+            }
         } catch {
             problem = describe(error)
             return nil
@@ -379,7 +397,10 @@ struct ItemView: View {
         guard let service = model.service else { return }
         Task {
             do {
-                let code = try await service.run { core, _ in try core.totp(id: id) }
+                let code = try await service.run { core, keystore in
+                    try core.confirmProtection(id: id, keystore: keystore)
+                    return try core.totp(id: id)
+                }
                 model.copy(code.code)
             } catch {
                 problem = describe(error)
@@ -395,7 +416,10 @@ struct ItemView: View {
         guard let service = model.service else { return }
         Task {
             do {
-                notes = try await service.run { core, _ in try core.notes(id: id) } ?? ""
+                notes = try await service.run { core, keystore in
+                    try core.confirmProtection(id: id, keystore: keystore)
+                    return try core.notes(id: id)
+                } ?? ""
             } catch {
                 problem = describe(error)
             }

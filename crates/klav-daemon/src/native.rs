@@ -179,8 +179,9 @@ pub fn install_hint(caller: &Caller) -> String {
 }
 
 /// Whether the extension may send `request` (ADR 0017 §4). Never: values
-/// for `run`/`inject`, attachments, imports, agents, revocation, the audit
-/// log or `shutdown`; and never a duplicate title.
+/// for `run`/`inject` (only one environment variable's, ADR 0032 §6),
+/// attachments, agents, revocation, the audit log or `shutdown`; and never
+/// a duplicate title.
 pub fn check_request(request: &Request) -> Result<(), String> {
     match request {
         Request::Status
@@ -247,7 +248,24 @@ pub fn check_request(request: &Request) -> Result<(), String> {
         | Request::ExtensionReply { .. }
         // The master password the person typed in Klav's frame for an
         // agent's event (ADR 0041 §3.1): `klavd` checks it.
-        | Request::ExtensionPresence { .. } => Ok(()),
+        | Request::ExtensionPresence { .. }
+        // Environments in the popup (ADR 0032 §6): names and origins, never
+        // a value; saving one goes through `prepare_environment` (the
+        // grants first, presence to lower the protection) and trashing a
+        // protected one asks for presence. The import review stays the
+        // CLI's: importing a `.env` belongs to it (§6).
+        | Request::Environments { .. }
+        | Request::Environment { .. }
+        | Request::EnvironmentSave { .. }
+        | Request::EnvironmentTrash { .. } => Ok(()),
+        // «Show» and «Copy» of one variable (ADR 0032 §6): `klavd` refuses
+        // a reference that is not an environment's variable, and asks for
+        // Touch ID when it is protected. Never the `resolve` of `run`.
+        Request::Resolve {
+            references,
+            variables_only: true,
+            ..
+        } if references.len() == 1 => Ok(()),
         Request::Create { item } if !item.allow_duplicate => Ok(()),
         Request::Edit { patch, .. } if !patch.allow_duplicate => Ok(()),
         Request::FulfillSecretRequest { input, .. }
@@ -647,8 +665,22 @@ mod tests {
         ] {
             assert!(ok(&format!(r#"{{"v":1,"id":7,"request":{op}}}"#)), "{op}");
         }
+        // Environments in the popup (ADR 0032 §6).
+        for op in [
+            r#"{"op":"environments"}"#,
+            r#"{"op":"environment","project":"p","name":"production"}"#,
+            r#"{"op":"environment_save","project":"p","name":"development","edit":{"set":[{"name":"A","value":"x"}]}}"#,
+            r#"{"op":"environment_trash","project":"p","name":"development"}"#,
+            r#"{"op":"resolve","references":["klav://a/b/c/D"],"variables_only":true}"#,
+        ] {
+            assert!(ok(&format!(r#"{{"v":1,"id":8,"request":{op}}}"#)), "{op}");
+        }
         for op in [
             r#"{"op":"resolve","references":["klav://a/b/c/d"]}"#,
+            r#"{"op":"resolve","references":["klav://a/b/c/d"],"variables_only":false}"#,
+            r#"{"op":"resolve","references":["klav://a/b/c/D","klav://a/b/c/E"],"variables_only":true}"#,
+            r#"{"op":"resolve","references":[],"variables_only":true}"#,
+            r#"{"op":"environment_import_review","name":"development","variables":[["A","x"]]}"#,
             r#"{"op":"shutdown"}"#,
             r#"{"op":"agents"}"#,
             // The presence gate (ADR 0041): never `hold` (decision on Q3),

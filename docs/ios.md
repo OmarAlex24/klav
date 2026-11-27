@@ -228,6 +228,35 @@ lists.
 |---|---|---|
 | ![The smart generator following accor.com's rules](img/ios/generador.png) | ![The generator history](img/ios/generador-historial.png) | ![Two previous passwords on the item page](img/ios/anteriores.png) |
 
+### Environments (ADR 0032 §6, layer 4b)
+
+- **In the vault**, "Environments" is a tab of its own once there is one. A
+  row opens the environment's screen (`EnvironmentScreen`) instead of the
+  item page. An item a protected environment points to says "Protected by
+  “production”: showing or copying a value asks for Touch ID or Face ID
+  every time".
+- **The environment's screen** shows each variable with its value as noise
+  until "Show", and "Copy". Both ask `KlavCore` every time
+  (`variable_value`): in a protected environment, or through a reference to
+  a protected item, `KlavCore` asks for the device's owner first (Face ID,
+  or the passcode) through the keystore, with the app's words in its
+  language, and refuses when the iPhone has no passcode. It says where each
+  value comes from and which variables an agent changed since the person
+  last saved it. Values go when the screen closes or the app leaves the
+  foreground.
+- **Editing:** "Add variable" (a value in a secure field, or a `klav://`
+  reference), "Change" and "Remove" in each variable's menu, "Protect this
+  environment" and "Move to the trash…". Turning the protection off and
+  trashing a protected environment ask for Face ID in `KlavCore` first
+  (`save_environment`, `trash_environment`), and a change that makes the
+  protection grow reissues the agents' grants before it saves, as in the
+  CLI.
+- **An item a protected environment protects:** its page asks for Face ID
+  before every "Show", "Copy", notes, code and previous password
+  (`value_protection`), and its code shows on demand rather than every 30
+  seconds. AutoFill doesn't change (ADR 0032 §3.1, residual risk 45).
+- Importing a `.env` stays the CLI's.
+
 ## 2. Unlocking
 
 > The steps for people who use Klav are on the public page [`iphone.mdx`](../apps/docs/src/content/docs/apps/iphone.mdx) (in `apps/docs/src/content/docs/apps/`); a change to those steps goes there first.

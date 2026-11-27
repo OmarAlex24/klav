@@ -1973,6 +1973,7 @@ impl Request {
 fn resolve_of(references: &[String], password: Option<&str>) -> Request {
     Request::Resolve {
         references: references.to_vec(),
+        variables_only: false,
         password: secret(password),
     }
 }
@@ -2868,4 +2869,85 @@ async fn a_covered_protected_value_behind_a_dialog_is_busy() {
     first.await.unwrap().expect("cancel");
     assert_eq!(at_once(value).await.unwrap(), ErrorCode::PresenceBusy);
     assert_eq!(fake.asked(), before + 1, "no second dialog");
+}
+
+/// The apps' «Show» of one variable (ADR 0032 §6): a `resolve` with
+/// `variables_only` reads an environment's variable, asking for Touch ID
+/// every time in a protected one and naming it, and is refused, with no
+/// prompt, for a reference to any other item's field.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_variable_shows_only_through_its_environment() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("home"));
+    account(&server, &home, "ana@example.com", PERSON).await;
+    let fake = Fake::new(true);
+    let _klavd = daemon(&home, &fake, &[session(40)], false).await;
+    let a = conn(&home).await;
+    call::<DaemonStatus>(&a, unlock(Some(PERSON)))
+        .await
+        .expect("unlock");
+    protect_github(&a).await;
+    let projects: Vec<klav_client::ProjectSummary> = call(&a, Request::Projects { vault: None })
+        .await
+        .expect("projects");
+    let p = &projects[0];
+    let variable = |reference: String| Request::Resolve {
+        references: vec![reference],
+        variables_only: true,
+        password: None,
+    };
+
+    let before = fake.asked();
+    let refused = code(
+        &a,
+        variable(format!("klav://{}/{}/GitHub/password", p.vault, p.name)),
+    )
+    .await;
+    assert_eq!(refused, ErrorCode::Denied);
+    assert_eq!(
+        fake.asked(),
+        before,
+        "nothing asked for a refused reference"
+    );
+
+    let reference = format!("klav://{}/{}/production/GITHUB_PASSWORD", p.vault, p.name);
+    let shown: Value = call(&a, variable(reference.clone()))
+        .await
+        .expect("the variable");
+    assert_eq!(resolved(shown).len(), 1);
+    assert_eq!(fake.asked(), before + 1, "a protected variable asks");
+    assert!(fake.last().contains("production"), "{}", fake.last());
+    call::<Value>(&a, variable(reference)).await.expect("again");
+    assert_eq!(fake.asked(), before + 2, "and asks every time");
+
+    // An unprotected environment's variable that points to an item a
+    // protected one reaches asks too: the protection follows the item.
+    let saved: Result<Value, ErrorBody> = call(
+        &a,
+        Request::EnvironmentSave {
+            project: Some(format!("{}/{}", p.vault, p.name)),
+            name: "development".into(),
+            edit: klav_client::environments::EnvironmentEdit {
+                create: true,
+                must_be_new: true,
+                protected: None,
+                set: vec![klav_client::environments::NewVariable {
+                    name: "GITHUB_PASSWORD".into(),
+                    value: None,
+                    reference: Some(format!("klav://{}/{}/GitHub/password", p.vault, p.name)),
+                }],
+                remove: Vec::new(),
+            },
+            password: None,
+        },
+    )
+    .await;
+    saved.expect("development");
+    let inherited = format!("klav://{}/{}/development/GITHUB_PASSWORD", p.vault, p.name);
+    call::<Value>(&a, variable(inherited))
+        .await
+        .expect("through development");
+    assert_eq!(fake.asked(), before + 3, "an inherited target asks");
+    assert!(fake.last().contains("production"), "{}", fake.last());
 }

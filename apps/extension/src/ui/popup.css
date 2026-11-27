@@ -253,3 +253,22 @@ body { width: 360px; min-height: 200px; }
 /* The passkey window: the same square, filled. */
 .check[type="radio"]:checked::after { width: 8px; height: 8px; border: 0; background: var(--boton-texto); transform: none; }
 .uv-confirm:empty { display: none; }
+
+/* -------------------------------------------------------- environments */
+/* ADR 0032 §6: an environment's variables, hidden until «Show». */
+.env { display: flex; flex-direction: column; gap: 18px; }
+.env-protected { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 12px; color: var(--tinta); }
+.env-protected svg { width: 14px; height: 14px; flex: none; margin-top: 1px; }
+.env-lock { display: inline-flex; color: var(--tinta); margin-right: 6px; }
+.env-lock svg { width: 12px; height: 12px; }
+.row-end .env-lock + .mono { vertical-align: middle; }
+.env-variable .field-label { color: var(--tinta); font-size: 12px; }
+.env-origin { display: block; margin-top: 3px; font-size: 11px; }
+.env-form { gap: 10px; padding-top: 4px; }
+.env-form[hidden] { display: none; }
+.env-form-actions { display: flex; gap: 8px; }
+.env-protect { border-top: 1px solid var(--linea); }
+.env-trash { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.env-new-link { align-self: flex-start; }
+.env-new-link[hidden] { display: none; }
+.screen-env .title-l { font-family: var(--mono); }

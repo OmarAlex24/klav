@@ -344,7 +344,10 @@ pub struct AgentChanges {
 /// origins, never values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvironmentDetail {
-    #[serde(flatten)]
+    /// The environment, nested: flattened, its count of variables and the
+    /// list below would share the key `variables`, and nothing could read
+    /// the answer back.
+    #[serde(rename = "environment")]
     pub listing: EnvironmentListing,
     /// Its variables, in order.
     pub variables: Vec<VariableView>,
@@ -749,6 +752,33 @@ impl Unlocked {
             out.extend(hop);
         }
         Ok(out)
+    }
+
+    /// The environments `references` name, one per reference, each of them
+    /// a variable of an environment (ADR 0032 §6: «Show» and «Copy» in the
+    /// apps). Anything else, a field of another kind of item or a reference
+    /// that does not resolve, is refused before any value is read.
+    pub fn variable_environments(&self, references: &[String]) -> ClientResult<Vec<ItemLocation>> {
+        references
+            .iter()
+            .map(|reference| {
+                let parsed = Reference::parse(reference.trim())?;
+                let resolved = parsed.resolve(self)?;
+                let loc = ItemLocation {
+                    vault: resolved.vault,
+                    project: resolved.project,
+                    item: resolved.item,
+                };
+                let item = self.open_item(loc)?;
+                if item.kind() != ItemKind::Environment {
+                    return Err(ClientError::Denied(
+                        "only an environment's variables can be read here".into(),
+                    ));
+                }
+                resolve_variable(&item, &resolved.field)?;
+                Ok(loc)
+            })
+            .collect()
     }
 
     /// Where a reference points, and, through an environment's reference
@@ -1704,6 +1734,36 @@ fn name_list(names: &[String], env: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `klavd` sends for `environment` reads back as it was, the
+    /// listing's count and the list of variables both there.
+    #[test]
+    fn a_detail_round_trips_through_json() {
+        let detail = EnvironmentDetail {
+            listing: EnvironmentListing {
+                id: ItemId::generate(),
+                vault_id: VaultId::generate(),
+                vault: "Personal".into(),
+                project_id: ProjectId::generate(),
+                project: "acme-api".into(),
+                name: "production".into(),
+                variables: 1,
+                protected: true,
+                updated_at: 1,
+                author_agent_id: None,
+            },
+            variables: vec![VariableView {
+                name: "STRIPE_KEY".into(),
+                origin: VariableOrigin::Value,
+                resolve: "klav://a/b/c/STRIPE_KEY".into(),
+            }],
+            agent_changes: None,
+        };
+        let json = serde_json::to_string(&detail).expect("encodes");
+        let back: EnvironmentDetail = serde_json::from_str(&json).expect(&json);
+        assert_eq!(back.variables.len(), 1);
+        assert_eq!(back.listing.variables, 1);
+    }
 
     fn contribution(title: &str, protected: bool, items: &[ItemId]) -> Contribution {
         Contribution {

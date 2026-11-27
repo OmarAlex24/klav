@@ -161,8 +161,10 @@ The *host* only lets these `klavd` operations through; the others answer
 | `tasks`, `decide_task`, `add_to_task`, `end_task` | Task requests from the *popup* (ADR 0021); not `task_log`, which belongs to the audit log |
 | `extension_attach`, `extension_reply`, `extension_presence` | Receive and answer the agents' fills (§8), and the master password for the presence gate's question on this connection (§8, "The presence gate") |
 | `import_add`, `import_preview`, `import_apply`, `import_cancel` | The import wizard (§12, ADR 0024) |
+| `environments`, `environment`, `environment_save`, `environment_trash` | Environments in the *popup* (§7, ADR 0032 §6): names, counts and origins, never a value. Saving goes through the same grants-first order as the CLI; lowering the protection and trashing a protected environment ask for Touch ID in `klavd` (or the master password the *popup* sends) |
+| `resolve` with `variables_only: true` and one reference | «Show» and «Copy» of one environment variable (§7). `klavd` refuses a reference that isn't an environment's variable, and asks for Touch ID every time in a protected environment |
 
-Never: `resolve`, `attach`, `create_vault`, `create_project`,
+Never: `resolve` for `run` (without `variables_only`, or with more than one reference), `environment_import_review` (importing a `.env` stays the CLI's), `attach`, `create_vault`, `create_project`,
 the agents, revocation, the audit log, `shutdown`, nor `browser_tab`,
 `browser_fill` or `agent_rotate_*` (those belong to agents).
 
@@ -795,6 +797,36 @@ Klav's button in the browser's toolbar opens the *popup*:
     that sign-in: the frame doesn't ask for the password again. The
     *background* marks only the unlocks from
     `passkey.html` that way (`passkey_flow`), even if another page puts it in its request.
+
+- **Environments** (ADR 0032 §6): an "Environments" tab, shown once there
+  is one, lists each environment with its project, its number of variables
+  (`environments`, asked once) and a padlock when it is protected. A row
+  opens the environment's page (`environment`):
+  - each variable with its value as noise until "Show", and "Copy". Both ask
+    `klavd` every time (`resolve` with `variables_only`), so a protected
+    environment, or a reference to a protected item, asks for Touch ID on
+    every "Show" and every "Copy". The value lives only in the field that
+    shows it, and goes when it hides or the page closes. A copied value is
+    cleared like a password;
+  - where each value comes from: "Its own value", or "From Stripe ›
+    api_key" (and "· protected" when that item is);
+  - the notice of a protected environment, and which variables an agent
+    changed since the person last saved it;
+  - "Add variable" (a value, typed in a password field, or a `klav://`
+    reference), "Change" and "Remove" on each variable, the "Protect this
+    environment" box and "Move to trash" with a confirmation. Turning the
+    protection off and trashing a protected environment ask for Touch ID in
+    `klavd`; without it, the *popup* asks for the master password first and
+    sends it with the request.
+
+  "New environment" (in "New item", and above the "Environments" list)
+  picks the project, the name (`[a-z0-9][a-z0-9_-]{0,63}`) and the
+  protected box, ticked by itself for `production` and `prod` until the
+  person touches it. The page of an item a protected environment points to
+  says "Protected by “production”: showing or copying a value asks for
+  Touch ID every time". Importing a `.env` stays the CLI's (`klav env
+  import`). An older `klavd` or native *host* answers these operations
+  with `denied` or `bad_request`, and the *popup* says "Update Klav".
 
 ![The vault in the popup, with the site's code](img/extension/popup-en-pagina.png)
 

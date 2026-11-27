@@ -11,7 +11,7 @@ import type { ItemKind, ItemSummary } from "../shared/protocol";
 export type VaultFilter = "all" | "codes" | Exclude<ItemKind, "totp">;
 
 /** Tabs in this order; the ones with nothing in them stay hidden. */
-export const FILTERS: readonly VaultFilter[] = ["all", "login", "codes", "card", "note", "ssh_key", "api_key", "identity", "file"];
+export const FILTERS: readonly VaultFilter[] = ["all", "login", "codes", "card", "note", "ssh_key", "api_key", "environment", "identity", "file"];
 
 const LABELS: Record<VaultFilter, MessageKey> = {
   all: "filter_all",
@@ -21,6 +21,7 @@ const LABELS: Record<VaultFilter, MessageKey> = {
   note: "filter_note",
   ssh_key: "filter_ssh_key",
   api_key: "filter_api_key",
+  environment: "filter_environment",
   identity: "filter_identity",
   file: "filter_file",
 };

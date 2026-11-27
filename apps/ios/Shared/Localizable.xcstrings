@@ -163,6 +163,17 @@
         }
       }
     },
+    "%@ changed %@ since you last saved it. Check them before using them.": {
+      "comment": "On an environment an agent changed",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ cambió %@ desde la última vez que lo guardaste. Revísalas antes de usarlas."
+          }
+        }
+      }
+    },
     "%@ changed on another device. Check it and try again.": {
       "comment": "The login's title",
       "localizations": {
@@ -358,6 +369,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ · generada, no confirmada"
+          }
+        }
+      }
+    },
+    "%@ · protected": {
+      "comment": "A variable's origin, whose item is protected",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · protegido"
           }
         }
       }
@@ -1214,6 +1236,47 @@
         }
       }
     },
+    "%lld variables": {
+      "comment": "How many variables an environment has",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld variable"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld variables"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld variable"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld variables"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld waiting for you": {
       "comment": "Mac: requests waiting; plural",
       "localizations": {
@@ -1491,6 +1554,17 @@
         }
       }
     },
+    "A reference starts with klav://": {
+      "comment": "A variable's reference is not valid",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una referencia empieza por klav://"
+          }
+        }
+      }
+    },
     "A security problem this version of Klav doesn’t know: %@ Update Klav.": {
       "localizations": {
         "es": {
@@ -1542,6 +1616,26 @@
         }
       }
     },
+    "Add variable": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir variable"
+          }
+        }
+      }
+    },
+    "Agents and klav run stop finding it. You can restore it from the trash with the CLI.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los agentes y klav run dejan de encontrarlo. Puedes recuperarlo de la papelera con la CLI."
+          }
+        }
+      }
+    },
     "Allow %@ with any arguments for 15 minutes": {
       "comment": "Face ID / Touch ID reason for an MCP lease: «profile · tool»",
       "localizations": {
@@ -1549,6 +1643,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Permitir %@ con cualquier argumento durante 15 minutos"
+          }
+        }
+      }
+    },
+    "An agent": {
+      "comment": "An agent whose name this device doesn't know",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un agente"
           }
         }
       }
@@ -2733,6 +2838,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "llamó a %@"
+          }
+        }
+      }
+    },
+    "Change %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambiar %@"
           }
         }
       }
@@ -4522,6 +4637,17 @@
         }
       }
     },
+    "development": {
+      "comment": "Placeholder: an environment's name, never translated",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "development"
+          }
+        }
+      }
+    },
     "Development build: Klav doesn’t check that its helpers are signed by Klav’s team. Copies from klav.dev do.": {
       "localizations": {
         "es": {
@@ -4889,6 +5015,55 @@
         }
       }
     },
+    "env.from": {
+      "comment": "Where a variable's value comes from: «Item › field»",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "From %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "De %@"
+          }
+        }
+      }
+    },
+    "Environment": {
+      "comment": "Kind of item: a project's set of variables",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entorno"
+          }
+        }
+      }
+    },
+    "environment": {
+      "comment": "Kind of item, small tag at the end of a row",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "entorno"
+          }
+        }
+      }
+    },
+    "Environments": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entornos"
+          }
+        }
+      }
+    },
     "Every agent": {
       "localizations": {
         "es": {
@@ -5151,6 +5326,16 @@
         }
       }
     },
+    "Face ID for every value, and agents ask every time. Turning it off asks for Face ID.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID para cada valor, y los agentes piden permiso cada vez. Para quitarlo se pide Face ID."
+          }
+        }
+      }
+    },
     "Face ID isn’t available right now. Klav uses it on this iPhone, so deleting the account needs it. If Face ID is locked, unlock the iPhone with its passcode and try again. You can also delete the account from another of your devices, or turn off Face ID for Klav in Settings (the iPhone asks for its passcode).": {
       "localizations": {
         "es": {
@@ -5299,6 +5484,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Filtrar por tipo"
+          }
+        }
+      }
+    },
+    "filter.environment": {
+      "comment": "Type tab in the vault: a project's sets of variables",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Environments"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entornos"
           }
         }
       }
@@ -5456,6 +5658,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Desde %@"
+          }
+        }
+      }
+    },
+    "From an item this device can’t see": {
+      "comment": "A variable's reference to an item not on this device",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "De un elemento que este dispositivo no ve"
           }
         }
       }
@@ -6482,6 +6695,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Su compilación: %1$@. La del klav de esta app: %2$@."
+          }
+        }
+      }
+    },
+    "Its own value": {
+      "comment": "A variable that stores its value",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valor propio"
           }
         }
       }
@@ -7517,6 +7741,16 @@
         }
       }
     },
+    "klav://Vault/Project/Item/field": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "klav://Bóveda/Proyecto/Elemento/campo"
+          }
+        }
+      }
+    },
     "Klav’s background service doesn’t offer this. Update Klav.": {
       "localizations": {
         "es": {
@@ -7838,6 +8072,17 @@
         }
       }
     },
+    "Letters, digits and _, not starting with a digit (up to 128).": {
+      "comment": "A variable's name is not valid",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letras, números y _, sin empezar por un número (hasta 128)."
+          }
+        }
+      }
+    },
     "Link suggested by %@ — check the domain before opening: %@": {
       "comment": "Secret request setup URL warning (ADR 0046, T235)",
       "extractionState": "manual",
@@ -8058,6 +8303,27 @@
         }
       }
     },
+    "Lower the protection of “%@”": {
+      "comment": "Face ID prompt: the environment",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bajar la protección de «%@»"
+          }
+        }
+      }
+    },
+    "Lowercase letters, digits, - and _ (up to 64), like development.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minúsculas, números, - y _ (hasta 64), como development."
+          }
+        }
+      }
+    },
     "macOS didn’t take the credential proxy off Login Items: %@": {
       "localizations": {
         "es": {
@@ -8249,6 +8515,16 @@
         }
       }
     },
+    "More for %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más opciones de %@"
+          }
+        }
+      }
+    },
     "Move Klav to the Applications folder and open it from there. From the disk image or Downloads, macOS runs it from a temporary place, and a link or a background service pointing there would break.": {
       "localizations": {
         "es": {
@@ -8280,12 +8556,33 @@
         }
       }
     },
+    "Move “%@” to the trash": {
+      "comment": "Face ID prompt: the environment",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mover «%@» a la papelera"
+          }
+        }
+      }
+    },
     "Move “%@” to the trash?": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "¿Mover «%@» a la papelera?"
+          }
+        }
+      }
+    },
+    "Moved to the trash": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se movió a la papelera"
           }
         }
       }
@@ -8307,6 +8604,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Moviendo…"
+          }
+        }
+      }
+    },
+    "NAME": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NOMBRE"
+          }
+        }
+      }
+    },
+    "Name": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nombre"
           }
         }
       }
@@ -8337,6 +8654,27 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nuevos"
+          }
+        }
+      }
+    },
+    "New Environment": {
+      "comment": "Menu command",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuevo entorno"
+          }
+        }
+      }
+    },
+    "New environment": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuevo entorno"
           }
         }
       }
@@ -8820,6 +9158,16 @@
         }
       }
     },
+    "No variables yet.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todavía no hay variables."
+          }
+        }
+      }
+    },
     "No weak password.": {
       "localizations": {
         "es": {
@@ -9251,6 +9599,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ahora en %@. El servidor nuevo ya debe tener esta cuenta, con los mismos datos."
+          }
+        }
+      }
+    },
+    "Now protected: %@": {
+      "comment": "Items a protected environment's new reference protects",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ahora protegidos: %@"
           }
         }
       }
@@ -9926,6 +10285,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "PIN"
+          }
+        }
+      }
+    },
+    "Project": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proyecto"
+          }
+        }
+      }
+    },
+    "Protect this environment": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proteger este entorno"
+          }
+        }
+      }
+    },
+    "Protected": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protegido"
+          }
+        }
+      }
+    },
+    "Protected by %@: showing or copying a value asks for Touch ID or Face ID every time.": {
+      "comment": "On a protected item's page: the environments that protect it",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo protege %@: mostrar o copiar un valor pide Touch ID o Face ID cada vez."
+          }
+        }
+      }
+    },
+    "Protected: showing or copying a value asks for Touch ID or Face ID every time.": {
+      "comment": "On a protected environment's page",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protegido: mostrar o copiar un valor pide Touch ID o Face ID cada vez."
           }
         }
       }
@@ -10802,6 +11213,16 @@
         }
       }
     },
+    "Reference": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Referencia"
+          }
+        }
+      }
+    },
     "Reference for agents": {
       "localizations": {
         "es": {
@@ -10839,6 +11260,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Quitar"
+          }
+        }
+      }
+    },
+    "Remove %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitar %@"
           }
         }
       }
@@ -11714,6 +12145,27 @@
         }
       }
     },
+    "Save": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar"
+          }
+        }
+      }
+    },
+    "Saved": {
+      "comment": "An environment was saved",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardado"
+          }
+        }
+      }
+    },
     "Set it up again": {
       "localizations": {
         "es": {
@@ -11770,6 +12222,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Está configurado en este Mac. Para que arranque, permite Klav en Ajustes del Sistema › General › Ítems de inicio y extensiones."
+          }
+        }
+      }
+    },
+    "Show a value of “%@”": {
+      "comment": "Face ID prompt: the environment",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar un valor de «%@»"
+          }
+        }
+      }
+    },
+    "Show a value protected by an environment": {
+      "comment": "Face ID prompt",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar un valor que protege un entorno"
           }
         }
       }
@@ -14266,6 +14740,16 @@
         }
       }
     },
+    "This environment is no longer here.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este entorno ya no está."
+          }
+        }
+      }
+    },
     "This Klav carries %@. Klav keeps its own copies up to date when the app starts; a copy you edited is left as it is until you choose.": {
       "extractionState": "manual",
       "localizations": {
@@ -14905,6 +15389,16 @@
         }
       }
     },
+    "Touch ID for every value, and agents ask every time. Turning it off asks for Touch ID.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID para cada valor, y los agentes piden permiso cada vez. Para quitarlo se pide Touch ID."
+          }
+        }
+      }
+    },
     "Touch ID isn’t available right now, and Klav uses it on this Mac to delete the account. Open the lid (or unlock the Mac with its password if Touch ID is locked) and try again, or delete it from another of your devices.": {
       "localizations": {
         "es": {
@@ -15043,6 +15537,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Al activarlo, tu proxy indica qué herramienta usa cada llamada: así tus reglas pueden permitir, preguntar o denegar cada una, y Actividad muestra quién la llamó. No se puede volver a apagar."
+          }
+        }
+      }
+    },
+    "Type a value.": {
+      "comment": "A variable has no value",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escribe un valor."
           }
         }
       }
@@ -15586,6 +16091,16 @@
         }
       }
     },
+    "Value": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valor"
+          }
+        }
+      }
+    },
     "Vault health": {
       "comment": "Title of the health screen",
       "extractionState": "manual",
@@ -16077,6 +16592,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dónde rellena: %1$@ → %2$@"
+          }
+        }
+      }
+    },
+    "Where the value comes from": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "De dónde sale el valor"
           }
         }
       }

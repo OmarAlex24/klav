@@ -34,7 +34,7 @@ export function formatNumber(n: number): string {
 }
 
 /** `<base>_one` or `<base>_other` for `n`, with `n` as `$1`. */
-export type PluralBase = "other_accounts" | "sites" | "imp_entries" | "imp_passkeys" | "imp_new" | "imp_merged" | "imp_dupes" | "imp_apply";
+export type PluralBase = "other_accounts" | "sites" | "env_variables" | "imp_entries" | "imp_passkeys" | "imp_new" | "imp_merged" | "imp_dupes" | "imp_apply";
 
 export function plural(base: PluralBase, n: number): string {
   const form = new Intl.PluralRules(locale()).select(n) === "one" ? "one" : "other";

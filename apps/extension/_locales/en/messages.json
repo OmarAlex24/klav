@@ -1842,5 +1842,142 @@
   },
   "presence_canceled": {
     "message": "Canceled."
+  },
+  "filter_environment": {
+    "message": "Environments"
+  },
+  "kind_environment": {
+    "message": "Environment"
+  },
+  "kind_short_environment": {
+    "message": "environment"
+  },
+  "env_variables_one": {
+    "message": "$1 variable",
+    "description": "$1: how many variables."
+  },
+  "env_variables_other": {
+    "message": "$1 variables",
+    "description": "$1: how many variables."
+  },
+  "env_row_sub": {
+    "message": "$1 / $2 · $3",
+    "description": "An environment row: $1 vault, $2 project, $3 how many variables."
+  },
+  "env_protected": {
+    "message": "Protected"
+  },
+  "env_protected_notice": {
+    "message": "Protected: showing or copying a value asks for Touch ID every time."
+  },
+  "env_protected_by": {
+    "message": "Protected by $1: showing or copying a value asks for Touch ID every time.",
+    "description": "On a protected item’s page. $1: the environments, in quotes."
+  },
+  "env_protect_title": {
+    "message": "Protect this environment"
+  },
+  "env_protect_text": {
+    "message": "Touch ID for every value, and agents ask every time. Turning it off asks for Touch ID."
+  },
+  "env_from": {
+    "message": "From $1",
+    "description": "Where a variable’s value comes from. $1: «Item › field»."
+  },
+  "env_from_unknown": {
+    "message": "From an item this device can’t see"
+  },
+  "env_own_value": {
+    "message": "Its own value"
+  },
+  "env_target_protected": {
+    "message": "$1 · protected",
+    "description": "$1: where the value comes from."
+  },
+  "env_agent_changed": {
+    "message": "$1 changed $2 since you last saved it. Check them before using them.",
+    "description": "$1: the agent; $2: the variables, comma-separated."
+  },
+  "env_an_agent": {
+    "message": "An agent"
+  },
+  "env_none": {
+    "message": "No variables yet."
+  },
+  "env_add": {
+    "message": "Add variable"
+  },
+  "env_change": {
+    "message": "Change $1",
+    "description": "$1: the variable."
+  },
+  "env_remove": {
+    "message": "Remove $1",
+    "description": "$1: the variable."
+  },
+  "env_name": {
+    "message": "Name"
+  },
+  "env_value": {
+    "message": "Value"
+  },
+  "env_reference": {
+    "message": "Reference"
+  },
+  "env_source": {
+    "message": "Where the value comes from"
+  },
+  "env_reference_hint": {
+    "message": "A field of another item: klav://Vault/Project/Item/field"
+  },
+  "env_bad_variable": {
+    "message": "Letters, digits and _, not starting with a digit (up to 128)."
+  },
+  "env_bad_name": {
+    "message": "Lowercase letters, digits, - and _ (up to 64), like development."
+  },
+  "env_bad_reference": {
+    "message": "A reference starts with klav://"
+  },
+  "env_empty_value": {
+    "message": "Type a value."
+  },
+  "env_saved": {
+    "message": "Saved"
+  },
+  "env_now_protected": {
+    "message": "Now protected: $1",
+    "description": "After saving. $1: the items, comma-separated."
+  },
+  "env_trash": {
+    "message": "Move to trash"
+  },
+  "env_trash_confirm": {
+    "message": "Move $1 to the trash?",
+    "description": "$1: the environment."
+  },
+  "env_trashed": {
+    "message": "Moved to the trash"
+  },
+  "env_new": {
+    "message": "New environment"
+  },
+  "env_project": {
+    "message": "Project"
+  },
+  "env_create": {
+    "message": "Create"
+  },
+  "env_gone": {
+    "message": "This environment is no longer here."
+  },
+  "env_update_klav": {
+    "message": "Environments need a newer Klav on this computer. Update Klav."
+  },
+  "env_password_lower": {
+    "message": "Master password to lower the protection"
+  },
+  "cancel": {
+    "message": "Cancel"
   }
 }
