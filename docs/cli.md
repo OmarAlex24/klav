@@ -2589,7 +2589,9 @@ klav proxy local init --email CORREO [--server URL] [--json]
 - **`cloud stop`** («Dejar de usarlo») revoca el agente del enclave y
   cambia la llave de lo que tenía (un agente que ya no existe no es un
   error), deja la cuenta sin proxy, vuelve a firmar los emisores sin él y
-  lista los tokens que hay que cambiar en cada proveedor.
+  lista los tokens que hay que cambiar en cada proveedor. Un `use klav`
+  posterior, desde este dispositivo o desde otro, inscribe un agente nuevo
+  en la generación siguiente y lo verifica como la primera vez.
 - **`cloud reset`** («Configurarlo otra vez», tras perder sus llaves o un
   agente revocado): inscribe un agente nuevo en la generación siguiente,
   lo verifica, le concede los elementos, perfiles y reglas del grant

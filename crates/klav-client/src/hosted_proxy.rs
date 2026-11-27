@@ -201,7 +201,8 @@ struct HostedFile {
     /// The highest `seed_epoch` of a manifest it verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     seed_epoch: Option<u32>,
-    /// The highest generation it enrolled at: a reset asks for the next.
+    /// The highest generation it enrolled at: a reset asks for the next,
+    /// and `use klav` for the next when this one's agent is revoked.
     #[serde(default)]
     generation: u32,
     /// Every hosted agent it enrolled, so a grant to one is checked even
@@ -999,7 +1000,10 @@ mod verify {
         }
 
         /// Enrolls the account (`reset`: at the next generation, replacing
-        /// `old`) and verifies the agent the enclave registered.
+        /// `old`) and verifies the agent the enclave registered. Without
+        /// `reset`, a generation whose agent the server shows revoked (a
+        /// `cloud stop`, a lapsed or denied pending agent) moves to the next
+        /// one, once.
         async fn prepare_hosted_enroll(
             &mut self,
             reset: bool,
@@ -1066,8 +1070,78 @@ mod verify {
                 .fetch_manifest(&http)
                 .await
                 .map_err(HostedFailure::into_error)?;
-            let floor = self.read_hosted_file().file().generation;
-            let generation = if reset { floor + 1 } else { floor };
+            // A second device's file can lag behind the enclave: the
+            // generation the enclave says it serves raises the floor. It is
+            // not verified, so it is only a number to ask at, and is written
+            // only once an enroll answer at it checks out.
+            let local = self.read_hosted_file().file().generation;
+            let floor = match self.hosted_generation().await {
+                Ok(enclave) => local.max(enclave),
+                Err(_) => local,
+            };
+            let generation = if reset {
+                floor.checked_add(1).ok_or_else(|| {
+                    ClientError::Invalid("the account's hosted proxy has no next generation".into())
+                })?
+            } else {
+                floor
+            };
+            let mut answer = self.enroll_at(&http, &manifest, generation, old).await?;
+            // The keys the server shows for that pending agent must be the
+            // ones an approved image holds (§6.1 step 4: no six words).
+            let public = match self.hosted_agent_keys(answer.agent_id).await {
+                Ok((_, public)) => public,
+                Err(f) => {
+                    // The enclave still holds the agent of a generation the
+                    // person stopped (or that lapsed, was denied or is
+                    // gone): `use klav` enrolls once at the next one, which
+                    // the enclave answers with a new agent. Any other
+                    // failure stands.
+                    let Some(next) = reenroll_generation(reset, answer.generation, &f) else {
+                        return Err(f.into_error());
+                    };
+                    answer = self
+                        .enroll_at(&http, &manifest, next, Some(answer.agent_id))
+                        .await?;
+                    self.hosted_agent_keys(answer.agent_id)
+                        .await
+                        .map_err(HostedFailure::into_error)?
+                        .1
+                }
+            };
+            let endpoint = self.hosted_proxy_endpoint();
+            let check = self
+                .verify_hosted_agent(answer.agent_id, &public)
+                .await
+                .map_err(HostedFailure::into_error)?;
+            check.wrappable()?;
+            if !check.egress.is_empty() {
+                warnings.push(format!(
+                    "Klav Cloud's proxy reaches the Klav server from {}; a strict network profile with those addresses is not signed by this version yet (ADR 0044, ADR 0051 §3.5)",
+                    check.egress.join(", ")
+                ));
+            }
+            Ok(PreparedHostedUse {
+                agent_id: answer.agent_id,
+                view: check.view(Some(true), endpoint),
+                replaces: replaces.into_iter().map(|(loc, _)| loc).collect(),
+                replaces_agent,
+                warnings,
+            })
+        }
+
+        /// Signs and sends `POST /v1/enroll` at `generation`, and checks the
+        /// answer: that generation, the channel of the agent it names under
+        /// the manifest's endpoint, and never `not_agent` (the agent a reset
+        /// replaces, or the revoked one a retry moves past). Records the
+        /// generation and the agent once it checks out.
+        async fn enroll_at(
+            &mut self,
+            http: &reqwest::Client,
+            manifest: &VerifiedManifest,
+            generation: u32,
+            not_agent: Option<AgentId>,
+        ) -> ClientResult<EnrollAnswer> {
             let at_ms = u64::try_from(now_ms()).unwrap_or_default();
             let signed = self.sign_hosted_proxy_enroll(generation, at_ms);
             let endpoint = self.hosted_proxy_endpoint();
@@ -1104,7 +1178,7 @@ mod verify {
             })?;
             if answer.generation != generation
                 || answer.channel != channel_name(answer.agent_id, manifest.endpoint())
-                || (old.is_some() && Some(answer.agent_id) == old)
+                || Some(answer.agent_id) == not_agent
             {
                 return Err(ClientError::Security(
                     "Klav Cloud's proxy answered the enroll with another generation or channel than asked; nothing was set".into(),
@@ -1114,30 +1188,7 @@ mod verify {
                 f.generation = generation;
                 f.agents.push(answer.agent_id);
             })?;
-            // The keys the server shows for that pending agent must be the
-            // ones an approved image holds (§6.1 step 4: no six words).
-            let (_, public) = self
-                .hosted_agent_keys(answer.agent_id)
-                .await
-                .map_err(HostedFailure::into_error)?;
-            let check = self
-                .verify_hosted_agent(answer.agent_id, &public)
-                .await
-                .map_err(HostedFailure::into_error)?;
-            check.wrappable()?;
-            if !check.egress.is_empty() {
-                warnings.push(format!(
-                    "Klav Cloud's proxy reaches the Klav server from {}; a strict network profile with those addresses is not signed by this version yet (ADR 0044, ADR 0051 §3.5)",
-                    check.egress.join(", ")
-                ));
-            }
-            Ok(PreparedHostedUse {
-                agent_id: answer.agent_id,
-                view: check.view(Some(true), endpoint),
-                replaces: replaces.into_iter().map(|(loc, _)| loc).collect(),
-                replaces_agent,
-                warnings,
-            })
+            Ok(answer)
         }
 
         /// Writes `proxy: {mode: "klav", agent_id}` after presence (ADR
@@ -1234,11 +1285,8 @@ mod verify {
                     .collect(),
                 Err(_) => Vec::new(),
             };
-            // A generation above the old agent's, whatever this device
-            // remembers.
-            if let Ok(answer) = self.hosted_generation().await {
-                self.update_hosted_file(|f| f.generation = f.generation.max(answer))?;
-            }
+            // `prepare_hosted_enroll` asks above the old agent's
+            // generation, whatever this device remembers.
             let new = self.prepare_hosted_enroll(true, old).await?;
             Ok(PreparedHostedReset {
                 old_agent_id: old,
@@ -1538,12 +1586,62 @@ mod verify {
         f
     }
 
+    /// The generation `use klav` enrolls at again when the agent the
+    /// enclave answered at `generation` is revoked, denied, lapsed or gone
+    /// on the server (`failure`, from `hosted_agent_keys`): the next one,
+    /// once. `None` when the failure stands: a reset (which already asked
+    /// for a new generation), any other state (a key that doesn't decode,
+    /// a server that didn't answer), or no next generation.
+    fn reenroll_generation(reset: bool, generation: u32, failure: &HostedFailure) -> Option<u32> {
+        if reset || failure.state != HostedState::Revoked {
+            return None;
+        }
+        generation.checked_add(1)
+    }
+
     fn revoked() -> HostedFailure {
         HostedFailure::new(
             HostedState::Revoked,
             "agent_revoked",
             "the account's hosted proxy agent is revoked or gone; stop using it, or set it up again",
         )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn failure(state: HostedState) -> HostedFailure {
+            HostedFailure::new(state, "test", "test")
+        }
+
+        /// `use klav` after `cloud stop` (or a lapsed, denied or deleted
+        /// agent) moves past that generation once; nothing else does.
+        #[test]
+        fn only_a_revoked_agent_moves_use_klav_to_the_next_generation() {
+            assert_eq!(reenroll_generation(false, 0, &revoked()), Some(1));
+            assert_eq!(reenroll_generation(false, 7, &revoked()), Some(8));
+            // A reset already asked for a new generation.
+            assert_eq!(reenroll_generation(true, 1, &revoked()), None);
+            // A key that doesn't decode, a server that didn't answer, or any
+            // other state is a failure that stands.
+            for state in [
+                HostedState::Verified,
+                HostedState::Unverified,
+                HostedState::Unreachable,
+                HostedState::NotEntitled,
+                HostedState::LostKeys,
+                HostedState::Unsupported,
+            ] {
+                assert_eq!(
+                    reenroll_generation(false, 0, &failure(state)),
+                    None,
+                    "{state:?}"
+                );
+            }
+            // No generation past the last one.
+            assert_eq!(reenroll_generation(false, u32::MAX, &revoked()), None);
+        }
     }
 }
 

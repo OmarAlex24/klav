@@ -3462,3 +3462,212 @@ async fn cloud_stop_keeps_the_issuers_of_the_own_proxy() {
     assert_eq!(issuer_names(&mut person, t3).await, None);
     assert_eq!(issuer_names(&mut person, boat).await, Some(own.id()));
 }
+
+/// `use klav` after `klav proxy cloud stop` (the enclave still holds the
+/// stopped generation's agent, which the server shows revoked) enrolls the
+/// next generation and verifies its new agent, on the device that stopped
+/// it and on another one whose `hosted-proxy.bin` never saw a generation
+/// (it asks the enclave which one it serves first). The own proxy's issuer
+/// keeps it throughout (Q5 (a)).
+#[tokio::test(flavor = "multi_thread")]
+async fn use_klav_after_cloud_stop_enrolls_the_next_generation() {
+    use klav_client::hosted_proxy::HostedState;
+    use klav_client::{LoginRequest, login};
+    use klav_core::crypto::secret_key::SecretKey;
+    use klav_core::model::preferences::ProxyMode;
+    use secrecy::ExposeSecret;
+
+    let mut server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let world = World::new().await;
+    let img = image("0.12.0");
+    let enclave = world.enclave_with(&img, &server.url, QuotaLimits::default());
+    enclave.start_fresh().expect("seed");
+    key_server_for(&mut server, &enclave);
+    let host = reqwest::Url::parse(&server.url)
+        .expect("url")
+        .host_str()
+        .expect("host")
+        .to_owned();
+    let release = FakeReleaseKey::new(RELEASE);
+    let seq1 = manifest_for(1, &[(&img, "current")], &release, &host, now() - 60_000, 20);
+    enclave.load_manifest(seq1).expect("manifest");
+    let parent =
+        tampering_parent(api(&enclave).await, Arc::new(Mutex::new(Tamper::default()))).await;
+    let upstream = Upstream::start().await;
+
+    let email = "fay@example.com";
+    let password = "correct horse battery staple";
+    let (mut laptop, kit) = signup(
+        &Home::at(dir.path().join("device-laptop")),
+        SignupRequest {
+            server: server.url.clone(),
+            email: email.into(),
+            password: MasterPassword::new(password),
+            device_name: "laptop".into(),
+            device_kind: klav_proto::auth::DeviceKind::Cli,
+            invite: None,
+        },
+    )
+    .await
+    .expect("sign-up");
+    add_item(&mut laptop, "Northflank", "tok_live_fay_0123456789abcdef").await;
+    add_item(&mut laptop, "Second", "tok_live_fay_second_0123456789").await;
+    add_item(&mut laptop, "Third", "tok_live_fay_third_0123456789").await;
+    laptop
+        .set_hosted_proxy_endpoint(Some(&parent))
+        .expect("endpoint");
+    laptop.set_hosted_proxy_test_anchors(world.nitro.root(), &[release.public()]);
+
+    // P_own, holding Northflank, with Boat's issuer I_boat.
+    let own = Agent::register(
+        &Home::at(dir.path().join("agent-own")),
+        Registration {
+            name: "own-proxy".into(),
+            server: server.url.clone(),
+            email: email.into(),
+            note: None,
+            key_store: KeyStore::File {
+                path: dir.path().join("own.key"),
+            },
+        },
+    )
+    .await
+    .expect("register")
+    .0;
+    let prepared = laptop
+        .prepare_proxy_use(Some("own-proxy"))
+        .await
+        .expect("use own");
+    laptop.commit_proxy_use(prepared).await.expect("use own");
+    let mut credential = crate::sandbox_e2e_tests::credential_at(
+        "northflank",
+        &format!("https://upstream.test:{}", upstream.port),
+    );
+    credential.methods = vec!["GET".into()];
+    let prepared = laptop
+        .prepare_proxy_grant("Northflank", &credential, PairingCheck::InPrompt)
+        .await
+        .expect("grant own");
+    prepared.require_updated_devices(true).expect("ack");
+    assert!(
+        laptop
+            .commit_proxy_change(prepared)
+            .await
+            .expect("grant own")
+            .complete()
+    );
+    let boat = add_issuer(
+        &mut laptop,
+        &server,
+        &dir,
+        email,
+        "sandbox-issuer",
+        "tls://own-proxy.example.com:8443".into(),
+        "northflank",
+    )
+    .await;
+    assert_eq!(issuer_names(&mut laptop, boat).await, Some(own.id()));
+
+    // `use klav` at generation 0, then `cloud stop`.
+    hosted_proxy_switch(&server, "enable", email);
+    let prepared = laptop.prepare_hosted_proxy_use().await.expect("prepare");
+    assert_eq!(prepared.view.generation, Some(0));
+    let first = prepared.agent_id;
+    laptop
+        .commit_hosted_proxy_use(prepared)
+        .await
+        .expect("commit");
+    assert!(
+        grant(&mut laptop, "Second", &upstream)
+            .await
+            .expect("grant")
+            .complete()
+    );
+    let stopped = laptop.stop_hosted_proxy().await.expect("stop");
+    assert!(stopped.revoked.is_some());
+    assert_eq!(
+        laptop.preferences().expect("prefs").proxy().mode,
+        ProxyMode::None
+    );
+
+    // a) `use klav` again on the same device: the enclave still answers
+    // generation 0 with the revoked agent, so it enrolls generation 1.
+    let prepared = laptop
+        .prepare_hosted_proxy_use()
+        .await
+        .expect("use klav after stop");
+    let second = prepared.agent_id;
+    assert_ne!(second, first);
+    assert_eq!(prepared.view.state, HostedState::Verified);
+    assert_eq!(prepared.view.generation, Some(1));
+    let resigned = laptop
+        .commit_hosted_proxy_use(prepared)
+        .await
+        .expect("commit after stop");
+    assert!(resigned.done.is_empty(), "{resigned:?}");
+    assert!(resigned.failed.is_empty(), "{resigned:?}");
+    let setting = laptop.preferences().expect("prefs").proxy();
+    assert_eq!(setting.mode, ProxyMode::Klav);
+    assert_eq!(setting.agent_id, Some(second));
+    let status = laptop
+        .hosted_proxy_status()
+        .await
+        .expect("status")
+        .expect("klav");
+    assert_eq!(status.state, HostedState::Verified, "{status:?}");
+    assert_eq!(status.generation, Some(1));
+    assert_eq!(issuer_names(&mut laptop, boat).await, Some(own.id()));
+    // A grant reaches the new agent after a fresh attestation.
+    assert!(
+        grant(&mut laptop, "Third", &upstream)
+            .await
+            .expect("grant to the new agent")
+            .complete()
+    );
+
+    // b) Stopped again; another device that never enrolled (its file says
+    // generation 0, the enclave serves 1) sets it up.
+    let stopped = laptop.stop_hosted_proxy().await.expect("stop again");
+    assert!(stopped.revoked.is_some());
+    let mut phone = login(
+        &Home::at(dir.path().join("device-phone")),
+        LoginRequest {
+            server: server.url.clone(),
+            email: email.into(),
+            password: MasterPassword::new(password),
+            secret_key: SecretKey::parse(kit.secret_key().to_text().expose_secret())
+                .expect("secret key"),
+            device_name: "phone".into(),
+            device_kind: klav_proto::auth::DeviceKind::Cli,
+        },
+    )
+    .await
+    .expect("login");
+    phone
+        .set_hosted_proxy_endpoint(Some(&parent))
+        .expect("endpoint");
+    phone.set_hosted_proxy_test_anchors(world.nitro.root(), &[release.public()]);
+    let prepared = phone
+        .prepare_hosted_proxy_use()
+        .await
+        .expect("use klav from another device");
+    let third = prepared.agent_id;
+    assert!(third != first && third != second);
+    assert_eq!(prepared.view.state, HostedState::Verified);
+    assert_eq!(prepared.view.generation, Some(2));
+    phone
+        .commit_hosted_proxy_use(prepared)
+        .await
+        .expect("commit from another device");
+    let setting = phone.preferences().expect("prefs").proxy();
+    assert_eq!(setting.mode, ProxyMode::Klav);
+    assert_eq!(setting.agent_id, Some(third));
+    assert_eq!(issuer_names(&mut phone, boat).await, Some(own.id()));
+    let agents = phone.agents().await.expect("agents");
+    let status = |id: AgentId| agents.iter().find(|a| a.id == id).expect("listed").status;
+    assert_eq!(status(first), AgentStatus::Revoked);
+    assert_eq!(status(second), AgentStatus::Revoked);
+    assert_eq!(status(own.id()), AgentStatus::Active);
+    assert_eq!(status(boat), AgentStatus::Active);
+}
