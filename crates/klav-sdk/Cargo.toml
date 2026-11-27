@@ -14,6 +14,11 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 klav-client.workspace = true
 klav-core.workspace = true
 klav-daemon.workspace = true
+# Only `klav_forward::issuer`: an issuer's request to Klav Cloud's hosted
+# proxy over the account's pinned TLS 1.3 channel (ADR 0051 §6.4). It
+# depends on `klav-core` alone (no cycle) and adds no external crate:
+# `rustls` and `tokio-rustls` are already here through `reqwest`.
+klav-forward.workspace = true
 klav-proto.workspace = true
 klav-touchid.workspace = true
 # Only to compare errnos in the secret-file writer (`secret_file`): same

@@ -263,10 +263,31 @@ struct Setup {
     port: String,
     person: Device,
     issuer: Device,
+    /// The proxy's pinned channel, when it serves one.
+    channel: Option<std::net::SocketAddr>,
     _stop: StopDaemon,
 }
 
 fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Setup {
+    person_proxy_and_issuer_at(
+        root,
+        server,
+        |_| "tls://proxy.example.com:8443".into(),
+        false,
+        None,
+    )
+}
+
+/// [`person_proxy_and_issuer`] with the issuer's proxy URL `url(proxy's
+/// agent ID)`, the proxy's pinned channel on loopback with `channel`, and
+/// a second issuer `(name, url)` added before the proxy starts.
+fn person_proxy_and_issuer_at(
+    root: &std::path::Path,
+    server: &ServerProcess,
+    url: impl Fn(klav_core::ids::AgentId) -> String,
+    channel: bool,
+    second: Option<(&str, &str)>,
+) -> Setup {
     let person = Device::new(root, "person");
     person.signup(server, "ana@example.com");
     let stop = StopDaemon(Device::new(root, "person"));
@@ -314,6 +335,10 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
             "",
         )
         .ok();
+    let proxy_id = klav_sdk::Agent::load(&Home::at(root.join("klav-proxy")), "klav-proxy")
+        .expect("proxy agent")
+        .id();
+    let url = url(proxy_id);
     let words = register(root, server, "t3-code");
     // The first issuer, with neither the acknowledgement nor the words (no
     // terminal to ask): the first refusal names both.
@@ -327,7 +352,7 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
                 "--profile",
                 "railway",
                 "--url",
-                "tls://proxy.example.com:8443",
+                &url,
             ],
             "",
         )
@@ -347,7 +372,7 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
                 "--profile",
                 "railway",
                 "--url",
-                "tls://proxy.example.com:8443",
+                &url,
                 "--max-live",
                 "2",
                 "--every-device-is-updated",
@@ -357,6 +382,28 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
             "",
         )
         .ok();
+
+    if let Some((name, url)) = second {
+        let words = register(root, server, name);
+        person
+            .unlocked(
+                &[
+                    "proxy",
+                    "issuer",
+                    "add",
+                    name,
+                    "--profile",
+                    "railway",
+                    "--url",
+                    url,
+                    "--every-device-is-updated",
+                    "--words",
+                    &words,
+                ],
+                "",
+            )
+            .ok();
+    }
 
     // The proxy, in this process, with the real startup path, and its
     // local socket where the person's `klav proxy local` looks (layer 11).
@@ -371,7 +418,7 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
             home: Home::at(root.join("klav-proxy")),
             name: "klav-proxy".into(),
             port: 0,
-            channel: None,
+            channel: channel.then(|| std::net::SocketAddr::from(([127, 0, 0, 1], 0))),
             max_body: klav_proxy::proxy::DEFAULT_MAX_BODY,
             request_timeout: Duration::from_secs(30),
             no_local_calls: false,
@@ -380,6 +427,7 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
         }))
         .expect("proxy");
     let port = bound.port().to_string();
+    let channel = bound.channel_addr();
     runtime.spawn(bound.run(std::future::pending()));
     let issuer = Device::new(root, "t3-code");
     Setup {
@@ -387,6 +435,7 @@ fn person_proxy_and_issuer(root: &std::path::Path, server: &ServerProcess) -> Se
         port,
         person,
         issuer,
+        channel,
         _stop: stop,
     }
 }
@@ -401,6 +450,7 @@ fn an_issuer_starts_lists_and_stops_sandboxes_without_printing_the_package() {
         person,
         issuer,
         _stop,
+        ..
     } = person_proxy_and_issuer(root.path(), &server);
     let port = port.as_str();
 
@@ -1327,6 +1377,7 @@ fn the_person_lists_and_revokes_the_proxys_sandboxes() {
         person,
         issuer,
         _stop,
+        ..
     } = person_proxy_and_issuer(root.path(), &server);
     let list = |args: &[&str]| -> Value {
         let mut all = vec!["proxy", "sandboxes", "--json"];
@@ -1778,6 +1829,7 @@ fn the_person_revokes_through_the_local_socket_while_locked() {
         person,
         issuer,
         _stop,
+        ..
     } = person_proxy_and_issuer(root.path(), &server);
     let work = tempfile::tempdir().expect("work");
     let mut ids = Vec::new();
@@ -1854,4 +1906,220 @@ fn the_person_revokes_through_the_local_socket_while_locked() {
         "{}",
         log.stdout
     );
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `klav <args>` from `dev` with `KLAV_HOSTED_PROXY_CHANNEL_ADDR` set to
+/// `channel` (or unset).
+fn run_with_channel(dev: &Device, channel: Option<&str>, args: &[&str]) -> common::Run {
+    let mut cmd = dev.command();
+    match channel {
+        Some(addr) => cmd.env("KLAV_HOSTED_PROXY_CHANNEL_ADDR", addr),
+        None => cmd.env_remove("KLAV_HOSTED_PROXY_CHANNEL_ADDR"),
+    };
+    let out = cmd.args(args).output().expect("run klav");
+    common::Run {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8(out.stdout).expect("utf-8"),
+        stderr: String::from_utf8(out.stderr).expect("utf-8"),
+    }
+}
+
+/// A TCP relay to `to` on `runtime` that records what the client sends.
+fn tap(
+    runtime: &tokio::runtime::Runtime,
+    to: std::net::SocketAddr,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = std::sync::Arc::clone(&seen);
+    runtime.spawn(async move {
+        while let Ok((inbound, _)) = listener.accept().await {
+            let s = std::sync::Arc::clone(&s);
+            tokio::spawn(async move {
+                let Ok(outbound) = tokio::net::TcpStream::connect(to).await else {
+                    return;
+                };
+                let (mut in_r, mut in_w) = tokio::io::split(inbound);
+                let (mut out_r, mut out_w) = tokio::io::split(outbound);
+                let up = async {
+                    let mut buf = [0u8; 4096];
+                    while let Ok(n) = in_r.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        s.lock().expect("lock").extend_from_slice(&buf[..n]);
+                        if out_w.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                    let _ = out_w.shutdown().await;
+                };
+                let down = async {
+                    let _ = tokio::io::copy(&mut out_r, &mut in_w).await;
+                    let _ = in_w.shutdown().await;
+                };
+                tokio::join!(up, down);
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// ADR 0051 §6.4: `klav sandbox start | ls | stop` take Klav Cloud's
+/// pinned channel only when the issuer's grant names the channel of its
+/// own proxy agent (`tls://a<agent_id hex>.<domain>:<port>`), and the
+/// loopback listener (`--proxy-port`) for anything else, as before:
+/// - with the hosted URL, `ls` dials the channel with the account's name
+///   as SNI (a tap reads it in the ClientHello) at
+///   `KLAV_HOSTED_PROXY_CHANNEL_ADDR`, pinned to the grant's key, and never
+///   `--proxy-port`; a self-hosted proxy's channel serves no issuer API,
+///   so it refuses, and `start` there starts nothing;
+/// - without the variable, the channel's own name is dialed (it doesn't
+///   resolve here) and the error says Klav Cloud's channel didn't answer;
+/// - an issuer whose URL names another agent's channel keeps the loopback
+///   listener even with the variable set, and starts, lists and stops
+///   there.
+#[test]
+fn the_issuer_takes_klav_clouds_channel_only_when_its_grant_names_it() {
+    let server = ServerProcess::start(900);
+    let root = tempfile::tempdir().expect("tempdir");
+    let hosted = |proxy: klav_core::ids::AgentId| {
+        format!("tls://a{}.proxy.klav.test:443", hex(proxy.as_bytes()))
+    };
+    // `local-agent`'s URL names another agent's channel.
+    let other = format!("tls://a{}.proxy.klav.test:443", "ab".repeat(16));
+    let setup = person_proxy_and_issuer_at(
+        root.path(),
+        &server,
+        hosted,
+        true,
+        Some(("local-agent", &other)),
+    );
+    let channel = setup.channel.expect("channel");
+    let proxy_id = klav_sdk::Agent::load(&Home::at(root.path().join("klav-proxy")), "klav-proxy")
+        .expect("proxy agent")
+        .id();
+    let name = format!("a{}.proxy.klav.test", hex(proxy_id.as_bytes()));
+    let (tapped, seen) = tap(&setup.runtime, channel);
+
+    // `--proxy-port 9`: nothing listens there, so a local route would say
+    // the proxy is unreachable. The hosted route reaches the channel, which
+    // (self-hosted) has no issuer API: its fallback refuses a key bound to
+    // no sandbox, which the CLI reports as a channel without the issuer
+    // API, not as nothing listening.
+    let out = run_with_channel(
+        &setup.issuer,
+        Some(&tapped),
+        &["sandbox", "ls", "--proxy-port", "9", "--json"],
+    );
+    assert_ne!(out.code, 0, "{}", out.stderr);
+    let error = json_error(&out);
+    assert_eq!(error["error"], "klav_proxy_unreachable", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("does not serve the sandbox issuer API"),
+        "{error}"
+    );
+    let wire = seen.lock().expect("lock").clone();
+    assert!(
+        wire.windows(name.len()).any(|w| w == name.as_bytes()),
+        "the ClientHello names the account's channel"
+    );
+    assert!(
+        !wire.windows(16).any(|w| w == b"/_klav/sandboxes"),
+        "the request is inside TLS"
+    );
+    let out = run_with_channel(
+        &setup.issuer,
+        Some(&tapped),
+        &[
+            "sandbox",
+            "start",
+            "--label",
+            "chat-1",
+            "--profile",
+            "railway",
+            "--proxy-port",
+            "9",
+            "--json",
+            "--",
+            "true",
+        ],
+    );
+    assert_ne!(out.code, 0, "{}", out.stderr);
+    never_the_package(&out);
+    // The person's view (the server's log of the proxy): nothing started.
+    let out = setup.person.run(&["proxy", "sandboxes", "--json"], "").ok();
+    let v: Value = serde_json::from_str(&out.stdout).expect("list json");
+    assert_eq!(
+        v["sandboxes"],
+        serde_json::json!([]),
+        "nothing started: {v}"
+    );
+
+    // No relay: the channel's own name is dialed, and doesn't resolve.
+    let out = run_with_channel(&setup.issuer, None, &["sandbox", "ls", "--json"]);
+    let error = json_error(&out);
+    assert_eq!(error["error"], "klav_proxy_unreachable", "{error}");
+    assert!(
+        error["next"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Klav Cloud"),
+        "{error}"
+    );
+
+    // Another agent's channel in the grant: the loopback listener, as before.
+    let local = Device::new(root.path(), "local-agent");
+    let file = root.path().join("package");
+    let out = run_with_channel(
+        &local,
+        Some(&tapped),
+        &[
+            "sandbox",
+            "start",
+            "--label",
+            "chat-2",
+            "--profile",
+            "railway",
+            "--proxy-port",
+            &setup.port,
+            "--package-file",
+            file.to_str().expect("path"),
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    never_the_package(&out);
+    let out = run_with_channel(
+        &local,
+        Some(&tapped),
+        &["sandbox", "ls", "--proxy-port", &setup.port, "--json"],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let v: Value = serde_json::from_str(&out.stdout).expect("ls json");
+    assert_eq!(v["sandboxes"].as_array().expect("sandboxes").len(), 1);
+    let out = run_with_channel(
+        &local,
+        Some(&tapped),
+        &[
+            "sandbox",
+            "stop",
+            "--all",
+            "--proxy-port",
+            &setup.port,
+            "--json",
+        ],
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(live(&local, &setup.port).is_empty());
 }

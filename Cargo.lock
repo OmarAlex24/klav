@@ -2118,6 +2118,7 @@ dependencies = [
  "klav-client",
  "klav-core",
  "klav-daemon",
+ "klav-forward",
  "klav-proto",
  "klav-touchid",
  "nix",

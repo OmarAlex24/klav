@@ -13,6 +13,7 @@
 pub mod channel;
 pub mod forward;
 pub mod http;
+pub mod issuer;
 pub mod setup;
 
 #[cfg(test)]
