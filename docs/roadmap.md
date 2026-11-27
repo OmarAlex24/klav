@@ -547,12 +547,13 @@ Omar lo pidió y lo aceptó el 2026-11-26, con la opción (a) en Q1–Q7: Klav C
   - [x] Generar las llaves de la autoridad en la bóveda de Omar y fijarlas en `klav-core` y en `KLAV_ENCLAVE_RELEASE_KEYS` (con la capa 5)
   - [x] La API del emisor (`start`, `list` y `stop`) en el canal fijado de cada cuenta, con TLS 1.3 terminado dentro del enclave, nunca en la API pública (T276); `?channel=` firmado como `?port=`; `klav sandbox start|ls|stop` va por el canal cuando el grant lo nombra. Probado con el relevo del padre interceptado: el secreto de un solo uso nunca lo cruza en claro (ADR §19). Cambia la imagen: sus PCR y su entrada del manifiesto son nuevos
   - [ ] Prueba a mano en AWS (*runbook* §10). Lo que ya corrió en `us-east-2` (anotado el 2026-11-27) y lo que falta (ADR §18):
-    - [x] Las dos zonas desplegadas detrás de `proxy.klav.dev` y `*.proxy.klav.dev`, con los PCR del hardware idénticos byte a byte a los del manifiesto 2
-    - [x] El traspaso atestado en hardware real: la zona `a` con `genesis` y la `b` con `join`, al primer intento y con la misma `service_key`
+    - [x] Las dos zonas desplegadas detrás de `proxy.klav.dev` y `*.proxy.klav.dev`, con los PCR del hardware idénticos byte a byte a los del manifiesto 2 (y luego al manifiesto 3 en `a41b8e94`)
+    - [x] El traspaso atestado en hardware real: primero de zona `a` (`genesis`) a zona `b` (`join`) al primer intento, y después la actualización escalonada de `23f82370` a `a41b8e94` (manifiesto 3, corrida `46039394816`): antes de mergear el manifiesto 3 a `main` el titular rechazó el traspaso (§4.2); al publicarse, zona `b` se unió en 2 s con la misma `service_key`, el cambio de `in_service` en los NLB dio 36/36 `200 OK` en `/v1/status` sin cortes, y zona `a` pasó de `genesis` manual a `klav-enclave.service` (`join`) en 2 s
     - [x] `klav proxy use klav` y `klav proxy cloud status` contra `proxy.klav.dev` y `api.klav.dev`
+    - [x] Prueba E2E completa de sandbox en cuenta desechable aislada (`klav proxy use klav`, `proxy grant`, `proxy issuer add`, `klav sandbox start` por el canal TLS 1.3 fijado del enclave sin `klav-proxy` local, `klav-forward up`, llamada a `httpbin.org/headers` e `/ip` saliendo por la IP de zona `b` `3.131.48.170` con `[redacted by klav]` en la respuesta, `sandbox ls` y `sandbox stop` seguido de `401 klav_sandbox_revoked`)
     - [ ] Un sandbox de Boat con `northflank` y el MCP de Maple a través del proxy alojado
     - [ ] Perder una zona (el relevo a mano)
-    - [ ] Una actualización escalonada sin llamadas fallidas
+    - [ ] Una actualización escalonada sin llamadas fallidas de un sandbox en bucle durante el corte (ya se midió 36/36 `200 OK` en `/v1/status`)
     - [ ] Una pérdida total con su reenvoltura
     - [ ] La carga de un enclave de 1 vCPU
   - [x] Un documento real del enclave de Klav en `docs/vectores/nitro-attestation.json`: el de la zona `a` del 2026-11-27, también en `crates/klav-core/src/nitro/testdata/`, que verifica contra la raíz fijada y el manifiesto 2 publicado. Muestra que el NSM real solo escribe con longitud indefinida el mapa de primer nivel del *payload*
