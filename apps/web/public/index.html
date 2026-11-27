@@ -361,6 +361,44 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
 .proxy-does li:not(:nth-child(3n + 1)) { border-left: 1px solid var(--linea); }
 .proxy-does li:nth-child(n + 4) { border-top: 1px solid var(--linea); }
 
+/* Klav Cloud's proxy in a Nitro Enclave: the host drawn dashed around the
+ * one box that holds your token in ink. Hidden values stay in the grey mask,
+ * never blue: blue is for agents. */
+.enclave { margin-top: 56px; border: 1px solid var(--tinta); }
+.enclave-head { padding: 30px 32px 28px; }
+.enclave-tag { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-size: 12.5px; font-weight: 500; }
+.enclave-tag > span:first-child { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; background: var(--tinta); color: var(--papel); }
+.enclave-live { display: inline-flex; align-items: center; gap: 7px; color: var(--gris); font-weight: 400; }
+.enclave-live::before { content: ""; width: 6px; height: 6px; background: var(--tinta); flex: none; }
+.enclave-head h3 { margin-top: 18px; font-size: clamp(26px, 2.8vw, 34px); font-weight: 600; letter-spacing: -0.045em; line-height: 1.08; }
+.enclave-head h3 + p { margin-top: 12px; max-width: 46em; color: var(--gris); font-size: 15.5px; }
+.enclave-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-top: 1px solid var(--linea); }
+.enc-scene { background: var(--niebla); padding: 32px; display: flex; align-items: center; }
+.enc-host { width: 100%; border: 1px dashed var(--cruz); padding: 18px 20px 22px; }
+.enc-host-name b { display: block; font-size: 14px; font-weight: 600; letter-spacing: -0.02em; }
+.enc-host-name span { display: block; margin-top: 1px; font-size: 12.5px; color: var(--gris); }
+.enc-host-sees { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--linea); font-size: 13px; color: var(--gris); line-height: 1.45; }
+.enc-box { margin-top: 18px; background: var(--papel); border: 1px solid var(--tinta); box-shadow: 4px 4px 0 var(--tinta); padding: 16px 18px 18px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 14px; align-items: center; }
+.enc-box .seal { grid-row: span 2; width: 34px; height: 30px; display: grid; place-items: center; background: var(--tinta); color: var(--papel); }
+.enc-box .seal .key { width: 18px; height: 11px; }
+.enc-box > b { font-size: 14px; font-weight: 600; letter-spacing: -0.02em; }
+.enc-token { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--gris); }
+.enc-mask { display: block; flex: 1 1 auto; max-width: 132px; height: 12px; background: repeating-conic-gradient(var(--mask-2) 0 25%, var(--mask-1) 0 50%) 0 0 / 4px 4px; }
+.enc-box small { grid-column: 1 / -1; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--linea); font-size: 12.5px; color: var(--tinta); font-weight: 500; }
+.enc-term { max-width: none; border: 0; border-left: 1px solid var(--linea); display: flex; align-items: center; }
+.enc-term .term-body { padding: 24px 26px; width: 100%; }
+.enc-term .wrapline { overflow-wrap: anywhere; }
+.enc-term .enc-gap { margin-top: 14px; }
+.enclave-proofs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--linea); }
+.enclave-proofs li { padding: 20px 24px 22px; font-size: 14px; color: var(--gris); }
+.enclave-proofs li + li { border-left: 1px solid var(--linea); }
+.enclave-proofs li strong { display: block; color: var(--tinta); font-weight: 600; font-size: 15px; letter-spacing: -0.02em; margin-bottom: 4px; }
+.enclave-proofs code { white-space: normal; }
+.enc-links { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; }
+.enc-links a { font: 400 12px/1.5 var(--mono); color: var(--tinta); text-underline-offset: 3px; }
+.enclave-trust { border-top: 1px solid var(--linea); padding: 16px 32px 18px; font-size: 13.5px; color: var(--gris); }
+.enclave-trust strong { color: var(--tinta); font-weight: 600; }
+
 .ptable { margin-top: 56px; border: 1px solid var(--linea); }
 .prow { display: grid; grid-template-columns: 196px repeat(3, minmax(0, 1fr)); }
 .prow + .prow { border-top: 1px solid var(--linea); }
@@ -515,6 +553,10 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
   .proxy-does li:nth-child(even) { border-left: 1px solid var(--linea); }
   .proxy-does li:nth-child(n + 3) { border-top: 1px solid var(--linea); }
   .next { grid-template-columns: 1fr; }
+  .enclave-proofs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .enclave-proofs li + li { border-left: 0; }
+  .enclave-proofs li:nth-child(even) { border-left: 1px solid var(--linea); }
+  .enclave-proofs li:nth-child(n + 3) { border-top: 1px solid var(--linea); }
 }
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; gap: 48px; padding-top: 48px; }
@@ -527,6 +569,8 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
   .scene-view { border-left: 0; border-top: 1px solid var(--linea); order: 2; min-height: 0; }
   .ptable .prow { grid-template-columns: 160px repeat(3, minmax(0, 1fr)); }
   .honest { grid-template-columns: 1fr; }
+  .enclave-body { grid-template-columns: 1fr; }
+  .enc-term { border-left: 0; border-top: 1px solid var(--linea); }
   .dl-row { grid-template-columns: 200px minmax(0, 1fr); }
   .dl-row > .dl-get { grid-column: 2; border-left: 1px solid var(--linea); padding-top: 0; }
   .dl-ext .dl-browsers { grid-column: 2; grid-template-columns: 1fr; }
@@ -573,6 +617,15 @@ canvas.mask { position: absolute; left: 0; top: 0; width: 100%; height: 100%; po
   .proxy-does li:nth-child(even) { border-left: 0; }
   .proxy-does li:nth-child(n + 2) { border-top: 1px solid var(--linea); }
   .proxy-does li { padding: 16px 16px 18px; }
+  .enclave-head { padding: 22px 16px 22px; }
+  .enc-scene { padding: 20px 14px; }
+  .enc-host { padding: 14px 14px 18px; }
+  .enc-term .term-body { padding: 16px 14px; }
+  .enclave-proofs { grid-template-columns: 1fr; }
+  .enclave-proofs li:nth-child(even) { border-left: 0; }
+  .enclave-proofs li + li { border-top: 1px solid var(--linea); }
+  .enclave-proofs li { padding: 16px 16px 18px; }
+  .enclave-trust { padding: 14px 16px 16px; }
   .ptable .prow { grid-template-columns: 1fr; }
   .prow-head { display: none; }
   .prow > div { padding: 5px 16px; }
@@ -883,9 +936,9 @@ env:
   <!-- =========================================================== proxy -->
   <section class="wrap section" id="proxy">
     <div class="section-head">
-      <span class="soon" data-i18n="px.soon">Coming soon</span>
+      <span class="soon" data-i18n="px.badge">Early preview</span>
       <h2 class="h2" data-i18n="px.title">Your tokens never enter the sandbox.</h2>
-      <p class="lede" data-i18n="px.lede">Agents will reach Railway, Northflank or Maple through a proxy that adds the real token on the way out. The sandbox only gets a credential that dies with it. The self-hosted proxy comes first; the managed one follows, once it runs inside an enclave you can verify.</p>
+      <p class="lede" data-i18n="px.lede">Agents reach Northflank, or any HTTPS API you list, through a proxy that adds the real token on the way out. The sandbox only gets a credential that dies with it. Run the proxy yourself today, or, in the invited beta, use Klav Cloud’s, inside an enclave your devices verify.</p>
     </div>
 
     <div class="proxy cross">
@@ -904,7 +957,7 @@ env:
           <div class="wire"><span class="packet" hidden></span></div>
           <div class="node node-box node-api">
             <span class="api-lines" aria-hidden="true"><i></i><i></i><i></i></span>
-            <span><b>Railway API</b><small data-i18n="px.apiSub">Only the hosts, paths and methods you allowed.</small></span>
+            <span><b>Northflank API</b><small data-i18n="px.apiSub">Only the hosts, paths and methods you allowed.</small></span>
           </div>
         </div>
         <div class="legend">
@@ -923,12 +976,60 @@ env:
       </ul>
     </div>
 
-    <div class="ptable" role="table" aria-label="No proxy, self-hosted proxy and Klav managed">
+    <div class="enclave cross" id="enclave">
+      <div class="enclave-head">
+        <p class="enclave-tag"><span data-i18n="enc.tag">Klav Cloud · invited beta</span><span class="enclave-live" data-i18n="enc.live">Live on AWS, us-east-2</span></p>
+        <h3 data-i18n="enc.title">We run it. We still can't read it.</h3>
+        <p data-i18n-html="enc.lede">Klav Cloud's proxy keeps your sandboxes working while every device of yours is off, with no server of your own. It runs inside an AWS Nitro Enclave, and your devices check what it runs before they share a single token with it. Once Klav turns it on for your beta account, <code>klav proxy use klav</code> sets it up.</p>
+      </div>
+
+      <div class="enclave-body">
+        <div class="enc-scene" role="img" aria-label="An AWS host machine around a sealed Nitro Enclave. The host relays bytes; your token is decrypted only inside the enclave.">
+          <div class="enc-host">
+            <p class="enc-host-name"><b data-i18n="enc.host">The AWS host machine</b><span data-i18n="enc.hostWho">Root, Klav's operators, AWS's staff</span></p>
+            <p class="enc-host-sees" data-i18n="enc.hostSees">Relays encrypted bytes. Sees addresses, timing, sizes, and which account a connection is for.</p>
+            <div class="enc-box">
+              <span class="seal"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg></span>
+              <b>Nitro Enclave</b>
+              <span class="enc-token"><span data-i18n="enc.token">Your Northflank token</span><i class="enc-mask" aria-hidden="true"></i></span>
+              <small data-i18n="enc.boxSub">Decrypted only in this memory. No login, no disk.</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="term enc-term">
+          <div class="term-body">
+            <div class="wrapline"><span class="p">$</span> klav proxy cloud status</div>
+            <div class="wrapline">Klav Cloud's proxy: attested, version 0.10.0 (aarch64), commit a41b8e941bf0…, checked just now</div>
+            <div class="wrapline">PCR0: 125d20da15aa7266…9e769df23a</div>
+            <div class="wrapline">PCR1: 3b4a7e1b5f13c5a1…ba0974d03</div>
+            <div class="wrapline">PCR2: a82b0b078ccdb85c…87b9ce7418</div>
+            <div class="wrapline">Manifest: seq 3 (deploy/nitro/manifests/3.json in Klav's repository)</div>
+            <div class="wrapline enc-gap"><span class="p">$</span> deploy/nitro/verify-release.sh --seq 3 --release-key a8aa68a5… --no-rebuild</div>
+            <div class="wrapline">signature: OK (release key a8aa68a51a5d6cee…)</div>
+            <div class="wrapline">seq 3, seed_epoch 0, endpoint proxy.klav.dev, server api.klav.dev</div>
+            <div class="wrapline">image 0.10.0 a41b8e941bf0 aarch64 current</div>
+            <div class="wrapline dim" data-i18n="enc.termNote"># without --no-rebuild, it rebuilds each image and compares its PCRs</div>
+          </div>
+        </div>
+      </div>
+
+      <ul class="enclave-proofs">
+        <li><strong data-i18n="enc.p1">Sealed memory</strong><span data-i18n="enc.p1t">No one can log in to the enclave, and it has no disk. Root on the host, Klav's operators and AWS's staff can't read its memory. A debug console would zero its measurements, and your devices would refuse it.</span></li>
+        <li><strong data-i18n="enc.p2">Your device checks first</strong><span data-i18n-html="enc.p2t">Before it wraps a token for the enclave, your Mac, iPhone or the CLI checks a fresh attestation signed by AWS's hardware (ECDSA P-384, chained to AWS's Nitro root) and compares <code>PCR0</code>, <code>PCR1</code> and <code>PCR2</code> with a signed manifest. One changed byte, and it refuses.</span></li>
+        <li><strong data-i18n="enc.p3">Rebuild it yourself</strong><span data-i18n-html="enc.p3t">The code is open and the image builds the same every time. <code>verify-release.sh</code> checks a manifest's signature and rebuilds each listed commit to the same PCRs.</span><span class="enc-links"><!--open:repo--><a href="https://github.com/OmarAlex24/klav/tree/main/deploy/nitro/manifests">manifests</a><a href="https://github.com/OmarAlex24/klav/blob/main/deploy/nitro/verify-release.sh">verify-release.sh</a><a href="https://proxy.klav.dev/v1/manifest">proxy.klav.dev/v1/manifest</a><!--/open:repo--><!--closed:repo--><code>proxy.klav.dev/v1/manifest</code><!--/closed:repo--></span></li>
+        <li><strong data-i18n="enc.p4">Upgrades in the open</strong><span data-i18n-html="enc.p4t">Sandbox traffic ends its TLS 1.3 inside the enclave, at <code>*.proxy.klav.dev</code>, so the host relays only ciphertext. An enclave hands its keys to a new version only once that version's signed manifest is public on GitHub.</span></li>
+      </ul>
+
+      <p class="enclave-trust"><strong data-i18n="enc.trustTitle">What you still trust:</strong> <span data-i18n="enc.trust">AWS's Nitro hardware and its attestation keys, and whoever signs Klav's releases, who would have to publish a bad one where anyone can see it. The host still sees which services you call, when and how much.</span></p>
+    </div>
+
+    <div class="ptable" role="table" aria-label="No proxy, self-hosted proxy and Klav Cloud">
       <div class="prow prow-head" role="row">
         <div role="columnheader"></div>
         <div role="columnheader" data-i18n="px.cNone">No proxy</div>
         <div role="columnheader" class="is-klav"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg><span data-i18n="px.cSelf">Self-hosted proxy</span></div>
-        <div role="columnheader" class="is-klav"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg><span data-i18n="px.cManaged">Klav managed</span></div>
+        <div role="columnheader" class="is-klav"><svg class="key" viewBox="0 1 8 5" shape-rendering="crispEdges" aria-hidden="true"><path fill="currentColor" d="M1 1h2v1H1zM0 2h1v1H0zM3 2h1v1H3zM0 3h1v1H0zM3 3h5v1H3zM0 4h1v1H0zM3 4h1v1H3zM5 4h1v1H5zM7 4h1v1H7zM1 5h2v1H1z"/></svg><span data-i18n="px.cManaged">Klav Cloud</span></div>
       </div>
     </div>
 
@@ -958,6 +1059,7 @@ env:
         <p data-i18n="nx.lede">Not released yet.</p>
       </div>
       <ul>
+        <li><strong data-i18n="nx.sandboxes">More for sandboxes</strong><span data-i18n-html="nx.sandboxesText">A transparent <code>HTTPS_PROXY</code> mode, so tools work unchanged, and an Active sandboxes panel on the iPhone.</span></li>
         <li><strong data-i18n="nx.envs">Environments per repository</strong><span data-i18n-html="nx.envsText">Import a <code>.env</code> once, then run with <code>--env production</code>.</span></li>
         <li><strong data-i18n="nx.deployed">Deployed services</strong><span data-i18n="nx.deployedText">Your app on a hosting platform keeps a service ID instead of its secrets, and Klav notices a copied instance.</span></li>
         <li><strong data-i18n="nx.stores">In the stores</strong><span data-i18n="nx.storesText">The extension in the Chrome Web Store and on addons.mozilla.org, and the iPhone app in the App Store.</span></li>
@@ -1210,33 +1312,35 @@ env:
   // Source: the comparison Omar asked for (docs/sitio-web.md §6).
   const PROXY_ROWS = {
     en: [
-      ["Available", "Today", "First", "Later, once the enclave is ready"],
-      ["Where your tokens live", "Inside every sandbox", "On your server or your Mac", "On Klav's infrastructure, inside an enclave"],
-      ["Who could read them", "The agent and whoever runs the sandbox", "You and whoever hosts your server", "No one: not Klav's team, not its cloud provider"],
-      ["Can Klav see them", "No", "No", "No: your devices check what code runs before handing them over"],
+      ["Available", "Today", "Today, in early preview", "Today, in the invited beta"],
+      ["Where your tokens live", "Inside every sandbox", "On your server or your Mac", "In an AWS Nitro Enclave that Klav runs"],
+      ["Who could read them", "The agent and whoever runs the sandbox", "You and whoever hosts your server", "No one at Klav, and not root on the host. You trust AWS's hardware and Klav's published releases"],
+      ["Can Klav see them", "No", "No", "No: your devices check the enclave's attestation before they share each token"],
       ["When the sandbox is deleted", "The token stays alive", "Access ends at once", "Access ends at once"],
       ["With your computer off", "Works", "Only if the proxy runs on an always-on server", "Works"],
       ["Approvals and log per sandbox", "No", "Yes", "Yes"],
       ["Who runs and updates it", "No one", "You", "Klav"],
-      ["Setup", "None", "Deploy it and pair it once, with six words and Face ID or Touch ID", "A switch in your account"],
-      ["Cost", "Nothing", "What hosting it costs you", "Part of the hosted plan; price to be confirmed"],
+      ["Setup", "None", "Deploy it and pair it once, with six words and Face ID or Touch ID", "klav proxy use klav, once Klav turns it on for your account"],
+      ["Cost", "Nothing", "What hosting it costs you", "Part of a higher hosted plan; price to be confirmed"],
     ],
     es: [
-      ["Disponible", "Hoy", "Primero", "Más adelante, cuando el enclave esté listo"],
-      ["Dónde están tus tokens", "Dentro de cada sandbox", "En tu servidor o en tu Mac", "En la infraestructura de Klav, dentro de un enclave"],
-      ["Quién podría leerlos", "El agente y quien opera el sandbox", "Tú y quien hospeda tu servidor", "Nadie: ni el equipo de Klav ni su proveedor de nube"],
-      ["Klav puede verlos", "No", "No", "No: tus dispositivos comprueban qué código corre antes de entregarlos"],
+      ["Disponible", "Hoy", "Hoy, en versión preliminar", "Hoy, en la beta con invitación"],
+      ["Dónde están tus tokens", "Dentro de cada sandbox", "En tu servidor o en tu Mac", "En un AWS Nitro Enclave que opera Klav"],
+      ["Quién podría leerlos", "El agente y quien opera el sandbox", "Tú y quien hospeda tu servidor", "Nadie en Klav, ni root en el servidor. Confías en el hardware de AWS y en las versiones que Klav publica"],
+      ["Klav puede verlos", "No", "No", "No: tus dispositivos revisan la atestación del enclave antes de compartirle cada token"],
       ["Al borrar el sandbox", "El token sigue vivo", "El acceso muere al instante", "El acceso muere al instante"],
       ["Con tu computadora apagada", "Funciona", "Solo si el proxy corre en un servidor siempre encendido", "Funciona"],
       ["Aprobaciones y bitácora por sandbox", "No", "Sí", "Sí"],
       ["Quién lo mantiene y actualiza", "Nadie", "Tú", "Klav"],
-      ["Configuración", "Ninguna", "Lo despliegas y lo emparejas una vez, con seis palabras y Face ID o Touch ID", "Un interruptor en tu cuenta"],
-      ["Costo", "Nada", "Lo que te cueste hospedarlo", "Incluido en el plan alojado; precio por confirmar"],
+      ["Configuración", "Ninguna", "Lo despliegas y lo emparejas una vez, con seis palabras y Face ID o Touch ID", "klav proxy use klav, en cuanto Klav lo activa para tu cuenta"],
+      ["Costo", "Nada", "Lo que te cueste hospedarlo", "Parte de un plan alojado superior; precio por confirmar"],
     ],
   };
-  const COLS = { en: ["No proxy", "Self-hosted proxy", "Klav managed"], es: ["Sin proxy", "Proxy propio", "Klav gestionado"] };
+  const COLS = { en: ["No proxy", "Self-hosted proxy", "Klav Cloud"], es: ["Sin proxy", "Proxy propio", "Klav Cloud"] };
+  const PTABLE_LABEL = { en: "No proxy, self-hosted proxy and Klav Cloud", es: "Sin proxy, proxy propio y Klav Cloud" };
   const ptable = document.querySelector(".ptable");
   function renderProxyTable() {
+    ptable.setAttribute("aria-label", PTABLE_LABEL[lang]);
     ptable.querySelectorAll(".prow:not(.prow-head)").forEach((r) => r.remove());
     for (const [label, ...cells] of PROXY_ROWS[lang]) {
       const row = document.createElement("div");
@@ -1324,9 +1428,9 @@ env:
     "how.cliText": "<code>klav mcp</code> le da a cualquier cliente MCP herramientas como <code>fill_login</code> y <code>run_with_secrets</code>. La skill le enseña al agente a preferir acciones y a dar motivos reales. Desde la terminal, <code>klav agent fill</code> rellena un login en tu navegador sin que la contraseña pase por el agente.",
     "how.logTitle": "Mira lo que vio cada agente.",
     "how.logText": "Cada acción queda en una bitácora que puedes verificar, con el motivo del agente. Revocas un agente y Klav te enseña cada elemento que usó, cuántas veces y si obtuvo un secreto, para que sepas qué cambiar.",
-    "px.soon": "Próximamente",
+    "px.badge": "Versión preliminar",
     "px.title": "Tus tokens nunca entran al sandbox.",
-    "px.lede": "Los agentes llegarán a Railway, Northflank o Maple a través de un proxy que pone el token real por el camino. El sandbox solo recibe una credencial que muere con él. Primero sale el proxy propio; el gestionado llega después, cuando corra dentro de un enclave verificable.",
+    "px.lede": "Los agentes llegan a Northflank, o a cualquier API HTTPS de tu lista, a través de un proxy que pone el token real por el camino. El sandbox solo recibe una credencial que muere con él. Hoy puedes correr tu propio proxy o, en la beta con invitación, usar el de Klav Cloud, dentro de un enclave que tus dispositivos verifican.",
     "px.proxy": "Proxy de Klav",
     "px.proxySub": "Tu token se queda aquí y viaja en la petición.",
     "px.apiSub": "Solo los hosts, rutas y métodos que permitiste.",
@@ -1345,9 +1449,29 @@ env:
     "px.d5t": "Un <code>DELETE</code>, por ejemplo, llega antes a tu iPhone o a tu Mac.",
     "px.d6": "Cada llamada en tu bitácora",
     "px.d6t": "Con el nombre del sandbox que la hizo.",
+    "enc.tag": "Klav Cloud · beta con invitación",
+    "enc.live": "En AWS, us-east-2",
+    "enc.title": "Lo corremos nosotros. Ni así podemos leerlo.",
+    "enc.lede": "El proxy de Klav Cloud mantiene tus sandboxes funcionando aunque todos tus dispositivos estén apagados, sin que montes un servidor propio. Corre dentro de un AWS Nitro Enclave, y tus dispositivos revisan qué está corriendo antes de compartirle un solo token. En cuanto Klav lo activa para tu cuenta de la beta, <code>klav proxy use klav</code> lo configura.",
+    "enc.host": "El servidor de AWS",
+    "enc.hostWho": "Root, los operadores de Klav, el personal de AWS",
+    "enc.hostSees": "Pasa bytes cifrados. Ve direcciones, horarios, tamaños y a qué cuenta va cada conexión.",
+    "enc.token": "Tu token de Northflank",
+    "enc.boxSub": "Se descifra solo en esta memoria. Nadie entra, no hay disco.",
+    "enc.termNote": "# sin --no-rebuild, recompila cada imagen y compara sus PCR",
+    "enc.p1": "Memoria sellada",
+    "enc.p1t": "Nadie puede entrar al enclave, y no tiene disco. Ni root en el servidor, ni los operadores de Klav, ni el personal de AWS pueden leer su memoria. Una consola de depuración pondría sus medidas en cero, y tus dispositivos lo rechazarían.",
+    "enc.p2": "Tu dispositivo revisa primero",
+    "enc.p2t": "Antes de envolverle un token, tu Mac, tu iPhone o la CLI revisan una atestación reciente firmada por el hardware de AWS (ECDSA P-384, encadenada a la raíz Nitro de AWS) y comparan <code>PCR0</code>, <code>PCR1</code> y <code>PCR2</code> con un manifiesto firmado. Si cambia un solo byte, se niegan.",
+    "enc.p3": "Recompílalo tú",
+    "enc.p3t": "El código es abierto y la imagen sale idéntica cada vez que se compila. <code>verify-release.sh</code> revisa la firma de un manifiesto y recompila cada <em>commit</em> de la lista hasta obtener los mismos PCR.",
+    "enc.p4": "Actualizaciones a la vista",
+    "enc.p4t": "El TLS 1.3 de los sandboxes termina dentro del enclave, en <code>*.proxy.klav.dev</code>, así que el servidor solo pasa texto cifrado. Un enclave le entrega sus llaves a una versión nueva solo cuando el manifiesto firmado de esa versión ya es público en GitHub.",
+    "enc.trustTitle": "En qué sigues confiando:",
+    "enc.trust": "en el hardware Nitro de AWS y sus llaves de atestación, y en quien firma las versiones de Klav, que tendría que publicar una mala donde cualquiera la vea. El servidor sigue viendo a qué servicios llamas, cuándo y cuánto.",
     "px.cNone": "Sin proxy",
     "px.cSelf": "Proxy propio",
-    "px.cManaged": "Klav gestionado",
+    "px.cManaged": "Klav Cloud",
     "px.selfTitle": "Con el proxy propio, te toca:",
     "px.self1": "<strong>Mantenerlo encendido.</strong> Si corre en tu Mac y se duerme, los sandboxes no pueden usar tus tokens hasta que despierte.",
     "px.self2": "<strong>Actualizarlo</strong> cuando salga una versión nueva.",
@@ -1359,6 +1483,8 @@ env:
     "px.none3": "<strong>El proxy protege el token,</strong> no los datos que el agente decida sacar por otro lado.",
     "nx.title": "También en camino",
     "nx.lede": "Todavía sin publicar.",
+    "nx.sandboxes": "Más para los sandboxes",
+    "nx.sandboxesText": "Un modo <code>HTTPS_PROXY</code> transparente, para que las herramientas funcionen sin cambios, y un panel de sandboxes activos en el iPhone.",
     "nx.envs": "Entornos por repositorio",
     "nx.envsText": "Importas un <code>.env</code> una vez y después corres con <code>--env production</code>.",
     "nx.deployed": "Servicios desplegados",
@@ -1943,7 +2069,7 @@ env:
   function renderSbx() {
     lines(sbxTerm, px.dead
       ? [{ parts: [[say("sbxDead"), "dim"]] }, { parts: [[say("sbxDeadSub"), "dim"]] }]
-      : [{ parts: [["$ ", "dim"], ["env | grep RAILWAY"]] }, { parts: [[say("sbxNone"), "dim"]] }]);
+      : [{ parts: [["$ ", "dim"], ["env | grep NORTHFLANK"]] }, { parts: [[say("sbxNone"), "dim"]] }]);
   }
   function frame(f) {
     const life = f.life === "die" ? 1 - f.p : f.life === "dead" ? 0 : f.life === "born" ? f.p : 1;

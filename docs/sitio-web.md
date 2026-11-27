@@ -515,6 +515,12 @@ la página no se mezcla antes.
 | Descargas: el iPhone pide iOS 18, entra a una cuenta creada en la Mac o con la CLI, y sale por una beta pública de TestFlight | [ios.md](ios.md); [publicar-ios.md](publicar-ios.md) |
 | Descargas: el servidor propio con `docker compose up`, SQLite o Postgres, detrás de tu TLS; el nuestro, gratis durante su beta con invitación | [self-hosting.md](self-hosting.md); la beta, [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4 y Q1 |
 | La beta de `api.klav.dev` («Request a free beta invite», la tarjeta «Hosted by us» en `#beta`): gratis mientras sea con invitación; después, un plan de 20 USD al año con al menos 60 días de aviso; el servidor propio, gratis siempre | [ADR 0048](decisiones/0048-invite-beta-and-distribution.md) §4, Q1 y Q5 (aceptado el 2026-11-25); el modo `invite` de `klav-server` y el código en `klav signup` y en la app de Mac (capas 1 y 2 del ADR). **Lo que la página no dice:** que la cuenta se pueda llevar a un servidor propio. ADR 0048 Q5 (a) nombra `klav account set-server`, pero hoy solo cambia la dirección de una cuenta que el servidor nuevo ya tiene ([cli.md](cli.md) §3, `set_server_cmd` en `crates/klav-cli/src/commands/account.rs`), y no hay forma de exportar una cuenta de `api.klav.dev` a un servidor propio vacío. Ni la página, ni los correos, ni los docs lo prometen hasta que exista ese camino; hace falta antes de que termine la beta. La página tampoco nombra las cuotas de la beta: dependen de las variables de producción |
+| La sección `#proxy` lleva «Early preview» / «Versión preliminar», no «Coming soon»: el proxy propio (`klav-proxy`, `klav-forward`, `klav proxy`, `klav sandbox`) está en `main` en versión preliminar, y el de Klav Cloud funciona para las cuentas invitadas de la beta. El *lede* nombra Northflank (el único *preset* de la API que funciona; `railway` necesita un modo que el proxy aún no tiene) o «cualquier API HTTPS de tu lista» (`--upstream`) | [features.md](features.md), «Agent sandboxes with a credential proxy»; `crates/klav-cli/src/cli.rs` (`--preset`) |
+| El bloque de Klav Cloud (`#enclave`): corre en un AWS Nitro Enclave en `us-east-2`, detrás de `proxy.klav.dev` y `*.proxy.klav.dev`; beta con invitación, y Klav lo activa por cuenta (`klav-server hosted-proxy enable`) antes de `klav proxy use klav`; nadie entra al enclave ni tiene disco, y ni root en el servidor, ni los operadores de Klav, ni el personal de AWS leen su memoria; una consola de depuración pone los PCR en cero y los dispositivos la rechazan; el servidor ve direcciones, horarios, tamaños y la cuenta de cada conexión (el SNI) | [ADR 0051](decisiones/0051-hosted-nitro-enclave-proxy.md) §1, §1.1, §2.2 (paso 6), §3.4, §18 («Live in `us-east-2`»); el roadmap, capa 6 |
+| Tu Mac, tu iPhone o la CLI revisan una atestación reciente (ECDSA P-384 hasta AWS Nitro Enclaves Root-G1) y comparan `PCR0`–`PCR2` con un manifiesto firmado antes de envolver; si cambia un byte, se niegan | ADR 0051 §2.2; `klav-core` (feature `nitro-attestation`), que `klav-cli`, `klavd` y `klav-ffi` compilan con `hosted-proxy` |
+| La terminal del bloque: la salida de `klav proxy cloud status` y de `verify-release.sh --seq 3 --no-rebuild`, con los *hashes* recortados con «…» | Las cadenas de `print_hosted` en `crates/klav-cli/src/commands/proxy.rs`; `deploy/nitro/manifests/3.json` (las imágenes `join` de `a41b8e94`, `current`, que listan la versión 0.10.0); la salida real de `deploy/nitro/verify-release.sh --seq 3 --release-key a8aa68a5… --no-rebuild`, corrida el 2026-11-27 |
+| «Recompílalo tú», «Actualizaciones a la vista» y «En qué sigues confiando»: la imagen es reproducible y `verify-release.sh` recompila cada *commit*; el TLS 1.3 del canal termina dentro del enclave (no el de la API de `proxy.klav.dev`, que termina en el NLB y se autentica sola, y la página no lo afirma); un enclave entrega la semilla solo si el manifiesto ya es público en `main`; se confía en el hardware de AWS y en la autoridad de publicación, y el servidor ve los metadatos | ADR 0051 §2.1, §2.3, §2.5, §4.2 (paso 2), §7.3, §18 y §19 |
+| La tabla de `#proxy`, columna «Klav Cloud»: «Hoy, en la beta con invitación»; funciona con la computadora apagada (una zona sirve y la otra espera; el relevo es a mano, y la página no promete redundancia); el costo, «parte de un plan alojado superior; precio por confirmar» | ADR 0051 §18; el [roadmap](roadmap.md#el-proxy-alojado-de-klav-cloud-en-un-aws-nitro-enclave-aceptado-adr-0051) («Es un plan superior y posterior»). No hay precio decidido |
 | Mientras queden lugares, la invitación llega por correo; si no, se espera en la lista (la etiqueta del formulario, y los mensajes `invited`, `already_invited` y de la lista) | §3, «Invitaciones automáticas» y «Mandar las invitaciones»; [ADR 0050](decisiones/0050-auto-beta-invites.md) |
 
 **Próximamente** (sin implementar en `main`). La lista sale de
@@ -523,11 +529,16 @@ la página no se mezcla antes.
 solo lo que está en «Accepted, not built», y los mismos elementos que «On the
 way» en los docs. Quien cambie una lista cambia las otras dos en el mismo PR.
 
-- **El proxy y `klav sandbox`** (la sección «Your tokens never enter the
-  sandbox»), el propio primero y el gestionado en un enclave después; ADR
-  [0036](decisiones/0036-sandboxes-de-agentes.md), aceptado. La comparativa
-  (la tabla, «te toca» y «lo que ningún modo resuelve») sale de la nota de
-  Omar del 2026-11-06 y del ADR. El precio del gestionado está por confirmar.
+- **Más para los sandboxes** (el elemento «More for sandboxes» de «Also on
+  the way»): el modo `HTTPS_PROXY` transparente y el panel de sandboxes
+  activos del iPhone; ADR [0036](decisiones/0036-sandboxes-de-agentes.md),
+  aceptado. La sección «Your tokens never enter the sandbox» ya no es
+  «Próximamente»: el proxy propio está en versión preliminar y el de Klav
+  Cloud en la beta con invitación (ADR
+  [0051](decisiones/0051-hosted-nitro-enclave-proxy.md); sus fuentes, en la
+  tabla de arriba). La comparativa (la tabla, «te toca» y «lo que ningún modo
+  resuelve») sale de la nota de Omar del 2026-11-06 y de los ADR. El precio
+  del plan de Klav Cloud está por confirmar.
 - **Entornos por repositorio** (`--env production`, importar un `.env`; ADR
   [0032](decisiones/0032-entornos-por-repositorio.md)).
 - **Servicios desplegados** (ADR [0038](decisiones/0038-deployed-services.md)):

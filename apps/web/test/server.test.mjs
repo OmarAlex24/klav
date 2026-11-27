@@ -764,7 +764,12 @@ describe("downloads", () => {
       const on = links(await (await fetch(`${opened.base}/`)).text()).filter((href) => !self(href));
       for (const href of on) {
         assert.ok(
-          href.startsWith("/download/") || href === "https://github.com/OmarAlex24/klav" || href.startsWith("https://docs.klav.dev/"),
+          href.startsWith("/download/") ||
+            href === "https://github.com/OmarAlex24/klav" ||
+            href.startsWith("https://github.com/OmarAlex24/klav/tree/main/deploy/nitro/") ||
+            href.startsWith("https://github.com/OmarAlex24/klav/blob/main/deploy/nitro/") ||
+            href === "https://proxy.klav.dev/v1/manifest" ||
+            href.startsWith("https://docs.klav.dev/"),
           href,
         );
       }
