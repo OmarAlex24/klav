@@ -302,6 +302,13 @@ impl Cbor {
         out.push(0xff);
         Self(out)
     }
+    /// The same array with an indefinite length.
+    pub(crate) fn indefinite_array(items: &[Cbor]) -> Self {
+        let mut out = vec![0x9f];
+        items.iter().for_each(|i| out.extend_from_slice(&i.0));
+        out.push(0xff);
+        Self(out)
+    }
     pub(crate) fn tag(tag: u64, inner: Cbor) -> Self {
         Self([head(6, tag), inner.0].concat())
     }
@@ -323,6 +330,10 @@ pub(crate) struct DocSpec {
     pub(crate) extra: Vec<(Cbor, Cbor)>,
     /// Write the payload map with an indefinite length.
     pub(crate) indefinite: bool,
+    /// Write every array and map of the document with an indefinite length:
+    /// the `COSE_Sign1` array, its unprotected map, the payload map, `pcrs`
+    /// and `cabundle` (the protected header is `protected`, as given).
+    pub(crate) indefinite_containers: bool,
     /// Wrap the `COSE_Sign1` in tag 18.
     pub(crate) tagged: bool,
     /// Protected header bytes.
@@ -358,6 +369,7 @@ impl DocSpec {
             nonce: Some(nonce.to_vec()),
             extra: Vec::new(),
             indefinite: false,
+            indefinite_containers: false,
             tagged: false,
             protected: PROTECTED_ES384.to_vec(),
             cabundle: None,
@@ -389,12 +401,12 @@ impl DocSpec {
             (Cbor::text("module_id"), Cbor::text(&self.module_id)),
             (Cbor::text("digest"), Cbor::text(&self.digest)),
             (Cbor::text("timestamp"), Cbor::uint(self.timestamp_ms)),
-            (Cbor::text("pcrs"), Cbor::map(&pcrs)),
+            (Cbor::text("pcrs"), self.map(&pcrs)),
             (
                 Cbor::text("certificate"),
                 Cbor::bytes(self.certificate.as_deref().unwrap_or(&chain.leaf)),
             ),
-            (Cbor::text("cabundle"), Cbor::array(&cabundle)),
+            (Cbor::text("cabundle"), self.array(&cabundle)),
             (Cbor::text("public_key"), opt(&self.public_key)),
             (Cbor::text("user_data"), opt(&self.user_data)),
             (Cbor::text("nonce"), opt(&self.nonce)),
@@ -403,7 +415,23 @@ impl DocSpec {
         if self.indefinite {
             Cbor::indefinite_map(&entries).0
         } else {
-            Cbor::map(&entries).0
+            self.map(&entries).0
+        }
+    }
+
+    fn map(&self, entries: &[(Cbor, Cbor)]) -> Cbor {
+        if self.indefinite_containers {
+            Cbor::indefinite_map(entries)
+        } else {
+            Cbor::map(entries)
+        }
+    }
+
+    fn array(&self, items: &[Cbor]) -> Cbor {
+        if self.indefinite_containers {
+            Cbor::indefinite_array(items)
+        } else {
+            Cbor::array(items)
         }
     }
 
@@ -413,12 +441,17 @@ impl DocSpec {
         let signature: Signature = chain
             .leaf_key
             .sign(&sig_structure(&self.protected, &payload));
-        cose(
-            &self.protected,
-            &payload,
-            &signature.to_bytes(),
-            self.tagged,
-        )
+        let array = self.array(&[
+            Cbor::bytes(&self.protected),
+            self.map(&[]),
+            Cbor::bytes(&payload),
+            Cbor::bytes(&signature.to_bytes()),
+        ]);
+        if self.tagged {
+            Cbor::tag(18, array).0
+        } else {
+            array.0
+        }
     }
 }
 

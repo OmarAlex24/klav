@@ -140,6 +140,55 @@ fn a_tagged_document_verifies_too() {
     assert!(f.check(&spec.build(&f.chain)).is_ok());
 }
 
+/// A real NSM writes indefinite-length arrays and maps (ADR 0051 §18). A
+/// document with every array and map indefinite, the protected header too,
+/// verifies and reads as its definite twin.
+#[test]
+fn a_document_with_indefinite_arrays_and_maps_verifies() {
+    let f = Fixture::new();
+    let mut spec = f.spec();
+    spec.indefinite_containers = true;
+    spec.protected = vec![0xbf, 0x01, 0x38, 0x22, 0xff];
+    let document = spec.build(&f.chain);
+    assert_eq!(document[0], 0x9f, "the COSE array is indefinite");
+    assert_eq!(document.last(), Some(&0xff));
+
+    let doc = verify_document_with_root(&document, &f.chain.root, NOW_MS).expect("verifies");
+    let definite = f.spec().build(&f.chain);
+    let twin = verify_document_with_root(&definite, &f.chain.root, NOW_MS).expect("verifies");
+    assert_eq!(doc, twin);
+    assert!(f.check(&document).is_ok());
+
+    // Tagged, and with only the containers indefinite (definite protected).
+    spec.tagged = true;
+    assert!(f.check(&spec.build(&f.chain)).is_ok());
+    let mut definite_protected = f.spec();
+    definite_protected.indefinite_containers = true;
+    assert!(f.check(&definite_protected.build(&f.chain)).is_ok());
+
+    // The payload map's own checks hold when it is indefinite.
+    let mut duplicate = f.spec();
+    duplicate.indefinite_containers = true;
+    duplicate.extra = vec![(Cbor::text("nonce"), Cbor::bytes(&f.nonce))];
+    expect(&f, &duplicate, NitroError::Cbor(CborError::DuplicateKey));
+    let mut unknown = f.spec();
+    unknown.indefinite_containers = true;
+    unknown.extra = vec![(Cbor::text("debug"), Cbor::uint(1))];
+    expect(&f, &unknown, NitroError::UnknownField);
+
+    // Changing a byte of the signed protected header breaks the signature:
+    // the signature covers the bytes as sent, not their decoded value.
+    // Here it is swapped for the definite `{1: -35}`, which is accepted on
+    // its own, so only the signature can refuse it.
+    let mut swapped = document.clone();
+    let at = swapped
+        .windows(6)
+        .position(|w| w == [0x45, 0xbf, 0x01, 0x38, 0x22, 0xff])
+        .expect("protected header");
+    swapped.splice(at..at + 6, [0x44, 0xa1, 0x01, 0x38, 0x22]);
+    assert_eq!(f.check(&swapped), Err(NitroError::Signature));
+}
+
 #[test]
 fn a_draining_image_is_accepted() {
     let mut f = Fixture::new();
@@ -329,13 +378,10 @@ fn the_payload_has_exactly_the_documented_fields() {
     duplicate.extra = vec![(Cbor::text("nonce"), Cbor::bytes(&f.nonce))];
     expect(&f, &duplicate, NitroError::Cbor(CborError::DuplicateKey));
 
+    // An indefinite payload map is read like the definite one.
     let mut indefinite = f.spec();
     indefinite.indefinite = true;
-    expect(
-        &f,
-        &indefinite,
-        NitroError::Cbor(CborError::IndefiniteLength),
-    );
+    assert!(f.check(&indefinite.build(&f.chain)).is_ok());
 
     let mut digest = f.spec();
     digest.digest = "SHA256".into();
@@ -370,6 +416,35 @@ fn the_cose_envelope_is_strict() {
     let mut extra_header = f.spec();
     extra_header.protected = vec![0xa2, 0x01, 0x38, 0x22, 0x04, 0x40];
     expect(&f, &extra_header, NitroError::ProtectedHeader);
+    // The protected header decodes strictly to exactly {1: -35}: any other
+    // map, a repeated or extra entry, a non-map, a long form, an indefinite
+    // string or a break with no map is the same refusal.
+    for protected in [
+        vec![0xbf, 0x01, 0x26, 0xff],
+        vec![0xbf, 0x01, 0x38, 0x22, 0x04, 0x40, 0xff],
+        vec![0xbf, 0x01, 0x38, 0x22, 0x01, 0x38, 0x22, 0xff],
+        vec![0xa2, 0x01, 0x38, 0x22, 0x01, 0x38, 0x22],
+        vec![0xa1, 0x02, 0x38, 0x22],
+        vec![0xa1, 0x61, b'1', 0x38, 0x22],
+        vec![0xa1, 0x18, 0x01, 0x38, 0x22],
+        vec![0xa1, 0x01, 0x39, 0x00, 0x22],
+        vec![0xbf, 0x01, 0x38, 0x22],
+        vec![0xa1, 0x01, 0x38, 0x22, 0x00],
+        vec![0xa0],
+        vec![0xbf, 0xff],
+        vec![0x82, 0x01, 0x38, 0x22],
+        vec![0x5f, 0x41, 0x01, 0xff],
+        vec![0xff],
+        vec![],
+    ] {
+        let mut spec = f.spec();
+        spec.protected = protected.clone();
+        assert_eq!(
+            f.check(&spec.build(&f.chain)),
+            Err(NitroError::ProtectedHeader),
+            "{protected:02x?}"
+        );
+    }
 
     let spec = f.spec();
     let payload = spec.payload(&f.chain);
