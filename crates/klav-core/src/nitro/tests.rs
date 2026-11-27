@@ -665,10 +665,15 @@ fn manifest_checks() {
     assert_eq!(m.parent_roles(), &[test_pcr(3)]);
     assert_eq!(m.egress().len(), 2);
 
-    // Production pins no key yet.
+    // No key at all: nothing verifies.
+    assert_eq!(
+        verify(&json, &sig, &[], None, NOW_MS),
+        Err(NitroError::NoReleaseKey)
+    );
+    // Production pins the real keys: a test key's signature is refused.
     assert_eq!(
         verify_manifest(json.as_bytes(), &sig, None, NOW_MS),
-        Err(NitroError::NoReleaseKey)
+        Err(NitroError::ManifestSignature)
     );
     // The backup key signs too; a third key doesn't.
     let by_backup = sign_manifest(&backup, json.as_bytes());
@@ -769,6 +774,25 @@ fn malformed_manifests_are_refused_after_the_signature() {
             verify(&json, &sig, &keys, None, NOW_MS),
             Err(NitroError::ManifestMalformed(reason)),
             "{json}"
+        );
+    }
+}
+
+/// The production release-authority keys (ADR 0051 §11.5), `[active,
+/// backup]`, as Omar generated them; each one is a valid Ed25519 point,
+/// since `verify_manifest` skips a key that doesn't parse.
+#[test]
+fn release_authority_keys_are_pinned() {
+    let expected = [
+        "a8aa68a51a5d6cee7b2c2789cea049ac1c6a2f80d98d1416ddc49fcf074abc45",
+        "b25c2385c2179b8fd404e12b513ab512aa2048ec14b4b03bfb62d08c0e189e88",
+    ];
+    assert_eq!(RELEASE_AUTHORITY_KEYS.len(), 2);
+    for (key, hex_key) in RELEASE_AUTHORITY_KEYS.iter().zip(expected) {
+        assert_eq!(hex::encode(key), hex_key);
+        assert!(
+            ed25519_dalek::VerifyingKey::from_bytes(key).is_ok(),
+            "{hex_key}"
         );
     }
 }

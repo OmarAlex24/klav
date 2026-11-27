@@ -2,9 +2,7 @@
 
 How to run Klav Cloud's hosted credential proxy on AWS Nitro Enclaves ([ADR 0051](../../docs/decisiones/0051-hosted-nitro-enclave-proxy.md)): the release-authority key, the manifests, the first deployment, the standby, upgrades, failover, revocation, total loss, and the hand test before going live.
 
-> **This is not live, and two things block going live** (ADR 0051 §18):
-> 1. **The release-authority keys are not pinned.** `RELEASE_AUTHORITY_KEYS` in `klav-core` is empty, so every enclave refuses to start and every manifest is refused. Layer 5 pins them (§2).
-> 2. **No hand test on real Nitro hardware yet** (§10). That covers bringing the loopback interface up, `/dev/nsm`, vsock, joining through the API load balancer, and how long a switch between zones takes.
+> **This is not live yet.** The release-authority keys are pinned: `RELEASE_AUTHORITY_KEYS` in `klav-core` and `KLAV_ENCLAVE_RELEASE_KEYS` in `Dockerfile.enclave` hold the active key (`a8aa68a5…4abc45`) and the backup (`b25c2385…189e88`) (§2.1). **One thing still blocks going live** (ADR 0051 §18): the hand test on real Nitro hardware (§10). That covers bringing the loopback interface up, `/dev/nsm`, vsock, joining through the API load balancer, and how long a switch between zones takes.
 
 ## Contents
 1. [What runs where](#1-what-runs-where)
@@ -61,20 +59,22 @@ ADR 0051 §11.5 calls for two Ed25519 keys: the **active** key, a Klav vault ite
    klav item attach klav-release-authority-active key "$d/k.pem" --name active.pem
    rm -rf "$d"
    ```
-   If `klav item attach` refuses a named pipe, use a RAM disk instead (`diskutil erasevolume APFS klavram $(hdiutil attach -nomount ram://2048)`), write the key there, attach it, and eject the volume. Never write it to the internal disk.
+   If `klav item attach` refuses a named pipe, use a RAM disk instead (`diskutil erasevolume HFS+ klavram "$(hdiutil attach -nomount ram://16384 | tr -d '[:space:]')"`: 8 MiB, because APFS refuses a 1 MiB `ram://2048` disk, and `hdiutil` pads the device name with whitespace), write the key there, attach it, and eject the volume. Never write it to the internal disk.
 2. Read each public key (64 hex characters) from the vault:
    ```sh
    d=$(mktemp -d)
-   klav inject -r 'klav://Personal/General/klav-release-authority-active/key' --pipe -o "$d/k.pem" --ttl 2m &
+   klav inject -r 'klav://Personal/General/klav-release-authority-active/key' --fifo -o "$d/k.pem" --ttl 2m &
    openssl pkey -in "$d/k.pem" -pubout -outform DER | tail -c 32 | xxd -p -c 64
    rm -rf "$d"
    ```
 3. **Backup key:** do the same with the title `klav-release-authority-backup`. Then move it out of the everyday vault: export its PEM once to two encrypted offline media (an encrypted USB drive in a safe, and a paper printout of the PEM in a separate place), and delete the item from the Mac's vault. The backup signs only if the active key is lost or stolen. It must not live on the same machine.
-4. **Pin both public keys in one PR** (layer 5, ADR 0051 §14):
+4. **Pin both public keys in one PR** (ADR 0051 §14), done for the current keys:
    - `crates/klav-core/src/nitro/manifest.rs`: `RELEASE_AUTHORITY_KEYS = &[active, backup]`;
    - `deploy/nitro/Dockerfile.enclave`: `ENV KLAV_ENCLAVE_RELEASE_KEYS="<active hex>,<backup hex>"`.
 
-   Both are part of the image, and so of PCR0 and PCR2. Only images built from that commit onward can start.
+   Both are part of the image, and so of PCR0 and PCR2. Only images built from that commit onward can start. The pinned keys:
+   - active: `a8aa68a51a5d6cee7b2c2789cea049ac1c6a2f80d98d1416ddc49fcf074abc45`
+   - backup: `b25c2385c2179b8fd404e12b513ab512aa2048ec14b4b03bfb62d08c0e189e88`
 
 **If the active key is lost or stolen:** sign a manifest with the backup that revokes nothing new, then release a version that pins a new active key and keeps the backup. A stolen key can list a rogue image, but an enclave hands the seed over only for a manifest already public in `deploy/nitro/manifests/` (ADR 0051 §4.2). Watch that folder's history: a commit there that you didn't make is an incident.
 
@@ -97,7 +97,7 @@ The public log is this repository's `deploy/nitro/manifests/` on `main` (see its
 4. Sign it, with the key served once through a pipe:
    ```sh
    d=$(mktemp -d)
-   klav inject -r 'klav://Personal/General/klav-release-authority-active/key' --pipe -o "$d/k.pem" --ttl 2m &
+   klav inject -r 'klav://Personal/General/klav-release-authority-active/key' --fifo -o "$d/k.pem" --ttl 2m &
    deploy/nitro/sign-manifest.sh --manifest deploy/nitro/manifests/drafts/<seq>.json \
      --key "$d/k.pem" --release-key <active public key hex>
    rm -rf "$d"

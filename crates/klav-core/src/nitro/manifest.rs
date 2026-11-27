@@ -28,11 +28,24 @@ pub const MAX_MANIFEST_LEN: usize = 64 * 1024;
 /// Most `egress` entries (ADR 0044's pin holds at most 16).
 pub const MAX_EGRESS: usize = 16;
 
-/// The release authority's Ed25519 public keys (ADR 0051 §11.5: the active
-/// key and an offline backup). **Empty in this build:** the keys do not
-/// exist yet, so every manifest is refused with
-/// [`NitroError::NoReleaseKey`] until a later layer pins them.
-pub const RELEASE_AUTHORITY_KEYS: &[[u8; 32]] = &[];
+/// The release authority's Ed25519 public keys (ADR 0051 §11.5), in
+/// `[active, backup]` order: the active key, kept in Omar's Klav vault, and
+/// the backup, kept offline. `deploy/nitro/Dockerfile.enclave`'s
+/// `KLAV_ENCLAVE_RELEASE_KEYS` lists the same two, in the same order.
+pub const RELEASE_AUTHORITY_KEYS: &[[u8; 32]] = &[
+    // Active: a8aa68a51a5d6cee7b2c2789cea049ac1c6a2f80d98d1416ddc49fcf074abc45
+    [
+        0xa8, 0xaa, 0x68, 0xa5, 0x1a, 0x5d, 0x6c, 0xee, 0x7b, 0x2c, 0x27, 0x89, 0xce, 0xa0, 0x49,
+        0xac, 0x1c, 0x6a, 0x2f, 0x80, 0xd9, 0x8d, 0x14, 0x16, 0xdd, 0xc4, 0x9f, 0xcf, 0x07, 0x4a,
+        0xbc, 0x45,
+    ],
+    // Backup: b25c2385c2179b8fd404e12b513ab512aa2048ec14b4b03bfb62d08c0e189e88
+    [
+        0xb2, 0x5c, 0x23, 0x85, 0xc2, 0x17, 0x9b, 0x8f, 0xd4, 0x04, 0xe1, 0x2b, 0x51, 0x3a, 0xb5,
+        0x12, 0xaa, 0x20, 0x48, 0xec, 0x14, 0xb4, 0xb0, 0x3b, 0xfb, 0x62, 0xd0, 0x8c, 0x0e, 0x18,
+        0x9e, 0x88,
+    ],
+];
 
 /// The status of an image in the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

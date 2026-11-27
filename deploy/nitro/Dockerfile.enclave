@@ -98,9 +98,9 @@ ENV KLAV_ENCLAVE_CHANNEL=vsock:4294967295:5000 \
     KLAV_LOG_FORMAT=json \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 # The release authority's Ed25519 public keys (64 hex each, comma-separated),
-# the same ones klav-core pins in RELEASE_AUTHORITY_KEYS. Empty until layer 5
-# pins them; until then /klav-enclave-start refuses to start (ADR 0051 §14).
-ENV KLAV_ENCLAVE_RELEASE_KEYS=""
+# the same ones klav-core pins in RELEASE_AUTHORITY_KEYS, as [active, backup]
+# (ADR 0051 §14). /klav-enclave-start refuses to start if this is empty.
+ENV KLAV_ENCLAVE_RELEASE_KEYS="a8aa68a51a5d6cee7b2c2789cea049ac1c6a2f80d98d1416ddc49fcf074abc45,b25c2385c2179b8fd404e12b513ab512aa2048ec14b4b03bfb62d08c0e189e88"
 CMD ["/bin/busybox", "sh", "/klav-enclave-start"]
 
 FROM base AS variant-genesis

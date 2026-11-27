@@ -1319,7 +1319,7 @@ Cada rechazo tiene su variante de `NitroError` y un código estable (`NitroError
 mensaje = tuple("klav/v1/sig/enclave-manifest", SHA-256(manifest_bytes))
 ```
 
-con cualquiera de las llaves públicas de la autoridad de publicación fijadas en `klav-core` (`RELEASE_AUTHORITY_KEYS`: la activa y una de respaldo). **En esta versión la lista está vacía**: esas llaves aún no existen, así que todo manifiesto se rechaza con `no_release_key` hasta que una capa posterior las fije.
+con cualquiera de las llaves públicas de la autoridad de publicación fijadas en `klav-core` (`RELEASE_AUTHORITY_KEYS`: la activa y una de respaldo). La lista fija la activa (`a8aa68a51a5d6cee7b2c2789cea049ac1c6a2f80d98d1416ddc49fcf074abc45`) y la de respaldo (`b25c2385c2179b8fd404e12b513ab512aa2048ec14b4b03bfb62d08c0e189e88`); una compilación con la lista vacía rechaza todo manifiesto con `no_release_key`.
 
 El dispositivo verifica la firma antes de leer el JSON, y después rechaza: un `seq` menor que el más alto que ya verificó (el mismo `seq` se acepta), un manifiesto con `ahora ≥ expires_at_ms` y uno con `issued_at_ms > ahora + 5 minutos`.
 
