@@ -100,7 +100,7 @@ When the UI and the code disagree, prose follows the UI and identifiers are quot
 | ¿De dónde vienes? (asistente de importación) | Where are you coming from? | UI, extension and iOS (ADR 0024) |
 | fusionar (al importar) | merge | CLI `klav import`: the `merge` action; UI "Merged" |
 | passkey | passkey | ADR 0020; never translated |
-| entorno | environment | ADR 0032; `ItemKind::Environment` (`kind = environment`) in `klav-core` and the server since layers 1–2; `klav env`, `klav run --env` and `klav inject --env --dotenv` since layer 3 |
+| entorno | environment | ADR 0032; `ItemKind::Environment` (`kind = environment`) in `klav-core` and the server since layers 1–2; `klav env`, `klav run --env` and `klav inject --env --dotenv` since layer 3; UI "Environments"/"Entornos" in the popup and the Mac and iOS apps since layer 4b |
 | código de salida | exit code | Docs site, Reference › CLI commands; `crates/klav-cli/src/error.rs` |
 
 ## Passwords and the generator
