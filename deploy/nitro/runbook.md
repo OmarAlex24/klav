@@ -218,14 +218,15 @@ What happens to people is in ADR 0051 §4.4: sandboxes fail with `klav_proxy_unr
 ## 10. Hand test on AWS before going live
 Each item needs evidence in the PR (commands and output; never a secret). What ran is in ADR 0051 §18 (2026-11-27).
 
-- [ ] `eif.yml` on GitHub's `ubuntu-24.04-arm`: two runners agree on PCR0, PCR1 and PCR2 for both images (ADR 0051's layer 6 stop rule; done at `a86a4057` and `23f82370`). Then `verify-release.sh` on another machine agrees too (not recorded yet).
+- [ ] `eif.yml` on GitHub's `ubuntu-24.04-arm`: two runners agree on PCR0, PCR1 and PCR2 for both images (ADR 0051's layer 6 stop rule; done at `a86a4057`, `23f82370`, and `a41b8e94`). Then `verify-release.sh` on another machine agrees too (not recorded yet).
 - [x] Real PCRs match: `nitro-cli describe-enclaves` on a parent shows the same PCR0/1/2 as `images.json`, and a real attestation document from `GET /v1/attest` verifies in `klav-core` against the published manifest.
-- [ ] The enclave starts on real hardware: `lo` comes up (busybox `ip`), `/dev/nsm` opens, vsock 5000/5001/5002 work, and egress reaches `api.klav.dev` and `raw.githubusercontent.com`.
+- [x] The enclave starts on real hardware: `lo` comes up (busybox `ip`), `/dev/nsm` opens, vsock 5000/5001/5002 work, and egress reaches `api.klav.dev`, `raw.githubusercontent.com`, and upstream APIs (`httpbin.org` via `3.131.48.170`).
 - [x] A real attestation document from Klav's enclave added to `docs/vectores/nitro-attestation.json` (ADR 0051's layer 6 deliverable): `klav-proxy-2026-11-27-us-east-2a`.
 - [x] `klav proxy use klav` from a device enrolls, verifies the attestation and turns the hosted proxy on (needs layer 5, and the service key set on `api.klav.dev`, §4 step 4).
+- [x] Disposable-account E2E sandbox smoke test on `api.klav.dev` + `proxy.klav.dev`: `klav proxy use klav`, `proxy grant`, `proxy issuer add`, `klav sandbox start` over the pinned TLS 1.3 SNI channel (no local `klav-proxy`), `klav-forward up`, upstream `httpbin.org/headers` (redacted to `[redacted by klav]`) and `httpbin.org/ip` (`3.131.48.170`), `sandbox ls`, and `sandbox stop` (`401 klav_sandbox_revoked`).
 - [ ] A Boat sandbox calls `northflank` and Maple's MCP through the hosted proxy (`klav sandbox start`, then a wrapped credential works).
-- [ ] The standby joins (§5), and `/v1/manifest` answers 200 on it.
+- [x] The standby joins (§5), and `/v1/manifest` answers 200 on it (verified in 2 s on both zone `b` and zone `a`, preserving the live `service_key`).
 - [ ] Losing a zone: stop the zone in service (`nitro-cli terminate-enclave`), fail over (§7), and a running sandbox goes on working, or claims again without `theft` if it started before the standby's last join. Record how long sandboxes were down.
-- [ ] Rolling upgrade (§6) with a sandbox calling a provider in a loop: count failed calls during the switch. ADR 0051 asks for none. If some fail, record how many and how long.
+- [ ] Rolling upgrade (§6) with a sandbox calling a provider in a loop: count failed calls during the switch. ADR 0051 asks for none. If some fail, record how many and how long. *(First live upgrade `23f82370` → `a41b8e94` under manifest 3 ran on 2026-11-27 with 36/36 `200 OK` probes on `/v1/status` across the NLB swap; a live sandbox loop during the switch is still to be measured.)*
 - [ ] Forced total loss (§8.2): both enclaves stopped, genesis with `seed_epoch` + 1, the new service key set on the server, a device shows the set-up-again sheet, and re-wrapping restores a sandbox.
 - [ ] Load: a 1-vCPU, 2-GiB enclave under the beta's expected load (ADR 0051 §13).
