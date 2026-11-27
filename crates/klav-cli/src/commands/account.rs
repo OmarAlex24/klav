@@ -137,7 +137,7 @@ pub(crate) async fn signup_cmd(ctx: &mut Ctx, args: SignupArgs) -> CliResult<()>
     )
     .await;
     drop(password);
-    let unlocked = match result {
+    let mut unlocked = match result {
         Ok((unlocked, _)) => unlocked,
         Err(e) => {
             if let Some(path) = kit_path.as_ref().filter(|p| p.exists()) {
@@ -150,6 +150,9 @@ pub(crate) async fn signup_cmd(ctx: &mut Ctx, args: SignupArgs) -> CliResult<()>
             return Err(invite_error(e, &email));
         }
     };
+    // A new account starts with the MCP gateway on: nothing older is on
+    // it yet (ADR 0049, amendment of 2026-11-27).
+    unlocked.start_with_mcp_gateway().await;
     for w in unlocked.warnings() {
         output::warn(w);
     }

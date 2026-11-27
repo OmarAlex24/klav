@@ -5,8 +5,10 @@ import SwiftUI
 /// Mac connects to, its tool rules in three lanes (allowed, asks you,
 /// denied) and the local clients that may use it. Above them, the
 /// account's gateway switch, which a one-time sheet turns on after «update
-/// every device first». Names, hosts and patterns only: never a key or a
-/// client's token.
+/// every device first» when the account has another device or its own
+/// proxy, and Touch ID alone turns on when this Mac is all there is (ADR
+/// 0049, amendment of 2026-11-27). Names, hosts and patterns only: never a
+/// key or a client's token.
 struct McpServersPane: View {
     @EnvironmentObject private var model: MacModel
     @State private var info: McpServersInfo?
@@ -49,6 +51,23 @@ struct McpServersPane: View {
         }
     }
 
+    /// Nothing on the account is older than the gateway: Touch ID (or the
+    /// master password) alone. `klavd` checks that again and refuses
+    /// without «update every device first» if it changed meanwhile.
+    private func turnOnAlone() async {
+        do {
+            try await model.withPresenceResult(String(localized: "Turn on the MCP gateway for your account")) { engine, password in
+                try engine.turnMcpGatewayOnWithPassword(everyDeviceUpdated: false, password: password)
+            } done: { _ in
+                model.show(Toast(text: String(localized: "The MCP gateway is on.")))
+                Task { await load() }
+            }
+        } catch {
+            await load()
+            problem = describe(error)
+        }
+    }
+
     @ViewBuilder
     private func content(_ info: McpServersInfo) -> some View {
         // Local clients reach these servers only through the proxy on this
@@ -62,7 +81,14 @@ struct McpServersPane: View {
             Notice(text: String(localized: "This Klav server is older than the MCP gateway. Update the server to use MCP servers through your proxy."))
                 .padding(.bottom, 20)
         case false?:
-            GatewayOff { model.turningOnMcpGateway = true }.padding(.bottom, 24)
+            GatewayOff(alone: !info.needsUpdateWarning) {
+                if info.needsUpdateWarning {
+                    model.turningOnMcpGateway = true
+                } else {
+                    Task { await turnOnAlone() }
+                }
+            }
+            .padding(.bottom, 24)
         case true?:
             EmptyView()
         }
@@ -122,8 +148,11 @@ enum McpServersWords {
     }
 }
 
-/// The switch is off: what turning it on does, and the button.
+/// The switch is off: what turning it on does, and the button. `alone`:
+/// nothing on the account is older than the gateway, so the button asks
+/// for Touch ID instead of opening the sheet.
 private struct GatewayOff: View {
+    let alone: Bool
     let turnOn: () -> Void
 
     var body: some View {
@@ -137,7 +166,12 @@ private struct GatewayOff: View {
                 Text("Turning it on lets your proxy say which tool each call uses, so your rules can allow, ask about or deny each tool, and Activity shows who called it. It stays on.")
                     .font(.ui(13)).foregroundStyle(Palette.gris)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Turn on…", action: turnOn)
+                if alone {
+                    Text("Nothing on your account is older than the gateway: this Mac is its only device, and it has no klav-proxy of its own.")
+                        .font(.ui(13)).foregroundStyle(Palette.gris)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button(alone ? String(localized: "Turn on") : String(localized: "Turn on…"), action: turnOn)
                     .buttonStyle(SecondaryButtonStyle(compact: true))
                     .fixedSize()
                     .padding(.top, 6)

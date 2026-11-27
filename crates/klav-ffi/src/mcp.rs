@@ -122,6 +122,12 @@ pub struct McpServersInfo {
     /// The account's switch: on or off, or `None` from a server older
     /// than the gateway, which can't turn it on.
     pub gateway_on: Option<bool>,
+    /// While the switch is off: turning it on needs the person's word that
+    /// every device and `klav-proxy` are updated, because the account has
+    /// another device or a proxy of its own, or `klavd` can't tell (ADR
+    /// 0049, amendment of 2026-11-27). `false` when the switch is on or
+    /// the server is older than the gateway.
+    pub needs_update_warning: bool,
     /// The account's own proxy, by the name the server lists; `None`
     /// without one.
     pub proxy: Option<String>,
@@ -170,7 +176,11 @@ pub struct McpLocalClientInfo {
 
 /// «Development › MCP servers» from `klav proxy status` and the switch.
 #[cfg(feature = "daemon")]
-pub(crate) fn mcp_servers_info(status: ProxyStatus, gateway_on: Option<bool>) -> McpServersInfo {
+pub(crate) fn mcp_servers_info(
+    status: ProxyStatus,
+    gateway_on: Option<bool>,
+    needs_update_warning: bool,
+) -> McpServersInfo {
     use klav_core::policy::Effect;
     let clients_of = |profile: &str| -> Vec<String> {
         status
@@ -219,6 +229,7 @@ pub(crate) fn mcp_servers_info(status: ProxyStatus, gateway_on: Option<bool>) ->
         .collect();
     McpServersInfo {
         gateway_on,
+        needs_update_warning: gateway_on == Some(false) && needs_update_warning,
         proxy: status.agent.as_ref().map(|a| a.name.clone()),
         servers,
         local_clients: status
@@ -439,8 +450,10 @@ mod tests {
     #[test]
     fn the_servers_list_groups_patterns_by_effect_and_names_clients() {
         let (proxy, item) = (AgentId::generate(), ItemId::generate());
-        let info = mcp_servers_info(status(proxy, item), Some(true));
+        let info = mcp_servers_info(status(proxy, item), Some(true), true);
         assert_eq!(info.gateway_on, Some(true));
+        // On already: nothing to warn about.
+        assert!(!info.needs_update_warning);
         let maple = &info.servers[0];
         assert_eq!(maple.tools_allow, ["query_*", "get_*"]);
         assert_eq!(maple.tools_ask, ["delete_*"]);

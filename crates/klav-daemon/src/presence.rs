@@ -191,6 +191,7 @@ pub(crate) fn gate(request: &Request) -> Gate {
         | Request::ProxyIssuerPreview { .. }
         | Request::LocalClientPreview { .. }
         | Request::McpGateway
+        | Request::McpGatewayOlder
         | Request::PauseAgents { .. }
         | Request::AuditLog { .. }
         | Request::VerifyAudit

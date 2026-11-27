@@ -394,7 +394,7 @@ KLAV_IOS_SKIP_FFI=1 scripts/macos/test.sh   # reusar target/ios/KlavFFI.xcframew
   | `-KlavAppearance light` o `dark` | Fija la apariencia |
   | `-KlavOpen main,menu` | Abre la ventana y el panel de la barra en una ventana, para capturarlos |
   | `-KlavSection requests`, `agents`, `sandboxes`, `mcp`, `activity`, `clients` o `health` | Abre esa sección |
-  | `-KlavSampleMcp card`, `security` u `off` | La tarjeta de una llamada MCP, una tarjeta de seguridad (las dos solas en Solicitudes) o el gateway MCP apagado (§10) |
+  | `-KlavSampleMcp card`, `security`, `off` u `off-alone` | La tarjeta de una llamada MCP, una tarjeta de seguridad (las dos solas en Solicitudes), el gateway MCP apagado con un proxy propio (con la hoja del aviso) o apagado con este Mac solo (sin aviso, §10) |
   | `-KlavSamplePaused YES` | Todos los agentes de ejemplo empiezan en pausa |
   | `-KlavItem <id>` | Abre ese elemento |
   | `-KlavSampleSignedOut YES` | Sin cuenta: abre «Configurar este Mac» |
@@ -641,7 +641,7 @@ Lo que ya estaba:
 
 ## 10. Servidores MCP (ADR 0049, capa 6)
 
-Desarrollo › Servidores MCP (⌘8), debajo de Sandboxes en la barra lateral. Lo arma `Mac/Development/McpServersPane.swift`, y lo lee de `mcp_servers` de `DaemonEngine`: `proxy_status` y la operación nueva `mcp_gateway` de `klavd`. Muestra nombres, *hosts* y patrones; nunca una llave, un token de cliente ni su resumen.
+Desarrollo › Servidores MCP (⌘8), debajo de Sandboxes en la barra lateral. Lo arma `Mac/Development/McpServersPane.swift`, y lo lee de `mcp_servers` de `DaemonEngine`: `proxy_status` y las operaciones `mcp_gateway` y `mcp_gateway_older` de `klavd`. Muestra nombres, *hosts* y patrones; nunca una llave, un token de cliente ni su resumen.
 
 - **Cada servidor** es un perfil MCP del grant del proxy: su nombre, el título del elemento y el servidor (`https://api.maple.dev/mcp`). Debajo, en un bloque:
   - «En esta Mac», la URL a la que se conecta un cliente local (`http://127.0.0.1:8790/maple/mcp`, el puerto por defecto de `klav-proxy`), con «Copiar»;
@@ -649,11 +649,13 @@ Desarrollo › Servidores MCP (⌘8), debajo de Sandboxes en la barra lateral. L
   - «Clientes»: los clientes locales que el grant deja usar ese perfil, por su nombre conocido («Claude Code y Codex»), o el comando para conectar uno.
 - **Sin servidores**, el comando para añadir uno (`klav proxy grant … --mcp-url … --tools-allow … --tools-ask …`); sin proxy, que primero hace falta uno (`klav proxy use own`). Los problemas del ajuste del proxy salen arriba, en las palabras de `klav-client`.
 - **El interruptor `mcp_gateway`** (ADR 0049 §9). Encendido, el encabezado cuenta los servidores. Apagado, un bloque dice qué hace encenderlo y que no se apaga, con «Activar…». Con un servidor anterior al gateway (`404`), un aviso pide actualizar el servidor y no hay botón.
-  - «Activar…» abre una hoja que dice qué pierden las apps, CLIs y `klav-proxy` anteriores al gateway (su lista de solicitudes falla, `klav log verify` reporta manipulación, el proxy deja de servir), que los dispositivos no informan su versión y que no se puede apagar. «Activar» se enciende solo con la casilla «Klav está actualizado en todos mis dispositivos, y klav-proxy también» marcada, y pide Touch ID en `klavd`. En un Mac sin él, la hoja de la contraseña maestra sale encima de la hoja de «Activar» (`PromptHost.mcpGatewaySheet`): macOS no muestra una segunda hoja desde la ventana de debajo.
-  - `klavd` (`mcp_gateway_on`) rechaza antes del aviso de Touch ID una petición sin esa confirmación (`every_device_updated`) y un servidor anterior; con el interruptor ya encendido contesta que sí sin pedir nada.
+  - Si la cuenta no puede tener nada anterior al gateway (este Mac es su único dispositivo sin revocar y no tiene un proxy propio; `McpServersInfo.needsUpdateWarning` en `false`), el bloque lo dice y el botón es «Activar»: pide Touch ID (o la contraseña maestra, sobre la ventana) y nada más (ADR 0049, enmienda del 2026-11-27). Lo decide `mcp_gateway_older` de `klavd`; un `klavd` anterior a esa operación cuenta como «puede haber algo anterior».
+  - Si no, «Activar…» abre una hoja que dice qué pierden las apps, CLIs y `klav-proxy` anteriores al gateway (su lista de solicitudes falla, `klav log verify` reporta manipulación, el proxy deja de servir), que los dispositivos no informan su versión y que no se puede apagar. «Activar» se enciende solo con la casilla «Klav está actualizado en todos mis dispositivos, y klav-proxy también» marcada, y pide Touch ID en `klavd`. En un Mac sin él, la hoja de la contraseña maestra sale encima de la hoja de «Activar» (`PromptHost.mcpGatewaySheet`): macOS no muestra una segunda hoja desde la ventana de debajo.
+  - `klavd` (`mcp_gateway_on`) vuelve a mirar los dispositivos y el proxy, y rechaza antes del aviso de Touch ID una petición sin esa confirmación (`every_device_updated`) cuando puede haber algo anterior, y un servidor anterior; con el interruptor ya encendido contesta que sí sin pedir nada.
+  - Una cuenta nueva no ve nada de esto: el registro de las apps (`KlavCore.sign_up`) deja el interruptor encendido.
   - Es la única forma de encenderlo fuera de `klav proxy grant --mcp-url`, que lo enciende al firmar el primer perfil MCP (implementación de la capa 5, nota 1).
 
-**Pruebas:** `McpGatewayTests` en `KlavMacTests` (la tarjeta, el motivo de Touch ID, la tarjeta de seguridad que el modelo no decide, las filas de Actividad, las palabras del panel, el interruptor de ejemplo, la contraseña encima de su hoja y el español), y `crates/klav-ffi/tests/mcp_gateway.rs` contra un servidor y un `klavd` reales.
+**Pruebas:** `McpGatewayTests` en `KlavMacTests` (la tarjeta, el motivo de Touch ID, la tarjeta de seguridad que el modelo no decide, las filas de Actividad, las palabras del panel, el interruptor de ejemplo con y sin aviso, la contraseña encima de su hoja o de la ventana y el español), y `crates/klav-ffi/tests/mcp_gateway.rs` contra un servidor y un `klavd` reales.
 
 **Lo que falta:**
 

@@ -91,6 +91,19 @@ async fn sign_up(
     home: &std::path::Path,
     email: &str,
 ) -> klav_client::Unlocked {
+    sign_up_with_kit(server, home, email).await.0
+}
+
+/// `klav_client::signup` alone, as a client older than the gateway signs
+/// up: the account's switch stays off.
+async fn sign_up_with_kit(
+    server: &ServerProcess,
+    home: &std::path::Path,
+    email: &str,
+) -> (
+    klav_client::Unlocked,
+    klav_core::crypto::secret_key::EmergencyKit,
+) {
     klav_client::signup(
         &Home::at(home),
         SignupRequest {
@@ -104,7 +117,31 @@ async fn sign_up(
     )
     .await
     .expect("sign-up")
-    .0
+}
+
+/// Signs the account of `kit` in on another device, at `home`: an iPhone
+/// that may run a Klav older than the gateway.
+async fn second_device(
+    server: &ServerProcess,
+    home: &std::path::Path,
+    kit: &klav_core::crypto::secret_key::EmergencyKit,
+) {
+    use secrecy::ExposeSecret;
+    let secret_key = kit.secret_key().to_text().expose_secret().to_owned();
+    klav_client::login(
+        &Home::at(home),
+        klav_client::LoginRequest {
+            server: server.url.clone(),
+            email: kit.email.clone(),
+            password: MasterPassword::new(PASSWORD),
+            secret_key: klav_core::crypto::secret_key::SecretKey::parse(&secret_key)
+                .expect("secret key"),
+            device_name: "iphone".into(),
+            device_kind: klav_proto::auth::DeviceKind::Ios,
+        },
+    )
+    .await
+    .expect("second device");
 }
 
 /// What the setup left: the approval the proxy is waiting on.
@@ -362,16 +399,19 @@ fn the_apps_show_mcp_calls_and_the_gateway() {
     );
 }
 
-/// An account without the gateway: the switch is off, nothing is turned
-/// on without the person's word that every device is updated, and then
-/// only with presence.
+/// An account from before the gateway, with another device that may run
+/// an older Klav: the switch is off, nothing is turned on without the
+/// person's word that every device is updated, and then only with
+/// presence.
 #[test]
 fn the_mac_turns_the_gateway_on_only_after_the_warning() {
     let server = ServerProcess::start(900);
     let dir = tempfile::tempdir().expect("tempdir");
     let home = dir.path().join("klav");
     runtime().block_on(async {
-        drop(sign_up(&server, &home, "off@example.com").await);
+        let (ana, kit) = sign_up_with_kit(&server, &home, "off@example.com").await;
+        drop(ana);
+        second_device(&server, &dir.path().join("iphone"), &kit).await;
     });
     let engine = DaemonEngine::new(home.display().to_string()).expect("engine");
     let _daemon = Daemon::start(&home);
@@ -380,6 +420,7 @@ fn the_mac_turns_the_gateway_on_only_after_the_warning() {
 
     let servers = engine.mcp_servers().expect("MCP servers");
     assert_eq!(servers.gateway_on, Some(false));
+    assert!(servers.needs_update_warning);
     assert_eq!(servers.proxy, None);
     assert!(servers.servers.is_empty() && servers.local_clients.is_empty());
 
@@ -407,4 +448,68 @@ fn the_mac_turns_the_gateway_on_only_after_the_warning() {
             .expect("on")
     );
     assert_eq!(engine.mcp_servers().expect("on").gateway_on, Some(true));
+}
+
+/// An account from before the gateway with this Mac as its only device
+/// and no proxy of its own (ADR 0049, amendment of 2026-11-27): nothing
+/// older can break, so the gateway turns on without the person's word
+/// that every device is updated, still only with presence.
+#[test]
+fn a_lone_mac_turns_the_gateway_on_without_the_warning() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().join("klav");
+    runtime().block_on(async {
+        drop(sign_up(&server, &home, "alone@example.com").await);
+    });
+    let engine = DaemonEngine::new(home.display().to_string()).expect("engine");
+    let _daemon = Daemon::start(&home);
+    wait_until("klavd", || engine.status().running);
+    engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
+
+    let servers = engine.mcp_servers().expect("MCP servers");
+    assert_eq!(servers.gateway_on, Some(false));
+    assert!(!servers.needs_update_warning);
+    // No acknowledgement, and still presence: Touch ID is off here, so
+    // the master password.
+    assert!(matches!(
+        engine.turn_mcp_gateway_on(false),
+        Err(KlavError::BiometryUnavailable { .. })
+    ));
+    assert_eq!(engine.mcp_servers().expect("again").gateway_on, Some(false));
+    assert!(
+        engine
+            .turn_mcp_gateway_on_with_password(false, Some(PASSWORD.into()))
+            .expect("on")
+    );
+    let on = engine.mcp_servers().expect("on");
+    assert_eq!(on.gateway_on, Some(true));
+    assert!(!on.needs_update_warning);
+}
+
+/// The apps' sign-up starts the account with the gateway on (ADR 0049,
+/// amendment of 2026-11-27): a new account has nothing older on it.
+#[test]
+fn signing_up_in_the_apps_turns_the_gateway_on() {
+    let server = ServerProcess::start(900);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().join("klav");
+    let core = KlavCore::new(home.display().to_string()).expect("core");
+    core.sign_up(
+        server.url.clone(),
+        "new@example.com".into(),
+        PASSWORD.into(),
+        "Mac".into(),
+        None,
+    )
+    .expect("sign up");
+    core.lock();
+    drop(core);
+    let engine = DaemonEngine::new(home.display().to_string()).expect("engine");
+    let _daemon = Daemon::start(&home);
+    wait_until("klavd", || engine.status().running);
+    engine.unlock(Some(PASSWORD.into()), None).expect("unlock");
+    let servers = engine.mcp_servers().expect("MCP servers");
+    assert_eq!(servers.gateway_on, Some(true));
+    assert!(!servers.needs_update_warning);
 }

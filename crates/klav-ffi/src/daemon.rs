@@ -1634,11 +1634,21 @@ impl DaemonEngine {
     /// «Development › MCP servers» (ADR 0049 §3, §9): the proxy's MCP
     /// profiles with their tool rules, the local clients its grant names,
     /// and the account's switch (`None` from a server older than the
-    /// gateway). Never a value, a token or a token's digest.
+    /// gateway), with whether turning it on needs «update every device
+    /// first» (a `klavd` older than that check says it does). Never a
+    /// value, a token or a token's digest.
     pub fn mcp_servers(&self) -> KlavResult<McpServersInfo> {
         let status: ProxyStatus = self.call(Request::ProxyStatus)?;
         let gateway_on: Option<bool> = self.call(Request::McpGateway)?;
-        Ok(crate::mcp::mcp_servers_info(status, gateway_on))
+        let needs_update_warning = gateway_on == Some(false)
+            && self
+                .call_new::<bool>(Request::McpGatewayOlder)?
+                .unwrap_or(true);
+        Ok(crate::mcp::mcp_servers_info(
+            status,
+            gateway_on,
+            needs_update_warning,
+        ))
     }
 
     /// Klav Cloud's proxy (ADR 0051 §6.3), as `klavd` checks it now: the
@@ -1672,9 +1682,11 @@ impl DaemonEngine {
     }
 
     /// Turns the account's MCP gateway switch on (ADR 0049 §9), after the
-    /// sheet's «update every device first»: `every_device_updated` is that
-    /// acknowledgement, and `klavd` refuses without it. Asks for Touch ID
-    /// in `klavd` unless the switch is already on. Nothing turns it off.
+    /// sheet's «update every device first» when the account may hold an
+    /// older device or proxy (`McpServersInfo::needs_update_warning`):
+    /// `every_device_updated` is that acknowledgement, and `klavd` checks
+    /// again and refuses without it. Asks for Touch ID in `klavd` unless
+    /// the switch is already on. Nothing turns it off.
     pub fn turn_mcp_gateway_on(&self, every_device_updated: bool) -> KlavResult<bool> {
         self.turn_mcp_gateway_on_with_password(every_device_updated, None)
     }

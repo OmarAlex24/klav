@@ -1016,7 +1016,7 @@ impl KlavCore {
         // The strings uniffi hands over are wiped when dropped.
         let password = zeroize::Zeroizing::new(password);
         let invite = invite.map(zeroize::Zeroizing::new);
-        let (unlocked, kit) = self.runtime.block_on(klav_client::signup(
+        let (mut unlocked, kit) = self.runtime.block_on(klav_client::signup(
             &self.home,
             klav_client::SignupRequest {
                 server,
@@ -1027,6 +1027,9 @@ impl KlavCore {
                 invite: invite.as_deref().map(|code| InviteCode::new(code.as_str())),
             },
         ))?;
+        // A new account starts with the MCP gateway on: nothing older is
+        // on it yet (ADR 0049, amendment of 2026-11-27).
+        self.runtime.block_on(unlocked.start_with_mcp_gateway());
         self.publish(unlocked);
         Ok(klav_client::kit::render(&kit).to_string())
     }

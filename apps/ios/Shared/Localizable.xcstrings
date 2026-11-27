@@ -9563,6 +9563,17 @@
         }
       }
     },
+    "Nothing on your account is older than the gateway: this Mac is its only device, and it has no klav-proxy of its own.": {
+      "comment": "Development › MCP servers, gateway off, when this Mac is the account's only device and it has no proxy of its own",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nada en tu cuenta es anterior al gateway: esta Mac es su único dispositivo y no tiene un klav-proxy propio."
+          }
+        }
+      }
+    },
     "Notifications carry no names or reasons: Klav asks the server for them when you open one.": {
       "localizations": {
         "es": {

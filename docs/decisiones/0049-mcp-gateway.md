@@ -1,6 +1,6 @@
 # 0049 · MCP gateway: remote MCP servers through `klav-proxy`, with per-tool rules signed in the grant, filtered `tools/list`, tool-level approvals and audit, for sandboxes and for the agents on the person's Mac
 
-- Status: accepted (2026-11-25)
+- Status: accepted (2026-11-25); amended on 2026-11-27 (new accounts start with the switch on, and the older-devices warning only when something older may be on the account)
 - Date: 2026-11-25
 - Amends:
   - [ADR 0036](0036-sandboxes-de-agentes.md) §7, Omar's decision 3 of the note of 2026-11-19 ("per-tool approval is not designed now; it would need a new field in the signed rule, its own ADR and a round of device updates"). This is that ADR.
@@ -499,6 +499,38 @@ What layer 6 (`klav-ffi`, `klavd`, the Mac and iPhone apps) fixed that the text 
 ## Implementation notes (ADR 0036 layer 11, 2026-11-25)
 1. **The proxy can run on the Mac.** ADR 0036 layer 11 adds the `dev.klav.proxy` LaunchAgent, which runs the bundle's `klav` as `klav-proxy serve --if-registered`: the loopback listener (8790 by default) that local MCP clients call, and the proxy's local socket. Development › MCP servers shows the proxy on this Mac at the top, with Start or Stop, because local clients reach the servers only through it.
 2. **The app learns the real port.** The local socket's `sandboxes` answer carries the listener's port and the proxy's MCP profiles ([api.md](../api.md) §8.14). When the account's proxy runs on this Mac on another port and serves the profile, the local URL and Copy use that port. This supersedes layer 6 note 7 for a running proxy; with no proxy running here, the URL still says 8790.
+
+## Amendment of 2026-11-27: new accounts start with the gateway on, and the warning only when something older may be on the account
+Omar, using `v0.11.0`: every account, even one created that day on a fresh install, started with the switch off and met the "update every device first" sheet. That sheet guards devices and proxies older than the gateway, and a new account, or an old one with this device alone, has none. This amends §9 ("turning it on is one person-only request, after the sheet's confirmation"), layer 5 note 1 and layer 6 note 6. No server, wire or schema change: the switch, its route and `/v1/agent/me` stay as built.
+
+1. **New accounts start with the switch on.**
+   - Right after a sign-up succeeds, the person's CLI (`klav signup`) and apps (`KlavCore.sign_up`, iPhone and Mac) send `POST /v1/account/mcp-gateway` (`Unlocked::start_with_mcp_gateway`).
+   - It is best effort and silent. A server older than the gateway answers `404`, and any other failure leaves the account off. Such an account has one device, so rule 2 turns it on later without the sheet.
+   - It is done in the client, not by the server at sign-up, and not inside `klav_client::signup` itself:
+     - a client older than the gateway (`< v0.10.0`) that signs up against a new server never gets an account with the switch on behind its back;
+     - the sign-up request needs no new field.
+   - Library tests that sign up with `klav_client::signup` still get an account with the switch off, as a pre-gateway client would. That is the legacy path the warning tests use.
+2. **The warning only when the account may hold something older.**
+   - "Update every device first" (`--every-device-is-updated` in the CLI, `every_device_updated` in `klavd`, the sheet's checkbox on the Mac) is asked only when `Unlocked::may_hold_older_than_mcp_gateway` says so. It says so for:
+     - another device of the account that is not revoked (`GET /v1/devices`);
+     - a proxy of the person's own (`mode: own`) whose agent is pending or active;
+     - anything it can't read: a failed sync or device list, preferences an agent wrote, an `own` setting without an agent.
+   - Klav Cloud's proxy (`mode: klav`) never counts: it is newer than the gateway, and Klav updates it.
+   - The CLI's MCP grant follows this rule:
+     - `mcp_first` (switch off, or the proxy's grant older than `v: 4`) now also needs that check;
+     - in practice it is still asked with an own proxy, which may be an older `klav-proxy`;
+     - it is not asked with Klav Cloud's proxy and this device alone;
+     - when the grant turns the switch on without the warning, the sheet says so and that it can't be turned off (`MCP_GATEWAY_TURNS_ON`).
+   - Unrelated guards keep their flag: the first per-item grant, the first sandbox issuer, Klav Cloud's proxy.
+3. **`klavd` decides, not the app.**
+   - The new read-only operation `mcp_gateway_older` answers the check, and `McpServersInfo.needs_update_warning` carries it to the Mac.
+   - `mcp_gateway_on` runs the check again and refuses without `every_device_updated` when it says so, whatever the app sent.
+   - An older `klavd` answers that the operation is malformed, which the app reads as "needs the warning".
+   - With nothing older, the Mac's "Turn on" asks for Touch ID (or the master password, over the window) and shows no sheet. With something older, it opens the sheet as before.
+4. **What this leaves.**
+   - A device added later to an account that is already on can run a Klav older than the gateway. That is the same as after any account turned the switch on (§9's table, "an older one left"). The sign-up turns it on only while nothing older can exist.
+   - A login never reuses its device row (`DeviceInfo.id` is always `None`), and logging out doesn't revoke it. Logging in again on the same machine therefore leaves an old row that counts as another device, and the warning stays until that row is revoked. This is the safe side.
+   - The device list doesn't tell a device that is on the gateway from one that isn't. The rule counts devices; it doesn't read their versions, which devices still don't report.
 
 ## Open questions for Omar (answered above)
 **Q1. One URL per MCP server, or one aggregated endpoint?**

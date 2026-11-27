@@ -2482,6 +2482,7 @@ fn counts_as_use(request: &Request) -> bool {
         | Request::ProxyIssuerPreview { .. }
         | Request::LocalClientPreview { .. }
         | Request::McpGateway
+        | Request::McpGatewayOlder
         | Request::AuditLog { .. }
         | Request::AuditStatus
         | Request::ItemActivity { .. }
@@ -5080,13 +5081,16 @@ async fn dispatch(
             ok(u.commit_local_client(prepared).await.map_err(e)?, warnings)
         }
         Request::McpGateway => ok(u.mcp_gateway_state().await.map_err(e)?, warnings),
+        Request::McpGatewayOlder => ok(u.may_hold_older_than_mcp_gateway().await, warnings),
         Request::McpGatewayOn {
             every_device_updated,
             password,
         } => {
             // A server older than the gateway, or an acknowledgement
-            // missing, is refused before presence; an account already on
-            // asks for nothing.
+            // missing while the account may hold a device or a proxy older
+            // than the gateway, is refused before presence; an account
+            // already on asks for nothing. Checked here, never taken from
+            // the app's sheet (amendment of 2026-11-27).
             match u.mcp_gateway_state().await.map_err(e)? {
                 None => {
                     return Err(e(ClientError::Invalid(
@@ -5096,7 +5100,7 @@ async fn dispatch(
                 Some(true) => return ok(true, warnings),
                 Some(false) => {}
             }
-            if !every_device_updated {
+            if !every_device_updated && u.may_hold_older_than_mcp_gateway().await {
                 return Err(e(ClientError::Invalid(format!(
                     "{}. Then confirm that every device is updated",
                     klav_client::proxy_admin::OLDER_CLIENTS_MCP
