@@ -138,3 +138,22 @@ test("a menu in a window too short for all of it fills, its list scrolling insid
   await expect(menu.getByText(COVERED)).toHaveCount(0);
   await expect(page.locator("#password")).toHaveValue(SECRET);
 });
+
+test("an open popover far from the menu still fills nothing (the top layer counts as covering)", async () => {
+  const page = await browser.context.newPage();
+  const { menu, choice } = await menuOn(page);
+  await page.evaluate(() => {
+    // A toast in the corner, in the top layer: its paint is not bounded by
+    // its box, and Chromium's own check counts its ::backdrop over the frame.
+    const toast = document.createElement("div");
+    toast.popover = "manual";
+    toast.style.cssText = "inset:auto;left:8px;bottom:8px;margin:0;width:160px;height:32px";
+    toast.textContent = "Code sent";
+    document.body.append(toast);
+    toast.showPopover();
+  });
+  await waitArmed(page);
+  await clickIn(choice);
+  await expect(menu.getByText(COVERED)).toBeVisible();
+  await expect(page.locator("#password")).toHaveValue("");
+});

@@ -295,6 +295,19 @@ export class InPage {
     this.icon?.remove();
     this.icon = undefined;
     if (!this.frames.has("menu")) this.anchor = undefined;
+    this.dropIfEmpty();
+  }
+
+  /**
+   * Takes the host out of `<html>` once it shows nothing (no frame, no
+   * glyph). An empty host left behind is still a node after any other of
+   * Klav's hosts: the passkey bridge's, once its frame closed, would make
+   * every later menu count as covered (T62) until the page reloads. The
+   * next frame or glyph makes a new host, at the end of `<html>`.
+   */
+  private dropIfEmpty(): void {
+    if (!this.host || this.frames.size > 0 || this.icon) return;
+    this.detach();
   }
 
   /** Opens a surface (an extension page in a frame); `focus` gives it the keyboard; `tall`: the menu has the generator. */
@@ -386,6 +399,7 @@ export class InPage {
       this.backdrop?.remove();
       this.backdrop = undefined;
     }
+    this.dropIfEmpty();
   }
 
   /** Removes the field's glyph and menu (the page navigated, or the field went away). */

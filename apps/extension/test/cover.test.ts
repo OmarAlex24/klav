@@ -297,9 +297,31 @@ describe("a page that leaves Klav alone", () => {
       ui.showIcon(field);
       expect(hosts()).toEqual([other, own, passkeyHost]);
       expect(bridge.isClear("passkey", "p1")).toBe(true);
+      // The passkey frame closes: its empty host goes too, and a menu
+      // opened later on the field (a code step) is not covered by it.
+      bridge.hide("passkey", "p1");
+      expect(passkeyHost?.isConnected).toBe(false);
+      expect(hosts()).toEqual([other, own]);
+      ui.show("menu", "m1");
+      vi.advanceTimersByTime(450);
+      expect(ui.isClear("menu", "m1")).toBe(true);
     } finally {
       bridge.hide("passkey");
     }
+  });
+
+  it("takes its host out of the page once it shows nothing, and makes a new one at the end", () => {
+    ui.show("card", "c1");
+    const first = host();
+    document.documentElement.append(document.createElement("other-extension"));
+    ui.hide("card", "c1");
+    expect(first.isConnected).toBe(false);
+    expect(document.querySelector("klav-ui")).toBeNull();
+    ui.show("save", "s1");
+    expect(document.documentElement.lastElementChild).toBe(host());
+    expect(host()).not.toBe(first);
+    vi.advanceTimersByTime(450);
+    expect(ui.isClear("save", "s1")).toBe(true);
   });
 
   it("puts its host back at the end when the glyph shows again", () => {
