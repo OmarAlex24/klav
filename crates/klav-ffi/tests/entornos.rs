@@ -289,6 +289,40 @@ fn the_phone_shows_environments_and_asks_for_the_protected_ones() {
         .expect("ask")
         .expect("protected");
     assert!(reason.contains("production"), "{reason}");
+    // A development variable that points to the same login asks too: the
+    // protection follows the item, not the environment it is read through.
+    core.save_environment(
+        project.clone(),
+        "development".into(),
+        edit(
+            false,
+            None,
+            vec![VariableInput {
+                name: "GITHUB_PASSWORD".into(),
+                value: None,
+                reference: Some(format!("{}/password", github.reference)),
+            }],
+        ),
+        LOWER.into(),
+        keystore.clone(),
+    )
+    .expect("development points to GitHub");
+    assert_eq!(owner.asked(), 2, "pointing to it asks nothing");
+    let dev = core
+        .environment(project.clone(), "development".into())
+        .expect("detail")
+        .expect("development");
+    let inherited = dev
+        .variables
+        .iter()
+        .find(|v| v.name == "GITHUB_PASSWORD")
+        .expect("reference");
+    assert!(inherited.target_protected);
+    let through = core
+        .variable_value(inherited.resolve.clone(), SHOW.into(), keystore.clone())
+        .expect("through development");
+    assert!(through == "gh-secret");
+    assert_eq!(owner.asked(), 3, "an inherited target asks");
 
     // Cancelling hands nothing out.
     owner.answer.store(CANCEL, Ordering::SeqCst);

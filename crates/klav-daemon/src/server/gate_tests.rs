@@ -2920,4 +2920,34 @@ async fn a_variable_shows_only_through_its_environment() {
     assert!(fake.last().contains("production"), "{}", fake.last());
     call::<Value>(&a, variable(reference)).await.expect("again");
     assert_eq!(fake.asked(), before + 2, "and asks every time");
+
+    // An unprotected environment's variable that points to an item a
+    // protected one reaches asks too: the protection follows the item.
+    let saved: Result<Value, ErrorBody> = call(
+        &a,
+        Request::EnvironmentSave {
+            project: Some(format!("{}/{}", p.vault, p.name)),
+            name: "development".into(),
+            edit: klav_client::environments::EnvironmentEdit {
+                create: true,
+                must_be_new: true,
+                protected: None,
+                set: vec![klav_client::environments::NewVariable {
+                    name: "GITHUB_PASSWORD".into(),
+                    value: None,
+                    reference: Some(format!("klav://{}/{}/GitHub/password", p.vault, p.name)),
+                }],
+                remove: Vec::new(),
+            },
+            password: None,
+        },
+    )
+    .await;
+    saved.expect("development");
+    let inherited = format!("klav://{}/{}/development/GITHUB_PASSWORD", p.vault, p.name);
+    call::<Value>(&a, variable(inherited))
+        .await
+        .expect("through development");
+    assert_eq!(fake.asked(), before + 3, "an inherited target asks");
+    assert!(fake.last().contains("production"), "{}", fake.last());
 }

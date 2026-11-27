@@ -8556,6 +8556,17 @@
         }
       }
     },
+    "Move “%@” to the trash": {
+      "comment": "Face ID prompt: the environment",
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mover «%@» a la papelera"
+          }
+        }
+      }
+    },
     "Move “%@” to the trash?": {
       "localizations": {
         "es": {

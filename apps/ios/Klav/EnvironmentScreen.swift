@@ -29,6 +29,11 @@ extension EnvironmentWords {
         String(localized: "Show a value of “\(environment)”", comment: "Face ID prompt: the environment")
     }
 
+    /// Face ID's words before a protected environment goes to the trash.
+    static func trashReason(_ environment: String) -> String {
+        String(localized: "Move “\(environment)” to the trash", comment: "Face ID prompt: the environment")
+    }
+
     /// Face ID's words before lowering an environment's protection.
     static func lowerReason(_ environment: String) -> String {
         String(localized: "Lower the protection of “\(environment)”", comment: "Face ID prompt: the environment")
@@ -301,7 +306,7 @@ struct EnvironmentScreen: View {
 
     private func trash() async {
         guard let service = model.service else { return }
-        let projectId = projectId, name = name, reason = EnvironmentWords.lowerReason(name)
+        let projectId = projectId, name = name, reason = EnvironmentWords.trashReason(name)
         busy = true
         defer { busy = false }
         do {
