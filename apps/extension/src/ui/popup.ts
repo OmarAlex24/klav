@@ -11,14 +11,21 @@ import { ask, daemon, type PageMessage } from "../shared/messages";
 import {
   DaemonError,
   type DaemonStatus,
+  type EnvironmentDetail,
+  type EnvironmentEdit,
+  type EnvironmentListing,
+  type EnvironmentSaved,
   type FieldView,
   type ItemSummary,
   type ItemView,
   type PasskeyUv,
+  type ProjectSummary,
+  type ResolvedValue,
   type Suggestion,
   type Suggestions,
 } from "../shared/protocol";
-import { gated, presence } from "./presence";
+import { gated, passwordDialog, presence } from "./presence";
+import { decodeValue, environmentSections, environmentSub, newEnvironmentEdit, newEnvironmentForm } from "./environments";
 import { watchApprovals } from "./approvals";
 import { clear, h } from "./dom";
 import { blocks, glyph, icon, iconButton, kindIcon, spaced } from "./kit";
@@ -436,7 +443,9 @@ async function showVault(status: DaemonStatus, query = "", filter: VaultFilter =
   const hereCodes = h("section", { class: "group", "aria-label": t("on_this_page"), hidden: true });
   const results = h("ul", { class: "list" });
   const heading = h("h2", { class: "label" }, t("your_vault"));
-  const all = h("section", { class: "group" }, heading, results);
+  const newEnv = h("button", { class: "btn-link env-new-link", type: "button", hidden: true }, t("env_new"));
+  newEnv.addEventListener("click", () => void showNewEnvironment(status));
+  const all = h("section", { class: "group" }, heading, newEnv, results);
   // The type tabs, under the search: drawn once the list says what there is.
   const kinds = h("div", { class: "kinds", role: "tablist", "aria-label": t("filter_by_type"), hidden: true });
   const settings = iconButton("gear", t("settings"), () => void showSettings(status));
@@ -522,8 +531,41 @@ async function showVault(status: DaemonStatus, query = "", filter: VaultFilter =
     visible.observe(slot);
     return slot;
   };
+  /**
+   * An environment opens its own page (ADR 0032 §6); its row says how many
+   * variables it has (klavd's `environments`, asked once) and carries a
+   * padlock when it is protected.
+   */
+  let envCounts: Map<string, number> | undefined;
+  let envAsked = false;
+  const loadEnvironments = (): void => {
+    if (envAsked || !listed.some((i) => i.kind === "environment")) return;
+    envAsked = true;
+    void daemon<EnvironmentListing[]>({ op: "environments" }).then(
+      (list) => {
+        envCounts = new Map(list.map((e) => [e.id, e.variables]));
+        if (results.isConnected) void paint(++seq);
+      },
+      () => undefined, // An older klavd: rows without counts.
+    );
+  };
+  const envRow = (i: ItemSummary): HTMLElement => {
+    const locked = (i.protected_by?.length ?? 0) > 0;
+    const end = h(
+      "span",
+      { class: "row-end" },
+      locked ? h("span", { class: "env-lock", role: "img", "aria-label": t("env_protected"), title: t("env_protected") }, icon("lock")) : null,
+      h("span", { class: "mono" }, kindName(i.kind, true)),
+    );
+    return itemRow({ id: i.id, title: i.title, sub: environmentSub(i.vault, i.project, envCounts?.get(i.id)) }, () => {
+      context.query = search.value;
+      void showEnvironment(i.project_id, i.title, context);
+    }, end);
+  };
   const listRow = (i: ItemSummary): HTMLElement =>
-    itemRow({ id: i.id, title: i.title, sub: i.username ?? `${i.vault} / ${i.project}`, site: i.urls[0] }, open, rowEnd(i));
+    i.kind === "environment"
+      ? envRow(i)
+      : itemRow({ id: i.id, title: i.title, sub: i.username ?? `${i.vault} / ${i.project}`, site: i.urls[0] }, open, rowEnd(i));
 
   const codeListRow = (i: ItemSummary): HTMLElement => {
     const row = codeRow({ id: i.id, title: i.title, username: i.username, site: i.urls[0] }, (id) => void copyCode(id));
@@ -669,6 +711,8 @@ async function showVault(status: DaemonStatus, query = "", filter: VaultFilter =
     here.hidden = filter !== "all";
     drawPageCodes();
     heading.textContent = filter === "all" ? t("your_vault") : t(filterLabel(filter));
+    newEnv.hidden = filter !== "environment";
+    loadEnvironments();
     const ids = codeIds;
     const inTab = filter === "codes" ? listed.filter((i) => ids?.has(i.id) === true) : ofKind(listed, filter);
     // In «Codes», what the page's section shows is not repeated below.
@@ -1013,6 +1057,10 @@ async function showItem(id: string, context: VaultContext): Promise<void> {
         h("h1", { class: "title-l", tabindex: "-1" }, view.title),
         h("p", { class: "sub" }, t("kind_where", kindName(view.kind), view.vault, view.project)),
       ),
+      // Protected by a reference from a protected environment (ADR 0032 §3.1).
+      view.protected_by?.length
+        ? h("p", { class: "env-protected", role: "note" }, icon("lock"), h("span", {}, t("env_protected_by", view.protected_by.map((n) => t("quote", n)).join(", "))))
+        : null,
       pending,
       rows,
       added,
@@ -1216,7 +1264,9 @@ async function showNewItem(status: DaemonStatus): Promise<void> {
   const backButton = h("button", { class: "back", type: "button" }, icon("back"), t("your_vault"));
   backButton.addEventListener("click", back);
   const title = h("h1", { class: "title", tabindex: "-1" }, t("new_title"));
-  const content = h("div", { class: "content" }, title);
+  const newEnvironment = h("button", { class: "btn-link env-new-link", type: "button" }, t("env_new"));
+  newEnvironment.addEventListener("click", () => void showNewEnvironment(status));
+  const content = h("div", { class: "content" }, title, newEnvironment);
   app.append(h("header", { class: "bar" }, backButton, glyph("brand-glyph")), content);
   const stop = mountNewItem(content, {
     daemon,
@@ -1234,6 +1284,177 @@ async function showNewItem(status: DaemonStatus): Promise<void> {
     document.removeEventListener("keydown", onKey);
     stop();
   };
+}
+
+// --------------------------------------------------------- environments --
+
+/** Whether klavd asks for Touch ID itself, or the popup asks for the master password first. */
+function hasTouchId(status: DaemonStatus): boolean {
+  return status.touch_id.available && status.touch_id.enrolled && !status.touch_id.password_required;
+}
+
+/** An environment operation an older native host or klavd does not know: «Update Klav». */
+function environmentError(e: unknown): string {
+  const error = errorOf(e);
+  if (error.code === "bad_request" || (error.code === "denied" && error.message.includes("not available to the browser extension"))) {
+    return t("env_update_klav");
+  }
+  return errorText(error.code, error.message);
+}
+
+/**
+ * Sends `request`, which lowers protection when `lowers`: on a Mac without
+ * Touch ID the master password goes with it, asked here first (klavd
+ * asks for Touch ID itself where there is one). `undefined`: «Not now».
+ */
+async function lowering<T>(status: DaemonStatus, lowers: boolean, send: (password?: string) => Promise<T>): Promise<T | undefined> {
+  if (!lowers || hasTouchId(status)) return send();
+  let problem: DaemonError | undefined;
+  for (;;) {
+    const password = await passwordDialog(t("env_password_lower"), problem);
+    if (password === undefined) return undefined;
+    try {
+      return await send(password);
+    } catch (e) {
+      problem = errorOf(e);
+      if (problem.code !== "wrong_credentials") throw problem;
+    }
+  }
+}
+
+/**
+ * One environment (ADR 0032 §6): its variables with their values hidden,
+ * «Show» and «Copy» on each (klavd asks for Touch ID every time in a
+ * protected one), the form to add or change one, the protected flag and
+ * the trash.
+ */
+async function showEnvironment(projectId: string, name: string, context: VaultContext): Promise<void> {
+  let detail: EnvironmentDetail | null;
+  try {
+    detail = await daemon<EnvironmentDetail | null>({ op: "environment", project: projectId, name });
+  } catch (e) {
+    if (errorOf(e).code === "locked") {
+      void start();
+      return;
+    }
+    toast(environmentError(e));
+    return;
+  }
+  const back = (): void => {
+    void showVault(context.status, context.query, context.filter);
+  };
+  if (!detail) {
+    toast(t("env_gone"));
+    back();
+    return;
+  }
+  screen("screen-item screen-env");
+  const onKey = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && !event.defaultPrevented) {
+      event.preventDefault();
+      back();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  leave = () => {
+    document.removeEventListener("keydown", onKey);
+  };
+  const env = detail.environment;
+  const reload = (): void => void showEnvironment(projectId, name, context);
+  const failed = (e: unknown): void => {
+    if (errorOf(e).code === "locked") {
+      void start();
+      return;
+    }
+    toast(environmentError(e));
+  };
+  const save = async (edit: EnvironmentEdit, lowers: boolean): Promise<void> => {
+    const saved = await lowering(context.status, lowers, (password) =>
+      daemon<EnvironmentSaved>({ op: "environment_save", project: projectId, name, edit, ...(password ? { password } : {}) }),
+    );
+    if (!saved) return;
+    toast(saved.newly_protected.length > 0 ? t("env_now_protected", saved.newly_protected.join(", ")) : t("env_saved"));
+    reload();
+  };
+  const body = environmentSections(detail, {
+    masked: maskedValue,
+    value: async (v) => {
+      const values = await gated<ResolvedValue[]>({ op: "resolve", references: [v.resolve], variables_only: true });
+      const first = values[0];
+      if (!first) throw new DaemonError("internal", "no value");
+      return decodeValue(first.value);
+    },
+    copy,
+    save,
+    trash: async () => {
+      const done = await lowering(context.status, env.protected, (password) =>
+        daemon<EnvironmentSaved>({ op: "environment_trash", project: projectId, name, ...(password ? { password } : {}) }),
+      );
+      if (!done) return;
+      toast(t("env_trashed"));
+      back();
+    },
+    failed,
+  });
+  const backButton = h("button", { class: "back", type: "button" }, icon("back"), t("your_vault"));
+  backButton.addEventListener("click", back);
+  app.append(
+    h("header", { class: "bar" }, backButton, glyph("brand-glyph")),
+    h(
+      "div",
+      { class: "content" },
+      h(
+        "section",
+        { class: "item-head" },
+        h("h1", { class: "title-l mono", tabindex: "-1" }, env.name),
+        h("p", { class: "sub" }, t("kind_where", kindName("environment"), env.vault, env.project)),
+      ),
+      body,
+    ),
+  );
+  app.querySelector<HTMLElement>(".title-l")?.focus({ preventScroll: true });
+}
+
+/** «New environment»: its project, its name and the protected flag. */
+async function showNewEnvironment(status: DaemonStatus): Promise<void> {
+  let projects: ProjectSummary[];
+  try {
+    projects = await daemon<ProjectSummary[]>({ op: "projects" });
+  } catch (e) {
+    toast(environmentError(e));
+    return;
+  }
+  screen("screen-new screen-env-new");
+  const context: VaultContext = { status, query: "", filter: "environment" };
+  const back = (): void => {
+    void showVault(status, "", "environment");
+  };
+  const onKey = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && !event.defaultPrevented) {
+      event.preventDefault();
+      back();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  leave = () => {
+    document.removeEventListener("keydown", onKey);
+  };
+  const backButton = h("button", { class: "back", type: "button" }, icon("back"), t("your_vault"));
+  backButton.addEventListener("click", back);
+  const form = newEnvironmentForm(projects, {
+    create: async (projectId, name, protectedOn) => {
+      await daemon<EnvironmentSaved>({ op: "environment_save", project: projectId, name, edit: newEnvironmentEdit(protectedOn) });
+      void showEnvironment(projectId, name, context);
+    },
+    failed: (e) => {
+      toast(environmentError(e));
+    },
+  });
+  app.append(
+    h("header", { class: "bar" }, backButton, glyph("brand-glyph")),
+    h("div", { class: "content" }, h("h1", { class: "title", tabindex: "-1" }, t("env_new")), form),
+  );
+  app.querySelector<HTMLElement>(".title")?.focus({ preventScroll: true });
 }
 
 /** «Salud» (ADR 0022 §4, §6): the report and «Arreglar mis contraseñas repetidas» (health.ts). */

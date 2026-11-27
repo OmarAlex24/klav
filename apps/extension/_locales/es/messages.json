@@ -1733,5 +1733,131 @@
   },
   "presence_canceled": {
     "message": "Cancelado."
+  },
+  "filter_environment": {
+    "message": "Entornos"
+  },
+  "kind_environment": {
+    "message": "Entorno"
+  },
+  "kind_short_environment": {
+    "message": "entorno"
+  },
+  "env_variables_one": {
+    "message": "$1 variable"
+  },
+  "env_variables_other": {
+    "message": "$1 variables"
+  },
+  "env_row_sub": {
+    "message": "$1 / $2 · $3"
+  },
+  "env_protected": {
+    "message": "Protegido"
+  },
+  "env_protected_notice": {
+    "message": "Protegido: mostrar o copiar un valor pide Touch ID cada vez."
+  },
+  "env_protected_by": {
+    "message": "Lo protege $1: mostrar o copiar un valor pide Touch ID cada vez."
+  },
+  "env_protect_title": {
+    "message": "Proteger este entorno"
+  },
+  "env_protect_text": {
+    "message": "Touch ID para cada valor, y los agentes piden permiso cada vez. Para quitarlo se pide Touch ID."
+  },
+  "env_from": {
+    "message": "De $1"
+  },
+  "env_from_unknown": {
+    "message": "De un elemento que este dispositivo no ve"
+  },
+  "env_own_value": {
+    "message": "Valor propio"
+  },
+  "env_target_protected": {
+    "message": "$1 · protegido"
+  },
+  "env_agent_changed": {
+    "message": "$1 cambió $2 desde la última vez que lo guardaste. Revísalas antes de usarlas."
+  },
+  "env_an_agent": {
+    "message": "Un agente"
+  },
+  "env_none": {
+    "message": "Todavía no hay variables."
+  },
+  "env_add": {
+    "message": "Añadir variable"
+  },
+  "env_change": {
+    "message": "Cambiar $1"
+  },
+  "env_remove": {
+    "message": "Quitar $1"
+  },
+  "env_name": {
+    "message": "Nombre"
+  },
+  "env_value": {
+    "message": "Valor"
+  },
+  "env_reference": {
+    "message": "Referencia"
+  },
+  "env_source": {
+    "message": "De dónde sale el valor"
+  },
+  "env_reference_hint": {
+    "message": "Un campo de otro elemento: klav://Bóveda/Proyecto/Elemento/campo"
+  },
+  "env_bad_variable": {
+    "message": "Letras, números y _, sin empezar por un número (hasta 128)."
+  },
+  "env_bad_name": {
+    "message": "Minúsculas, números, - y _ (hasta 64), como development."
+  },
+  "env_bad_reference": {
+    "message": "Una referencia empieza por klav://"
+  },
+  "env_empty_value": {
+    "message": "Escribe un valor."
+  },
+  "env_saved": {
+    "message": "Guardado"
+  },
+  "env_now_protected": {
+    "message": "Ahora protegidos: $1"
+  },
+  "env_trash": {
+    "message": "Mover a la papelera"
+  },
+  "env_trash_confirm": {
+    "message": "¿Mover $1 a la papelera?"
+  },
+  "env_trashed": {
+    "message": "Se movió a la papelera"
+  },
+  "env_new": {
+    "message": "Nuevo entorno"
+  },
+  "env_project": {
+    "message": "Proyecto"
+  },
+  "env_create": {
+    "message": "Crear"
+  },
+  "env_gone": {
+    "message": "Este entorno ya no está."
+  },
+  "env_update_klav": {
+    "message": "Los entornos necesitan una versión más nueva de Klav en esta computadora. Actualiza Klav."
+  },
+  "env_password_lower": {
+    "message": "Contraseña maestra para bajar la protección"
+  },
+  "cancel": {
+    "message": "Cancelar"
   }
 }

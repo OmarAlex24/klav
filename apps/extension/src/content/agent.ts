@@ -17,6 +17,7 @@ const WANTED: Record<ItemKind, string> = {
   totp: "login",
   note: "",
   api_key: "",
+  environment: "",
 };
 
 /** The role a value takes when the agent gives its field a selector. */

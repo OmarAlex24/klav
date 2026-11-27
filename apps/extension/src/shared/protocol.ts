@@ -10,7 +10,7 @@ export const PROTOCOL_VERSION = 1;
 /** Name of the native messaging host. */
 export const HOST_NAME = "dev.klav.host";
 
-export type ItemKind = "login" | "card" | "identity" | "ssh_key" | "file" | "totp" | "note" | "api_key";
+export type ItemKind = "login" | "card" | "identity" | "ssh_key" | "file" | "totp" | "note" | "api_key" | "environment";
 
 export type FieldKind =
   | "username"
@@ -160,6 +160,82 @@ export interface ItemSummary {
   pending_urls?: string[];
   /** The agent that wrote the current version, if one did. */
   author_agent_id?: string;
+  /**
+   * The protected environments that protect this item, or that it is, by
+   * name (ADR 0032 §3.1): showing or copying a value asks for Touch ID
+   * every time. Absent: not protected.
+   */
+  protected_by?: string[];
+}
+
+/** One environment of a project, without its variables (ADR 0032 §6). */
+export interface EnvironmentListing {
+  id: string;
+  vault_id: string;
+  vault: string;
+  project_id: string;
+  project: string;
+  name: string;
+  variables: number;
+  /** The effective protected flag (ADR 0032 §3). */
+  protected: boolean;
+  updated_at: number;
+  author_agent_id?: string;
+}
+
+/** One variable, never with its value: its own, or a reference to another item's field. */
+export type VariableView = { name: string; resolve: string } & (
+  | { origin: "value" }
+  | { origin: "reference"; reference: string; target?: string; protected: boolean }
+);
+
+/** What an agent changed since the person's latest version (ADR 0032 §3). */
+export interface AgentChanges {
+  agent_id: string;
+  agent?: string;
+  at: number;
+  variables: string[];
+}
+
+/** One environment: its variables in order, never a value. */
+export interface EnvironmentDetail {
+  environment: EnvironmentListing;
+  variables: VariableView[];
+  agent_changes?: AgentChanges;
+}
+
+/** A variable to add or replace: a value or a reference, never both. */
+export interface NewVariable {
+  name: string;
+  value?: string;
+  reference?: string;
+}
+
+export interface EnvironmentEdit {
+  create?: boolean;
+  must_be_new?: boolean;
+  protected?: boolean;
+  set?: NewVariable[];
+  remove?: string[];
+}
+
+export interface EnvironmentSaved {
+  name: string;
+  id?: string;
+  created: boolean;
+  protected: boolean;
+  newly_protected: string[];
+  unprotected: string[];
+  agents: string[];
+  warnings: string[];
+}
+
+/** One value `resolve` handed out: base64url without padding. */
+export interface ResolvedValue {
+  reference: string;
+  canonical: string;
+  kind: FieldKind;
+  value: string;
 }
 
 export interface FieldView {
@@ -712,6 +788,17 @@ export type Request =
   /** `chosen`: the person picked a login of the `parent` group (ADR 0025 §2). */
   | { op: "autofill"; item: string; url: string; part?: "all" | "totp" | "pending"; chosen?: boolean; password?: string }
   | { op: "totp"; query: string; field?: string; password?: string }
+  /**
+   * Environments (ADR 0032 §6). `resolve` reaches the extension only with
+   * `variables_only` and one reference, an environment variable's
+   * `resolve`: klavd refuses any other, and asks for Touch ID in a
+   * protected environment.
+   */
+  | { op: "environments"; project?: string }
+  | { op: "environment"; project?: string; name: string }
+  | { op: "environment_save"; project?: string; name: string; edit: EnvironmentEdit; password?: string }
+  | { op: "environment_trash"; project?: string; name: string; password?: string }
+  | { op: "resolve"; references: [string]; variables_only: true; password?: string }
   | { op: "create"; item: NewItem }
   | { op: "edit"; query: string; patch: ItemPatch }
   | { op: "generator_record"; value: string; host?: string }

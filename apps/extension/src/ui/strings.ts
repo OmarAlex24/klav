@@ -115,6 +115,7 @@ const KINDS: Record<string, [MessageKey, MessageKey]> = {
   totp: ["kind_totp", "kind_short_totp"],
   note: ["kind_note", "kind_short_note"],
   api_key: ["kind_api_key", "kind_short_api_key"],
+  environment: ["kind_environment", "kind_short_environment"],
 };
 
 /** An item's kind: «Card» under its title, «card» (`short`) at the end of a row. */
