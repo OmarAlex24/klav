@@ -116,6 +116,46 @@ export class InPage {
     return root;
   }
 
+  /**
+   * Puts the host back at the end of `<html>` when something was appended
+   * after it since Klav created it (another extension's element, a page's
+   * late node). Anything after the host counts as covering Klav's frames
+   * (T62, `cover.ts`), so without this a node that came later would block
+   * every frame for the rest of the page's life. Only right before Klav
+   * shows something (the person focused a field or opened a surface),
+   * never from the MutationObserver, so two scripts that each want to be
+   * last do not chase each other.
+   *
+   * It stops before another `<klav-ui>`: the passkey bridge
+   * (`webauthn.ts`) draws Klav's passkey frame in a host of its own, and
+   * passing it would cover that frame. Klav's hosts keep the order they
+   * had; a page that names its node `klav-ui` only gets the old behaviour
+   * (its node counts as covering).
+   *
+   * `moveBefore` (Chromium) moves the host with its frames alive; a plain
+   * move would reload them, so without it the host moves only while no
+   * frame is open. Frames that were open count as covered for a moment
+   * after the move, as after any change the page made.
+   */
+  private keepLast(): void {
+    const host = this.host;
+    if (!host) return;
+    let stop = host.nextElementSibling;
+    while (stop !== null && stop.localName !== "klav-ui") stop = stop.nextElementSibling;
+    if (host.nextElementSibling === stop) return;
+    const html = document.documentElement as HTMLElement & { moveBefore?: (node: Node, child: Node | null) => void };
+    try {
+      if (typeof html.moveBefore === "function") {
+        html.moveBefore(host, stop);
+        this.markCovered();
+        return;
+      }
+    } catch {
+      // A browser that refuses the move: as if it had none.
+    }
+    if (this.frames.size === 0) html.insertBefore(host, stop);
+  }
+
   /** Drops the host the page took away or moved (its frames went with it). */
   private detach(): void {
     this.watcher?.disconnect();
@@ -200,6 +240,7 @@ export class InPage {
       return;
     }
     const root = this.ensure();
+    this.keepLast();
     this.anchor = field;
     if (!this.icon) {
       const icon = document.createElement("button");
@@ -254,6 +295,19 @@ export class InPage {
     this.icon?.remove();
     this.icon = undefined;
     if (!this.frames.has("menu")) this.anchor = undefined;
+    this.dropIfEmpty();
+  }
+
+  /**
+   * Takes the host out of `<html>` once it shows nothing (no frame, no
+   * glyph). An empty host left behind is still a node after any other of
+   * Klav's hosts: the passkey bridge's, once its frame closed, would make
+   * every later menu count as covered (T62) until the page reloads. The
+   * next frame or glyph makes a new host, at the end of `<html>`.
+   */
+  private dropIfEmpty(): void {
+    if (!this.host || this.frames.size > 0 || this.icon) return;
+    this.detach();
   }
 
   /** Opens a surface (an extension page in a frame); `focus` gives it the keyboard; `tall`: the menu has the generator. */
@@ -261,6 +315,7 @@ export class InPage {
     if (this.frames.get(surface)?.id === id) return;
     this.hide(surface);
     const root = this.ensure();
+    this.keepLast();
     const frame = document.createElement("iframe");
     frame.src = `${ext.runtime.getURL(PAGES[surface])}#${id}`;
     const title = TITLES[surface];
@@ -311,23 +366,27 @@ export class InPage {
     const max =
       surface === "find"
         ? Math.min(MAX_HEIGHT.find, Math.round(innerHeight * 0.76))
-        : f.tall
-          ? this.tallMenuMax()
+        : surface === "menu"
+          ? this.menuMax(f.tall === true)
           : MAX_HEIGHT[surface];
     style(f.el, { height: `${String(Math.max(40, Math.min(max, Math.ceil(height))))}px` });
     this.place();
   }
 
   /**
-   * How tall the generator's menu may be: up to MENU_TALL, but never past
-   * the window on the side of the field where it opens (a frame cut by the
-   * window counts as covered, and the menu would refuse clicks).
+   * How tall the menu may be: up to MENU_MAX (MENU_TALL with the
+   * generator), but never past the window on the side of the field where
+   * it opens. A frame cut by the window counts as covered, both here
+   * (`cover.ts`) and for IntersectionObserver v2 in the frame, so a menu
+   * taller than the room would refuse every click; capped, its list
+   * scrolls inside instead.
    */
-  private tallMenuMax(): number {
+  private menuMax(tall: boolean): number {
+    const cap = tall ? MENU_TALL : MENU_MAX;
     const rect = this.anchor?.getBoundingClientRect();
-    if (!rect) return MENU_MAX;
+    if (!rect) return cap;
     const room = Math.max(innerHeight - rect.bottom, rect.top) - 12;
-    return Math.max(Math.min(MENU_MAX, room), Math.min(MENU_TALL, room));
+    return Math.min(cap, room);
   }
 
   /** Closes a surface (only if it is still the one with `id`, when given). */
@@ -340,6 +399,7 @@ export class InPage {
       this.backdrop?.remove();
       this.backdrop = undefined;
     }
+    this.dropIfEmpty();
   }
 
   /** Removes the field's glyph and menu (the page navigated, or the field went away). */
