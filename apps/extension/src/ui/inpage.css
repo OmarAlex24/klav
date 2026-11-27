@@ -6,6 +6,8 @@
 /* A long list scrolls inside the frame, which is at most a set height. */
 html { height: 100%; overflow: hidden; }
 body { height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+/* Content taller than the frame, while the frame grows to fit it (`frame.ts`): no scrollbar flashing in. */
+html.growing body { overflow-y: hidden; }
 
 /* Exactly the frame's box: its ink edge, and what the clickjacking check watches. */
 .frame-edge { position: fixed; inset: 0; pointer-events: none; border: 1px solid var(--tinta); z-index: 10; }
@@ -36,6 +38,8 @@ main { padding: 1px; }
 .choice-site { font: 400 11px/1 var(--mono); color: var(--gris); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile svg { width: 14px; height: 14px; }
 .tile-dashed { border-style: dashed; border-color: var(--cruz); color: var(--gris); }
+/* «Find another item», «Use another device»: their line explains, so it wraps instead of ending in «…». */
+.choice-quiet .row-sub { white-space: normal; }
 
 .empty { padding: 12px; color: var(--gris); font-size: 12.5px; }
 .empty strong { color: var(--tinta); font-weight: 600; }

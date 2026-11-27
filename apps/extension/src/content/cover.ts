@@ -46,7 +46,17 @@ function untouched(style: CSSStyleDeclaration): boolean {
   return get("content-visibility") === "" || get("content-visibility") === "visible";
 }
 
-/** Whether the page has something in the top layer (above every `z-index`). */
+/**
+ * Whether the page has something in the top layer (above every `z-index`).
+ * Any of it counts, even a small popover far from the frame. Its paint is
+ * not bounded by its box: a descendant with `position: fixed`, a
+ * `box-shadow`, an outline, overflowing text or a closed shadow root can
+ * cover the whole window, and so can its `::backdrop`. Chromium agrees:
+ * every open popover has a transparent full-window `::backdrop`, and
+ * IntersectionObserver v2 then reports Klav's frames as not visible, so
+ * relaxing this here would let Firefox (which has only this check) through
+ * without helping Chromium.
+ */
 function topLayer(doc: Document): boolean {
   if (doc.fullscreenElement) return true;
   for (const selector of [":modal", ":popover-open"]) {
@@ -59,7 +69,15 @@ function topLayer(doc: Document): boolean {
   return false;
 }
 
-/** Whether something comes after `host` in `<html>` and can paint over it. */
+/**
+ * Whether something comes after `host` in `<html>` and can paint over it.
+ * Anything rendered counts, even a 0×0 box: its `position: fixed`
+ * children, its pseudo-elements or a closed shadow root can still cover
+ * the frame, and none of that is bounded by its own rect. Instead of
+ * guessing, Klav moves its host back to the end of `<html>` before it
+ * shows a frame or the glyph (`InPage.keepLast`), so only a node that
+ * comes while a frame is open counts here.
+ */
 function somethingAfter(host: HTMLElement, view: Window): boolean {
   for (let node = host.nextElementSibling; node; node = node.nextElementSibling) {
     if (view.getComputedStyle(node).display !== "none") return true;

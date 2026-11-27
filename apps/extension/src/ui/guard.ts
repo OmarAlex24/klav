@@ -12,17 +12,38 @@ const shownAt = performance.now();
 const ARM_MS = 400;
 const VISIBLE_MS = 300;
 
+/**
+ * How much of the frame (px, per side) the window may cut and still count
+ * as whole: sub-pixel rounding at fractional zoom or device pixel ratios.
+ * The content script separately refuses a frame more than 1.5 px outside
+ * the window (`content/cover.ts`), so this only absorbs rounding.
+ */
+const ROUNDING_PX = 1;
+
 let visibleSince: number | undefined;
+
+/** Whether an entry says the whole frame is on screen with nothing painted over it. */
+export function wholeAndVisible(entry: IntersectionObserverEntry): boolean {
+  if ((entry as IntersectionObserverEntry & { isVisible?: boolean }).isVisible !== true) return false;
+  const box = entry.boundingClientRect;
+  const seen = entry.intersectionRect;
+  return box.width - seen.width <= ROUNDING_PX && box.height - seen.height <= ROUNDING_PX;
+}
+
 const tracksVisibility = typeof IntersectionObserverEntry !== "undefined" && "isVisible" in IntersectionObserverEntry.prototype;
 if (tracksVisibility) {
   const observer = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
-        const visible = (entry as IntersectionObserverEntry & { isVisible?: boolean }).isVisible === true;
-        visibleSince = visible ? (visibleSince ?? performance.now()) : undefined;
+        visibleSince = wholeAndVisible(entry) ? (visibleSince ?? performance.now()) : undefined;
       }
     },
-    { threshold: [1], trackVisibility: true, delay: 100 } as IntersectionObserverInit,
+    // Not just [1]: below the threshold Chromium reports `isVisible: false`
+    // even with nothing over the frame, so a frame cut by a rounding pixel
+    // would never arm. 0.99 still reports a cut beyond that, which
+    // `wholeAndVisible` refuses; `isVisible` alone keeps catching anything
+    // painted over it (an overlay, a popover, a faded or moved ancestor).
+    { threshold: [0.99, 1], trackVisibility: true, delay: 100 } as IntersectionObserverInit,
   );
   // The whole frame, not the body: a long list scrolls, and the body is then taller than the frame.
   const edge = document.querySelector(".frame-edge");
